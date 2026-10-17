@@ -6,23 +6,23 @@ worker measures with OpenCV, how the triage agent decides whether a change is re
 approves every article, and how the figure reaches the page. Then, in plain words, what the rail
 task measures and what its numbers do and do not mean.
 
-The design, every setting and what was measured are in [vision.md](../enhancements/vision.md)
+The design, every setting and what was measured are in [vision.md](../enhancements/archive/vision.md)
 (both tasks, the worker, the agent, COOL); the review of the stack, the choice of the rail angle
 and one specification per pull request are in
-[rail-access-monitor.md](../enhancements/rail-access-monitor.md). This page describes what is on
-the integration branch (#285), every rail pull request included.
+[rail-access-monitor.md](../enhancements/archive/rail-access-monitor.md). This page describes what is on
+`dev`, where the worker is deployed: #285 and every rail pull request since.
 
 **The operator's assistant and vision.** Like [article research](article-research.md), this page
 has a `feature` entry in the assistant: `architecture(feature="vision-pipeline")` walks through the
 same steps with this environment's resource names. Where vision is on, the assistant also reads
 each vision topic's running state and the worker's log in `vision_region`; see
 [Asking the assistant](#asking-the-assistant) below, and the design in
-[ops-assistant-vision.md](../enhancements/ops-assistant-vision.md).
+[ops-assistant-vision.md](../enhancements/archive/ops-assistant-vision.md).
 
-The rules this follows are the README's: research is diff-first, nothing is published without a
-review, and new sources are adapters. One more is the vision work's own: **not measured is never
-"nothing there"**. A site that could not be read keeps its history and records an error, and a
-figure tints what was not measured.
+The rules this follows are the [project plan's](../project-plan.md#2-hard-constraints): research
+is diff-first, nothing is published without a review, and new sources are adapters. One more is
+the vision work's own: **not measured is never "nothing there"**. A site that could not be read
+keeps its history and records an error, and a figure tints what was not measured.
 
 Resource names below use `<prefix>` (your `unique_name_prefix`) and `<env>` (`dev` or
 `production`).
@@ -241,10 +241,11 @@ runs.
 **With it `true`:** in `vision_region` (us-west-2 by default), the worker, its role (its own log
 group and nothing else), its log group and the artifacts bucket; in the home region, one policy on
 the pipeline's shared execution role (`lambda_exec`, which twelve functions use) allowing
-`lambda:InvokeFunction` on that one function, and the ARN in the research tick's environment. The
-switch is a GitHub repository variable fed to Terraform as `vision_enabled` (`TF_VAR_vision_enabled`
-in both apply workflows), never a tfvars edit; the bootstrap must have been re-applied with
-`vision_region` first. The steps are in the
+`lambda:InvokeFunction` on that one function, and the ARN in the research tick's environment; and
+one policy on the operator's assistant's MCP server role, to read the worker's log and each topic's
+running state. The switch is a GitHub repository variable fed to Terraform as `vision_enabled`
+(`TF_VAR_vision_enabled` in both apply workflows), never a tfvars edit; the bootstrap must have
+been re-applied with `vision_region` first. The steps are in the
 [deployment runsheet](../deployment-runsheet.md#vision-optional) and the settings in
 [configuration.md](../configuration.md#vision-and-rail-access).
 
@@ -259,12 +260,12 @@ in both apply workflows), never a tfvars edit; the bootstrap must have been re-a
 | What is diffed | the count against the median of earlier clear scenes, past both an absolute and a relative threshold | the served share, the desert area and the station count against the baseline of earlier clear scenes measured with the same polygon and parameters |
 | Agent tools | `look_again`, `previous_scene`, `site_history` | the same, and `web_context` |
 | What the article gets | the summary | the summary with up to three planner notes, and the map |
-| Where it stands | on the integration branch (#285) | on the integration branch (#285): the core [#289](https://github.com/AllainWoodsford/BloggerBear/pull/289), the worker task [#291](https://github.com/AllainWoodsford/BloggerBear/pull/291), the adapter [#292](https://github.com/AllainWoodsford/BloggerBear/pull/292), the figure [#293](https://github.com/AllainWoodsford/BloggerBear/pull/293), planner notes [#294](https://github.com/AllainWoodsford/BloggerBear/pull/294), time bounds [#295](https://github.com/AllainWoodsford/BloggerBear/pull/295), the findings window [#297](https://github.com/AllainWoodsford/BloggerBear/pull/297), the integration review's fixes [#298](https://github.com/AllainWoodsford/BloggerBear/pull/298) |
+| Where it stands | on `dev` since #285 | on `dev` since #285, and live as `rail-cities`: the core [#289](https://github.com/AllainWoodsford/BloggerBear/pull/289), the worker task [#291](https://github.com/AllainWoodsford/BloggerBear/pull/291), the adapter [#292](https://github.com/AllainWoodsford/BloggerBear/pull/292), the figure [#293](https://github.com/AllainWoodsford/BloggerBear/pull/293), planner notes [#294](https://github.com/AllainWoodsford/BloggerBear/pull/294), time bounds [#295](https://github.com/AllainWoodsford/BloggerBear/pull/295), the findings window [#297](https://github.com/AllainWoodsford/BloggerBear/pull/297), the integration review's fixes [#298](https://github.com/AllainWoodsford/BloggerBear/pull/298) |
 
 ### Asking the assistant
 
 The operator's assistant (the ask page, and Alexa+) reads the vision pipeline but never changes it
-([ops-assistant-vision.md](../enhancements/ops-assistant-vision.md)):
+([ops-assistant-vision.md](../enhancements/archive/ops-assistant-vision.md)):
 
 - **"How is the vision pipeline doing?", "Is the satellite worker on?", "Why wasn't Sydney
   measured?"** `vision_status` says whether the worker is on and in which Region, and for each
@@ -288,6 +289,12 @@ The operator's assistant (the ask page, and Alexa+) reads the vision pipeline bu
   what the next daily run reads. It says counts and ages, never what a summary says. The same
   Findings in full: `python scripts/admin_cli.py findings list rail-cities`, and the
   `topic-findings` Claude Code skill.
+- **"What did the vision agent do for rail access this week?", "Walk me through the latest rail
+  access scene."** `vision_evidence` reads the pipeline's evidence lines in the home Region's logs:
+  each new scene's numbers, whether they moved past the topic's usual range, what the triage agent
+  did and its verdict, whether a Finding was written and whether its article was approved; `scene`
+  "latest" shows one decision step by step. The lines hold only codes, ids and numbers, so Alexa+
+  hears what the page shows.
 
 With vision off it reads no running state and no worker log, and says the worker is off and that
 turning it on is the `VISION_ENABLED` setting.
@@ -295,7 +302,7 @@ turning it on is the `VISION_ENABLED` setting.
 ## Part two: the trains explainer
 
 What the Rail Access Monitor measures, for a reader who is not a planner. The exact keys,
-defaults and bounds are in [vision.md](../enhancements/vision.md#the-rail-tasks-request) (the
+defaults and bounds are in [vision.md](../enhancements/archive/vision.md#the-rail-tasks-request) (the
 rail parameters and the reply) and [configuration.md](../configuration.md#a-rail_access-topic)
 (the topic's settings); the paragraphs here describe the concepts as the code implements them.
 
@@ -425,7 +432,7 @@ or badly served in absolute terms.
 around its white one, a ghost line is a red line through its stations, and each simulated link
 (orbital or feeder) is dashed in green. In words, as **planner notes**: code writes one sentence
 per flag and per simulation from the measured values (`common/rail_notes.py`; the templates are in
-[vision.md §6.8](../enhancements/vision.md#68-planner-notes-the-flags-and-simulations-in-words)),
+[vision.md §6.8](../enhancements/archive/vision.md#68-planner-notes-the-flags-and-simulations-in-words)),
 calling flags flags and simulations simulations, with every station name in quotation marks as
 OpenStreetMap has it. Up to seven follow the measured change in what the summary model is given,
 so the **Finding's summary** can use them; the **article** ends with at most three, each keeping
@@ -508,7 +515,7 @@ person from the logs alone, and the agent's trail is not lost on the next tick. 
 holds a site or station name, an error's message, a news title or host, or the agent's reason
 (only its hash); the ring keeps the reason and the hosts for the page's "(unverified)" cells.
 What is recorded where, the events and the queries that read them are in
-[the evidence trail](../enhancements/vision-evidence.md) and the
+[the evidence trail](../enhancements/archive/vision-evidence.md) and the
 [runsheet](../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided).
 
 ### Licences and credits

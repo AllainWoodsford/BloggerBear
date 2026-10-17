@@ -32,17 +32,17 @@ number not yet measured holds a marked placeholder, `[R2: ...]`, naming the run 
 will come from; `scripts/submission_check.py` fails while any is left. A few numbers were measured
 before the run files existed (PR D's smoke run, the build container's timings, a workstation's
 Overpass query): each is marked indicative and cites the design doc that recorded it,
-[vision.md §7](../enhancements/vision.md#7-measured) or [friction.md](../friction.md). No number
+[vision.md §7](../enhancements/archive/vision.md#7-measured) or [friction.md](../friction.md). No number
 here is typed from memory.
 
 **The status of the evidence.** Each result below says which of four kinds it is.
 
-| Kind | What it means here | State on 16 October |
+| Kind | What it means here | State on 17 October |
 |---|---|---|
-| **Live** | measured and decided by the deployed system on dev, read back from its logs and state | Dev was deployed with the vision worker on 15 October, and again on 16 October with the rotating topic (#331). The first rail topic's first ticks found three defects, now fixed (§6, "Failures observed in the deployment"). The rotating topic, `rail-cities`, is not created yet, and no live triage has run. [R2: the live run's dates and counts, from the evidence export] |
-| **Replayed** | the real adapter and worker code driven over pinned real scenes, tick by tick, with the real model or its recorded answers | Being built (the evaluation's replay). [R2: the replay's run files] |
+| **Live** | measured and decided by the deployed system on dev, read back from its logs and state | Dev was deployed with the vision worker on 15 October, and again on 16 October with the rotating topic (#331). The first rail topic's first ticks found three defects, now fixed (§6, "Failures observed in the deployment"). The rotating topic, `rail-cities`, has been seeded and switched to a city a week (#338) with three goals in turn (#335); no live triage has run yet. [R2: the live run's dates and counts, from the evidence export] |
+| **Replayed** | the real adapter and worker code driven over pinned real scenes, tick by tick, with the real model or its recorded answers | Built (`vision_eval.py replay`, #336), not yet run on real data. [R2: the replay's run files] |
 | **Benchmarked** | a script's run on pinned inputs, written to a run file with its code, machine, build and inputs | One run file: the coverage of all 46 pinned Sydney scenes (§6). The Graviton session, stock against COOL, is the owner's (Appendix A). |
-| **Constructed** | inputs built to exercise one path: a failure case, a labelled agent case | The unit tests (§6, "Tests"); the agent's labelled cases are being built. [R2: the case set's run file] |
+| **Constructed** | inputs built to exercise one path: a failure case, a labelled agent case | The unit tests (§6, "Tests"); the agent's 13 labelled cases are built (`scripts/vision_eval_cases/`, #337), not yet run against the model. [R2: the case set's run file] |
 
 ---
 
@@ -93,7 +93,7 @@ map, and a person approves every article, because the numbers are proxies.
     `topic_findings` (the new Findings the next article on the week's city reads; on a day with
     none, the run writes the week's earlier Findings up again under the next goal, which the tool
     does not show) and `vision_evidence` (each decision, what the agent did, what a person did),
-    read-only ([the evidence trail](../enhancements/vision-evidence.md#asking-the-assistant)).
+    read-only ([the evidence trail](../enhancements/archive/vision-evidence.md#asking-the-assistant)).
   - They need three things: little effort, never a wrong number published, and the evidence on
     demand.
 - **Readers.** People following their city's growth and its trains: commuters, local-news
@@ -184,13 +184,13 @@ flowchart LR
 
 | Piece | What it does | Where |
 |---|---|---|
-| The topic | `rail-cities`: four city polygons, `reach_m` 1,000, a 192-hour findings window, and a `rotation` read on Sydney's calendar. The template gives each city weekdays; the live topic was switched to a city a week (`rotation_period` `"week"`, in the order Melbourne, Singapore, Boston, Sydney, which gives Sydney the week of 19 October and Melbourne that of 26 October) with three editorial goals taken in turn (`editorial_goal_rotation`: `access`, `network`, `simulations`) | `scripts/rail_topics.example.json`; [RailVisionSeeding.md §7](../RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides); [dailysubject_hook.md](../enhancements/dailysubject_hook.md) |
+| The topic | `rail-cities`: four city polygons, `reach_m` 1,000, a 192-hour findings window, and a `rotation` read on Sydney's calendar. The template gives each city weekdays; the live topic was switched to a city a week (`rotation_period` `"week"`, in the order Melbourne, Singapore, Boston, Sydney, which gives Sydney the week of 19 October and Melbourne that of 26 October) with three editorial goals taken in turn (`editorial_goal_rotation`: `access`, `network`, `simulations`) | `scripts/rail_topics.example.json`; [RailVisionSeeding.md §7](../RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides); [dailysubject_hook.md](../enhancements/archive/dailysubject_hook.md) |
 | The research tick | Hourly, diff-first, 120 s. The rail adapter takes one city per tick in turn, whatever the week: the newest clear scene from Earth Search, the city's OpenStreetMap network from its own S3 object (a first fetch gets the tick's measuring time), the worker, then the diff against the city's baseline. On the first tick of a city's week it also reports that city's newest clear scene as its **weekly reading**, no change claimed, once a week (`reported_period`) | `lambdas/research_tick_handler.py`; `lambdas/common/adapters/rail_access.py`; `lambdas/common/vision_sites.py` |
 | The worker | Validates the request against the contract, range-reads only the tiles under the city, measures with OpenCV 5, draws the figure, replies with the metrics, the figure, the build record and per-stage timings, and logs one `vision_measure` line | `lambdas/vision_worker_handler.py`; `lambdas/vision/`; `lambdas/common/vision_contract.py` |
 | The agent | Asked only when a number moved past a threshold; a bounded Bedrock Converse loop with four tools; fails closed | `lambdas/common/vision_triage.py` |
 | The day subject and the angle | The daily cycle asks the rail adapter's `day_subject` hook whose week it is, and drafts only that city's Findings since its last article on that city (`last_article_by_subject`). The goal rotation picks the angle: new Findings get the next goal; with nothing new, the run revisits the same Findings under a goal not yet used on them, so one weekly reading becomes three articles (access on Monday, the network's flags on Tuesday, the simulated links on Wednesday) and then nothing until something new. Every article is held for a person | `lambdas/common/day_subject.py`; `lambdas/common/goal_rotation.py`; `lambdas/common/findings_window.py`; `lambdas/daily_cycle_handler.py` |
 | The person | Every vision article is held; approving it publishes the page with its map and credits | `lambdas/admin_api_handler.py`; `scripts/review_inbox.py` |
-| The assistant | Read-only tools over the state, the Findings and the evidence lines, for the ask page and Alexa+ | `lambdas/ops_mcp/` ([ops-assistant-vision.md](../enhancements/ops-assistant-vision.md)) |
+| The assistant | Read-only tools over the state, the Findings and the evidence lines, for the ask page and Alexa+ | `lambdas/ops_mcp/` ([ops-assistant-vision.md](../enhancements/archive/ops-assistant-vision.md)) |
 
 **The agent's workflow** (perception, decision, action and the person; every failed gate and every
 agent failure ends at "No Finding", and a worker or source failure at "Not measured", which keeps
@@ -249,7 +249,7 @@ flowchart TD
 ```
 
 Each node and the evidence it leaves (P1's evidence lines, [the evidence
-trail](../enhancements/vision-evidence.md)):
+trail](../enhancements/archive/vision-evidence.md)):
 
 | Node | Evidence | Where it is kept |
 |---|---|---|
@@ -300,7 +300,7 @@ stations). Every failure is a code (`bad_request`, `backend_mismatch`, `not_cool
 `site_outside_scene`, `window_too_large`, `unreadable_scene`, `internal`). The worker follows no
 redirect and reads no further than the byte range it asked for. Every reply echoes the parameters
 it was measured with, so a result can be reproduced. (`lambdas/common/vision_contract.py`;
-[vision.md §4](../enhancements/vision.md#the-worker-contract).)
+[vision.md §4](../enhancements/archive/vision.md#the-worker-contract).)
 
 **The limits, and why.** The rail window is capped at 3,584 px a side, 71.7 km at 20 m
 (`RAIL_MAX_WINDOW_PX`, `lambdas/vision_worker_handler.py:90`): on one core of the build
@@ -308,7 +308,7 @@ container's Xeon, the worst contract-valid network built for the test took up to
 1.32 GB there, against 37.5 s at 4,096 px. With an assumed 1.3 times slower arm64 core that is
 about 33 s, and 41 to 56 s with the read (10 to 30 s for a 4,096 px window, scaled to this one's
 77 % of the pixels), under the client's 58 s; a full 30 s read on top of the worst case would not
-fit (the comment on `RAIL_MAX_WINDOW_PX`; [vision.md §7](../enhancements/vision.md#7-measured);
+fit (the comment on `RAIL_MAX_WINDOW_PX`; [vision.md §7](../enhancements/archive/vision.md#7-measured);
 indicative: a shared x86 container). No graph is built past 10,000 node clusters
 (`MAX_GRAPH_NODES`), and betweenness is exact within a work budget of 600,000 and sampled from 20
 to 200 seeded sources above it, said by the `betweenness_sampled` flag (`BETWEENNESS_WORK`,
@@ -348,7 +348,7 @@ cut, the sentence that no 5.x-specific call is used and the comparison was not m
 
 **Why two Regions.** The Sentinel-2 COGs are in `sentinel-cogs`, us-west-2. The worker reads beside
 them with HTTP range requests (about 54 MB for the whole Sydney box at 20 m, in PR D's smoke run;
-indicative, [vision.md §7](../enhancements/vision.md#7-measured)) and sends back a few KB of metrics and one
+indicative, [vision.md §7](../enhancements/archive/vision.md#7-measured)) and sends back a few KB of metrics and one
 PNG. Everything with state stays in the home Region, so the vision Region holds nothing to migrate
 and can be torn down at any time. The tick calls the worker with one cross-Region
 `lambda:InvokeFunction`.
@@ -388,8 +388,8 @@ machine, OpenCV build and inputs ([the schema](evidence/README.md#the-run-file))
   ETags read the same bytes. `python scripts/vision_eval.py pin` checks the manifest against the
   bucket.
 - **A pinned network.** The Sydney network fixture, `scripts/vision_benchmark_networks/sydney.json`,
-  is the network the deployed worker was sent, copied from its S3 object once the rotating topic's
-  first Sydney tick has fetched it. [R2: the fixture's extract date and sha256, from
+  is the network the deployed worker was sent, copied from its S3 object after the rotating topic
+  fetched it (committed on 17 October, #349). [R2: the fixture's extract date and sha256, from
   `scripts/vision_benchmark_networks/NOTICE.md`]
 - **A cache.** `--cache DIR` answers every range read from a local directory, filled on the first
   read, so repeats and both backends read byte-identical inputs.
@@ -469,7 +469,7 @@ missing running state, because S3 answers 403 rather than `NoSuchKey` to a role 
 User-Agent (#310); and Sydney's network query, timed from a workstation, took 54 s (5,925
 elements, 5.5 MB; indicative) against a 30 s first fetch (#312: the first fetch now gets the tick's
 measuring time)
-([friction.md](../friction.md), entry 12.25; [vision.md §8](../enhancements/vision.md#8-what-went-wrong-and-what-it-taught)
+([friction.md](../friction.md), entry 12.25; [vision.md §8](../enhancements/archive/vision.md#8-what-went-wrong-and-what-it-taught)
 lesson 16). [R2: from the export's `summary.json`, zero rows included: `vision_site` outcomes by
 code, worker refusals, worker runs that ended without a reply, tick attempts not kept, OpenStreetMap
 failures, and triage stops other than `answered`]
@@ -477,7 +477,7 @@ failures, and triage stops other than `answered`]
 **E9 and E10: timing, memory, and COOL against stock** (benchmarked). See
 [Appendix A](#appendix-a-best-use-of-cool). The only timings so far are indicative x86 rows from a
 shared build container, where two runs differed by up to 40 %
-([vision.md §7](../enhancements/vision.md#7-measured)); none is a COOL ratio.
+([vision.md §7](../enhancements/archive/vision.md#7-measured)); none is a COOL ratio.
 
 **The agent** (constructed cases, the live model). [R2: from the `agent` run file: the case set
 (four `real` cases, three to five `artefact` cases, each labelled by how it was built and which
@@ -563,7 +563,7 @@ REPRODUCE.md]
   measured, so the angles start later in its week.
 - **The demo topic.** Its thresholds of 0 make the agent run on a known day; it is disclosed in §8.
 - **COOL is benchmarked, not deployed.** The deployed worker runs stock OpenCV 5 on Lambda arm64;
-  whether COOL runs on Lambda's CPUs is open ([vision.md §10](../enhancements/vision.md#10-still-open)).
+  whether COOL runs on Lambda's CPUs is open ([vision.md §10](../enhancements/archive/vision.md#10-still-open)).
 - **The x86 timings are indicative.** A shared container, runs differing by up to 40 %; the arm64
   factor of 1.3 behind the window cap is an assumption until the Graviton rows replace it.
 - **Overpass.** Two public endpoints, rate-limited and sometimes slow: a stored network serves for
@@ -571,7 +571,7 @@ REPRODUCE.md]
   stays unmeasured.
 - **A Finding written while the daily cycle starts can be missed.** The tick dates a Finding at
   its start and writes it at its end; older than this work, and listed as a follow-up
-  ([vision.md §10](../enhancements/vision.md#10-still-open)).
+  ([vision.md §10](../enhancements/archive/vision.md#10-still-open)).
 
 ## 8. Responsible use
 
@@ -623,7 +623,7 @@ network"; or leave it out of the published article]
   (`SYSTEM_PROMPT` and `RAIL_SYSTEM_PROMPT`, `lambdas/common/vision_triage.py:118-143`).
 - No personal data is stored. The evidence lines hold codes, ids, times and numbers only, by
   schema: never a site or station name, an error's message, a news title or host, or the agent's
-  reason (its SHA-256 prefix only) ([the evidence trail](../enhancements/vision-evidence.md#what-is-never-recorded-and-why-readers-parse-lines)).
+  reason (its SHA-256 prefix only) ([the evidence trail](../enhancements/archive/vision-evidence.md#what-is-never-recorded-and-why-readers-parse-lines)).
 
 **Untrusted text.**
 

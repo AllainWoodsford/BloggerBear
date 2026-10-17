@@ -2054,7 +2054,7 @@ def test_the_assistants_only_write_is_on_its_own_suggestions_table():
 
 
 def test_the_briefings_rights_are_one_table_and_one_function_for_each_role():
-    """The async briefing (briefings.tf; docs/enhancements/alexa-plus.md, section 4.3). The MCP
+    """The async briefing (briefings.tf; docs/enhancements/archive/alexa-plus.md, section 4.3). The MCP
     server may read and mark one table and invoke one function; the agent may write that table
     and never read it back. Nothing else, and nothing on "*"."""
     text = _uncommented(_read("modules", "ops-assistant", "briefings.tf"))
@@ -2084,7 +2084,7 @@ def test_the_briefings_rights_are_one_table_and_one_function_for_each_role():
 
 
 def test_the_firewall_policy_is_production_only_and_queries_named_groups():
-    """firewall_review (firewall.tf; docs/enhancements/alexa-plus.md, section 4.4). The policy
+    """firewall_review (firewall.tf; docs/enhancements/archive/alexa-plus.md, section 4.4). The policy
     exists only where account_wide_data is on and groups are given; StartQuery is on those groups
     by ARN; the two query-id actions are the only ones on "*"; dev's root passes neither."""
     text = _uncommented(_read("modules", "ops-assistant", "firewall.tf"))
@@ -2132,7 +2132,7 @@ def test_the_logs_policy_queries_readable_environments_logs_by_tag_and_nothing_e
 
 
 def test_the_vision_policy_reads_one_workers_log_and_the_running_states_only_where_vision_is_on():
-    """The assistant's vision round (vision.tf; docs/enhancements/ops-assistant-vision.md). Only
+    """The assistant's vision round (vision.tf; docs/enhancements/archive/ops-assistant-vision.md). Only
     where the root deploys the worker: StartQuery and ListTagsForResource on the worker's one log
     group in vision_region, under the project's tags and exactly this environment (the worker is
     never shared), and GetObject on the running states; nothing on "*", no other action, and vision

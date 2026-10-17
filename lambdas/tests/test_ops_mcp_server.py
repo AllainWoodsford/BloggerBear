@@ -114,7 +114,7 @@ def test_it_still_answers_a_client_that_opens_with_initialize(client):
 
 
 def test_the_alexa_plus_sequence_works_as_standalone_posts_with_no_session(client):
-    """The Alexa+ toolkit speaks 2025-11-25 (docs/enhancements/alexa-plus.md, section 2): the
+    """The Alexa+ toolkit speaks 2025-11-25 (docs/enhancements/archive/alexa-plus.md, section 2): the
     handshake, the `initialized` notification, then `tools/list` and `tools/call`. Behind a
     Lambda every one of those is its own request with nothing kept between them, so each must
     be answered as it stands, with no session id given or asked for."""

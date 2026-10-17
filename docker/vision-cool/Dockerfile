@@ -1,6 +1,6 @@
 # The vision worker on COOL: OpenCV's Cloud-Optimized OpenCV Library (an OpenCV 5 build tuned for
 # Graviton3/4 with KleidiCV), from OpenCV's own image on AWS Marketplace, running the same handler
-# as the stock-OpenCV worker. Design: docs/enhancements/opencv-agentic-vision-enhancement.md §4.
+# as the stock-OpenCV worker. Design: docs/enhancements/archive/opencv-agentic-vision-enhancement.md §4.
 #
 # Build from the repository root, on (or for) arm64, with the COOL image's URI pinned by digest:
 #

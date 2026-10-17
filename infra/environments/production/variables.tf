@@ -139,7 +139,7 @@ variable "waf_site_enabled" {
 }
 
 # TODO: set before first production apply -- see
-# docs/specs/phase-0-foundations.md "Open questions" (domain name and
+# docs/enhancements/archive/phase-0-foundations.md "Open questions" (domain name and
 # registrar not yet decided/registered).
 variable "domain_name" {
   type        = string
@@ -334,7 +334,7 @@ variable "vision_enabled" {
     var.vision_region, invoked by the satellite_vision adapter. Off: dev runs it first. Before
     turning it on, the bootstrap must have been re-applied by hand with the same vision_region
     (its VisionWorker statements), or the apply is refused.
-    Design: docs/enhancements/opencv-agentic-vision-enhancement.md.
+    Design: docs/enhancements/archive/opencv-agentic-vision-enhancement.md.
   EOT
 }
 

@@ -10,7 +10,12 @@ BloggerBear is an autonomous, multi-domain research-and-publishing platform. Top
 four topics (GitHub Trending, crypto, tech market news, World of Warcraft) plus the cross-topic Trending
 digest. Recent work: an operator-requested Re-Write of held articles, AgentCore web search as a fallback
 when GDELT fails, web search usage and spend on the Stats page, and staggered research/authoring schedules.
-The §11 entries below record each enhancement as it shipped. Still open: some Phase 0 GitHub/AWS
+Since then (October 2026): the operator's assistant (an MCP server and a Strands agent, in dev and
+production, with an Alexa+ add-on waiting on Amazon's toolkit access), and the vision worker for the
+OpenCV AI Competition 2026, opt-in through `VISION_ENABLED` and on in dev, where the `rail-cities` topic
+writes up one city a week. The §11 entries below record each pipeline enhancement as it shipped; the
+assistant and the vision work are in `docs/PROGRESS.md` and [docs/architecture/](architecture/README.md).
+Still open: some Phase 0 GitHub/AWS
 settings (branch protection, a production reviewer, a shared WAF ACL, a working destroy-dev) and Phase 6's
 WAF tuning -- `docs/PROGRESS.md` tracks them.
 
@@ -29,10 +34,13 @@ WAF tuning -- `docs/PROGRESS.md` tracks them.
 > per AWS's own requirement. Do not change these to `ap-southeast-2`.
 - **Region**: `ap-southeast-2` (Sydney) for everything, except the
   CloudFront-scope WAF Web ACL and ACM certificate, which AWS requires in
-  `us-east-1` regardless of hosting region, and the AgentCore web search
+  `us-east-1` regardless of hosting region, the AgentCore web search
   gateway, which lives in `ap-northeast-1` (Tokyo) because the Web Search
-  Tool connector isn't offered in Sydney (see §11, "Web search")
-- **Compute**: Python 3.11 AWS Lambda functions
+  Tool connector isn't offered in Sydney (see §11, "Web search"), and the
+  optional vision worker, which runs in `vision_region` (`us-west-2` by
+  default, beside the Sentinel-2 imagery)
+- **Compute**: Python 3.11 AWS Lambda functions, plus the vision worker
+  (Python 3.12, arm64) where `VISION_ENABLED` is on
 - **AI**: Amazon Bedrock (Claude, via Australian cross-region inference
   profiles). Models are chosen at runtime from a DynamoDB model registry
   (per-topic model, fallback model, and rotation candidates), not fixed in
@@ -101,6 +109,10 @@ runs in the background and comes back to the inbox for approval (see §11, "Re-W
 | Models / ModelConfig | `model_id` / `config_id` | Model registry and prices; single rows for the default model, pipeline config and feedback config |
 | StatsCurrent / StatsHistory | `stats_id` / `week_start` | This week's counters (Bedrock spend, Lambda time, web search queries/spend, feedback) and past weeks plus an all-time row |
 | ViewCounts | `counter_id` (`<article_id>#<n>`) | Sharded article view counters |
+| SecurityEvents | `event_id`; index `status`/`last_seen` | Security incidents (blocked requests, dropped comments, sign-in lockouts), with a keyed hash of the client, never its IP |
+| SignIns | `username` / `at` | Sign-ins to the operator's assistant: attempts, successes, refusals and unlocks, for the lockout |
+| OperatorSuggestions | `user_id` / `item` | The operator's assistant's memory: what it suggested and what it was asked to watch (`infra/modules/ops-assistant`) |
+| OpsBriefings | `user_id` | The operator's assistant's latest briefing per user (`infra/modules/ops-assistant`) |
 
 View counts are sharded: each view ADDs onto one of a few `ViewCounts` items (`counter_id` = `<article_id>#<n>`),
 and a read sums them plus the Articles item's own `view_count`, which holds the count from before sharding
@@ -119,6 +131,12 @@ Optional hooks (defaults on `Adapter` keep existing adapters unchanged):
 - `uses_previous_state = True` — the research tick then calls
   `fetch_state(topic_config, previous_state=...)`, letting an adapter reuse
   slow-changing data it already fetched earlier in the day.
+- More, each with a default in `common/adapters/base.py`: `item_keys` (so an
+  item is not reported twice), `review_evidence` (the fresh-data review),
+  `figure_tolerance_percent`, `figure_guidance` and `drafting_guidance` (figures
+  that move), and, for the vision adapters, `keeps_running_state`,
+  `uses_vision_worker`, `config_by_hand`, `figures`, `planner_notes`, `subjects`,
+  `day_subject`, `status`, `status_vocabulary` and `decision_vocabulary`.
 
 **Adding an adapter.** One new module in `common/adapters/`, one line in `registry.py`, and a
 declaration of where its data comes from: set `sources` on the class, one
@@ -197,16 +215,16 @@ Two long-lived branches, two environments:
   a commit on `prod` (tagged with semver, e.g. `v0.1.0`). That workflow
   applies `infra/environments/production`, meant to be gated by the
   `production` GitHub Environment's required-reviewer approval. **Not yet
-  enforced:** the environment exists without a required reviewer (a paid
-  GitHub feature on a private repository), so a published release deploys
-  straight away. Because every release
+  enforced:** the environment exists without a required reviewer, so a
+  published release deploys straight away. The repository is public now, so
+  adding one no longer needs a paid plan. Because every release
   targets the same Terraform-managed production state, a new release
   replaces whatever was previously deployed rather than running alongside
   it.
 - Both `dev` and `prod` are meant to require PRs and passing
   `terraform`/`security` checks via branch protection — no direct pushes to
-  either. **Not yet enforced:** branch protection on a private repository
-  needs GitHub Pro, so this is currently a convention.
+  either. **Not yet enforced:** this is currently a convention. The repository is
+  public now, so a ruleset no longer needs GitHub Pro.
 - `infra/bootstrap` (the Terraform state backend itself — a single S3
   bucket, no DynamoDB table; locking is native to S3 via `use_lockfile`,
   Terraform ≥1.10) is the one exception to all of this: it's applied once,
@@ -215,12 +233,12 @@ Two long-lived branches, two environments:
   CloudFront distributions, rather than one each, to avoid paying its flat
   fee twice.
 
-Full detail: `docs/specs/phase-0-foundations.md`.
+Full detail: `docs/enhancements/archive/phase-0-foundations.md`.
 
 ## 9) Validation Commands
 - Terraform: `terraform fmt -check`, `terraform validate`, `terraform plan`
-- Python: `ruff check .`, `pytest`
-- Security: `trivy config infra/`, `checkov --config-file .checkov.yaml`, `trivy fs --scanners vuln,secret lambdas/`, `bandit -r lambdas/ -ll`
+- Python: `ruff check --fix lambdas/ scripts/` (the ruff pinned in `lambdas/requirements-dev.txt`), `pytest`
+- Security: `trivy config infra/`, `checkov --config-file .checkov.yaml`, `trivy fs --scanners vuln,secret .`, `bandit -r lambdas/ scripts/ --severity-level high --confidence-level high`
 
 ## 10) Build Phases
 Phases 1–8 are built and deployed; Phase 0's code is done, with a few GitHub/AWS settings still open.
@@ -291,10 +309,10 @@ out of sync.
 
 ### Custom domain (bloggerbear.com) via Route 53 + ACM
 
-**Status: built, not yet connected.** The whole path is in Terraform and tested, `domain_name` is set
-(`bloggerbear.com`), and `www.` is served and redirected to the bare domain. What is left is manual and in order:
-create the Route 53 zone (in `infra/bootstrap`), point GoDaddy's nameservers at it, put the zone ID in
-`infra/environments/production/terraform.tfvars`, and release. **The step-by-step, with checks, is
+**Status: connected.** Production is live at bloggerbear.com: the Route 53 zone is in `infra/bootstrap`,
+its ID is in `infra/environments/production/terraform.tfvars` beside `domain_name`, and `www.` is served and
+redirected to the bare domain. For a fork the steps are, in order: create the zone, point the registrar's
+nameservers at it, put the zone ID in `terraform.tfvars`, and release. **The step-by-step, with checks, is
 [docs/production-runsheet.md](production-runsheet.md)**; `python scripts/domain_check.py` shows where the
 domain stands at any time. The design notes below still describe why it is shaped this way.
 
@@ -466,12 +484,13 @@ into four pieces below, any of which could be scoped/built independently.
   paid API calls, and it answers "what has the AI cost" directly.
 
 **Deferred**
-- Per-AWS-service spend and storage costs (Cost Explorer) -- the Stats
-  page labels itself as an AI-spend estimate, not billing.
+- Per-AWS-service spend and storage costs (Cost Explorer) -- since built, by group:
+  the Stats page's AWS bill tiles come from Cost Explorer, in three groups and a total,
+  never per service (see "The Stats page: one source and one period per section").
 - Date-range filters on the Stats page (fixed last-30-days chart for now).
-- A separate cost tracker for musings (`common/musings.py` calls are
-  deliberately not part of an article's lineage, and are currently
-  untracked).
+- A separate cost tracker for musings -- since built: musing calls are still not
+  part of an article's lineage, and are tallied under their own `musings`
+  category on the week's Stats row (see "Observability" below).
 - An AI reviewer for the moderation queue (would produce
   `humans_and_ai`).
 
@@ -503,14 +522,15 @@ row keyed by profile id.
   already count). The article page and Stats page show research tokens/cost and the total.
 - *Audit and backfill.* `lineage audit` reports gaps; `lineage backfill [--apply]`
   recomputes cost from stored tokens and canonicalises old ARN ids.
-- *Not done:* the research tick still uses `BEDROCK_MODEL_ID` directly rather than the
-  per-topic/global model resolution the daily cycle uses (unchanged behaviour; the
-  recorded model is whatever it actually called).
+- *Since done:* the research tick now resolves its model the same way as the daily cycle
+  (`resolve_model`: rotation candidates, the topic's model, the ModelConfig default, then
+  `BEDROCK_MODEL_ID`); the recorded model is whatever it actually called.
 
 ### Rolling research, whole-window articles, and a fresh-data review before publish
 
-**Status: shipped, except (C) the fresh-data review: its shadow mode is built
-(records only, changes nothing); enforcement is designed below and not started.** Written up from a review of how the research and authoring
+**Status: shipped, (C) the fresh-data review included: shadow mode (records only,
+changes nothing) is the default, and enforcement is built and can be turned on per topic
+or for every topic (see "(C) Enforcement" below).** Written up from a review of how the research and authoring
 pipelines behaved, checked against the code and the dev environment.
 
 **Design constraint: topic-agnostic.** Topics can be about anything; the first
@@ -541,12 +561,13 @@ adapter.
   for a separate store to hold.
 - *Summaries cover only what is new and may not invent* (#69).
 - *Articles read the whole window* (#69, #70). Every finding since the topic's
-  previous article, at most 24h back (cap 48, 40k characters, oldest dropped
-  first). The topic records `last_article_at` (the run's *start*, written only
-  after an article exists and never allowed to fail the run, since a retry
-  would write a duplicate), so a manual run followed by the scheduled one
-  writes nothing the second time. `topics trigger --pipeline daily_cycle
-  --force` ignores it for an intentional regenerate.
+  previous article, at most `findings_window_hours` back (24 by default, 1 to 336
+  since #297; cap 48, 40k characters, oldest dropped first). The topic records
+  `last_article_at` (the run's *start*, written only after an article exists and
+  never allowed to fail the run, since a retry would write a duplicate), so a
+  manual run followed by the scheduled one writes nothing the second time.
+  `topics trigger --pipeline daily_cycle --force` ignores it for an intentional
+  regenerate.
 - *Research spend as a running tally* (#72). Each Finding stores the Bedrock
   call behind its summary; the daily cycle sums the whole window's calls into
   the article's lineage (`research`, `total_cost_aud`). See "Lineage cost fixes
@@ -595,8 +616,9 @@ the record on the article (`review`) and on the moderation item (`review_notes`)
 (default `shadow`). Where it differs from the design below: `review_mode` accepts only
 `off` and `shadow` -- `enforce` is added with PR 2, so a setting can never claim more than
 the code does; an adapter that opts out yields a `skipped` record; the daily-cycle
-Lambda timeout is now 300s. PR 2 (the revision pass and routing to moderation) is not
-started, and waits on about a week of shadow data from dev.
+Lambda timeout is now 300s. PR 2 (the revision pass and routing to moderation) has
+since been built: `review_mode` now takes `off`, `shadow` or `enforce`, still `shadow` by
+default (see "(C) Enforcement" below).
 
 **Problem.** Nothing re-checks an article against reality before it goes out.
 Drafts are written from finding *summaries*, hours old by publish time, and
@@ -674,7 +696,7 @@ length-capped.
 - *PR 2 -- enforce.* The revision pass and moderation routing, behind
   `review_mode = enforce`, then turn it on. Now scoped in full, with two
   prerequisite steps that fell out of reading the code, under "(C) Enforcement --
-  scoped enhancement" at the end of this section.
+  built, default still shadow" at the end of this section.
 
 **6. Cost.** +1 model call per article, +1 if it revises: a few cents a day per
 topic at Haiku prices, and visible in the lineage.
@@ -1082,7 +1104,7 @@ the rest, and the privacy policy rules that out.
 Each musing carries a mood, and the Musings page shows it: a bear feeling that mood where a bullet
 point used to be, and a line of grey text after the musing, "BloggerBear was feeling proud".
 
-**BloggerBear has five moods** (`common/musings.py`, `MOODS`), each set by real signal, not chosen at
+**BloggerBear has seven moods** (`common/musings.py`, `MOODS`), each set by real signal, not chosen at
 random:
 
 | Mood | When |
@@ -1090,8 +1112,10 @@ random:
 | **proud** | an article sailed through compliance on the first pass |
 | **thoughtful** | an article needed a person first (moderation-approve or a force-publish) |
 | **pleased** | the periodic feedback musing, when net votes are positive |
-| **reflective** | the same, when votes are net negative or tied |
+| **reflective** | the same, when votes are net negative or tied; also when a topic is paused |
 | **curious** | the same, when there was no feedback at all |
+| **excited** | a piece of gear is worn for the first time (a loot drop); also when a topic resumes |
+| **shocked** | moderation rejects an article |
 
 **The pictures** are `frontend/bears/<mood>.svg`, plus `default.svg` for a mood with no art of its own
 and for an older musing with no mood. They are placeholders in a consistent style: to use your own,
@@ -1637,9 +1661,9 @@ in the daily-cycle Lambda) called CoinGecko keyless. Both Lambdas now share `loc
   the Stats page; it is a rolling 30 days, so it is now kept on the row for the owner and not shown
   (see the section below). AgentCore's actual charge for a section's period is inside its bill's
   AI figure.
-- **Open item:** the Cost Explorer service name (`"Amazon Bedrock AgentCore"`) was assumed, because no
-  AgentCore spend had been billed yet. If the actual stays at $0 while the estimate grows, look up the
-  real name with `aws ce get-dimension-values --dimension SERVICE` and fix `AGENTCORE_SERVICE`.
+- **Service name, confirmed:** the Cost Explorer service name (`"Amazon Bedrock AgentCore"`) was
+  assumed at first, because no AgentCore spend had been billed yet. It was confirmed from billing data
+  on 2026-10-03 (`AGENTCORE_SERVICE` in `common/cost_explorer.py`).
 - **Not per article:** a search belongs to a research run, not to one article, so search spend is not
   added to article lineage.
 
@@ -1796,8 +1820,8 @@ lands between the read and the delete is lost, exactly as it was with one row.
 
 ### Observability, security and content fixes (October 2026 batch)
 
-**Status: in progress** (four PRs, in this order; designs agreed 2026-10-03). PR 1 (#145) and PR 2 (#146)
-merged; PR 3 (#147) and PR 4 in review.
+**Status: built** (four PRs, in this order; designs agreed 2026-10-03). PR 1 (#145), PR 2 (#146),
+PR 3 (#147) and PR 4 are merged.
 
 Found while planning this batch, and the reason PR 1 goes first: the production `stats-rollover` and
 `cost-explorer-poll` schedules have never invoked their Lambdas. Both schedules exist, but
@@ -2019,6 +2043,30 @@ on 7 days of hourly points.
    the site to it, and an open page picks the change up on its next load (`config.js` is `no-cache`).
 3. The `random` provider is new (lock files updated).
 
+### Still open at scale
+
+The three scaling PRs above took the limits that were nearest. These are still open, each with the
+fix that was sketched for it:
+
+- **Spend has no hard ceiling.** Each call's cost is tracked and the AWS Budget sends an e-mail,
+  but nothing stops a run. The fix is a per-topic and a global token budget, checked in code
+  before each model call and failing closed, with provisioned throughput or inference profiles for
+  headroom.
+- **A compliance failure retries the whole daily cycle.** The state machine retries the 300 s run
+  from the start, draft included, so one failed review costs a second draft. The fix is one Step
+  Functions state per stage, so a retry resumes at the stage that failed.
+- **One person reviews everything.** Every vision article and every flagged one waits for the
+  operator. The fix is risk-based routing: automatic publishing where a topic's reviews have been
+  clean, and the person only where it matters.
+- **One Region, all-at-once deploys and a CLI-only admin.** Each is the right choice for one
+  operator and a small site, and each is where a larger deployment would start. The fix, only at
+  real scale, is a second-Region Bedrock fallback, Lambda aliases with traffic shifting in place
+  of one all-or-nothing apply, and an identity provider for admin, with roles and a per-person
+  audit.
+- **Two schedules per topic** stop fitting in an hour at about twelve topics:
+  [dispatcher-sqs-enhancement.md](enhancements/dispatcher-sqs-enhancement.md), designed and not
+  built.
+
 ### Paged listings and a shorter pipeline box
 
 **Status: built** (#276, #277, #278).
@@ -2066,7 +2114,7 @@ below it. The frontend caps at three as well, so an older API response cannot fl
 
 ### Staggered schedules by slot, pausing a topic, and the digest's steering
 
-**Status: built** (this PR, `claude/clever-einstein-r6qclu`; design for the next step in
+**Status: built** (#302; design for the next step in
 docs/enhancements/dispatcher-sqs-enhancement.md).
 
 **Problem.** Every topic's two schedules were staggered by hand, a minute apart, so a new topic
@@ -2141,7 +2189,7 @@ says what the next step has to keep (one research run per topic at a time, the t
 
 ### Cost saving: optional firewall switches, hardened by default
 
-**Status: built** (this PR, `claude/clever-einstein-r6qclu`). The page is docs/cost-saving.md.
+**Status: built** (#302). The page is docs/cost-saving.md.
 
 **Problem.** The firewall is the biggest fixed line on the bill: five web ACLs and fourteen
 rules, about US$39 a month at list price, whether one request or a million goes through. A

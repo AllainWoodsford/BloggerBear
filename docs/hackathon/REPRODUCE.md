@@ -141,8 +141,8 @@ in the home Region for the topics' model. The steps are the existing runsheets, 
 are what the deployed system was built from, and copying them here would let them drift. Their
 commands are bash; on Windows run them in Git Bash ([setup guide](../setup-guide.md)) or WSL2.
 
-1. **The first deploy:** the README's [Quick start](../../README.md#quick-start) (the bootstrap,
-   the setup script, a merge into `dev`), or the [setup guide](../setup-guide.md) from the start.
+1. **The first deploy:** the [setup guide](../setup-guide.md) (the bootstrap, the setup script,
+   a merge into `dev`).
 2. **Turn the vision worker on:** the runsheet's [Vision (optional)](../deployment-runsheet.md#vision-optional)
    (re-apply the bootstrap with `vision_region`, set the `VISION_ENABLED` repository variable,
    deploy).
@@ -160,7 +160,7 @@ commands are bash; on Windows run them in Git Bash ([setup guide](../setup-guide
 4. **Read what it did:** the runsheet's
    [evidence queries](../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided)
    in CloudWatch Logs Insights, or ask the operator's assistant "what did the vision agent do for
-   rail access this week?" (`vision_evidence`; [the evidence trail](../enhancements/vision-evidence.md#asking-the-assistant)).
+   rail access this week?" (`vision_evidence`; [the evidence trail](../enhancements/archive/vision-evidence.md#asking-the-assistant)).
 5. **See the agent decide on a known day:** the runsheet's demo topic, "The demo topic's two-tick
    procedure" in the same section. Its thresholds of 0 send its second clear scene to the agent;
    reject its articles.

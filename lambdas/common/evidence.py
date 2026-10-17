@@ -1,6 +1,6 @@
 """The evidence trail: one JSON line per step the pipeline takes, and the parser every reader uses.
 
-docs/enhancements/vision-evidence.md. The research tick, the vision adapters, the vision worker
+docs/enhancements/archive/vision-evidence.md. The research tick, the vision adapters, the vision worker
 and the admin API each print one line per step (a tick ran, a site's turn, OpenCV measured, the
 numbers were compared, the agent decided, a person approved), so that what the pipeline saw and
 decided can be asked of the logs alone: Logs Insights in the console (the runsheet's queries), the

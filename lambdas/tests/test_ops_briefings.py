@@ -1,5 +1,5 @@
 """The async briefing (ops_mcp/briefings.py and its two callers): how Alexa+ gets the Strands
-agent's work without waiting for it (docs/enhancements/alexa-plus.md, section 4.3).
+agent's work without waiting for it (docs/enhancements/archive/alexa-plus.md, section 4.3).
 
 What is held: one briefing at a time per user; a start invokes the agent asynchronously with the
 caller's own token and nothing else; a slow old run never overwrites a newer one; the agent's

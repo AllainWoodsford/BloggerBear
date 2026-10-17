@@ -1,6 +1,6 @@
 """Satellite vision: count what OpenCV sees at fixed sites, scene by scene, and report real change.
 
-docs/enhancements/opencv-agentic-vision-enhancement.md is the design. This adapter is the thin,
+docs/enhancements/archive/opencv-agentic-vision-enhancement.md is the design. This adapter is the thin,
 topic-agnostic part of it: which sites, which scenes, the history and the diff. It has no OpenCV;
 the measuring is done by the vision worker (vision_worker_handler.py), which may run in another
 region, through common/vision_client.py. What it shares with the rail_access adapter (the STAC

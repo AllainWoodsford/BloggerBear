@@ -1,7 +1,7 @@
 """Rail access: how much of a city's built-up area lies within walking reach of a rail station, scene
 by scene, and whether that moved.
 
-docs/enhancements/rail-access-monitor.md is the design (§2 the angle and the cities, §3 the
+docs/enhancements/archive/rail-access-monitor.md is the design (§2 the angle and the cities, §3 the
 architecture, §4 PR E this adapter). It is the thin, topic-agnostic part: which cities, which
 scenes, the OpenStreetMap network each is read against, the history and the diff. It has no
 OpenCV; the measuring (built-up heat from Sentinel-2, station reach, the rail graph) is done by
@@ -52,7 +52,7 @@ for what it is (REFUSED_SCENE_CODES, recorded as `failed_scene`) is nothing new 
 appears or NETWORK_RETRY_HOURS pass, so it is not sent again every hour and (d) still gets its
 ticks. Not measured is never "nothing there".
 
-**One city a day** (docs/enhancements/dailysubject_hook.md §4, the day-subject round): with a
+**One city a day** (docs/enhancements/archive/dailysubject_hook.md §4, the day-subject round): with a
 `rotation` (the seven weekdays each naming a site, or a list of sites cycled one a day; every site
 needs a day) the topic writes about one city a day, read on the calendar of `rotation_timezone`
 (the topic's `daily_timezone` when unset, else UTC). `day_subject` names the day's city to the

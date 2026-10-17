@@ -1,5 +1,5 @@
 """firewall_review: the deep dive into what the firewall (AWS WAF) has been doing. Production only
-(docs/enhancements/alexa-plus.md, section 4.4).
+(docs/enhancements/archive/alexa-plus.md, section 4.4).
 
 **Only where it may be.** The firewall's logs are not one environment's: the CloudFront firewall
 in front of both sites logs to one shared group. So the tool exists only where the deployment says

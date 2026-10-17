@@ -1,7 +1,7 @@
 ---
 doc: progress-tracker
 schema_version: 1
-last_updated: 2026-10-09
+last_updated: 2026-10-17
 source_of_truth: docs/project-plan.md
 phases:
   - id: phase-0
@@ -46,7 +46,7 @@ this file *is* the plan-in-progress.
 **How to use this with an agent (Claude or Copilot):**
 1. Pick the next unchecked phase or item below.
 2. Ask Claude (this Project) to turn it into a build spec if one doesn't
-   already exist under `docs/specs/`.
+   already exist under `docs/enhancements/`.
 3. Hand the spec to Copilot as an issue/PR brief.
 4. When Copilot's PR merges, tick the corresponding `- [ ]` boxes below to
    `- [x]` **in that same PR**, and update the phase's `status` in the YAML
@@ -83,7 +83,7 @@ tracks *what's built vs. not*.
 
 ## Branch & Release Model
 
-Full detail in `docs/specs/phase-0-foundations.md`. Summary, since this
+Full detail in `docs/enhancements/archive/phase-0-foundations.md`. Summary, since this
 governs how every phase from here on ships:
 
 - `dev` (default branch) — feature branches fork from here, PR back in.
@@ -139,14 +139,14 @@ governs how every phase from here on ships:
 - [x] AWS region decided: **`ap-southeast-2` (Sydney)** — fixed, not still
   open. Exception: the CloudFront-scope WAF ACL and ACM certificate must
   still be created in `us-east-1` (AWS platform constraint, see
-  `docs/specs/phase-0-foundations.md` → "Region")
+  `docs/enhancements/archive/phase-0-foundations.md` → "Region")
 - [x] AWS CLI v2 installed locally, `aws configure` / `aws configure sso` run
 
 ---
 
 ## Phase 0 — Foundations
 
-Spec: `docs/specs/phase-0-foundations.md`
+Spec: `docs/enhancements/archive/phase-0-foundations.md`
 
 - [ ] Known issues above resolved (branches, protections, environments) —
   branches done; branch protection and the production reviewer are blocked
@@ -617,7 +617,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
 - [x] The operator's assistant (Alexa+ track): ops MCP server, Strands agent, memory, the Admin
   CLI guide, `ask.html` (#185–#192)
 - [x] Alexa+ plan: the voice over the Strands agent, the add-on, the async briefing (#195;
-  `docs/enhancements/alexa-plus.md`)
+  `docs/enhancements/archive/alexa-plus.md`)
 - [x] The page's voice fixed: tap to talk, per-error messages, speech that finishes, Test voice
   (#198)
 - [x] OAuth discovery for Alexa+ account linking: PRM, AS metadata, `WWW-Authenticate`, an Alexa
@@ -629,7 +629,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
 - [x] The operator's assistant in production: MFA, account-wide data, the firewall (#206)
 - [x] The operator's assistant reads the logs: root causes, check-it-yourself, written down and
   followed up, watch a function or table, masked addresses, a suggested command under the CLI help
-  (#218, #220, #221, #225, #226, #227, #228; docs/enhancements/ops-assistant-log-reader.md)
+  (#218, #220, #221, #225, #226, #227, #228; docs/enhancements/archive/ops-assistant-log-reader.md)
 - [x] The operator's assistant, second round: forgiving topic names with "did you mean" (#232),
   success rates and the Lambdas listed with what they do (#234), a suggested command for any CLI
   question and a topic-setup mock-up (#235), push to talk that does not let go while held (#238)
@@ -637,7 +637,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   no Lambda success rate (#249), no "I'm read-only" pushback and no false "someone is probing"
   (#250), log queries with their `SOURCE` log groups in an editable box (#253), the architecture
   in layers (#255), a wake call at sign-in (#256), a Dismiss button and "it looks like you already
-  fixed this" (#257); docs/enhancements/ops-assistant-log-reader.md, "Third round"
+  fixed this" (#257); docs/enhancements/archive/ops-assistant-log-reader.md, "Third round"
 - [x] Shorter listings: Musings 15 a page and a topic's articles 10 a page, with a pager
   (`?page=N` on the API and the route); "Articles in the Pipeline" lists at most 3 pending
   articles, then a plain "...more" (#276, #277, #278; project-plan §11, "Paged listings")
@@ -649,8 +649,8 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `lambdas/vision/`, the GeoTIFF reader and UTM without GDAL, the stateless OpenCV 5 worker on
   arm64 in us-west-2 with its contract and cross-region client, the `satellite_vision` adapter
   with running state, the bounded triage agent with a deadline, `force_manual_review`, the COOL
-  benchmark and image recipe; nothing deployed until switched on (docs/enhancements/vision.md,
-  docs/enhancements/rail-access-monitor.md §1)
+  benchmark and image recipe; nothing deployed until switched on (docs/enhancements/archive/vision.md,
+  docs/enhancements/archive/rail-access-monitor.md §1)
 - [x] The vision worker is opt-in through the `VISION_ENABLED` repository variable, fed to both
   apply workflows as `vision_enabled`; the setup script lists it as deliberately not asked (#286)
 - [x] The OpenStreetMap Overpass client for rail networks: two allow-listed endpoints, one
@@ -677,7 +677,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   2 MiB budget (#293; `lambdas/vision/rail_annotate.py`)
 - [x] Planner notes: the rail network's flags and simulated links as generated sentences in the
   diff summary, the review evidence and the Finding (`planner_notes`), never recommendations
-  (#294; `lambdas/common/rail_notes.py`; docs/enhancements/vision.md §6.8)
+  (#294; `lambdas/common/rail_notes.py`; docs/enhancements/archive/vision.md §6.8)
 - [x] The rail analysis's time bounds: linear station adjacency, ghost-line walk and run lengths,
   thinning only in the box round what the last pass removed, the rail window cap
   `RAIL_MAX_WINDOW_PX` = 3,584 px from one-core measurements, and speed guards that count the work
@@ -717,7 +717,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   they are spaced or spelt; a sites config is never filled in (#300, on the integration branch
   for the assistant's work after #285; `lambdas/ops_mcp/vision_status.py`,
   `lambdas/common/adapters/base.py`, `lambdas/ops_agent/policy.py`,
-  `infra/modules/ops-assistant/vision.tf`; [design](enhancements/ops-assistant-vision.md))
+  `infra/modules/ops-assistant/vision.tf`; [design](enhancements/archive/ops-assistant-vision.md))
 - [x] The submission round's evidence trail: one JSON line of codes and numbers per step (a tick
   ran, a site's turn, OpenCV measured, the numbers were compared, the agent decided, a person
   decided, a topic changed), a decision ring of the last 12 decisions per site in the running
@@ -727,7 +727,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   queries (on the integration branch after the assistant's vision round;
   `lambdas/common/evidence.py`, `lambdas/common/vision_decisions.py`,
   `lambdas/common/vision_triage.py`, `lambdas/vision_worker_handler.py`;
-  [design](enhancements/vision-evidence.md))
+  [design](enhancements/archive/vision-evidence.md))
 - [x] Interrogating a topic's Findings, three ways: the assistant's `topic_findings` (a topic's
   research Findings newest first as a table, with `next_article` for exactly what the next daily
   run reads; counts and ages spoken, the summary scrubbed and on the page only, nothing to a voice
@@ -738,7 +738,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   tool and the route; Findings joins the assistant's readable tables (the Findings round, #307,
   after #300 on the integration branch; `lambdas/ops_mcp/topic_findings.py`,
   `.claude/skills/topic-findings/SKILL.md`, `scripts/tests/test_claude_skills.py`;
-  [design](enhancements/ops-assistant-vision.md#topic-findings))
+  [design](enhancements/archive/ops-assistant-vision.md#topic-findings))
 - [x] The submission round, for the OpenCV AI Competition 2026: the rubric tracker
   (`docs/hackathon/rubric-tracker.md`), one row per rubric line, the owner's ask and each owner
   step, with its status, what it needs, the evidence, the gap, what closes it and what the
@@ -769,7 +769,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   did from the Articles table's topic index, the agent's spend in AUD, one sentence per topic and
   nothing summed across topics, and no new grant (#313, submission PR P2a, on the integration branch
   after the evidence trail; `lambdas/ops_mcp/vision_evidence.py`, `lambdas/common/dynamo.py`;
-  [design](enhancements/vision-evidence.md#asking-the-assistant))
+  [design](enhancements/archive/vision-evidence.md#asking-the-assistant))
 - [x] A slow city's network fetched out of band: `topics trigger <topic> --pipeline
   network_prefetch` runs the research tick's function only to fetch each site's network, with up to
   90 s per Overpass reply and 100 s in all, into `vision/<topic>/<site>/network.json`; the next tick
@@ -796,7 +796,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   the docs say what was built (S3) (`lambdas/common/day_subject.py`,
   `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
   `lambdas/common/adapters/rail_access.py`, `scripts/rail_topics.example.json`;
-  [design](enhancements/dailysubject_hook.md))
+  [design](enhancements/archive/dailysubject_hook.md))
 - [x] The goal rotation: a topic may take 2 to 7 editorial goals in turn
   (`editorial_goal_rotation`, `topics create|update --goal-rotation-json`), so one set of Findings is
   written up from different sides. New Findings get the next goal; with nothing new, the daily run
@@ -875,6 +875,14 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   they were but for their links and a note that the Sydney fixture is committed (#349, whose four
   city networks now have their `NOTICE.md` rows); the section now holds a link and what the
   session is for, and every link and mention follows it
+- [x] The docs tidied for the submission: the designs that were built moved to
+  `docs/enhancements/archive/` (with a README saying what each shipped and did not), the original
+  build spec and the public-repository runsheet with them, `docs/risks/` removed with its open items
+  carried into the project plan's "Still open at scale" and vision.md §9 and §10; every link and
+  comment follows the moves. Three new architecture pages, written from the code: the operator's
+  assistant, Alexa+, and the admin CLI and API. Living docs corrected where the code had moved on
+  (the rotation, the fixtures, the repository's visibility, the deploy triggers, the tracker's
+  owner rows). README gains a Hackathons table and a complete Docs table
 
 ## Backlog / not yet scheduled
 
@@ -882,23 +890,19 @@ submission-round entries after them are docs and tests, with nothing to deploy.
 phase above, or a new phase, whenever you're ready to schedule them.)*
 
 - **Fix production's CoinGecko key (operator):** the deployed
-  `COINGECKO_API_KEY` is rejected by CoinGecko (HTTP 401, "API Key
+  key is rejected by CoinGecko (HTTP 401, "API Key
   Missing"; it doesn't have the `CG-` prefix real keys use). Crypto research
-  falls back to the keyless API and fails on altcoin days. Update the
-  `production` environment secret (and the plan, if it's a Pro key), then
-  run a release
-- **Confirm the AgentCore Cost Explorer service name:** #135 assumed
-  `"Amazon Bedrock AgentCore"`. Once AgentCore spend has been billed, check
-  that `agentcore_cost_aud_30d` on the stats-current row is non-zero (it is
-  no longer a tile on the Stats page); if not, look the name up
-  with `aws ce get-dimension-values --dimension SERVICE`
+  falls back to the keyless API and fails on altcoin days. Put a working key in
+  the `/bloggerbear/production/coingecko-api-key` SSM parameter (and set
+  `coingecko_api_plan = "pro"`, if it's a Pro key), then run a release
 - **Confirm the AgentCore per-query price** ($0.007 USD assumed from the
   launch announcement) against the pricing page
 - **Fix the destroy-dev workflow**, then prove the destroy/rebuild round trip
 - **Share one WAF ACL** across the dev and production distributions (set
   dev's `web_acl_arn`)
-- **Branch protection and a production reviewer:** needs GitHub Pro, or a
-  public repository
+- **Branch protection and a production reviewer:** the repository is public now, so
+  neither needs GitHub Pro. Set them (`docs/configuration.md`, "GitHub repository
+  settings"), or record here that they are set
 - **WAF rule tuning** from real traffic (Phase 6)
 - **Look at the Stats page in a browser** — `test_frontend_stats.py` now runs the real
   script under Node and reads back every section, tile and table, but nothing checks how
@@ -922,3 +926,7 @@ phase above, or a new phase, whenever you're ready to schedule them.)*
   troubleshooting shows how to tell)
 - **Consider `adapter_config.provider = "agentcore"` for wow-forever:** the
   fallback triggers only when GDELT fails, not when it answers with nothing
+- **`topics update` writes the whole topic row back:** `_update_topic` reads the row and
+  puts it back whole, so an update that lands between a daily run's stamp and that read writes
+  back the old `last_article_at`, `last_article_by_subject` and `goal_rotation_state`, and the
+  subject's next run can draft its Findings again. Fix: an `update_item` on the changed keys only

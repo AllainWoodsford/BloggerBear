@@ -1,6 +1,6 @@
 """The pipeline's side of the vision worker: invoke it, wherever it runs, and check what comes back.
 
-docs/enhancements/opencv-agentic-vision-enhancement.md §2-§3. The worker may run in another region
+docs/enhancements/archive/opencv-agentic-vision-enhancement.md §2-§3. The worker may run in another region
 (next to the imagery), so the client is made for the region in the worker's ARN, not for the
 Lambda's own. Configuration, from the environment (set by Terraform when `vision_enabled`):
 

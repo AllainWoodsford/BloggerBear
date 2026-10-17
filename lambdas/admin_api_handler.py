@@ -15,7 +15,7 @@ either way. `handler` never raises -- every route function is wrapped in a
 broad top-level try/except that logs the real exception and returns a
 generic 500, per the task contract.
 
-The evidence trail (common/evidence.py, docs/enhancements/vision-evidence.md): `handler` binds
+The evidence trail (common/evidence.py, docs/enhancements/archive/vision-evidence.md): `handler` binds
 Lambda's request id as `tick` and API Gateway's as `api_request_id` (which joins the access log,
 holding no caller details), and the routes that act on an article or a topic print one line after
 the write: `moderation_decision` when a person approves, rejects, force-publishes, unpublishes or

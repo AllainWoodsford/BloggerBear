@@ -307,7 +307,7 @@ by a loose pattern, is only as good as the reading.
 **7.1 Free private repos can't protect anything.** Branch protection, rulesets and required
 reviewers on environments all return "Upgrade to GitHub Pro or make this repository public". The
 README's "approval-gated production" had no setting behind it. **Plan:** apply them the moment the
-repo goes public (docs/todo/public-repo-runsheet.md).
+repo goes public (docs/enhancements/archive/public-repo-runsheet.md).
 
 **7.2 A hand-added rule on `production`.** The environment also allowed the `dev` branch, so any
 workflow on `dev` could have taken the production deploy role. Removed; only `v*` tags now.
@@ -405,8 +405,8 @@ or three entries.
 
 **9.2 The first OpenCV topic was too risky.** A bushfire watch would publish safety information
 a day late, with false reassurance as its worst failure. Switched to counting ships at shipping choke
-points, written up as observations (docs/risks/opencv-bushfire-watch-01.md,
-docs/enhancements/supply-chain-tracker-enhancement.md).
+points, written up as observations (docs/enhancements/archive/supply-chain-tracker-enhancement.md; the
+bushfire risk notes were removed from the repository in October 2026).
 
 **9.3 Satellite resolution vs the idea.** "Count shipping containers" isn't possible at Sentinel-2's
 10 m resolution (a container is 2.4 m wide); ships are.
@@ -415,12 +415,12 @@ docs/enhancements/supply-chain-tracker-enhancement.md).
 Linux aarch64 is still the first thing to settle. **Settled 2026-10-06:** `opencv-python-headless==5.0.0.93`
 ships Linux aarch64 wheels. That is stock OpenCV on Graviton, which is not COOL, the Graviton-tuned build
 the COOL award asks for
-([docs/enhancements/opencv-agentic-vision-enhancement.md](enhancements/opencv-agentic-vision-enhancement.md) §4).
+([docs/enhancements/archive/opencv-agentic-vision-enhancement.md](enhancements/archive/opencv-agentic-vision-enhancement.md) §4).
 
 ## 10. Alexa+ and MCP (2026-10-04)
 
 Planning the Alexa+ entry, before any of it is built. The design these led to is
-[docs/enhancements/alexa-plus-operator-assistant-enhancement.md](enhancements/alexa-plus-operator-assistant-enhancement.md).
+[docs/enhancements/archive/alexa-plus-operator-assistant-enhancement.md](enhancements/archive/alexa-plus-operator-assistant-enhancement.md).
 
 **10.1 Our first idea was the rules' own example of an obvious one.** The plan was a public MCP
 server wrapping the public API, answering one question at a time. The judging criteria name exactly
@@ -561,7 +561,7 @@ version the toolkit doesn't use (it supports `2025-11-25`), put `ui://` URIs ins
 `structuredContent` (they belong in the tool's `_meta`), pointed at a manifest "in the original
 configuration" that wasn't there, and pasted its first half twice. It also dropped the Strands
 agent, which is the part the judging criteria reward. **Decided:**
-[docs/enhancements/alexa-plus.md](enhancements/alexa-plus.md) replaces it. **Lesson:** 6.5 again: a
+[docs/enhancements/archive/alexa-plus.md](enhancements/archive/alexa-plus.md) replaces it. **Lesson:** 6.5 again: a
 confident spec is a draft until each claim is checked against its source.
 
 **10.19 `.well-known` can't live at the root of an execute-api URL.** RFC 9728 puts Protected
@@ -647,7 +647,7 @@ again: when a platform's access is gated, build the part that can be tested with
 write down what is left.
 
 **The assistant reads the logs (2026-10-05).** Entries from the stack that let the assistant read
-logs ([design](enhancements/ops-assistant-log-reader.md)), prefixed with their PR so parallel PRs
+logs ([design](enhancements/archive/ops-assistant-log-reader.md)), prefixed with their PR so parallel PRs
 adding to this log do not collide.
 
 **#218 · A secret scanner caught the test fixtures, and a fix-up commit could not clear it.** The
@@ -832,7 +832,7 @@ exactly as long every day is hitting a limit, not finishing.
 
 The OpenCV AI Competition 2026 work: the review of the vision stack (#240–#254), its merge onto
 `dev` as the integration branch of #285, and the rail task built on it
-([rail-access-monitor.md](enhancements/rail-access-monitor.md)). Entries are added as the work
+([rail-access-monitor.md](enhancements/archive/rail-access-monitor.md)). Entries are added as the work
 goes, newest last.
 
 **12.1 A stacked PR's green CI was not dev's CI.** Every PR of the stack passed its checks, each
@@ -1133,7 +1133,7 @@ the tick's measuring time (the rest of the budget less 10 s, each hop's read and
 then cached for up to `osm_ttl_days`. **Lesson:** a mock is the author's model of a service, and
 a fake knows neither a third party's policies nor its real latency; a first deploy needs one real
 tick per adapter, read in its log, before anything depends on it. (#305, #310, #312, rail PR U;
-[vision.md §8](enhancements/vision.md#8-what-went-wrong-and-what-it-taught) lesson 16)
+[vision.md §8](enhancements/archive/vision.md#8-what-went-wrong-and-what-it-taught) lesson 16)
 
 ## Patterns worth keeping
 

@@ -729,7 +729,7 @@ resource "aws_iam_role_policy" "lambda_web_search" {
 }
 
 # -----------------------------------------------------------------------
-# Vision worker (docs/enhancements/opencv-agentic-vision-enhancement.md): OpenCV 5 on arm64 in
+# Vision worker (docs/enhancements/archive/opencv-agentic-vision-enhancement.md): OpenCV 5 on arm64 in
 # var.vision_region, beside the Sentinel-2 imagery. Only when var.vision_enabled (off; dev goes
 # first); until then the research tick's VISION_WORKER_ARN is empty and the satellite_vision
 # adapter records every site as not measured (common/vision_client.py), never as empty.
@@ -2885,8 +2885,8 @@ resource "aws_lambda_function" "sign_in_events" {
 # =========================================================================
 # The operator's assistant (infra/modules/ops-assistant): the ops MCP server, the Strands agent
 # behind POST /ask, the briefings Alexa+ reads, and production's firewall deep dive. The pilot of
-# docs/enhancements/alexa-plus-operator-assistant-enhancement.md, and the production half of
-# docs/enhancements/alexa-plus.md. Read-only on the pipeline; its own sign-in, with MFA required.
+# docs/enhancements/archive/alexa-plus-operator-assistant-enhancement.md, and the production half of
+# docs/enhancements/archive/alexa-plus.md. Read-only on the pipeline; its own sign-in, with MFA required.
 #
 # Production's assistant reads production only, plus two things that belong to the account and
 # that only production's may report (account_wide_data): the AWS bill, and the firewall's logs,

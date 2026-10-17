@@ -1,5 +1,5 @@
 # =============================================================================
-# What the assistant costs, recorded (docs/enhancements/alexa-plus.md; friction 6.9's sibling:
+# What the assistant costs, recorded (docs/enhancements/archive/alexa-plus.md; friction 6.9's sibling:
 # what is not counted is not seen).
 #
 # Every question runs the agent, and every run is several model calls. Two controls live here and

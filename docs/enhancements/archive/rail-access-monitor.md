@@ -753,7 +753,7 @@ configured" and the adapters report `last_error` rather than fail.
 #### PR F — documentation and the city templates (`-f-docs`, after E)
 
 Title: "Docs: Rail Access Monitor — vision.md for two tasks, city topics, progress, friction,
-submission draft". Files: `docs/enhancements/vision.md` (§1 one paragraph for both tasks; §3 the PR
+submission draft". Files: `docs/enhancements/archive/vision.md` (§1 one paragraph for both tasks; §3 the PR
 table gains PR 0 and A–F; §4 the new modules; the contract section gains `task`, the rail assets,
 `network`, the rail params table and the rail reply keys; §5 a `rail_access` topic table with every
 default; "Where things are stored" gains `articles/figures/<article>/<n>.png`; §6 a 6.7 "Rail

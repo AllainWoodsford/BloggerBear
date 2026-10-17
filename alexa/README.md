@@ -4,7 +4,7 @@ How to put the operator's assistant on Alexa+: one add-on per environment, each 
 environment's own sign-in and MCP server. This is a one-time bootstrap, run by a person on their
 own machine. Nothing here runs in CI.
 
-The design is in `docs/enhancements/alexa-plus.md`, section 4.6. The infrastructure it relies on is
+The design is in `docs/enhancements/archive/alexa-plus.md`, section 4.6. The infrastructure it relies on is
 in `infra/modules/ops-assistant/alexa.tf`.
 
 ## What it is
@@ -193,10 +193,10 @@ In the simulator, or on a device on the same Amazon account:
 2. Say "ask BloggerBear to start a briefing". Alexa calls `start_briefing`.
 3. A little later, say "ask BloggerBear for the briefing". Alexa calls `latest_briefing`.
 
-`start_briefing` and `latest_briefing` (the asynchronous briefing the Strands agent writes) come in
-a separate change; until then, try the read tools: "ask BloggerBear how the pipeline is doing"
-(`pipeline_health`), "...what is in the admin inbox" (`admin_inbox`), "...about alarms"
-(`alarms`).
+The briefing takes about a minute: the Strands agent writes it in the background, so
+`start_briefing` returns at once and `latest_briefing` reads it back. The read tools answer in
+the same request: "ask BloggerBear how the pipeline is doing" (`pipeline_health`), "...what is in
+the admin inbox" (`admin_inbox`), "...about alarms" (`alarms`).
 
 **Reading logs.** The add-on lists the same tools as the page's agent, so it can read logs too,
 read-only, with the same PII sweep (addresses only as `123.XXX.XXX.34`, said as "an address ending
@@ -222,10 +222,10 @@ in .34"):
 For the vision pipeline and a topic's Findings Alexa+ hears counts, ages and reasons only, from
 fixed words: never a site's name, an error's text or what a Finding's summary says. Those are on
 the ask page, in the table's "(unverified)" columns, which only the page's own sign-in client is
-sent ([ops-assistant-vision.md](../docs/enhancements/ops-assistant-vision.md)).
+sent ([ops-assistant-vision.md](../docs/enhancements/archive/ops-assistant-vision.md)).
 `vision_evidence` reads the pipeline's evidence lines, which hold only codes, ids and numbers, so
 Alexa+ hears what the page shows: the decisions counted, what the agent did, the findings written
-and what became of their articles ([vision-evidence.md](../docs/enhancements/vision-evidence.md#asking-the-assistant)).
+and what became of their articles ([vision-evidence.md](../docs/enhancements/archive/vision-evidence.md#asking-the-assistant)).
 It waits at most 8 seconds for its logs, then makes one short Articles read per topic with a finding
 written. Every request it makes to AWS (the topic list, the log access check, starting, polling and
 stopping the log queries, the Articles reads) is held to 12 seconds after the question: a request

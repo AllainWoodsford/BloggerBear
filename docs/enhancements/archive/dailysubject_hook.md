@@ -423,7 +423,7 @@ S2 was built on S1 (#320, with its review fixes, 7176098) and on the owner's net
   Sydney's first network, and a goal that names no city.
 - **Migration (4.4)** is the restart: create `rail-cities`, one tick per city as the first-deploy
   check, then `topics pause` the old city topic (`trains-sydney` on dev); the runsheet's
-  [`rail_access` topics](../deployment-runsheet.md#rail_access-topics) has the steps. The
+  [`rail_access` topics](../../deployment-runsheet.md#rail_access-topics) has the steps. The
   benchmark's Sydney network fixture is now taken from the object, not the running state.
 - **An import cycle, fixed once:** `common/day_subject.py` imported the adapter registry at its top,
   and the rail adapter imports the module for the rota; S1's review fixes (7176098) import the

@@ -30,7 +30,7 @@ from vision import cog, geo
 # The largest window the worker will read, per side, in reference pixels: 4096 px = 41 km at 10 m
 # (larger than any anchorage) or 82 km at 20 m, and bounded so one request can't ask for a whole
 # 110 km scene. The rail task has a smaller cap of its own, vision_worker_handler.RAIL_MAX_WINDOW_PX
-# = 3,584 px (71.7 km at 20 m; the four city boxes of docs/enhancements/rail-access-monitor.md §2
+# = 3,584 px (71.7 km at 20 m; the four city boxes of docs/enhancements/archive/rail-access-monitor.md §2
 # need at most 3,327 px with the pad, Sydney's), because its compute grows with the window and the
 # worker has one vCPU (2048 MB). That compute, through vision_worker_handler.lambda_handler (the bands
 # read from in-memory COGs, analyse_rail_access, annotate_rail, the reply; peak RSS from getrusage),
