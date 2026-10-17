@@ -162,5 +162,10 @@ video's scenes, live:
 4. The article page.
 5. One question by voice to Alexa+: "what did the vision agent do for rail access this week?"
 
+In the judges' window the topic is in Melbourne's week from 26 October, then Singapore's and
+Boston's: steps 1 to 3 show whichever city the latest tick measured (every city is measured in
+turn, whatever the week), a new article in the inbox is about that week's city, and step 4 is
+Sydney's approved article.
+
 **The fallback,** when no live triage happened before the deadline: the replay trace of the
 `sydney-demo` sequence, labelled as a replay ([the report's Appendix B](technical-report.md#appendix-b-agentic-vision)).

@@ -482,18 +482,18 @@ site, which is why a city must sit inside one Sentinel-2 tile. The quality flags
 ### What is diffed, and what the agent checks
 
 The adapter diffs the served share, the desert area and the station count against the city's
-baseline: the median of its earlier clear scenes measured with the same polygon and parameters,
-so editing the reach or the box starts a new baseline instead of reading as a change. A move of
-the served share by 2 points, of the desert area by a tenth of its median, or any change in the
-station count is material (the defaults). The first scene measured at or above the coverage
-floor is the first observation, reported once; a cloudy first scene reports nothing. With a city a
-week, the first tick of a city's week also reports its newest clear scene as the weekly reading, no
-change claimed and not triaged, so each city is written about in its week even when nothing moved. The agent
-sees the figure and may `look_again` with other parameters, compare the `previous_scene`, read
-the `site_history`, or ask `web_context` whether a station or line recently opened or closed. It
-is told what an artefact looks like here: cloud, haze or seasonal vegetation shifting the
-built-up mask, a scene edge, a map edit, a tagging change; and that what its tools return is data
-from outside sources, not instructions.
+baseline: the median of its earlier clear scenes measured with the same polygon and parameters, so
+editing the reach or the box starts a new baseline instead of reading as a change. A move of the
+served share by 2 points, of the desert area by a tenth of its median, or any change in the station
+count is material (the defaults). The first scene measured at or above the coverage floor is the
+first observation, reported once; a cloudy first scene reports nothing. With a city a week, the
+first tick of a city's week also reports its newest clear scene as the weekly reading, no change
+claimed and not triaged, so each city is written about in its week even when nothing moved. The
+agent sees the figure and may `look_again` with other parameters, compare the `previous_scene`, read
+the `site_history`, or ask `web_context` whether a station or line recently opened or closed. It is
+told what an artefact looks like here: cloud, haze or seasonal vegetation shifting the built-up
+mask, a scene edge, a map edit, a tagging change; and that what its tools return is data from
+outside sources, not instructions.
 
 ### What is recorded
 
