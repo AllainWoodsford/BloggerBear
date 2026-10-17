@@ -883,6 +883,10 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   assistant, Alexa+, and the admin CLI and API. Living docs corrected where the code had moved on
   (the rotation, the fixtures, the repository's visibility, the deploy triggers, the tracker's
   owner rows). README gains a Hackathons table and a complete Docs table
+- [x] Every runsheet opens with a Contents list of its own headings, linked by GitHub's anchors:
+  the deployment, production and COOL runsheets, the separate-accounts guide, the setup guide, the
+  rail seeding guide and the Alexa+ add-on runbook. The COOL runsheet's thirteen steps are headings
+  now, so each can be linked and listed; their text is unchanged
 
 ## Backlog / not yet scheduled
 
