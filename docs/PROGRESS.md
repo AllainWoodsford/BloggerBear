@@ -743,9 +743,9 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   (`docs/hackathon/rubric-tracker.md`), one row per rubric line, the owner's ask and each owner
   step, with its status, what it needs, the evidence, the gap, what closes it and what the
   assistant may say, updated by the PR that closes a row; a format test that fails on a
-  malformed row, run by the Python CI on a pull request that also touches `lambdas/` or
-  `scripts/` and by hand on a docs-only one until `python-ci.yml` lists `docs/hackathon/**`
-  (#303, submission PR P0; `scripts/tests/test_hackathon_docs.py`)
+  malformed row, run by the Python CI on a pull request that touches `lambdas/` or `scripts/`,
+  and since R1 on one that touches only `docs/hackathon/` too (#303, submission PR P0;
+  `scripts/tests/test_hackathon_docs.py`)
 - [x] The submission round's benchmark and evaluation inputs (Q1): the benchmark writes run files
   with the code, machine, build, inputs' ETags and every sample, records the rail metrics, their
   digest, the figure's hash, the peak memory and the OpenCV libraries mapped during a run, gains
@@ -797,6 +797,16 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
   `lambdas/common/adapters/rail_access.py`, `scripts/rail_topics.example.json`;
   [design](enhancements/dailysubject_hook.md))
+- [x] The submission package's first wave (R1): the technical report in the rubric's eight sections
+  and three appendices, drafted from the code on `dev` with code anchors and R2's numbers marked as
+  placeholders; the system and agent-workflow diagrams in Mermaid with their SVGs, embedded in the
+  report, the vision pipeline page and the README; the judges' reproduction guide (CI's commands,
+  held equal to `python-ci.yml` by a test, then the real-data runs, the deploy and the Graviton
+  session); the dependency audit, the judges' `constraints-py311.txt` and a pin test; CI prints
+  its `pip freeze --all` and runs the docs test on a `docs/hackathon/` change; the claim fixes;
+  responsible use; the video script with its redaction checklist and the demo plan; the Devpost
+  checklist and `scripts/submission_check.py` (#333, submission PR R1; `docs/hackathon/`,
+  `scripts/submission_check.py`, `lambdas/tests/test_requirements.py`)
 - [x] COOL's reconnaissance (16 October): the Graviton4 AMI, version 3.1, is offered in
   us-west-2; its `cv2` (5.1.0-dev, built against numpy 2.5.1) loads only inside the vendor's
   activated Python 3.12 environment; and its fingerprint is pinned from the build information,
