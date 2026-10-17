@@ -601,7 +601,7 @@ def clouded_to(coverage: float | None, report: dict):
 # --- the harness, on the driver ---------------------------------------------------------------------------
 
 DEFAULT_REPEATS = cli.DEFAULT_REPEATS
-# Fixture A for the Sydney cases (sydney.json, the file the runsheet's fixture step captures).
+# Fixture A for the Sydney cases (sydney.json, the file the COOL runsheet's step 5 captures).
 DEFAULT_NETWORK = cli.DEFAULT_NETWORK
 # C7's clock is moved this far forward when the agent is asked: past the topic's whole allowance.
 DEADLINE_JUMP_SECONDS = 1000.0
@@ -1343,7 +1343,7 @@ def real_setup(args, manifest: dict, site_name: str, names: list[str], *, head=N
     try:
         fixture_a = driver.load_network_file(path)
     except FileNotFoundError as exc:
-        raise Refused(f"{exc}: {path} (fixture A: the runsheet's fixture step captures it)") from exc
+        raise Refused(f"{exc}: {path} (fixture A: docs/cool-benchmark-runsheet.md, step 5)") from exc
     scenes = {s["name"]: s for s in manifest["scenes"]}
     chosen = [scenes[name] for name in names]
     site = manifest["sites"][site_name]

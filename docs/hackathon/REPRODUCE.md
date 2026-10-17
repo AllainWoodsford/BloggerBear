@@ -169,7 +169,7 @@ commands are bash; on Windows run them in Git Bash ([setup guide](../setup-guide
 
 ## Tier 3: COOL on Graviton4
 
-The runsheet's [COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark), steps 0
+The [COOL benchmark runsheet](../cool-benchmark-runsheet.md), steps 0
 to 12, is the session's script: the reconnaissance and its go or no-go table, a `c8g.xlarge` in
 us-west-2 (or a `c8g.2xlarge`), COOL's own activated environment wrapped as one interpreter with
 the benchmark's packages beside it (COOL 3.1, OpenCV 5.1.0-dev: [the reconnaissance](evidence/cool/recon.md)),

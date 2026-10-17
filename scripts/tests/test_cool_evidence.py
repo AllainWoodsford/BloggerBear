@@ -20,7 +20,7 @@ from vision import build
 ROOT = Path(__file__).resolve().parents[2]
 COOL = ROOT / "docs" / "hackathon" / "evidence" / "cool"
 BUILDINFO = COOL / "cool-buildinfo.txt"
-RUNSHEET = ROOT / "docs" / "deployment-runsheet.md"
+RUNSHEET = ROOT / "docs" / "cool-benchmark-runsheet.md"
 # COOL 3.1 (OpenCV 5.1.0-dev) on the us-west-2 AMI, 16 October 2026.
 PINNED = "12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4"
 

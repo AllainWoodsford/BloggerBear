@@ -14,7 +14,7 @@ import vision_runs
 
 COMMANDS = ("agent", "counterfactual", "stability")
 DEFAULT_REPEATS = 5
-# Fixture A for the Sydney cases: the file the runsheet's fixture step captures (and the benchmark's
+# Fixture A for the Sydney cases: the file the COOL runsheet's step 5 captures (and the benchmark's
 # scenes file names).
 DEFAULT_NETWORK = Path(__file__).resolve().parent / "vision_benchmark_networks" / "sydney.json"
 # E3's scene set in the manifest, in time order.

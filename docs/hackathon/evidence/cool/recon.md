@@ -1,6 +1,6 @@
 # COOL reconnaissance, 16 October 2026
 
-The answers to step 0 of the [runsheet's COOL section](../../../deployment-runsheet.md#the-cool-backend-and-the-benchmark),
+The answers to step 0 of the [COOL benchmark runsheet](../../../cool-benchmark-runsheet.md),
 taken on a `c8g.large` in us-west-2, launched from the Marketplace subscription and reached through
 SSM Session Manager. Nothing was benchmarked. By the runsheet's table this is **go, on the AMI**:
 an AMI, and `cv2` 5.x on Python 3.12 once the vendor's environment is activated (below).

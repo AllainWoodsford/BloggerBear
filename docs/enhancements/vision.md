@@ -880,7 +880,7 @@ None of this is automatic.
    measurements the submission needs (the live run in
    [the technical report](../hackathon/technical-report.md#6-evaluation) §6).
 6. **COOL:** the Graviton session, exactly as the
-   [runsheet's COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark) gives
+   [COOL benchmark runsheet](../cool-benchmark-runsheet.md) gives
    it: the reconnaissance (done on 16 October, `docs/hackathon/evidence/cool/recon.md`: an AMI,
    COOL 3.1 with `cv2` 5.1.0-dev, us-west-2, Python 3.12), a `c8g.xlarge` (or `c8g.2xlarge`) from the COOL AMI with
    IMDSv2 and SSM, COOL's interpreter on the vendor's own activated environment (a wrapper, with
@@ -916,9 +916,9 @@ None of this is automatic.
 7. **The COOL run on Graviton**, by the operator (§9): the benchmark's Graviton stock and COOL
    rows, and the 1.3 times slower arm64 core that the rail window cap assumes, are not measured.
    The benchmark now records what that session needs (the run files, the rail metrics and their
-   parity, the mapped libraries, the negative controls, the 4.x row) and the runsheet's COOL
-   section is the session's script; what remains is to run it. The Sydney network fixture the
-   rail scenes need is captured after the deploy's first tick (the runsheet's step 5), into
+   parity, the mapped libraries, the negative controls, the 4.x row) and the
+   [COOL benchmark runsheet](../cool-benchmark-runsheet.md) is the session's script; what remains is to run it. The Sydney network fixture the
+   rail scenes need is captured after the deploy's first tick (the COOL runsheet's step 5), into
    `scripts/vision_benchmark_networks/`, whose `NOTICE.md` is in place.
 8. **Grade-separated crossings read as junctions.** Two lines crossing on a bridge are crossing
    pixels; degree and betweenness inherit it. OpenStreetMap's `bridge` and `layer` tags could keep

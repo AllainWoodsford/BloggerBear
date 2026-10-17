@@ -870,6 +870,11 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   operator's labels (O9). E8 (`vision_eval.py builtup-check`) compares the built-up mask with ESA
   WorldCover 2021; E6 and E7 were cut (#347, submission PR Q3; `scripts/evidence_export.py`,
   `scripts/vision_eval_reference.py`; [the live evidence](hackathon/evidence/README.md#the-live-evidence-live))
+- [x] The COOL session has its own runsheet: the steps of the deployment runsheet's "The COOL
+  backend and the benchmark" moved to [cool-benchmark-runsheet.md](cool-benchmark-runsheet.md), as
+  they were but for their links and a note that the Sydney fixture is committed (#349, whose four
+  city networks now have their `NOTICE.md` rows); the section now holds a link and what the
+  session is for, and every link and mention follows it
 
 ## Backlog / not yet scheduled
 

@@ -1210,8 +1210,9 @@ def fixture_of(network: dict) -> dict:
 
 def same_network(held: bytes, fixture: dict) -> bool:
     """Whether a network file already holds `fixture`: the same fields and values once read, however
-    it was written (the runsheet's O2 capture is jq's: indented, `\\u` escapes, a missing field as
-    null). Such a file is left as it is, byte for byte, so the sha256 every run file pins still holds."""
+    it was written (the O2 capture, the COOL runsheet's step 5, is jq's: indented, `\\u` escapes, a
+    missing field as null). Such a file is left as it is, byte for byte, so the sha256 every run file
+    pins still holds."""
     try:
         text = json.loads(held.decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError):
