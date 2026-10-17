@@ -16,6 +16,34 @@ The account ID on this page, `111111111111`, is a placeholder.
 Use your own. Commands name `ap-southeast-2` (Sydney), the default region; use yours if you chose
 another ([Deploying to another region](#deploying-to-another-region)).
 
+## Contents
+
+- [Quick start: the setup script](#quick-start-the-setup-script)
+- [How a deploy picks its account](#how-a-deploy-picks-its-account)
+- [Before you start](#before-you-start)
+- [1. Bootstrap, once, by hand](#1-bootstrap-once-by-hand)
+- [2. GitHub settings](#2-github-settings)
+- [3. One account or two](#3-one-account-or-two)
+- [4. First deploy: dev](#4-first-deploy-dev)
+- [5. After the first deploy](#5-after-the-first-deploy)
+  - [Interrogating a topic's Findings](#interrogating-a-topics-findings)
+- [Optional, but recommended](#optional-but-recommended)
+  - [API keys for the data sources](#api-keys-for-the-data-sources)
+  - [The model registry: seeding and rotation](#the-model-registry-seeding-and-rotation)
+  - [DynamoDB tag-based access control (ABAC)](#dynamodb-tag-based-access-control-abac)
+  - [CloudWatch Logs tags (the assistant's log tools)](#cloudwatch-logs-tags-the-assistants-log-tools)
+  - [The personal-data and secret checks](#the-personal-data-and-secret-checks)
+  - [Vision (optional)](#vision-optional)
+  - [`rail_access` topics](#rail_access-topics)
+  - [Evidence: what the pipeline measured and decided](#evidence-what-the-pipeline-measured-and-decided)
+  - [The COOL backend and the benchmark](#the-cool-backend-and-the-benchmark)
+  - [The evaluation's real-data runs](#the-evaluations-real-data-runs)
+  - [The evidence export, the trace and the labels (O9)](#the-evidence-export-the-trace-and-the-labels-o9)
+- [Deploying to another region](#deploying-to-another-region)
+- [Tearing down and cost control](#tearing-down-and-cost-control)
+- [Local development](#local-development)
+- [What is still tied to the original deployment](#what-is-still-tied-to-the-original-deployment)
+
 ## Quick start: the setup script
 
 `scripts/setup_repo.py` asks for every GitHub setting a deployment needs, checks each answer, shows

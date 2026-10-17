@@ -7,6 +7,21 @@ own machine. Nothing here runs in CI.
 The design is in `docs/enhancements/archive/alexa-plus.md`, section 4.6. The infrastructure it relies on is
 in `infra/modules/ops-assistant/alexa.tf`.
 
+## Contents
+
+- [What it is](#what-it-is)
+- [Files here](#files-here)
+- [The helper script](#the-helper-script)
+- [The bootstrap, per environment](#the-bootstrap-per-environment)
+  - [1. Read the environment's outputs](#1-read-the-environments-outputs)
+  - [2. Install the CLI and sign in to Amazon](#2-install-the-cli-and-sign-in-to-amazon)
+  - [3. Account linking, in two halves](#3-account-linking-in-two-halves)
+  - [4. Check that `assistant_access` is open](#4-check-that-assistant_access-is-open)
+  - [5. Write the manifest, deploy, and test](#5-write-the-manifest-deploy-and-test)
+  - [6. If sign-in fails with `invalid_request`](#6-if-sign-in-fails-with-invalid_request)
+- [Unlinking and revoking](#unlinking-and-revoking)
+- [Security](#security)
+
 ## What it is
 
 Amazon's Alexa+ MCP Toolkit (the `alexa-ai` CLI) publishes an *add-on*: a manifest that points

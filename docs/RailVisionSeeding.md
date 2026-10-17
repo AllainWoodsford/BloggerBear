@@ -11,6 +11,19 @@ every config key ([configuration.md, A `rail_access` topic](configuration.md#a-r
 the rota design ([dailysubject_hook.md](enhancements/archive/dailysubject_hook.md)) and the cadence in
 detail ([deployment-runsheet.md, rail_access topics](deployment-runsheet.md#rail_access-topics)).
 
+## Contents
+
+- [1. What gets seeded](#1-what-gets-seeded)
+- [2. What an article is made of](#2-what-an-article-is-made-of)
+  - [The text](#the-text)
+  - [The figures](#the-figures)
+- [3. The editorial goal](#3-the-editorial-goal)
+  - [What was kept from the "weekly city rotation" template, and what was not](#what-was-kept-from-the-weekly-city-rotation-template-and-what-was-not)
+- [4. Seeding runsheet (dev)](#4-seeding-runsheet-dev)
+- [5. Reviewer checklist (before `approve`)](#5-reviewer-checklist-before-approve)
+- [6. Adding a city later](#6-adding-a-city-later)
+- [7. A city a week, written up from three sides](#7-a-city-a-week-written-up-from-three-sides)
+
 ## 1. What gets seeded
 
 | Setting | Value | Why |

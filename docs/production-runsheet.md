@@ -13,6 +13,21 @@ Wherever it says **check it**, `python scripts/domain_check.py` is the read-only
 the domain stands. It reads the domain from production's `terraform.tfvars` (or pass one:
 `python scripts/domain_check.py example.com`), needs no AWS login and changes nothing.
 
+## Contents
+
+- [Before you start](#before-you-start)
+- [1. Create the DNS zone and the budget alarm (you, locally, once)](#1-create-the-dns-zone-and-the-budget-alarm-you-locally-once)
+- [2. Point your registrar at Route 53 (you, at the registrar)](#2-point-your-registrar-at-route-53-you-at-the-registrar)
+- [3. Wait for the change to spread, then check it](#3-wait-for-the-change-to-spread-then-check-it)
+- [4. Put the domain and zone ID in production (a small PR)](#4-put-the-domain-and-zone-id-in-production-a-small-pr)
+- [5. GitHub setup for production (you)](#5-github-setup-for-production-you)
+- [6. Release to production (you approve, CI applies)](#6-release-to-production-you-approve-ci-applies)
+- [7. After the first apply](#7-after-the-first-apply)
+- [Vision (optional)](#vision-optional)
+- [Rolling back](#rolling-back)
+- [What it costs (list prices, roughly)](#what-it-costs-list-prices-roughly)
+- [Not done, on purpose](#not-done-on-purpose)
+
 ## Before you start
 
 | You need | How to tell |

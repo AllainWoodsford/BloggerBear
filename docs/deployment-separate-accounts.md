@@ -11,6 +11,20 @@ Account IDs on this page are placeholders: `111111111111` is the dev account and
 is the production account. `your-name/your-fork` is your repository and `acme-blog` is your name
 prefix. Use your own.
 
+## Contents
+
+- [Should you?](#should-you)
+- [What you do twice](#what-you-do-twice)
+- [Bootstrap, once per account](#bootstrap-once-per-account)
+- [GitHub settings that differ](#github-settings-that-differ)
+- [What the OIDC side looks like](#what-the-oidc-side-looks-like)
+- [In one account, each role is refused the other environment](#in-one-account-each-role-is-refused-the-other-environment)
+- [The firewall](#the-firewall)
+- [Logs, alarms and dashboards](#logs-alarms-and-dashboards)
+- [Vision (optional)](#vision-optional)
+- [Checklist before the first deploy](#checklist-before-the-first-deploy)
+- [Enhancement: a deployment account that assumes a role in each environment's account](#enhancement-a-deployment-account-that-assumes-a-role-in-each-environments-account)
+
 ## Should you?
 
 **One account is the simpler choice, and it is what the original deployment uses.** Names never

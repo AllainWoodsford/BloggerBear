@@ -17,6 +17,27 @@ each tool and setting is for, then points to the detailed runsheets when you nee
 
 ---
 
+## Contents
+
+- [0. What you are building, in one paragraph](#0-what-you-are-building-in-one-paragraph)
+- [1. Fill in your values first](#1-fill-in-your-values-first)
+- [2. Install the tools](#2-install-the-tools)
+- [3. Set up AWS](#3-set-up-aws)
+  - [3a. The account(s)](#3a-the-accounts)
+  - [3b. Point the AWS CLI at your account](#3b-point-the-aws-cli-at-your-account)
+  - [3c. Ask for enough Lambda concurrency](#3c-ask-for-enough-lambda-concurrency)
+  - [3d. Make sure your account can call the model](#3d-make-sure-your-account-can-call-the-model)
+- [4. Fork and clone](#4-fork-and-clone)
+- [5. Bootstrap AWS (the only manual Terraform apply)](#5-bootstrap-aws-the-only-manual-terraform-apply)
+- [6. Tell GitHub about your AWS setup](#6-tell-github-about-your-aws-setup)
+  - [6a. The `production` environment](#6a-the-production-environment)
+  - [6b. Secrets and variables: the setup script](#6b-secrets-and-variables-the-setup-script)
+  - [6c. How the pieces connect (the IAM and GitHub setup in one picture)](#6c-how-the-pieces-connect-the-iam-and-github-setup-in-one-picture)
+- [7. The first deploy](#7-the-first-deploy)
+- [8. Seed your first topic](#8-seed-your-first-topic)
+- [9. When something goes wrong](#9-when-something-goes-wrong)
+- [10. Where next](#10-where-next)
+
 ## 0. What you are building, in one paragraph
 
 You fork the repository and run **one** Terraform apply from your own machine (the *bootstrap*).
