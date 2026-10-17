@@ -17,6 +17,12 @@ line itself, because CI logs are public on a public repo.
     python scripts/pii_denylist_check.py --staged           # pre-commit: what's about to be committed
     python scripts/pii_denylist_check.py --range BASE HEAD  # CI: what a pull request adds
     python scripts/pii_denylist_check.py --all              # on-demand: every tracked file as it is now
+    python scripts/pii_denylist_check.py --files PATH ...   # these files whole, tracked or not
+
+`--files` reads whole files, in a repository or not: what `scripts/evidence_export.py` writes is
+untracked until it is committed, so none of the other modes would read it, and the export runs this
+on every file it wrote and refuses to finish on a hit. A path that is not a file (a typo, a
+directory) is refused with exit 2, so it never passes as "nothing found".
 """
 
 from __future__ import annotations
@@ -124,15 +130,43 @@ def tracked_lines(root: Path) -> list[tuple[str, int, str]]:
     return out
 
 
+def file_lines(paths: list[str]) -> list[tuple[str, int, str]]:
+    """(path, line number, text) for every line of each file, the path as given, read as UTF-8 (a
+    byte that does not decode is replaced, so it never hides the rest of the file). Binary files (a
+    NUL in the first 8 KB) are skipped, as `--all` skips them. FileNotFoundError, or
+    IsADirectoryError, for a path that is not a file: the caller names it."""
+    out: list[tuple[str, int, str]] = []
+    for path in paths:
+        target = Path(path)
+        if target.is_dir():
+            raise IsADirectoryError(2, "is a directory", path)
+        data = target.read_bytes()
+        if b"\0" in data[:8192]:
+            continue
+        for number, text in enumerate(data.decode("utf-8", errors="replace").splitlines(), start=1):
+            out.append((path, number, text))
+    return out
+
+
+def _root() -> Path:
+    """The repository's top level, where the local denylist file lives; this checkout's when git
+    cannot say (`--files` needs no repository)."""
+    try:
+        return Path(_git("rev-parse", "--show-toplevel").strip())
+    except (OSError, subprocess.CalledProcessError):
+        return Path(__file__).resolve().parents[1]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--staged", action="store_true", help="check the staged changes (pre-commit)")
     group.add_argument("--range", nargs=2, metavar=("BASE", "HEAD"), help="check BASE...HEAD (CI)")
     group.add_argument("--all", action="store_true", help="check every tracked file (on-demand scan)")
+    group.add_argument("--files", nargs="+", metavar="PATH", help="check these files whole, tracked or not")
     args = parser.parse_args(argv)
 
-    root = Path(_git("rev-parse", "--show-toplevel").strip())
+    root = _root() if args.files else Path(_git("rev-parse", "--show-toplevel").strip())
 
     # The local list must never be committed: it would publish everything it protects.
     if args.staged and DENYLIST_FILE in staged_paths():
@@ -144,7 +178,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pii-denylist: no denylist ({DENYLIST_ENV} unset, no {DENYLIST_FILE}); nothing to check.")
         return 0
 
-    if args.all:
+    if args.files:
+        try:
+            lines = file_lines(args.files)
+        except OSError as exc:  # not found, a directory, unreadable: named, never "nothing found"
+            print(f"pii-denylist: {exc.filename}: not a file this check can read.", file=sys.stderr)
+            return 2
+    elif args.all:
         lines = tracked_lines(root)
     else:
         base, head = args.range if args.range else (None, None)
@@ -154,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pii-denylist: checked against {len(entries)} entries; nothing found.")
         return 0
 
-    verb = "contains" if args.all else "adds"
+    verb = "contains" if args.all or args.files else "adds"
     for hit in hits:
         print(f"pii-denylist: {hit.path}:{hit.line} {verb} denylist entry #{hit.entry}", file=sys.stderr)
     print(f"pii-denylist: {len(hits)} finding(s). Remove the personal data, then commit.", file=sys.stderr)

@@ -1,0 +1,41 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C1e",
+  "base": "C1",
+  "title": "One station added inside served ground",
+  "built_as": "As C1, with the newest scene measured with A plus one infill station between two stations of one line, on ground both already serve; the news announces it. Real by the station count, while the served share barely moves.",
+  "networks": {
+    "A": {
+      "file": "vision_benchmark_networks/sydney.json"
+    },
+    "B": {
+      "from": "A",
+      "derive": "add_served_station"
+    }
+  },
+  "news": [
+    {
+      "title": "New infill station opens between two stops",
+      "url": "https://news.example.com/rail/infill-station-opens",
+      "published_at": "2024-08-29T00:00:00Z",
+      "source": "Example Transit News",
+      "snippet": "A new station between two existing stops opened on Thursday, shortening walks for nearby residents."
+    }
+  ],
+  "why": "The station count moved by one and the news reports the opening; the served share barely moves because the ground was already within reach.",
+  "scripted": [
+    {
+      "tool": "look_again",
+      "input": {
+        "reach_m": 1200
+      }
+    },
+    {
+      "tool": "web_context",
+      "input": {}
+    },
+    {
+      "text": "{\"verdict\": \"real\", \"reason\": \"One new station is on the map and in the news; the served share barely moves because the ground was already served.\"}"
+    }
+  ]
+}

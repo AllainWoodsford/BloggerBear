@@ -520,3 +520,44 @@ def test_a_name_of_joiners_alone_is_no_name():
     rows[0]["name"] = "\u200c\u200d\u200c"
     notes = planner_notes(entry(stations=rows))
     assert all('""' not in note["text"] for note in notes)
+
+
+# --- how many there were: the strongest few are never read as all of them -------------------------
+
+
+def test_the_notes_say_how_many_flags_there_were_when_the_cap_left_some_out():
+    many = entry()
+    extra = [{"type": "isolated_high_demand", "station": "s:B", "name": "Hornsby", "activity": 0.3,
+              "degree": 1, "isolation_weight": 41.0}] * 8  # fmt: skip
+    many["flags"] = many["flags"] + extra  # 11 flags, of which MAX_FLAGS are written
+    notes = planner_notes(many)
+    shown = sum(1 for note in notes if note["kind"] == "flag")
+    assert shown == rail_notes.MAX_FLAGS
+    text = format_notes(notes, many)
+    assert text.endswith(f"These are the strongest {shown} of the 11 flags the pipeline found.")
+    # Without the entry, as before: no count.
+    assert format_notes(notes) == NOTES_LEAD + " ".join(note["text"] for note in notes)
+
+
+def test_no_count_when_every_flag_and_simulation_is_shown():
+    every = entry()
+    notes = planner_notes(every)
+    assert rail_notes.shown_of_found(notes, every) == ""
+    assert format_notes(notes, every) == format_notes(notes)
+
+
+def test_simulations_are_counted_too_and_a_stored_flag_count_stands_in_for_a_trimmed_list():
+    trimmed = entry()
+    trimmed["suggestions"] = trimmed["suggestions"] * 3  # more than MAX_SIMULATIONS
+    notes = planner_notes(trimmed)
+    sims = sum(1 for note in notes if note["kind"] == "simulation")
+    found = len(trimmed["suggestions"])
+    assert rail_notes.shown_of_found(notes, trimmed) == (
+        f"These are the strongest {sims} of the {found} simulations the pipeline found."
+    )
+    # An entry whose flag list was dropped keeps its count.
+    counted = {"flag_count": 9}
+    assert rail_notes.shown_of_found([{"kind": "flag"}], counted) == (
+        "These are the strongest 1 of the 9 flags the pipeline found."
+    )
+    assert rail_notes.shown_of_found([], counted) == ""  # nothing shown: nothing to count against

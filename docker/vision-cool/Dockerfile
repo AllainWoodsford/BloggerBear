@@ -12,8 +12,7 @@
 # after the Sydney network fixture is in the checkout (scripts/vision_benchmark_networks/), which is
 # copied in beside the benchmark, its run-file module, its scenes and the evaluation's manifest.
 #
-# The URI comes from the Marketplace subscription (docs/deployment-runsheet.md, "The COOL
-# backend"); it is not written here because it belongs to that subscription.
+# The URI comes from the Marketplace subscription (docs/cool-benchmark-runsheet.md, step 10); it is not written here because it belongs to that subscription.
 #
 # Then, on a Graviton3/4 host, print the build's fingerprint (what COOL_BUILD_SHA256 is set to) and
 # run the benchmark against the stock build's numbers:

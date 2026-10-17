@@ -56,7 +56,7 @@ research tick ── SatelliteVisionAdapter.fetch_state
                    │ 1. STAC search per site (Earth Search, free)
                    │ 2. VisionClient.analyse(site, scene) ───────────► vision worker (arm64)
                    │                                                    backend = "opencv"  (Lambda, stock OpenCV 5)
-                   │                                                    backend = "cool"    (COOL on Graviton3/4)
+                   │                                                    COOL: benchmarked on Graviton4 (not deployed)
                    │                                                    windowed COG read → masks → detect → count
                    │ ◄──── metrics JSON (+ annotated PNG, small) ──────  annotate; no state kept
                    │ 3. append to the site's history in the snapshot
@@ -130,15 +130,17 @@ What has to be settled first (the first COOL PR does this, before any infrastruc
   COOL image runs correctly on Lambda `arm64`, that is simpler and is preferred.
 - **Proving COOL is in use.** The worker reports `cv2.__version__` and a hash of
   `cv2.getBuildInformation()`, and the build information's KleidiCV line, with every result, so the
-  logs and the Stats page show which build did the work. A `cool` call that comes back from a
-  non-COOL build fails rather than being counted.
+  worker's log line (and each decision in the evidence trail) names the build and the CPU that did
+  the work; the Stats page shows the agent's spend. A `cool` call that comes back from a non-COOL
+  build fails rather than being counted.
 - **Marketplace subscription** is a console step (like Cost Explorer, docs/friction.md 1.10) with a
   7-day trial and then usage pricing. It goes in the deployment runsheet, not in Terraform, and its
   cost goes in the costs section once known.
 - **The benchmark** (`scripts/vision_benchmark.py`): the same scenes through stock OpenCV 5 on
   x86_64, stock on arm64, and COOL on Graviton, reporting per-stage latency (read, mask, detect,
-  annotate), total, memory and cost per scene. Reproducible from a pinned scene list. Its table goes
-  in the technical report.
+  annotate), total and peak memory per scene (each scene in a fresh interpreter, `--isolate`); the
+  cost per scene is the compare report's time times the instance's price. Reproducible from a pinned
+  scene list. Its table goes in the technical report.
 
 ## 5. The agent (Agentic Vision Award)
 
@@ -155,10 +157,12 @@ The design turns the supply-chain doc's one-shot triage into a bounded tool-usin
   - `previous_scene(site)` analyses the site's last scene, so it can compare like with like;
   - `site_history(site)` returns the stored counts.
 - **Action:** a Finding (then the normal article path) or a recorded "artefact" with its reason.
-- **Bounds, in code not prompt:** at most N tool calls (default 3) and a per-tick cost cap; a
-  malformed answer, a tool failure or the cap being hit is `"artefact"`, never `"real"` (fail
-  closed); every tool call and verdict is logged and stored on the snapshot, so the demo can replay
-  the agent's reasoning trail.
+- **Bounds, in code not prompt:** at most N tool calls (default 3), that plus two model turns, and
+  a deadline; there is no cost cap, but each decision's cost is recorded. A malformed answer, a
+  Bedrock error, the turn limit or the deadline is `"artefact"`, never `"real"` (fail closed); every
+  tool call and verdict is logged (one `vision_triage` line of codes and numbers) and kept, with each
+  tool's result, in the site's decision ring (the last 12 decisions); the evaluation's replay re-runs
+  a recorded trace ([the evidence trail](vision-evidence.md)).
 - **Human control:** `force_manual_review` on the topic. No vision article is published without a
   person approving it in the review inbox.
 
@@ -284,6 +288,7 @@ The steps, with their checks, are in
    release, unless the `production` environment sets `VISION_ENABLED` to `false`.
 4. **Create a topic**: `adapter: "satellite_vision"`, `sites` in `adapter_config`, an
    `object_noun`, and editorial goals (docs/deployment-runsheet.md, "Vision (optional)").
-5. **COOL**: subscribe, measure, pin the fingerprint (runsheet, "The COOL backend and the
-   benchmark"); unsubscribe after the trial if it isn't kept.
+5. **COOL**: subscribe, measure, pin the fingerprint
+   ([COOL benchmark runsheet](../cool-benchmark-runsheet.md)); unsubscribe after the trial if it
+   isn't kept.
 

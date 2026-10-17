@@ -484,7 +484,8 @@ call:
 - `site_history()`: every stored scene's date, key values and coverage;
 - `web_context()` (rail only, when the topic's `web_context` is true): at most five news
   headlines from the last 60 days for "<city> rail station opening closure line", through the
-  existing GDELT search (`common/web_search.search_web`), within 10 s.
+  existing news search (`common/web_search.search_web`): GDELT, with the AgentCore web-search
+  gateway as its fallback when GDELT fails; within 10 s.
 
 Bounds are in code: at most `triage_max_tool_calls` tool calls, at most that plus two model turns,
 a deadline (`triage_deadline_seconds` after the tick started) under which no model turn starts with
@@ -673,8 +674,9 @@ The benchmark with the rail kernels (`python scripts/vision_benchmark.py kernels
 2048 px synthetic images, 20 runs, medians) on **this build container's CPU, not Graviton**: an
 Intel Xeon at 2.10 GHz with 4 vCPUs, stock `opencv-python-headless` 5.0.0 (build `0ef08003c311`),
 Python 3.11, on the integration branch with PR J's code; then pinned to one CPU (`taskset -c 0`),
-as the worker's one vCPU is. The machine is shared, and two runs differed by up to 40 % on some
-rows:
+as the worker's one vCPU is. **Indicative only:** the machine is a shared container, two runs
+differed by up to 40 % on some rows, and no row here is a COOL ratio (COOL is measured against stock
+on one Graviton4 instance, §9):
 
 | Operation | 4 vCPUs, ms | 1 CPU, ms |
 |---|---:|---:|
@@ -703,6 +705,21 @@ of them (16 October, x86): the share of each scene the worker can measure, why a
 unusable, and how many of the year's items the production search would pick only to find them
 under the floor. The tables above stay as the first indicative numbers; the report cites the
 files.
+
+**Evaluation results: [`RESULTS.md`](../hackathon/evidence/RESULTS.md)**, the index of every run
+file, one table per kind, written by `vision_eval.py index` and checked in CI. The evaluation's
+first half (Q2a) adds `replay` (the real adapter over pinned Sydney scenes, tick by tick, with the
+deployed worker and the real model, or a recording a judge re-runs without AWS: the A2 trace,
+rendered to `docs/hackathon/evidence/replay/`), `failures` (the constructed failure catalogue, its
+tests checked to be collected, its real-data rows through the worker) and `access-baseline` (E5:
+the production distance transform against the precise one and SDG 11.2.1's straight-line buffer).
+The second half (Q2b) adds `agent` (thirteen cases, balanced between the classes, scored per class
+against numeric-only and always-artefact, with the failure cases C6-C9), `counterfactual` (only
+OpenCV's output changed, at the agent's re-measurement and at the coverage gate) and `stability`
+(E3: the year set through the production rule on one network; the false-alarm rate with its
+interval). Their real-data runs are the operator's, in the
+[runsheet](../deployment-runsheet.md#the-evaluations-real-data-runs); until they are committed,
+RESULTS.md holds the coverage run alone.
 
 The worst cases the worker must survive were measured separately (PR J; the figures are in the
 comments on `RAIL_MAX_WINDOW_PX` in `vision_worker_handler.py`, `MAX_WINDOW_PX` in
@@ -860,19 +877,23 @@ None of this is automatic.
    adapter's default (§5, "Editorial goal") is not what you want. Check
    `docs/risks/opencv-bushfire-watch-01.md` against it.
 5. **Run Sydney for real:** a tick with the Overpass network on the deployed worker, for the
-   measurements the submission needs (its table in `docs/hackathon/opencv-2026-submission.md`).
+   measurements the submission needs (the live run in
+   [the technical report](../hackathon/technical-report.md#6-evaluation) §6).
 6. **COOL:** the Graviton session, exactly as the
-   [runsheet's COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark) gives
-   it: the Friday reconnaissance (the product's delivery type, Region, price and Python), a
-   `c8g.xlarge` from the COOL AMI with IMDSv2 and SSM, a COOL venv on the product's own `cv2`
-   (`--system-site-packages`; never opencv or numpy in it), stock 5.0.0.93 and 4.14.0.94 venvs
+   [COOL benchmark runsheet](../cool-benchmark-runsheet.md) gives
+   it: the reconnaissance (done on 16 October, `docs/hackathon/evidence/cool/recon.md`: an AMI,
+   COOL 3.1 with `cv2` 5.1.0-dev, us-west-2, Python 3.12), a `c8g.xlarge` (or `c8g.2xlarge`) from the COOL AMI with
+   IMDSv2 and SSM, COOL's interpreter on the vendor's own activated environment (a wrapper, with
+   the benchmark's packages beside it; never opencv or numpy in it), stock 5.0.0.93 and 4.14.0.94 venvs
    beside it, the interleaved `kernels`, `scenes` (`--isolate`, `--cache`, pinned to one core),
    `compare` and `controls` runs of its step 8 written to `docs/hackathon/evidence/runs/`, and the
    proof checklist it ends with; pin the COOL `build_sha256` as `COOL_BUILD_SHA256`; terminate the
    instance and unsubscribe if not kept.
 7. **For the submission:** the benchmark table (x86, Graviton stock, Graviton COOL), a run of the
-   loop on dev showing an artefact rejected and a real change held for review, the architecture
-   diagram (§1), and the video.
+   loop on dev showing an artefact rejected and a real change held for review, and the video. The
+   package is in `docs/hackathon/`: the [technical report](../hackathon/technical-report.md), the
+   system and agent [diagrams](../hackathon/diagrams/README.md), the
+   [reproduction guide](../hackathon/REPRODUCE.md) and the [video script](../hackathon/video-script.md).
 
 ---
 
@@ -880,10 +901,11 @@ None of this is automatic.
 
 1. Does the COOL image run on Lambda's `arm64` CPUs, or does the COOL backend need ECS on a
    Graviton4 instance? That decides its Terraform.
-2. Are COOL and Graviton4 (`c8g`) offered in us-west-2 and ap-southeast-2? The runsheet's
-   reconnaissance step records the answer in `docs/hackathon/evidence/cool/recon.md`.
-3. COOL's price after the trial: recorded by the same step, and by `--label price=` in the run
-   files.
+2. Are COOL and Graviton4 (`c8g`) offered in us-west-2 and ap-southeast-2? **Answered on
+   16 October** (`docs/hackathon/evidence/cool/recon.md`): the listing names a COOL 3.1 AMI in both
+   (26 Regions in all), and a `c8g.large` ran it in us-west-2.
+3. COOL's price: the listing's table on 16 October gave USD 0.01 an hour on `c8g.large` and 0.02 on
+   `c8g.2xlarge`, the software fee only (recon.md); the session's hours and fees go in `session.md`.
 4. Inter-region transfer cost of the worker's replies against reading `sentinel-cogs` from Sydney:
    measure both on dev.
 5. Lambda `arm64`'s CPU generation: answered from the first invoke once deployed, by the worker's
@@ -894,9 +916,9 @@ None of this is automatic.
 7. **The COOL run on Graviton**, by the operator (§9): the benchmark's Graviton stock and COOL
    rows, and the 1.3 times slower arm64 core that the rail window cap assumes, are not measured.
    The benchmark now records what that session needs (the run files, the rail metrics and their
-   parity, the mapped libraries, the negative controls, the 4.x row) and the runsheet's COOL
-   section is the session's script; what remains is to run it. The Sydney network fixture the
-   rail scenes need is captured after the deploy's first tick (the runsheet's step 5), into
+   parity, the mapped libraries, the negative controls, the 4.x row) and the
+   [COOL benchmark runsheet](../cool-benchmark-runsheet.md) is the session's script; what remains is to run it. The Sydney network fixture the
+   rail scenes need is captured after the deploy's first tick (the COOL runsheet's step 5), into
    `scripts/vision_benchmark_networks/`, whose `NOTICE.md` is in place.
 8. **Grade-separated crossings read as junctions.** Two lines crossing on a bridge are crossing
    pixels; degree and betweenness inherit it. OpenStreetMap's `bridge` and `layer` tags could keep

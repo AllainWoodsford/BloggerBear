@@ -677,8 +677,8 @@ CPU's rows are closest to it with the run pinned to one core.
 A `rail_access` scene also needs its OpenStreetMap network, which the worker is sent with the
 request. The scenes file names `vision_benchmark_networks/sydney.json` for both Sydney scenes; the
 directory's `NOTICE.md` carries the Open Database Licence attribution and the row to fill in when
-the file lands (the runsheet's COOL section says how to take it from the deployed city's network
-object, or `fetch-network` asks Overpass for the scene's polygon through `lambdas/common/osm.py`, the
+the file lands ([the COOL benchmark runsheet](../docs/cool-benchmark-runsheet.md), step 5, says how to take it
+from the deployed city's network object, or `fetch-network` asks Overpass for the scene's polygon through `lambdas/common/osm.py`, the
 same client the adapter uses). Until the file exists, the rail scenes' rows read
 `error: network_file missing`. Overpass is not reachable from the build containers, so the file
 is captured on a machine that can reach it, checked with `pii_denylist_check.py --staged`, and
@@ -730,6 +730,213 @@ roles), takes `--only NAME` and `--cache [DIR]`, HEADs each asset first and refu
 ETag ("input changed"), and exits 1 when a scene's `expected` (`low_coverage` for the cloud and
 no-data cases) was not met. Both subcommands run on Windows as well as Linux and macOS (`py -3.11 scripts\vision_eval.py ...`); they need
 `lambdas/requirements-vision.txt` and `scripts/requirements.txt`.
+
+## The evaluation proper: `vision_eval.py replay`, `failures`, `access-baseline`, `index`
+
+Each writes one run file (`--out DIR`, `--tag`) with the code, machine, build and inputs it ran
+on, and runs in CI on a synthetic city with scripted parts; on real data they are the operator's
+runs (the runsheet's [evaluation runs](../docs/deployment-runsheet.md#the-evaluations-real-data-runs),
+bash and PowerShell). Every real-data run HEADs its scenes first and refuses one whose pinned ETag
+moved ("input changed"); `--cache [DIR]` answers the worker's reads from DIR after the first.
+
+```bash
+python scripts/vision_eval.py replay --sequence sydney-demo --worker <ARN> --agent bedrock --model-id <id> --out docs/hackathon/evidence/runs --trace
+python scripts/vision_eval.py replay --sequence sydney-demo --agent recorded --from docs/hackathon/evidence/runs/<run>.json --cache ~/cogs
+python scripts/vision_eval.py replay --sequence synthetic-city                       # CI's: the synthetic city, scripted agent
+python scripts/vision_eval.py failures --cache ~/cogs --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py access-baseline --cache ~/cogs --out docs/hackathon/evidence/runs   # E5; --scene synthetic-1 in CI
+python scripts/vision_eval.py index            # docs/hackathon/evidence/index.json and RESULTS.md
+python scripts/vision_eval.py index --check    # change nothing; exit 1 if either is stale or a label is wrong
+```
+
+**`replay`** (2.6.4) drives the real `RailAccessAdapter` through `fetch_state` then `material_diff`,
+tick by tick, over a sequence of the manifest's scenes (`sydney-winter`, `sydney-demo` with the demo
+topic's thresholds of 0, `sydney-c1` with network B on its last tick, and `synthetic-city`), as a
+one-site topic like `trains-sydney`, each tick six hours after its scene. The worker is in this
+process (`--worker in-process`, the default) or the deployed one (`--worker <ARN>`, without
+`--cache`; every site id sent is `eval-sydney`, and the run file names the Region, never the ARN).
+The agent is Bedrock (`--agent bedrock --model-id <id> [--region R]`: every Converse response
+recorded; an application inference profile's ARN reaches Converse alone, and the run file and the
+trace name no model for it), a recording (`--agent recorded --from <run file>`: the responses, the
+ticks' times and the clock's readings replayed, every measurement recomputed in-process and held to
+the recording: the ring's code-derived fields exactly, measurements within 2.7.1's tolerances, the
+fields left out listed in the run file under `excluded`) or scripted (`--agent scripted`, the
+default: a `look_again` at 800 m, the news, then `real` exactly when the station count moved). The
+news the agent may read is the sequence's own (sydney-c1's is constructed and says so), never a live
+search. A recorded replay is refused when a pinned ETag or the network file moved, or when a
+recorded response calls a tool the profile no longer offers (naming the tick and the step); an
+in-process worker under the real model's deadline is refused without `--cache` off an EC2 instance
+in us-west-2 (its `look_again` would re-read the scene inside the agent's 85 s; when the instance is
+what allowed it, the run file's `environment.host` says so). `--trace` renders the ticks' decisions
+to `docs/hackathon/evidence/replay/<sequence>.md` through `vision_decisions.trace` and the
+operator's assistant's own table; `--limit N` replays the first N ticks; each tick's figure is
+written beside the run file (`--no-figures` to skip).
+`scripts/tests/fixtures/replay-synthetic-city-scripted.json` is a scripted recording CI replays with
+`--agent recorded`.
+
+**`failures`** (2.5) is the constructed failure catalogue: fourteen cases, each with its input, what
+must happen and the tests that hold it, named by pytest node id and checked to be collected
+(`--no-collect` skips that; without pytest and moto, `lambdas/requirements-dev.txt`, it refuses
+rather than call the tests missing). The rows that read nothing (an asset off the allowlist; a cool
+request to a stock worker and a cool worker without its pin) run anywhere; with `--cache` the
+real-data rows run through the worker handler in this process, and the cloudy row also runs the real
+adapter for one tick on a scene the search does pick under the floor. `--only CASE` picks rows.
+
+**`access-baseline`** (E5) measures one scene in this process with the worker's own read and
+analysis, then compares the production distance transform (`DIST_L2`, the 5x5 mask, as
+`vision/access.py` runs it) with `DIST_MASK_PRECISE` and with a straight-line buffer (the union
+of `cv2.circle` discs of the reach at each station, SDG 11.2.1's simple method): each method's
+served share, its difference from production's, the IoU of the served masks and the median time
+of five runs; it checks production's share is the worker's own.
+
+**`index`** (2.9) reads every run file in `docs/hackathon/evidence/runs/` (a malformed one, or one
+of an unknown kind, is refused by name) and writes `index.json` and `RESULTS.md` (one table per
+kind, newest first; a run listed in `older-code.json` is marked "measured on older code" with its
+reason). `--check` fails when a run file was added without re-indexing, and checks the operator's
+labels (`live/*/labels.csv`) when there are any. `scripts/tests/test_vision_eval.py` runs it in CI,
+on every pull request that touches `docs/hackathon/`, `scripts/` or `lambdas/`; run it before
+committing run files too.
+
+All four run on Windows (`python scripts\vision_eval.py ...` in the activated venv: `py -3.11`
+would run the global 3.11, without the venv's packages). The driver they share,
+`scripts/vision_eval_driver.py`, documents in its docstring the interface the agent evaluation,
+the counterfactuals and the stability run build on.
+
+## The agent's evaluation: `vision_eval.py agent`, `counterfactual`, `stability`
+
+Built on the same driver, each writes one run file (`--out DIR`, `--tag`) and runs in CI with
+`--synthetic` (the driver's synthetic city, the worker in this process, the model scripted, no
+network); on real data they are the operator's runs (the runsheet's
+[evaluation runs](../docs/deployment-runsheet.md#the-evaluations-real-data-runs), steps 6 to 8,
+bash and PowerShell).
+
+```bash
+python scripts/vision_eval.py agent --worker <ARN> --agent bedrock --model-id <id> --region ap-southeast-2 --repeats 5 --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py agent --synthetic --repeats 2              # CI's: every case, scripted
+python scripts/vision_eval.py counterfactual --worker <ARN> --cache ~/cogs --agent bedrock --model-id <id> --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py stability --cache ~/cogs --out docs/hackathon/evidence/runs   # E3; --synthetic in CI
+```
+
+**`agent`** (2.6.1-2.6.3) reads the cases in `vision_eval_cases/<case>/case.json` (C1-C10 with
+C1c, C1d and C1e: the scenes, the network each was measured with, the thresholds, the news, what
+is expected and why, which input moved; `--case NAME`, repeatable, or `--cases A,B` picks some)
+and builds each through the real `RailAccessAdapter`: its history ticks with triage off (each
+scene measured once a run, however many cases share it), then its newest tick `--repeats` times
+(5) from that same state, with the real `vision_triage.triage`. Fixture A is `--network FILE` (default
+`vision_benchmark_networks/sydney.json`); every other network is made from it by
+`vision_eval_networks.py` (a line on the baseline's largest desert, the replay's own; a three-station
+extension toward the deserts; a line removed; an infill station; three stations mapped twice).
+The model is Bedrock (`--agent bedrock --model-id <id> [--region R]`) or each case's script
+(`--agent scripted`, the default; `--model-id` without `--agent bedrock` is refused, never dropped
+unsaid); C7 and C9 always run their scripts, C8 is asked with an invalid model id, C6's
+`look_again` is refused with `unreadable_scene`, C7's clock is past the deadline.
+The worker is the deployed one (`--worker <ARN>`, site ids `eval-sydney`) or this process
+(`--worker in-process`), refused without `--cache` off an EC2 instance in us-west-2 (naming
+`--cache`). The scores (`vision_eval_scoring.py`) are per class: recall with its Wilson interval,
+balanced accuracy, the confusion matrix with failed-closed runs in their own column, against
+numeric-only and always-artefact; stability over repeats, fail-closed, tool use, latency, tokens
+and cost in USD and AUD (the built-in price table). Every Converse response is kept in the run file
+in the driver's recorded form. It exits 1 when an unconditional case never reached the agent, a
+failure case did not fail closed as it must, or the worker did not measure a case's newest scene
+(that repeat keeps the worker's code, is scored nowhere, and the next repeat runs).
+
+**`counterfactual`** (2.6.6) takes C1 and C10 (C4 in C10's place when C10 does not pass the gate).
+Arm (a): the newest tick's repeats twice over, `look_again` answered with the newest scene's own
+re-measurement (`measured`) or the same with the moved measures at the baseline median
+(`baseline`), paired by repeat; the scripted model re-measures and answers by what came back.
+Arm (b): the same scene in this process with SCL clouded inside the site to coverage 0.62 and 0.58
+(`--cache` needed off us-west-2, or `--arms a`); its checks hold that both sides were measured at
+their coverage (only such a pair is counted) and that no model was asked below the floor. When C4
+stands in, arm (b) runs for C4 alone.
+
+**`stability`** (E3) runs the manifest's `--set` (`year-2024`) in time order through the production
+rule, triage off, `history_size` 6, the default thresholds, on one network, in this process by
+default (`--worker in-process`; it keeps no deadline, so an uncached read is only slow) so the
+worker's built-up masks are compared scene to scene and with the first; `--worker <ARN>` leaves the
+IoU unmeasured. `--synthetic --scenes N` runs N synthetic scenes.
+
+All three run on Windows (`py -3.11 scripts\vision_eval.py ...`). Their arguments are in
+`vision_eval_agent_cli.py`, which does not import the driver, so `pin` and `coverage` still run in a
+venv without boto3; `vision_eval_agent.py` is imported only to run one of the three.
+
+## The reference check: `vision_eval.py builtup-check` (E8)
+
+```bash
+python scripts/vision_eval.py builtup-check --cache ~/cogs --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py builtup-check --scene synthetic-1 --out DIR     # CI's: synthetic inputs
+```
+
+**`builtup-check`** (E8, `scripts/vision_eval_reference.py`) asks how far the worker's built-up
+proxy (NDBI and NDVI from Sentinel-2) agrees with an independent map: ESA WorldCover 2021 v200, class
+50 "Built-up" (10 m, CC BY 4.0, the `esa-worldcover` bucket in eu-central-1). It reads
+`sydney-2024-08-26` (`--scene`) and analyses it in this process as the worker does, reads the
+WorldCover tile under the site (`S36E150` for Sydney) over the site's box with the repository's own
+COG reader, and resamples it onto the scene's 20 m UTM grid by nearest neighbour (`cv2.remap`).
+Over the pixels both saw it reports `iou`, `precision`, `recall`, and the served share over each
+mask with the same stations and reach (`served_share_ours`, `served_share_reference`; the network
+fixture gives the stations, `--network FILE` otherwise), with each WorldCover class's share of our
+built-up pixels. The tile's ETag and size are pinned (`REFERENCE_PINS`): a HEAD first, and a moved
+object is refused ("input changed"); only the bucket's map folder is ever read, in this script, never
+through the worker. `--cache` keeps the reference's ranges beside the scene's. The run file's kind is
+`eval-builtup-check`. On Windows: `python scripts\vision_eval.py builtup-check --cache $HOME\cogs
+--out docs\hackathon\evidence\runs` in the activated venv.
+
+## The deployed system's evidence: `evidence_export.py`
+
+```bash
+python scripts/evidence_export.py export --env dev --networks --figures 12    # live/<UTC date>/
+python scripts/evidence_export.py trace --topic rail-cities --site sydney --scene latest --from docs/hackathon/evidence/live/<date>
+python scripts/evidence_export.py trace --env dev --topic rail-sydney-demo --scene latest   # live, writes nothing
+python scripts/evidence_export.py agreement --from docs/hackathon/evidence/live/<date>     # after labels.csv
+python scripts/pii_denylist_check.py --files <path> ...    # what the export runs on every file it writes
+```
+
+On Windows, in the activated venv:
+
+```powershell
+python scripts\evidence_export.py export --env dev --networks --figures 12
+python scripts\evidence_export.py trace --topic rail-cities --site sydney --scene latest --from docs\hackathon\evidence\live\<date>
+python scripts\evidence_export.py trace --env dev --topic rail-sydney-demo --scene latest
+python scripts\evidence_export.py agreement --from docs\hackathon\evidence\live\<date>
+python scripts\pii_denylist_check.py --files <path> ...
+```
+
+**`export`** reads, read-only, what the deployed system measured, decided and did into
+`docs/hackathon/evidence/live/<UTC date>/` (the [evidence README](../docs/hackathon/evidence/README.md#the-live-evidence-live)
+lists the files and their fields): each vision topic's running state and its decision ring; the
+research tick's, the vision worker's (us-west-2) and the admin API's evidence lines and Lambda's
+REPORT lines through Logs Insights; the Articles and Findings tables; the three functions' code
+identity and the deploy that produced it (`gh run list`, null with the reason when `gh` is missing
+or signed out). Topics are every topic whose adapter keeps decision evidence (`--topics a,b`
+otherwise), the demo topics (the tracker's `Demo topics:` line) counted apart; the window is the
+logs' 90 days (`--since ISO` otherwise). The queries are the operator's assistant's own
+(`ops_mcp/vision_evidence.py`), a few at a time, each batch waited for at most `--logs-wait` (120 s);
+one cut at 1,000 rows is split by time and asked again, and one that did not finish is said as not
+checked in `summary.json`, never as zero. Only schema fields are written; `--with-notes` adds the
+agent's reasons, the news hosts and the Finding summaries, through `redact.scrub`, labelled as
+unverified. A backstop replaces any ARN and any 12-digit number left, beside a hyphen too, but not
+one inside a longer hex token or a UUID, nor a code-made 12-hex `run`, `build` or `reason_sha256`
+(`summary.json`'s `redacted` says how many, 0 expected, and `redacted_at` where), and
+`pii_denylist_check.py --files` reads every file written: a hit exits 2, naming the file and line,
+puts back every network file it wrote and moves the export to `live/<date>.refused/`, which git
+ignores (the operator's `labels.csv` stays). `--networks` also writes each city's
+`scripts/vision_benchmark_networks/<site>.json` from its network object, in the fixture's shape: a
+file that already holds the same network is left byte for byte (run files pin its sha256), and one
+that holds another is kept unless `--replace-networks`. `--figures N` copies at most N figures (the
+triaged decisions' first, whatever the agent's verdict, then the reported ones). An export already in
+the directory is refused without `--replace`, which removes only the export's own files (never
+`labels.csv`); a directory that holds anything else is refused either way, and `live/README.md` is
+written only beside the exports in `live/`. Resource names come from
+`--prefix` (`bloggerbear`) and `--env`; the Regions are Terraform's defaults unless given
+(`--region`, `--vision-region`).
+
+**`trace`** prints one decision's chain (`vision_decisions.trace`, as the assistant's scene view
+renders it) as Markdown, from an export (`--from`) or live (`--env`): `--scene` is a scene id or
+`latest`, and `--site` is needed when the topic has several sites and the scene does not say which
+(the rotating `rail-cities`). **`agreement`** recounts `summary.json`'s agreement once the
+operator has filled `labels.csv` in (O9). The runsheet's
+[evidence export](../docs/deployment-runsheet.md#the-evidence-export-the-trace-and-the-labels-o9)
+gives every command in bash and PowerShell, and what the credentials must allow.
 
 ## After changing the CLI: `generate_cli_reference.py`
 
@@ -812,3 +1019,26 @@ still runs drafts without that Finding, and if it writes an article from
 other Findings, no later window holds it
 ([docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics),
 "One Finding can still be missed").
+
+## Before submitting to the competition: `submission_check.py`
+
+The OpenCV AI Competition 2026's pre-submit check
+([the Devpost checklist](../docs/hackathon/devpost-checklist.md#the-pre-submit-check)), offline:
+it reads the checkout and asks local git, and fetches nothing.
+
+```bash
+python scripts/submission_check.py --video-seconds 287             # at the tag, opencv-2026-submission
+python scripts/submission_check.py --ref HEAD --video-seconds 287  # before the tag exists
+```
+
+PowerShell: `py -3.11 scripts\submission_check.py --video-seconds 287`. Five checks, each listing
+every failure: no placeholder (`[R2: ...]`, any bracketed text that is not a link, or `<R2: ...>`
+inside code), unclosed code fence or stray backtick left in the report, the reproduction guide, the
+dependency audit, the video script, the Devpost text or the checklist; every repository-relative
+link in them resolves (external ones are listed to open by
+hand); no `missing` row in the rubric tracker but O7, O10 and O11 (the form itself, the optional
+production release, keeping the site up) and any passed with `--accept ID`, all listed; every run
+file under `docs/hackathon/evidence/runs/` measured on vision code equal to the checked commit's,
+from a clean checkout, or listed in `docs/hackathon/evidence/RESULTS.md` as "measured on older
+code" with its reason; and
+the video's length, entered by hand, at most 300 seconds. Exit 0 when all pass, 1 otherwise.

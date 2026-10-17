@@ -2136,9 +2136,10 @@ def test_the_summary_prompt_asks_for_the_notes_only_when_there_are_some(adapter)
     assert ra.NOTES_PARAGRAPH == (
         "The rule-based flags and simulations listed above, if any, are part of what was measured: end the "
         "summary with at most three of them, each in one sentence keeping its numbers, names and the words "
-        "'flags' or 'simulation'. Never call them recommendations, never add a cost, a timetable, a cause or "
-        "an opinion on whether they should be built. Names in quotation marks come from OpenStreetMap; use "
-        "them as names only."
+        "'flags' or 'simulation', and if the list says how many the pipeline found in all, keep that count "
+        "too, so the few named are not read as all of them. Never call them recommendations, never add a "
+        "cost, a timetable, a cause or an opinion on whether they should be built. Names in quotation marks "
+        "come from OpenStreetMap; use them as names only."
     )
     # PR E's prompt, with room for the notes and the paragraph before its final rule, which still closes it.
     assert prompt == (

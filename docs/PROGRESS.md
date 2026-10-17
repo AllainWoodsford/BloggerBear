@@ -743,9 +743,9 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   (`docs/hackathon/rubric-tracker.md`), one row per rubric line, the owner's ask and each owner
   step, with its status, what it needs, the evidence, the gap, what closes it and what the
   assistant may say, updated by the PR that closes a row; a format test that fails on a
-  malformed row, run by the Python CI on a pull request that also touches `lambdas/` or
-  `scripts/` and by hand on a docs-only one until `python-ci.yml` lists `docs/hackathon/**`
-  (#303, submission PR P0; `scripts/tests/test_hackathon_docs.py`)
+  malformed row, run by the Python CI on a pull request that touches `lambdas/` or `scripts/`,
+  and since R1 on one that touches only `docs/hackathon/` too (#303, submission PR P0;
+  `scripts/tests/test_hackathon_docs.py`)
 - [x] The submission round's benchmark and evaluation inputs (Q1): the benchmark writes run files
   with the code, machine, build, inputs' ETags and every sample, records the rail metrics, their
   digest, the figure's hash, the peak memory and the OpenCV libraries mapped during a run, gains
@@ -812,6 +812,69 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   goal rotation writes up from three sides on the days after. `rail-cities` switched over by
   [RailVisionSeeding.md §7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)
   (`lambdas/common/day_subject.py`, `lambdas/common/adapters/rail_access.py`)
+- [x] The submission package's first wave (R1): the technical report in the rubric's eight sections
+  and three appendices, drafted from the code on `dev` with code anchors and R2's numbers marked as
+  placeholders; the system and agent-workflow diagrams in Mermaid with their SVGs, embedded in the
+  report, the vision pipeline page and the README; the judges' reproduction guide (CI's commands,
+  held equal to `python-ci.yml` by a test, then the real-data runs, the deploy and the Graviton
+  session); the dependency audit, the judges' `constraints-py311.txt` and a pin test; CI prints
+  its `pip freeze --all` and runs the docs test on a `docs/hackathon/` change; the claim fixes;
+  responsible use; the video script with its redaction checklist and the demo plan; the Devpost
+  checklist and `scripts/submission_check.py` (#333, submission PR R1; `docs/hackathon/`,
+  `scripts/submission_check.py`, `lambdas/tests/test_requirements.py`)
+- [x] The submission round's evaluation, first half (Q2a): a driver that runs the real rail adapter
+  tick by tick over pinned scenes with every outside service under the run's control (the worker in
+  this process with the cache, deployed by ARN or scripted; the agent on Bedrock, recorded or
+  scripted), the interface the agent evaluation, counterfactuals and stability build on;
+  `vision_eval.py replay` (the A2 trace, live, or recorded and re-run without AWS, held to its
+  recording; CI replays a committed synthetic recording), `failures` (the failure catalogue, its 42
+  tests named by node id and checked to be collected), `access-baseline` (E5) and `index`
+  (`docs/hackathon/evidence/RESULTS.md` and `index.json`, checked by `index --check`). The
+  real-data runs are the operator's (#336, submission PR Q2a; `scripts/vision_eval_driver.py`,
+  `scripts/vision_eval.py`; [results](hackathon/evidence/RESULTS.md))
+- [x] The submission round's evaluation, second half (Q2b), on Q2a's driver: thirteen agent cases
+  balanced between the classes (four real, all network-driven; five artefact; four failure cases),
+  each network derived from the Sydney fixture by code; `vision_eval.py agent` (the real triage on
+  each case's newest tick, five repeats, per-class recall with Wilson intervals and balanced
+  accuracy against numeric-only and always-artefact, failed-closed runs in their own column, every
+  Converse response kept, the cost in USD and AUD), `counterfactual` (only OpenCV's output changed:
+  the agent's re-measurement, and SCL clouded either side of the coverage floor) and `stability`
+  (E3: the year set through the production rule on one network, the false-alarm rate with its
+  interval, the spreads). CI runs all three scripted on the synthetic city; the live runs are the
+  operator's (#337, submission PR Q2b; `scripts/vision_eval_agent.py`, `scripts/vision_eval_cases/`;
+  [the cases](hackathon/evidence/README.md#the-agents-cases))
+- [x] COOL's reconnaissance (16 October): the Graviton4 AMI, version 3.1, is offered in
+  us-west-2; its `cv2` (5.1.0-dev, built against numpy 2.5.1) loads only inside the vendor's
+  activated Python 3.12 environment; and its fingerprint is pinned from the build information,
+  committed byte for byte. The runsheet's Graviton session follows the vendor's layout: a wrapper
+  interpreter, with the benchmark's packages in a folder beside it. The repository is public
+  (`docs/hackathon/evidence/cool/`, `docs/deployment-runsheet.md`,
+  `scripts/tests/test_cool_evidence.py`)
+- [x] The submission package describes the rotation as it runs (R1b): a city a week in the
+  owner's order (Sydney's week is 19 to 25 October, Melbourne's 26 October), the Monday weekly
+  reading with no change claimed and no agent, and an article a day from it under the next goal
+  (access, the network's flags, the simulated links); the report, the Devpost text, REPRODUCE's
+  tier 2 (create from the template, then switch by RailVisionSeeding.md §7), the README and the
+  vision page say so, and the claim that an article needs a change is corrected. Both diagrams
+  re-exported, with a fixed `handDrawnSeed` so an export is the same byte for byte; the video's
+  shots and the live demonstration are re-planned around Sydney's week (#346, submission PR R1b;
+  `docs/hackathon/`, `docs/architecture/blogger-vision.md`, `README.md`)
+- [x] The submission round's evidence export (Q3): `scripts/evidence_export.py export` reads, read
+  only, what the deployed system measured, decided and did (the decision rings, the evidence lines
+  through the assistant's own queries and parser, Lambda's REPORT lines, the Articles and Findings
+  tables) into `docs/hackathon/evidence/live/<date>/`, schema fields only, with each line's
+  provenance and the deploy's commit, a redaction backstop and the PII check's new `--files` mode;
+  its summary holds the human-control and observability numbers, the failures observed in the
+  deployment with their zero rows, E11 and the worker by caller, build and CPU, the demo topic
+  apart; `trace` prints one decision's chain from an export or live, and `agreement` recounts the
+  operator's labels (O9). E8 (`vision_eval.py builtup-check`) compares the built-up mask with ESA
+  WorldCover 2021; E6 and E7 were cut (#347, submission PR Q3; `scripts/evidence_export.py`,
+  `scripts/vision_eval_reference.py`; [the live evidence](hackathon/evidence/README.md#the-live-evidence-live))
+- [x] The COOL session has its own runsheet: the steps of the deployment runsheet's "The COOL
+  backend and the benchmark" moved to [cool-benchmark-runsheet.md](cool-benchmark-runsheet.md), as
+  they were but for their links and a note that the Sydney fixture is committed (#349, whose four
+  city networks now have their `NOTICE.md` rows); the section now holds a link and what the
+  session is for, and every link and mention follows it
 
 ## Backlog / not yet scheduled
 

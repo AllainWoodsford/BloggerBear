@@ -933,8 +933,9 @@ def _topic_result(entry: dict, config) -> dict:
         "state": entry["state"],
         "fetched_at": entry["status"]["fetched_at"],
         "first_observed_at": entry["status"]["first_observed_at"],
-        "next_research_at": due.isoformat() if due else None,
+        "next_research_at": None if item.get("paused") is True else (due.isoformat() if due else None),
         "sites": counts(entry),
+        **({"paused": True} if item.get("paused") is True else {}),
     }
 
 
@@ -1149,6 +1150,14 @@ def _find_site(asked: str, found: list[dict]) -> list[dict]:
     return matched
 
 
+def _paused_spoken(labels: list[str]) -> str:
+    """One sentence for the paused vision topics (at most three named, then "and {k} more")."""
+    named = _join(labels) if len(labels) <= 3 else f"{', '.join(labels[:3])} and {len(labels) - 3} more"
+    if len(labels) == 1:
+        return f"{named} is paused, so its sites aren't measured until it is resumed."
+    return f"{named} are paused, so their sites aren't measured until they are resumed."
+
+
 def _refusal(spoken: str, matched: dict | None) -> dict:
     return {"spoken": spoken, "findings": [], "matched_topic": matched}
 
@@ -1207,9 +1216,21 @@ def vision_status(topic: str | None = None, *, screen: bool, now: datetime | Non
         for entry in surveyed
         for index in range(len(entry["classes"]))
     ]
+    # A paused topic (`topics pause`) is not researched until it is resumed: its sites are shown as
+    # they were last measured, but raise no card and are said as paused, never as not measured.
+    running = [entry for entry in surveyed if entry["item"].get("paused") is not True]
+    paused = [spoken_label(entry["item"]) for entry in surveyed if entry["item"].get("paused") is True]
+    one = prefix if topic is not None else None
+    if running or not paused:
+        spoken = _spoken(running, env, the_worker, spend, now, one=one)
+    else:
+        where = f"on, in {the_worker['region']}" if the_worker["on"] else "off"
+        spoken = f"{one or ''}The vision worker is {where}."
+    if paused:
+        spoken = f"{spoken} {_paused_spoken(paused)}"
     result = {
-        "spoken": _spoken(surveyed, env, the_worker, spend, now, one=prefix if topic is not None else None),
-        "findings": cards(surveyed, env, on=the_worker["on"]),
+        "spoken": spoken,
+        "findings": cards(running, env, on=the_worker["on"]),
         "environment": env,
         "worker": the_worker,
         "topics": [_topic_result(entry, config) for entry in surveyed],

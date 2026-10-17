@@ -1,0 +1,22 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C9",
+  "base": "C1",
+  "kind": "failure",
+  "title": "A malformed answer: no JSON",
+  "built_as": "C1, with a scripted answer that holds no JSON verdict.",
+  "expected": {
+    "verdict": "artefact",
+    "stop": "malformed"
+  },
+  "why": "An answer that cannot be read is an artefact (fail closed).",
+  "driven_by": null,
+  "run": {
+    "converse": "scripted"
+  },
+  "scripted": [
+    {
+      "text": "The change looks real to me."
+    }
+  ]
+}

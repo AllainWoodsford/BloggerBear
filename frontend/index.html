@@ -31,7 +31,7 @@
     convention, regardless of <link> tags, so it exists as a real file
     too, not just this rel="alternate icon" reference); apple-touch-icon
     is what iOS/iPadOS uses for home-screen bookmarks. All three are
-    generated from the same source mark (frontend/logo.svg).
+    made from the same original artwork as the header logo (logo.webp).
   -->
   <link rel="icon" href="logo.svg" type="image/svg+xml" />
   <link rel="alternate icon" href="favicon.ico" />
@@ -56,7 +56,7 @@
   <header id="top">
     <a class="site-title" href="#/">
       <picture>
-        <source srcset="logo.webp" type="image/webp" />
+        <source srcset="logo.webp 1x, logo-2x.webp 2x, logo-3x.webp 3x" type="image/webp" />
         <img class="site-logo" src="logo.svg" alt="" width="32" height="32" />
       </picture>
       BloggerBear

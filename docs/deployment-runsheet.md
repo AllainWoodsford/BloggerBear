@@ -821,9 +821,11 @@ Finding: its `summary` (the model wrote it from a diff that, for a change the ag
 quoted the agent's reason as `the vision agent's note (not a measurement): "…"`), `figures`,
 `planner_notes`, `subjects` and `raw_snapshot_s3_key`. That snapshot (and the running state) holds
 the whole trail under `triage`, keyed by site id: `verdict`, `reason`, `tool_calls` (each tool's
-`name`, its `input` and whether it was `ok`), `model_id`, the tokens and `model_calls`; the newest
-history entry repeats the verdict and reason. A change the agent judged an artefact writes no
-Finding, so its trail is only in the running state. The review evidence, which the fresh-data
+`name`, its `input` and whether it was `ok`), `steps` (each tool's code-derived result), `stop`,
+`model_id`, the tokens and `model_calls`; the newest history entry repeats the verdict and reason.
+A change the agent judged an artefact writes no Finding, so its trail is in the site's decision
+ring in the running state (the last 12 decisions) and in the logs (the `vision_triage` line, 90
+days: [Evidence](#evidence-what-the-pipeline-measured-and-decided), below). The review evidence, which the fresh-data
 review checks the draft against, carries each city's measured numbers and planner notes, not the
 trail: to see why a change was or was not reported, read `triage`.
 
@@ -898,8 +900,9 @@ Every step the vision pipeline takes leaves one JSON line in the logs, and every
 entry in the site's decision ring in the running state ([the evidence
 trail](enhancements/vision-evidence.md)). The lines are read in the CloudWatch console (Logs →
 Logs Insights, pick the Region, the log group and a window) with the fixed queries below, which
-filter by field equality: a query on `rail-sydney` never matches `rail-sydney-demo`. The
-operator's assistant and Alexa+ read the same lines in the next round.
+filter by field equality: a query on one topic id never matches another that it prefixes (a
+`rail-sydney` beside `rail-sydney-demo`). The operator's assistant and Alexa+ read the same lines
+with `vision_evidence` ([Asking the assistant](enhancements/vision-evidence.md#asking-the-assistant)).
 
 - (a), (b), (c), (c2) and (f) run on `/aws/lambda/<prefix>-<env>-research-tick` in the home
   Region;
@@ -907,9 +910,9 @@ operator's assistant and Alexa+ read the same lines in the next round.
 - (e) on `/aws/lambda/<prefix>-<env>-admin-api` in the home Region.
 
 ```
-(a) A topic's decisions (one topic: equality, so rail-sydney never matches rail-sydney-demo)
+(a) A topic's decisions (one topic, by equality: rail-cities never matches rail-sydney-demo)
 fields @timestamp, site_id, scene_id, code, moved, network_changed, verdict, reported, coverage, tick, run
-| filter evidence = "bloggerbear/1" and event = "vision_decision" and topic_id = "rail-sydney"
+| filter evidence = "bloggerbear/1" and event = "vision_decision" and topic_id = "rail-cities"
 | sort @timestamp desc | limit 50
 
 (b) What the agent did
@@ -960,7 +963,7 @@ the demo topic's site is `demo-sydney`, not `sydney`.
 
 **The first-deploy check**, once, on dev, right after the deploy that carries this:
 
-1. Force a tick (`python scripts/admin_cli.py topics trigger rail-sydney --pipeline
+1. Force a tick (`python scripts/admin_cli.py topics trigger rail-cities --pipeline
    research_tick`) and run (c) with its tick id (the `START RequestId:` line of the invocation,
    or the `tick` field of any evidence line in the window). Every line of the tick must come
    back with Lambda's own `START`, `END` and `REPORT` lines.
@@ -1016,304 +1019,315 @@ articles are rejected in the inbox, never published.
 
 ### The COOL backend and the benchmark
 
-COOL (OpenCV's Graviton-tuned OpenCV 5, "Cloud Optimized OpenCV for AWS Graviton4" on AWS
-Marketplace) is what the competition's COOL award scores, and it is measured against the stock
-worker above on one Graviton4 instance, in one session. Nothing here is in Terraform; these are by
-hand, and every command below is what the session runs, in this order. The evidence it leaves
-behind is listed at the end; the run files it writes are the only source of the COOL numbers in
-the report ([the evidence README](hackathon/evidence/README.md) has the schema). The script's own
-options are in [scripts/README.md](../scripts/README.md#timing-the-vision-worker-vision_benchmarkpy).
+The COOL session has its own runsheet: **[COOL benchmark runsheet](cool-benchmark-runsheet.md)**.
 
-**Venvs, not the system pip.** Ubuntu 24.04 refuses a system-wide `pip install` (PEP 668,
-"externally-managed-environment"). Every install below goes into a venv: never `sudo pip`, never
-`--break-system-packages`, and never `opencv-python-headless` or `numpy` into the COOL venv, which
-must see the product's own `cv2` and the numpy it was built against (a stock install there would
-shadow them, and the handler would answer `not_cool`).
+What it is for: the competition's COOL award scores COOL, OpenCV's Graviton4-tuned build ("Cloud
+Optimized OpenCV for AWS Graviton4" on AWS Marketplace). The runsheet is the by-hand session that
+shows COOL running this project's real workload: on one Graviton4 instance in us-west-2 it times
+the vision worker's own code under COOL and under stock OpenCV 5, on the same Sydney scenes and
+network, checks that both give the same rail metrics, and pushes the run files that prove which
+build ran and how fast. Nothing in it is in Terraform, and the deployed worker keeps running stock
+OpenCV 5 on Lambda.
 
-0. **Reconnaissance (Friday 16, 20 minutes, right after subscribing).** Record the answers in
-   `docs/hackathon/evidence/cool/recon.md`:
-   - the Marketplace product id, version and price, and its **delivery type**: an AMI or a
-     container image;
-   - whether it is offered in **us-west-2**, beside `sentinel-cogs`, and with `c8g` instances;
-   - on the smallest instance it allows: `python3 -V`;
-     `python3 -c 'import cv2; print(cv2.__version__, cv2.__file__)'`; `lscpu`;
-     `grep -m1 'CPU part' /proc/cpuinfo`.
+### The evaluation's real-data runs
 
-   Then decide:
+The evaluation's subcommands (`scripts/vision_eval.py`; options in
+[scripts/README.md](../scripts/README.md#the-evaluation-proper-vision_evalpy-replay-failures-access-baseline-index))
+run in CI on a synthetic city with scripted parts. These are the runs on real data: the
+operator's, and their run files are the evidence the report cites
+([the evidence README](hackathon/evidence/README.md#running-the-evaluation-for-real)). Run them
+once the Sydney network fixture is committed (O2: `scripts/vision_benchmark_networks/sydney.json`;
+until then each command takes `--network <file>`), from a checkout of the code being evaluated,
+in a venv. They read the pinned scenes from `sentinel-cogs` in us-west-2 through a cache that the
+first run fills (about 54 MB a scene, eight scenes in all) and later runs read from; on the
+Graviton instance (step 8's `$C` in the [COOL benchmark runsheet](cool-benchmark-runsheet.md)) or any machine in us-west-2 that is fast, elsewhere it is a few
+minutes a scene through a slow link. Nothing here writes to AWS.
 
-   | Found | Then |
-   |---|---|
-   | an AMI; `cv2` imports and is 5.x; Python 3.11 or newer | go: the steps below as written |
-   | `cv2` imports, but is not 5.x | record it; every claim is scoped to "COOL <version>"; add a stock venv of the same major version, so the comparison is like for like |
-   | a container image, not an AMI | launch a `c8g` with Docker; build `docker/vision-cool/Dockerfile` from the image by digest once step 5 has the network fixture in the checkout (its 5.x gate applies), and run the COOL commands inside it, as the paragraph below the table says |
-   | no Python binding (C++ only) | the container route if one exists; otherwise the COOL proof (C3) is "not shown" and the report says why; the COOL configuration (C1) and the stock rows still stand |
-   | Python under 3.11 | the stock venvs need a 3.11+ interpreter (numpy 2.4.4 requires it): install one for them (step 3) and record that the backends ran on different Pythons |
-   | not in us-west-2 | the nearest Region with `c8g`; fill `--cache` once there (the reads then cross Regions only once) |
-   | no trial, or more than about USD 5 an hour | decide before launching |
-
-   **The container route.** The image copies in the handler, the benchmark with its run-file
-   module, its scenes file, the evaluation's manifest and `scripts/vision_benchmark_networks/`, so
-   build it from the checkout after step 5, naming the commit (the image has no git history):
+1. **The venv and the names.**
 
    ```sh
-   docker build --platform linux/arm64 -f docker/vision-cool/Dockerfile --build-arg COOL_IMAGE=<registry>/<repository>@sha256:<digest> --build-arg GIT_SHA=$(git rev-parse HEAD) -t bloggerbear-vision-cool .
-   docker run --rm --network host -v "$PWD/docs/hackathon/evidence/runs:/var/task/runs" -v "$HOME/cogs:/cogs" --entrypoint python3 bloggerbear-vision-cool bench/vision_benchmark.py kernels --backend cool --cool-sha $SHA --out runs
-   ```
-
-   Each COOL command of step 8 runs that way: `docker run ... bench/vision_benchmark.py` in
-   place of `~/cool/bin/python scripts/vision_benchmark.py`, `--out runs` for `--out $E` and
-   `--cache /cogs` for `$C` (the two mounts put the run files and the cache on the host, beside the
-   stock runs, which use the host's venvs as written), and `--network host` so `--imds` reaches the
-   metadata service in one hop.
-1. **Subscribe** on AWS Marketplace to *Cloud Optimized OpenCV for AWS Graviton4* on Friday 16.
-   Note the price; unsubscribe at the end unless the subscription is kept.
-2. **Launch** a `c8g.xlarge` (4 vCPU, 8 GiB: enough for the 1.32 GB worst case) in us-west-2,
-   from the COOL AMI (or a plain Ubuntu arm64 AMI with Docker, for a container image). Require
-   IMDSv2. Connect through SSM Session Manager, with no inbound ports. The instance role has
-   `AmazonSSMManagedInstanceCore` only (step 12 adds one statement for its own hour).
-3. **The host.** On the instance:
-
-   ```sh
-   lscpu > lscpu.txt
-   grep -m1 'CPU part' /proc/cpuinfo      # expect 0xd4f: Neoverse V2, Graviton4
-   python3 -V && uname -r
-   sudo apt-get update && sudo apt-get install -y python3-venv   # steps 6 and 7 make venvs; a no-op when it is there
-   ```
-
-   An Ubuntu server image ships `python3` without its `venv` package (`python3 -m venv` then fails
-   with "ensurepip is not available"), hence the install. If `python3 -V` is under 3.11, the stock
-   venvs need a 3.11+ interpreter from the distribution's own archive: on Ubuntu 22.04 (Python
-   3.10) that is `sudo apt-get install -y python3.11 python3.11-venv` (22.04 has no `python3.12`);
-   use `python3.11` in place of `python3` in step 7, and record it in `recon.md`.
-4. **The COOL build.**
-
-   ```sh
-   python3 -c 'import cv2, sys; sys.stdout.write(cv2.getBuildInformation())' > cool-buildinfo.txt
-   sha256sum cool-buildinfo.txt
-   python3 -c 'import cv2; print(cv2.__version__, cv2.__file__)'
-   ```
-
-   The sha256 is the COOL fingerprint: it must equal `build_info()["build_sha256"]`, which is the
-   hash of exactly that text (`lambdas/vision/build.py`), and it is what `COOL_BUILD_SHA256` is
-   pinned to. Expect `kleidicv` True.
-5. **The code and the inputs.** Clone the repository at the commit to be benchmarked and record
-   it: `git rev-parse HEAD` (the submission tag does not exist yet; the evidence index says how an
-   earlier commit is still cited). The repository may still be private: `gh auth login` in the
-   session, or copy a `git bundle` (`git bundle create bloggerbear.bundle HEAD` on your machine,
-   `git clone bloggerbear.bundle BloggerBear` on the instance). Not a `git archive`: a copy
-   without git history has no commit to record, and every run file would name none
-   (`code.git_sha` null).
-
-   Two inputs must be in that checkout before the runs:
-
-   - **The Sydney network fixture**, `scripts/vision_benchmark_networks/sydney.json`: the network
-     the deployed worker was sent, taken from Sydney's network object after the first Sydney tick
-     (each city's network is its own object, `vision/<topic>/<site>/network.json`, not part of the
-     running state: [`rail_access` topics](#rail_access-topics), "Where things land"), on your own
-     machine. For the example topic the object is `vision/rail-cities/sydney/network.json`; for
-     dev's `trains-sydney`, `vision/trains-sydney/sydney/network.json`, once a tick after the
-     day-subject round has moved it there:
-
-     ```sh
-     aws s3 cp s3://<prefix>-dev-content/vision/rail-cities/sydney/network.json - | jq '{ways, stations, pois, fetched_at, source, endpoint, query_url, counts}' > scripts/vision_benchmark_networks/sydney.json
-     ```
-
-     ```powershell
-     aws s3 cp s3://<prefix>-dev-content/vision/rail-cities/sydney/network.json "$env:TEMP\network.json"
-     jq -a '{ways, stations, pois, fetched_at, source, endpoint, query_url, counts}' "$env:TEMP\network.json" | Set-Content -Encoding ascii scripts\vision_benchmark_networks\sydney.json
-     ```
-
-     The PowerShell lines differ on purpose: Windows PowerShell re-encodes whatever passes between
-     two programs through its own pipe, which mangles any station name outside ASCII, so the
-     network is downloaded to a file first and `jq -a` writes every such character as a `\u`
-     escape; and
-     `Set-Content -Encoding ascii` writes the lines as they are, with no byte-order mark (the
-     benchmark reads a file with one too).
-
-     The alternative is `python scripts/vision_benchmark.py fetch-network --scene sydney-rail-2024-08-26`
-     (PowerShell: `py -3.11 scripts\vision_benchmark.py fetch-network --scene sydney-rail-2024-08-26`)
-     on any machine that reaches Overpass (the network is then whatever OpenStreetMap holds that
-     day). Fill the row in `scripts/vision_benchmark_networks/NOTICE.md` from the file's
-     `fetched_at`, `endpoint` and `query_url` and its sha256 (`sha256sum`; PowerShell:
-     `Get-FileHash scripts\vision_benchmark_networks\sydney.json`), `git add` it and run
-     `python scripts/pii_denylist_check.py --staged` (PowerShell:
-     `py -3.11 scripts\pii_denylist_check.py --staged`) before committing it: Sydney's suburb and
-     station names could match the denylist; if they do, decide whether to allow the term or keep
-     the file out of git, in which case the run files still cite its sha256. Without the file the
-     two rail scenes report `error: network_file missing` and only the ship scene is timed.
-   - **The pinned scenes.** `scripts/vision_eval_manifest.json` was pinned on 16 October (every
-     asset's ETag and size, from the build container). Confirm nothing moved, on your own machine
-     (on the instance, after step 7: `~/stock/bin/python scripts/vision_eval.py pin`; the instance
-     has no `python` and no `requests` until then):
-
-     ```sh
-     python scripts/vision_eval.py pin        # prints "the manifest matches the bucket", or what changed
-     ```
-
-     ```powershell
-     py -3.11 scripts\vision_eval.py pin
-     ```
-
-     A changed ETag is said and exits 1: every benchmark run then refuses that scene ("input
-     changed") until the manifest is re-pinned with `--write`, which is a new input, not the one
-     earlier runs read. `coverage` was run on 16 October too (its run file is in
-     `docs/hackathon/evidence/runs/`); it need not be re-run for the session, and when it is (a
-     re-pinned scene, or a scene added), it runs anywhere with internet, about 60 range requests
-     and 0.7 MB a scene:
-
-     ```sh
-     python scripts/vision_eval.py coverage --write --out docs/hackathon/evidence/runs
-     ```
-
-     ```powershell
-     py -3.11 scripts\vision_eval.py coverage --write --out docs\hackathon\evidence\runs
-     ```
-6. **The COOL venv**, on the product's own Python, with the system site-packages visible so the
-   product's `cv2` and numpy are the ones imported:
-
-   ```sh
-   python3 -m venv --system-site-packages ~/cool
-   ~/cool/bin/pip install requests==2.34.2 networkx==3.4.2 boto3==1.34.162
-   ~/cool/bin/python -c 'import cv2; print(cv2.__file__)'    # must be outside ~/cool
-   ~/cool/bin/python -c 'import cv2, hashlib; print(hashlib.sha256(cv2.getBuildInformation().encode()).hexdigest())'   # must equal step 4
-   ```
-
-   These are `lambdas/requirements-vision-cool.txt`'s pins without `awslambdaric`, plus boto3
-   for step 12. **Never install opencv or numpy here.** If the AMI puts `cv2` on a custom
-   `PYTHONPATH`, keep that variable in the environment of every COOL command.
-7. **The stock venvs**: OpenCV 5 as the deployed worker runs it, and the newest OpenCV 4 that has
-   an aarch64 wheel for this Python and numpy 2, so the report can say what OpenCV 5 changed for
-   this workload:
-
-   ```sh
-   python3 -m venv ~/stock && ~/stock/bin/pip install -r lambdas/requirements-vision.txt
-   python3 -m venv ~/stock4 && ~/stock4/bin/pip install "opencv-python-headless==4.14.0.94" numpy==2.4.4 requests==2.34.2 networkx==3.4.2
-   for v in stock stock4; do ~/$v/bin/python -c 'import cv2, sys; sys.stdout.write(cv2.getBuildInformation())' > $v-buildinfo.txt; done
-   sha256sum stock-buildinfo.txt stock4-buildinfo.txt
-   ```
-
-   `opencv-python-headless==4.14.0.94` is the 4.x pin: PyPI's newest 4.x release (its wheels
-   uploaded on 28 and 29 July 2026), with `cp37-abi3` aarch64 wheels (manylinux_2_17 and 2_28);
-   it was installed beside `numpy==2.4.4` on 16 October and imports as `cv2` 4.14.0, and the
-   benchmark's `kernels` ran on it (the evidence README records the check). Use step 3's
-   `python3.11` in place of `python3` here if step 3 said so. Stock aarch64 builds can
-   include KleidiCV too, which is why the proof is the fingerprint and the mapped libraries, not
-   the flag.
-8. **The runs.** Interleave the backends, so a slow minute on the instance does not land on one
-   side. Set the names once:
-
-   ```sh
+   python3.11 -m venv .venv && . .venv/bin/activate
+   pip install -r lambdas/requirements-dev.txt -r scripts/requirements.txt
    E=docs/hackathon/evidence/runs
-   CPU=neoverse-v2-graviton4               # the cpu slug in every run id: check it against the first file written
-   SHA=<step 4's sha256>
-   L="--imds --label cool_product=<product id> --label cool_version=<version> --label cool_delivery=<ami|container>"
    C="--cache $HOME/cogs"
    ```
 
-   Each run writes `$E/<UTC date>-bench-<mode>-$CPU-<backend>-<tag>.json` (`--out $E` with
-   `--tag`), and `scenes` writes each scene's figure beside it. The date is the run's own start, so
-   a session that crosses midnight UTC writes two dates; the `compare` lines find each file by the
-   rest of its name (`newest`: the latest of that mode, backend and tag). `--imds` records the
-   instance type, AMI, Region, architecture and the Marketplace product codes, nothing else of the
-   identity document (the account id never reaches a file). `taskset -c 0` pins a run to one core, the deployed worker's
-   shape; the affinity is recorded, so the one-core rows say so themselves (`--pin-cpu 0` does the
-   same from inside the script). `--isolate` runs each scene in a fresh interpreter, so its peak
-   memory is its own.
-
-   ```sh
-   for r in 1 2; do
-     taskset -c 0 ~/stock/bin/python scripts/vision_benchmark.py kernels --threads 1 $L --out $E --tag 1t-r$r
-     taskset -c 0 ~/cool/bin/python  scripts/vision_benchmark.py kernels --threads 1 --backend cool --cool-sha $SHA $L --out $E --tag 1t-r$r
-     ~/stock/bin/python scripts/vision_benchmark.py kernels $L --out $E --tag 4t-r$r
-     ~/cool/bin/python  scripts/vision_benchmark.py kernels --backend cool --cool-sha $SHA $L --out $E --tag 4t-r$r
-   done
-   ~/stock/bin/python scripts/vision_benchmark.py scenes --repeats 1 $C --out /tmp/warm.json                      # fills the cache: the timed runs read no network
-   taskset -c 0 ~/stock/bin/python scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C $L --out $E --tag 1t
-   taskset -c 0 ~/cool/bin/python  scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C --backend cool --cool-sha $SHA $L --out $E --tag 1t
-   ~/stock/bin/python scripts/vision_benchmark.py scenes --repeats 5 --isolate $C $L --out $E --tag 4t
-   ~/cool/bin/python  scripts/vision_benchmark.py scenes --repeats 5 --isolate $C --backend cool --cool-sha $SHA $L --out $E --tag 4t
-   taskset -c 0 ~/stock4/bin/python scripts/vision_benchmark.py kernels --threads 1 $L --out $E --tag 4x-1t
-   taskset -c 0 ~/stock4/bin/python scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C $L --out $E --tag 4x-1t
-   newest() { ls "$E"/*-bench-$1-$CPU-$2.json | tail -n 1; }
-   for pair in "scenes opencv-1t cool-1t" "scenes opencv-4t cool-4t" "kernels opencv-1t-r1 cool-1t-r1" "scenes opencv-4x-1t opencv-1t"; do
-     set -- $pair
-     ~/stock/bin/python scripts/vision_benchmark.py compare "$(newest $1 $2)" "$(newest $1 $3)" --out $E --tag "$1-$2-vs-$3"
-   done
-   ~/cool/bin/python  scripts/vision_benchmark.py controls --cool-sha $SHA --backend cool $C $L --out $E
-   ~/stock/bin/python scripts/vision_benchmark.py controls --cool-sha $SHA $C $L --out $E
+   ```powershell
+   py -3.11 -m venv .venv; .\.venv\Scripts\Activate.ps1
+   pip install -r lambdas\requirements-dev.txt -r scripts\requirements.txt
    ```
 
-   What to expect: a `kernels --backend cool` run on any build but the pinned one stops with
-   `not_cool` before timing anything; the `scenes --backend cool` rows are `ok` only from the COOL
-   venv (the handler's own guard answers `not_cool` elsewhere, and that row is what gets
-   recorded). `compare` prints the speed-up of the second run over the first (median A / median
-   B) with its bootstrap interval, the headline on the compute stages (`analyse` and `annotate`;
-   the read is reported apart, and `graph` is inside `analyse`), each stage's share, and `parity:
-   pass` when the rail metrics agree; it exits 1 when they do not, and refuses two runs from
-   different machines or inputs. The **headline speed-up is the pinned one-core scenes pair on the
-   compute stages**: it matches the deployed worker's one vCPU. The 4-thread pair shows what more
-   cores add; the `4x-1t` pair says what OpenCV 5 changed against 4.14. `controls` from the COOL
-   venv must show `ok`, `not_cool`, `backend_mismatch` (`as_expected` 3); from the stock venv
-   `not_cool`, `not_cool`, `backend_mismatch` (also 3). Every `scenes` and `controls` run file
-   lists the OpenCV shared objects mapped into the process (`environment.libraries`, with each
-   file's sha256 and package) and the build lines that tell a vendor build apart.
-9. **Optional: where the time went.**
+   `lambdas/requirements-dev.txt` is what CI installs: the Lambda and worker requirements, plus
+   pytest and moto, which `failures` needs to check that pytest collects the catalogue's tests
+   (without them it refuses rather than call the tests missing). The PowerShell lines below run
+   `python`, the activated venv's own: `py -3.11` would run the global 3.11, without the venv's
+   packages. They spell `--cache $HOME\cogs` and `--out docs\hackathon\evidence\runs` out in full.
+2. **The failure catalogue (2.5)**: every test it names is checked to be collected, then the real
+   rows run through the worker handler in this process (the cloudy and no-data scenes, the smoke
+   scene, a site off the tile, a window past the rail cap, a missing key; six scenes read).
 
    ```sh
-   sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)"    # perf, for this kernel
-   sudo env PYTHONPATH="$PYTHONPATH" perf record -g -o perf.data -- ~/cool/bin/python scripts/vision_benchmark.py scenes --repeats 1 --threads 1 $C --backend cool --cool-sha $SHA --only sydney-rail-2024-08-26
-   sudo perf report -i perf.data --sort dso --stdio > perf-dso.txt
+   python scripts/vision_eval.py failures $C --out $E
    ```
 
-   `sudo` resets the environment, so a `PYTHONPATH` the COOL commands need (step 6) is passed on
-   by hand, and `perf.data` is root's (mode 0600), so the report runs under `sudo` too.
+   ```powershell
+   python scripts\vision_eval.py failures --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   ```
 
-   The share of samples in `libkleidicv*` and `libopencv*`/`cv2*.so` is direct evidence that the
-   vendor's code executed. Commit `perf-dso.txt`, not `perf.data`.
-10. **Optional, the container route** (when the product is an AMI): build
-    `docker/vision-cool/Dockerfile` with the COOL image by digest and print `build_info()` inside
-    it. The image's fingerprint may differ from the AMI's; record both, and say which one ran.
-11. **Stop and commit.** Terminate the instance (or stop it, if step 12 follows within two days),
-    and unsubscribe unless the subscription is kept. Record the instance hours and the software
-    fee in `docs/hackathon/evidence/cool/session.md`. Commit the run files and figures from `$E`,
-    and `docs/hackathon/evidence/cool/` (`recon.md`, `cool-buildinfo.txt`, `stock-buildinfo.txt`,
-    `stock4-buildinfo.txt`, `lscpu.txt`, `session.md`, `perf-dso.txt` if made); then the
-    tracker's C1, C2, C3 and S7 rows, and O5. Nothing in `$E` holds an account id, an instance id
-    or an IP: `--imds` keeps five fields, and the run files say which.
+   It exits 1 when a row did not do what the catalogue says, and the run file says which and how.
+3. **E5, the access baseline**, on `sydney-2024-08-26`:
 
-    **What the session must leave behind** (the proof that COOL executed the claimed core workload,
-    all committed):
+   ```sh
+   python scripts/vision_eval.py access-baseline $C --out $E
+   ```
 
-    - [ ] the `scenes --backend cool` run files, with every scene `ok` and `environment.opencv.build_sha256`
-      equal to `sha256sum cool-buildinfo.txt`, taken from the product's own `cv2`;
-    - [ ] in those run files, `environment.libraries`: the `cv2` extension and the OpenCV and
-      KleidiCV shared objects by path, size, sha256 and owning package or AMI path, and
-      `environment.build_lines`;
-    - [ ] optionally `perf-dso.txt` (step 9);
-    - [ ] the CPU is Neoverse V2 (`lscpu.txt`, and `environment.cpu` in every run);
-    - [ ] `environment.host.marketplace_product_codes` names the COOL product;
-    - [ ] the two `controls` run files: `not_cool` under stock with the same pin, `not_cool` with
-      no pin, `backend_mismatch` for an `opencv` request;
-    - [ ] the `compare` run files with `parity: pass` for the stock-COOL pairs, on the same scene
-      and network;
-    - [ ] the speed-up on the compute stages, per stage, with its interval, from the same files;
-    - [ ] optionally the agent session's replay run (step 12).
+   ```powershell
+   python scripts\vision_eval.py access-baseline --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   ```
+4. **The replay with the deployed worker and the real model (2.6.4).** Credentials that may invoke
+   the worker (`lambda:InvokeFunction` on `<prefix>-dev-vision-worker` in us-west-2) and the
+   topics' model (`bedrock:InvokeModel` on the inference profile the topics use, in the home
+   Region); `M` is that profile's id (`python scripts/admin_cli.py model-config get` shows it).
+   An application inference profile is given by its ARN, which Converse needs; the run file and
+   the trace then name no model, because that ARN carries the account id (a system profile's ARN
+   is recorded as its id).
+   Every site id the worker is sent is `eval-sydney`, so these runs never pass for production's in
+   its logs; the run file names the worker's Region and code, never its ARN. About 10 worker calls
+   and a few cents of model calls a sequence.
 
-    **The claim's scope**, as the report words it: "the same worker handler, run on Graviton4 with
-    COOL, on real Sydney scenes and its real OpenStreetMap network, and (if step 12 ran) inside the
-    agent's loop; the deployed worker runs stock OpenCV 5 on Lambda arm64 (CPU named in its
-    logs)". Not "COOL is deployed": a deployed COOL worker (Terraform for `VISION_COOL_WORKER_ARN`
-    and a container Lambda or ECS) is out of scope until after the deadline, and whether COOL runs
-    on Lambda's CPUs is the open question in [vision.md §10](enhancements/vision.md#10-still-open).
-12. **Optional: the agent session (Wednesday 21, about an hour, once the evaluation's `replay`
-    and `stability` exist).** On the same kind of instance, with the cache from step 8:
-    - give the instance role, for this hour only, one statement: `bedrock:InvokeModel` on the one
-      inference profile the topics use and its foundation models, and remove it afterwards;
-    - `~/cool/bin/python scripts/vision_eval.py replay --sequence sydney-demo --agent bedrock --worker in-process --backend cool --cool-sha $SHA $C --out $E`:
-      COOL then executes the agent's `look_again` re-measurements inside the agentic loop, in
-      us-west-2, with production's deadline;
-    - `~/stock/bin/python scripts/vision_eval.py stability --set year-2024 $C --out $E`: the year of
-      clear Sydney scenes through the production rule, in-Region.
+   ```sh
+   W=$(aws lambda get-function --function-name <prefix>-dev-vision-worker --region us-west-2 --query Configuration.FunctionArn --output text)
+   M=<the topics' inference profile id>
+   for s in sydney-demo sydney-winter sydney-c1; do
+     python scripts/vision_eval.py replay --sequence $s --worker "$W" --agent bedrock --model-id "$M" --region ap-southeast-2 --out $E --trace
+   done
+   ```
+
+   ```powershell
+   $W = aws lambda get-function --function-name <prefix>-dev-vision-worker --region us-west-2 --query Configuration.FunctionArn --output text
+   $M = "<the topics' inference profile id>"
+   foreach ($s in "sydney-demo", "sydney-winter", "sydney-c1") {
+     python scripts\vision_eval.py replay --sequence $s --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --out docs\hackathon\evidence\runs --trace
+   }
+   ```
+
+   Each writes its run file and figures to `$E` and its trace to
+   `docs/hackathon/evidence/replay/<sequence>.md`. **sydney-demo is the headline A2 trace**: with
+   the demo topic's thresholds of 0, every scene after the first goes to the agent, on the same
+   network fixture throughout, so whatever moved came from the imagery; its trace says the
+   thresholds are 0. sydney-c1's last tick adds a constructed five-station line and a constructed
+   news item, and its trace says so.
+5. **Re-run each recording without AWS**, the way a judge will (2.6.4's assertions: every
+   measurement recomputed in this process, held to the recording within 2.7.1's tolerances):
+
+   ```sh
+   for s in sydney-demo sydney-winter sydney-c1; do
+     python scripts/vision_eval.py replay --sequence $s --agent recorded --from "$(ls $E/*-eval-replay-*-$s-bedrock.json | tail -n 1)" $C --out $E
+   done
+   ```
+
+   ```powershell
+   foreach ($s in "sydney-demo", "sydney-winter", "sydney-c1") {
+     $from = (Get-ChildItem "docs\hackathon\evidence\runs\*-eval-replay-*-$s-bedrock.json" | Select-Object -Last 1).FullName
+     python scripts\vision_eval.py replay --sequence $s --agent recorded --from $from --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   }
+   ```
+
+   Each exits 0 when it reproduced its recording; a failed check names the tick and the field. A
+   recording refused before it runs ("input changed", or a recorded response that calls a tool the
+   profile no longer offers) names what moved.
+6. **The agent's evaluation (2.6.1-2.6.3)**, with the same `W` and `M`: the thirteen cases in
+   `scripts/vision_eval_cases/` (the [evidence README](hackathon/evidence/README.md#the-agents-cases)
+   lists them), each case's history through the real adapter, then its newest tick asked of the
+   real model five times from the same state, against the deployed worker. C7 and C9 run their
+   scripts; C8 is asked with an invalid model id on purpose; C3 and C10 count only if their scene
+   passes the gate. About 55 live runs of up to five turns: a few US dollars of model calls (the
+   run file totals them in USD and AUD, by the built-in price table) and cents of worker time.
+
+   ```sh
+   python scripts/vision_eval.py agent --worker "$W" --agent bedrock --model-id "$M" --region ap-southeast-2 --repeats 5 --out $E
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py agent --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
+   ```
+
+   It exits 1 when an unconditional case never reached the agent, a failure case did not fail
+   closed as it must, or the worker did not measure a case's newest scene (the run keeps its code
+   and scores that repeat nowhere); `--case C1` (repeatable) re-runs one. Without Bedrock access
+   every case ends `bedrock_error`, counted, never dropped: check the summary's
+   `failed_closed_task_runs` before committing a run that only measured that. To run the worker
+   in this process instead, add `$C` and pass `--worker in-process`; without a cache it is refused
+   off an EC2 instance in us-west-2.
+7. **The counterfactuals (2.6.6)**: C1 and C10 (C4 in C10's place if C10 does not pass the gate),
+   five repeats per arm with only `look_again`'s numbers differing, and the same scene clouded to
+   coverage 0.62 and 0.58 in this process (arm (b), which needs the cache). About 22 model runs.
+
+   ```sh
+   python scripts/vision_eval.py counterfactual --worker "$W" $C --agent bedrock --model-id "$M" --region ap-southeast-2 --repeats 5 --out $E
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py counterfactual --worker $W --cache $HOME\cogs --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
+   ```
+
+   Its checks hold that both sides were measured at their coverage and that no model was asked
+   below the floor. Arm (a)'s `baseline` arm is a constructed tool output, and the report says so.
+8. **E3, stability over the year**: the manifest's `year-2024` set (17 scenes) through the
+   production rule, triage off, on one network, in this process so the built-up masks can be
+   compared: about 1 GB read once into the cache, so run it on the Graviton instance or another
+   machine in us-west-2. No model, no worker invocation.
+
+   ```sh
+   python scripts/vision_eval.py stability $C --out $E
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py stability --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   ```
+
+   Its summary's `false_material` of `decisions`, with `wilson_low` and `wilson_high`, is the
+   false-alarm rate a quiet city would call the agent at; `results.false_alarms.by_month` breaks it
+   down. If a summer scene against winter ones crossed a threshold here, C3 reaches the agent in
+   step 6; otherwise its gate held, which the report says.
+9. **E8, the built-up check (2.4.1)**: the worker's built-up mask on `sydney-2024-08-26` against
+   ESA WorldCover 2021's class 50, and the served share over each mask with the fixture's stations.
+   It reads the scene from the cache and the WorldCover tile `S36E150` from the `esa-worldcover`
+   bucket (eu-central-1, no credentials) over the site's box only, about 10 MB of a 20 MB object,
+   kept in the cache too; a HEAD first checks the object's pinned ETag and size. No model, no worker
+   invocation.
+
+   ```sh
+   python scripts/vision_eval.py builtup-check $C --out $E
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py builtup-check --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   ```
+
+   Its summary's `iou`, `precision` and `recall` compare the masks over the pixels both saw;
+   `results.ours_by_reference_class` says what WorldCover calls the pixels we call built-up. "input
+   changed: reference tile S36E150" means the object is not the one pinned on 17 October
+   (`REFERENCE_PINS` in `scripts/vision_eval_reference.py`): check it with `curl -sI <the URL the
+   message names>`, and pin the new ETag and size in a commit of its own that says why, before
+   the run.
+10. **Index and commit.**
+
+   ```sh
+   python scripts/vision_eval.py index && python scripts/vision_eval.py index --check
+   python scripts/pii_denylist_check.py --staged    # after `git add`
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py index; python scripts\vision_eval.py index --check
+   python scripts\pii_denylist_check.py --staged    # after `git add`
+   ```
+
+   Run `index --check` here before pushing: CI runs it too, on the pull request (python-ci lists
+   `docs/hackathon/**`), but a failure there costs a round trip. Run the PII check (your `.pii-denylist`) on what is staged, and read each trace before
+   committing it: besides scene and station ids, a trace quotes the agent's note under each
+   decision it was asked about (model text, through `redact.scrub`, of up to 300 characters),
+   which can name a suburb or a station.
+
+   Commit the run files and figures, `docs/hackathon/evidence/replay/`, `index.json` and
+   `RESULTS.md`, and update the tracker's A2, A3 and S7 rows. A run file made before the submission tag
+   on code that changed since in a way that matters to it goes in
+   `docs/hackathon/evidence/older-code.json` with the reason, and `index` again.
+
+### The evidence export, the trace and the labels (O9)
+
+What the deployed system measured, decided and did goes into git with
+`scripts/evidence_export.py` ([the live evidence](hackathon/evidence/README.md#the-live-evidence-live)
+says what each file holds). Run it on Saturday 24 October, and again by Thursday 29, from a checkout
+of the code being submitted, in the venv above. It only reads: nothing here writes to AWS.
+
+**What it needs.**
+
+- Credentials for the dev account (the profile you deploy with will do) that may:
+  - `s3:GetObject` on `<prefix>-dev-content` (`snapshots/<topic>/running-state.json`, each city's
+    `vision/<topic>/<site>/network.json`, the figures);
+  - `dynamodb:Scan` on `<prefix>-dev-topics`, `dynamodb:Query` on `<prefix>-dev-findings` and on
+    `<prefix>-dev-articles` (its `by_topic_created_at` index);
+  - `logs:StartQuery`, `logs:GetQueryResults` and `logs:StopQuery` on
+    `/aws/lambda/<prefix>-dev-research-tick` and `/aws/lambda/<prefix>-dev-admin-api` in the home
+    Region, and on `/aws/lambda/<prefix>-dev-vision-worker` in us-west-2;
+  - `lambda:GetFunctionConfiguration` on those three functions.
+- The Regions: the home one is `ap-southeast-2` and the vision one `us-west-2`, Terraform's defaults
+  (`--region` and `--vision-region` otherwise); the prefix is `bloggerbear` (`--prefix` otherwise).
+- `gh`, signed in (`gh auth status`), for the commit that deployed each function's code
+  (`provenance.json`); without it that commit is null, with the reason, and the export still
+  finishes.
+- Your `.pii-denylist` at the repository's root (or `PII_DENYLIST`): the export runs the check on
+  every file it writes, and refuses to start writing without a list, since nothing would then check
+  the files before they are committed. `--no-denylist` writes unchecked, and says so.
+
+The logs are read through Logs Insights, a few queries at a time, each batch waited for at most
+`--logs-wait` seconds (120); a 90-day scan of the three groups is a few GB at most, cents.
+
+1. **Export.**
+
+   ```sh
+   python scripts/evidence_export.py export --env dev --networks --figures 12
+   ```
+
+   ```powershell
+   python scripts\evidence_export.py export --env dev --networks --figures 12
+   ```
+
+   It writes `docs/hackathon/evidence/live/<UTC date>/`, and with `--networks` each city's network
+   as `scripts/vision_benchmark_networks/<site>.json` (fill each new file's row in that directory's
+   `NOTICE.md` from its `fetched_at`, `endpoint` and `query_url` and its sha256, which
+   `provenance.json` gives under `networks`). O2's Sydney fixture is left byte for byte when it
+   holds the same network (its `kept` says `unchanged`), and kept, with a line saying so, when it
+   holds another: the evaluation's real-data runs pin its sha256, and `replay --agent recorded`
+   refuses a file that changed, so do not pass `--replace-networks` once those runs are made. It
+   prints any log read that did not complete: "not_checked" means a query did not finish within
+   `--logs-wait`; run it again with `--logs-wait 300 --replace` (`--replace` removes only the
+   export's own files: your `labels.csv` stays). Exit 2 with `pii-denylist: <file>:<line> contains
+   denylist entry #n` means a personal string reached a file: the export is moved to
+   `live/<date>.refused/` (git ignores it), your `labels.csv` is left where it was, and every
+   network file it wrote is put back as it was; find where the string came from, then export
+   again. Leave out `--with-notes` for the committed export unless you have read every note it
+   adds (model and third-party text, scrubbed and labelled, but quoted).
+2. **Read it before committing**: `summary.json`'s `logs` (each `complete`), `redacted` (0
+   expected; anything else, `redacted_at` names each file, line and field: find out why),
+   `observed_failures.worker.not_checked` (worker runs whose own line was not read: 0 when every
+   log read completed), `human_control.completeness.unmatched` (a line nothing corroborates: the
+   report says so), and the traces under `traces/`.
+3. **The trace** the report and the video quote (the latest decision of a city, or of the demo
+   topic; `--scene <scene id>` for one in particular):
+
+   ```sh
+   python scripts/evidence_export.py trace --topic rail-cities --site sydney --scene latest --from docs/hackathon/evidence/live/<date>
+   python scripts/evidence_export.py trace --env dev --topic rail-sydney-demo --scene latest
+   ```
+
+   ```powershell
+   python scripts\evidence_export.py trace --topic rail-cities --site sydney --scene latest --from docs\hackathon\evidence\live\<date>
+   python scripts\evidence_export.py trace --env dev --topic rail-sydney-demo --scene latest
+   ```
+
+   The second reads live (the logs and the running state, now) and writes nothing; in the video,
+   run query (c) on the same tick id the committed trace shows.
+4. **Label (O9).** Copy `labels-template.csv` to `labels.csv` in the same directory and fill each
+   row's `label` (`agree` or `disagree` with the agent's verdict) and `reason` (one of the codes in
+   the file's header), reading the trace and the figure the row names. Save it as UTF-8 CSV. Then:
+
+   ```sh
+   python scripts/evidence_export.py agreement --from docs/hackathon/evidence/live/<date>
+   python scripts/vision_eval.py index --check
+   ```
+
+   ```powershell
+   python scripts\evidence_export.py agreement --from docs\hackathon\evidence\live\<date>
+   python scripts\vision_eval.py index --check
+   ```
+
+   `agreement` writes the k of n and its Wilson interval into that export's `summary.json`, the
+   cities and the demo topic apart.
+5. **Commit** the export directory, `docs/hackathon/evidence/live/README.md` and the network files,
+   after `python scripts/pii_denylist_check.py --staged` (PowerShell: `python
+   scripts\pii_denylist_check.py --staged`). Update the tracker's O9, S7 and A3 rows.
 
 ## Deploying to another region
 

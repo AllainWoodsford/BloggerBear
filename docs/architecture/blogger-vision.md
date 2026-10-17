@@ -29,15 +29,147 @@ Resource names below use `<prefix>` (your `unique_name_prefix`) and `<env>` (`de
 
 ## Part one: the pipeline
 
+**The system.** Everything that holds state is in the home Region; the worker runs in us-west-2,
+beside the imagery, and keeps nothing; the agent runs inside the research tick; COOL is benchmarked,
+not deployed. The source is [architecture.mmd](../hackathon/diagrams/architecture.mmd), with its
+[SVG](../hackathon/diagrams/architecture.svg) beside it.
+
+```mermaid
+flowchart LR
+  subgraph home["Home Region (ap-southeast-2 by default): everything that holds state"]
+    sched["EventBridge Scheduler<br/>an hourly research heartbeat and a daily run per topic"]
+    tick["Lambda: research tick, 120 s<br/>rail_access adapter: one city per tick, in turn"]
+    agent["Triage agent, inside the tick<br/>bounded, fails closed"]
+    sfn["Step Functions, Lambda: daily cycle<br/>the week's city from the topic's rota,<br/>the day's angle from its goal rotation;<br/>draft, reviews, held for a person"]
+    bedrock["Amazon Bedrock<br/>Converse"]
+    s3c[("S3 content bucket<br/>running state and decision rings,<br/>figures, each city's network")]
+    ddb[("DynamoDB<br/>topics (rail-cities: four cities, a week each in turn),<br/>Findings with their subjects, articles, moderation")]
+    api["Admin API<br/>IAM auth and a WAF allowlist"]
+    site[("S3, CloudFront and WAF<br/>the public site")]
+    logs["CloudWatch Logs, 90 days<br/>evidence lines: research tick, admin API"]
+    mcp["Ops MCP server, read-only<br/>vision_status, topic_findings, vision_evidence"]
+    opsagent["Ops agent (Strands)<br/>the ask page"]
+  end
+  subgraph west["us-west-2: beside the imagery"]
+    worker["Lambda: vision worker<br/>arm64, python3.12, OpenCV 5 (stock), networkx"]
+    cogs[("sentinel-cogs<br/>Sentinel-2 L2A COGs, public")]
+    wlogs["CloudWatch Logs, 90 days<br/>vision_measure lines"]
+  end
+  subgraph tokyo["ap-northeast-1 by default"]
+    gateway["Bedrock AgentCore<br/>web-search gateway"]
+  end
+  subgraph bench["Benchmarked, not deployed"]
+    c8g["EC2 c8g, Graviton4<br/>COOL, and stock OpenCV 5 and 4.x venvs"]
+  end
+  stac["Earth Search STAC<br/>the newest clear scene"]
+  osm["OpenStreetMap Overpass<br/>rail ways, stations, intermodal points"]
+  gdelt["GDELT<br/>news search"]
+  operator(["Operator"])
+  alexa(["Alexa+"])
+  readers(["Readers"])
+
+  sched -- "async invoke" --> tick
+  sched --> sfn
+  tick --> stac
+  tick -- "a city's network, cached 30 days" --> osm
+  tick -- "cross-Region invoke: the scene's assets and the network" --> worker
+  worker -- "HTTP range reads" --> cogs
+  worker --> wlogs
+  tick -- "only when the numbers moved" --> agent
+  agent --> bedrock
+  agent -- "look_again" --> worker
+  agent -- "web_context" --> gdelt
+  agent -. "web_context, when GDELT fails" .-> gateway
+  tick --> s3c
+  tick -- "a Finding and its city: a change, or the week's city's weekly reading" --> ddb
+  tick --> logs
+  sfn -- "the week's city's Findings" --> ddb
+  sfn --> bedrock
+  operator -- "admin CLI: approve or reject" --> api
+  api --> ddb
+  api --> logs
+  api -- "publish the page and its figures" --> site
+  readers --> site
+  operator -- "ask.html" --> opsagent
+  opsagent --> mcp
+  opsagent --> bedrock
+  alexa -- "MCP, OAuth through Cognito" --> mcp
+  mcp --> s3c
+  mcp --> ddb
+  mcp --> logs
+  mcp -- "log_review" --> wlogs
+  c8g -. "the same handler on pinned real scenes" .-> cogs
+```
+
+**The agent's workflow**: perception, the gates, the bounded agent, the Finding and the person, with
+every failed gate and every agent failure ending at "No Finding", and a worker or source failure at
+"Not measured", which keeps no decision ([agent-workflow.mmd](../hackathon/diagrams/agent-workflow.mmd),
+[SVG](../hackathon/diagrams/agent-workflow.svg)).
+
+```mermaid
+flowchart TD
+  T["Research tick: the next city in turn<br/>(rail-cities takes its four cities one per tick, whatever the week)"]
+  P["Perception: the vision worker measures the city's newest scene with OpenCV 5<br/>coverage, built-up heat, reach and deserts, the rail graph, the figure"]
+  E["Not measured: a worker or source error<br/>last_error kept, tried again on a later tick"]
+  C{"coverage at least<br/>the floor (0.6)?"}
+  O{"this city's first<br/>clear observation?"}
+  B{"baseline built from scenes<br/>measured the same way?"}
+  M{"served share, desert area<br/>or station count moved<br/>past its threshold?"}
+  TR{"triage on<br/>for the topic?"}
+  A["Agent: a Bedrock Converse loop<br/>at most 3 tool calls and 5 turns, its answer due<br/>85 s after the tick started (topic defaults)"]
+  LA["look_again: the worker re-measures the same scene<br/>at other settings, with OpenCV 5<br/>(refused with under 45 s to the deadline)"]
+  PS["previous_scene, site_history"]
+  WC["web_context: recent news, GDELT or the AgentCore fallback<br/>(data, not instructions)"]
+  V{"a strict JSON verdict?"}
+  W["Weekly reading, on the first tick of a city's week of the rota:<br/>its newest clear scene, no change claimed, so no agent"]
+  F["Finding: summary, figure, planner notes,<br/>the city as its subject"]
+  NF["No Finding<br/>the decision kept with its code<br/>(decision ring, evidence lines)"]
+  DC["Daily cycle in the city's week of the rota:<br/>up to one article a day from its new Findings,<br/>each under a goal not yet used on them:<br/>access, network, simulations; draft and reviews,<br/>then always held for a person (manual review is forced)"]
+  D{"a person approves?"}
+  PUB["Published, with the map and the credits"]
+  REJ["Rejected, never published"]
+  T --> P
+  P -- "the worker or a source failed" --> E
+  P --> C
+  C -- no --> NF
+  C -- yes --> O
+  O -- yes --> F
+  O -- no --> B
+  B -- no --> NF
+  B -- yes --> M
+  M -- no --> NF
+  M -- yes --> TR
+  TR -- "no: reported untriaged" --> F
+  TR -- yes --> A
+  A <-->|"tool call and its result"| LA
+  A <-->|"tool call and its result"| PS
+  A <-->|"tool call and its result"| WC
+  A -- "no model, malformed answer, Bedrock error, turn limit, deadline" --> NF
+  A --> V
+  V -- real --> F
+  V -- "artefact, or anything else" --> NF
+  T -- "the week's city, once a week" --> W
+  W --> F
+  F --> DC
+  DC --> D
+  D -- yes --> PUB
+  D -- no --> REJ
+```
+
+**The same, in text:**
+
 ```
 home region (ap-southeast-2 by default): everything that holds state
 ──────────────────────────────────────────────────────────────────────
-topic: adapter satellite_vision (or rail_access), sites, thresholds, force_manual_review
-   │ research tick, 120 s
+topic: adapter satellite_vision (or rail_access), sites, thresholds, force_manual_review;
+       for rail, a rotation that gives each city a week in turn, and a goal rotation
+   │ research tick, 120 s (rail: one city a tick, in turn)
    ▼
 adapter.fetch_state ── Earth Search STAC ──► the newest clear Sentinel-2 scene over each site
-   │                ── Overpass (rail) ────► rail ways, stations, intermodal points, cached in
-   │                                         the running state and sent inline to the worker
+   │                ── Overpass (rail) ────► rail ways, stations, intermodal points, cached
+   │                                         30 days in the city's own object,
+   │                                         vision/<topic>/<site>/network.json, and sent to
+   │                                         the worker
    │ a scene the site already has? nothing new
    │ vision_client.measure: one request, across regions   us-west-2, beside the imagery
    ├─────────────────────────────────────────────────────► vision worker (arm64, OpenCV 5)
@@ -47,13 +179,18 @@ adapter.fetch_state ── Earth Search STAC ──► the newest clear Sentinel
    │ history → running state; the PNG → content bucket
 adapter.material_diff: this scene against the site's own baseline
    │ within the usual range → stop; no model call
+   │ (rail, first tick of a city's week: its newest clear scene as the weekly reading,
+   │  no change claimed, no agent → Finding)
    ▼
 triage agent: the figure and the metrics, tools, a budget, a deadline; unsure → "artefact"
    │ artefact → kept in the state, no Finding
    ▼
 Finding {summary, figures: [{key, caption, alt}]}
    ▼
-daily cycle → draft → fresh-data and compliance reviews → held: force_manual_review
+daily cycle → the day's subject (rail: the city whose week it is by the rotation)
+   │ → draft from its Findings since its last article on that city, under the next goal
+   │   (nothing new: the same Findings again under a goal not yet used on them)
+   │ → fresh-data and compliance reviews → held: force_manual_review
    ▼
 a person approves → the article page, with the figure at articles/figures/<article>/<n>.png
                     and the Copernicus, AWS Open Data and OpenStreetMap credits
@@ -63,12 +200,12 @@ a person approves → the article page, with the figure at articles/figures/<art
 
 | # | Step | What happens | Where in the code / infra |
 |---|---|---|---|
-| 1 | **Topic and adapter** | A vision topic is a row of settings like any other: its adapter, its sites as lon/lat polygons, its thresholds and its schedule, all in `adapter_config`. `force_manual_review` is forced on when the topic is created or updated and cannot be unset. Two adapters: `satellite_vision` (the `ships` task, up to ten sites) and `rail_access` (up to eight cities, `MAX_RAIL_SITES`; one topic writes about one city a day by its `rotation`), both thin, on one shared module for the config checks, the scene search, the figure store, the time budget and the site order. | `topics` table; `lambdas/common/adapters/satellite_vision.py`, `rail_access.py`; `lambdas/common/vision_sites.py`; `admin_api_handler.py` forces the flag (`MANUAL_REVIEW_ADAPTERS`) |
-| 2 | **Sources** | Three public sources and no key for any of them. **Sentinel-2** scenes are found through the Earth Search STAC API (the newest scene over the whole site, under a cloud-cover cap, within a lookback window) and read from the public `sentinel-cogs` bucket as Cloud-Optimized GeoTIFFs. **OpenStreetMap** rail ways, stations and intermodal points come through the Overpass API: two allow-listed endpoints, one fallback hop, points decimated to the 20 m grid and capped, a coded error on failure; the rail adapter keeps each city's network in an object of its own (`vision/<topic>/<site>/network.json`) for `osm_ttl_days` (30), with the polygon it was fetched for. **GDELT**, through the existing news search, is the agent's `web_context` tool for the rail task. | `STAC_SEARCH_URL` in `lambdas/common/vision_sites.py`; `DEFAULT_ALLOWED_URL_PREFIXES` in `common/vision_contract.py`; `lambdas/common/osm.py`; `lambdas/common/web_search.py` |
-| 3 | **The research tick: diff first, with running state** | The tick is the same Lambda every topic uses. The adapter visits its sites inside a **time budget** (`time_budget_seconds`, 45 to 80 of the tick's 120 s), in rotation (those never attempted first, then the one attempted longest ago), skips a scene it has already measured, and appends each new measurement to the site's history. Both adapters keep one measuring rule (`vision_sites.time_to_measure`): the worker is asked only with 45 s of the budget left and waited on for at most 58 s, and a site left without time is deferred to the next tick, keeping its place; with a ship topic's default 60 s budget, a tick asks the worker only in about its first 15 s, so only the sites whose new scene is found by then are measured: how many depends on the search's and the worker's times, often fewer than the five `max_sites_per_tick` allows. The rail adapter works scene first: a city with no usable stored network fetches it (started with 30 s of the budget left, and given the rest of it less 10 s: a big city's query takes most of a minute, and the city is then measured on the next tick); a new scene is measured with the stored network, even past its TTL (with 45 s left); with nothing new, a stale network is refreshed, and after a failed refresh not again for 6 hours. Both adapters set `keeps_running_state`, so the tick keeps the newest state after every tick, not only when it writes a Finding: a baseline includes every scene measured, and a scene is never measured twice. `material_diff` then compares the new scene with the median of the site's earlier clear scenes measured the same way. | `lambdas/research_tick_handler.py`; `snapshots/<topic_id>/running-state.json` in the `<prefix>-<env>-content` bucket |
+| 1 | **Topic and adapter** | A vision topic is a row of settings like any other: its adapter, its sites as lon/lat polygons, its thresholds and its schedule, all in `adapter_config`. `force_manual_review` is forced on when the topic is created or updated and cannot be unset. Two adapters: `satellite_vision` (the `ships` task, up to ten sites) and `rail_access` (up to eight cities, `MAX_RAIL_SITES`; one topic writes about one city a week by its `rotation`), both thin, on one shared module for the config checks, the scene search, the figure store, the time budget and the site order. | `topics` table; `lambdas/common/adapters/satellite_vision.py`, `rail_access.py`; `lambdas/common/vision_sites.py`; `admin_api_handler.py` forces the flag (`MANUAL_REVIEW_ADAPTERS`) |
+| 2 | **Sources** | Three public sources and no key for any of them. **Sentinel-2** scenes are found through the Earth Search STAC API (the newest scene over the whole site, under a cloud-cover cap, within a lookback window) and read from the public `sentinel-cogs` bucket as Cloud-Optimized GeoTIFFs. **OpenStreetMap** rail ways, stations and intermodal points come through the Overpass API: two allow-listed endpoints, one fallback hop, points decimated to the 20 m grid and capped, a coded error on failure; the rail adapter keeps each city's network in an object of its own (`vision/<topic>/<site>/network.json`) for `osm_ttl_days` (30), with the polygon it was fetched for. **GDELT**, through the existing news search, with the AgentCore web-search gateway as its fallback when GDELT fails (`lambdas/common/web_search.py`), is the agent's `web_context` tool for the rail task. | `STAC_SEARCH_URL` in `lambdas/common/vision_sites.py`; `DEFAULT_ALLOWED_URL_PREFIXES` in `common/vision_contract.py`; `lambdas/common/osm.py`; `lambdas/common/web_search.py` |
+| 3 | **The research tick: diff first, with running state** | The tick is the same Lambda every topic uses. The adapter visits its sites inside a **time budget** (`time_budget_seconds`, 45 to 80 of the tick's 120 s), in rotation (those never attempted first, then the one attempted longest ago), skips a scene it has already measured, and appends each new measurement to the site's history. Both adapters keep one measuring rule (`vision_sites.time_to_measure`): the worker is asked only with 45 s of the budget left and waited on for at most 58 s, and a site left without time is deferred to the next tick, keeping its place; with a ship topic's default 60 s budget, a tick asks the worker only in about its first 15 s, so only the sites whose new scene is found by then are measured: how many depends on the search's and the worker's times, often fewer than the five `max_sites_per_tick` allows. The rail adapter works scene first: a city with no usable stored network fetches it (started with 30 s of the budget left, and given the rest of it less 10 s: a big city's query takes most of a minute, and the city is then measured on the next tick); a new scene is measured with the stored network, even past its TTL (with 45 s left); with nothing new, a stale network is refreshed, and after a failed refresh not again for 6 hours. Both adapters set `keeps_running_state`, so the tick keeps the newest state after every tick, not only when it writes a Finding: a baseline includes every scene measured, and a scene is never measured twice. `material_diff` then compares the new scene with the median of the site's earlier clear scenes measured the same way. The tick measures every city in turn whatever the rota; with a week rota (`rotation_period` `"week"`) it reads the rota for one thing, the **weekly reading**: on the first tick of a city's week that reports nothing else about it, the city's newest clear scene is reported, no change claimed, with its map and planner notes, once a week (`reported_period`). | `lambdas/research_tick_handler.py`; `snapshots/<topic_id>/running-state.json` in the `<prefix>-<env>-content` bucket |
 | 4 | **The stateless worker** | One cross-region `lambda:InvokeFunction`. The worker validates the request against the **contract** (version 1; the `task`, `ships` or `rail_access`, and its assets; every asset URL must start with an allowed prefix, the `sentinel-cogs` bucket by default, and an entry of `VISION_ALLOWED_URL_PREFIXES` that is not `https://<host>/` and a path is skipped; parameter bounds; a polygon of 3 to 64 points; for rail, the network's shape and caps), reads only the tiles under the site with HTTP range requests, following no redirect (a 3xx is `unreadable_scene`, its body unread) and reading no further than the range asked for, even from a server that ignores `Range` (no GDAL: a small reader for the TIFF subset Sentinel-2 uses; for rail, the 10 m bands from their 20 m COG overviews, and a window of at most 3,584 px a side), measures with OpenCV, draws the figure, and replies with the metrics, the PNG, the **build record** and per-stage timings. Every failure is a code (`bad_request`, `backend_mismatch`, `not_cool`, `site_outside_scene`, `window_too_large`, `unreadable_scene`, `internal`): the caller's mistakes are `bad_request`, and any other failure inside the worker is `internal` and logged. **Two backends** share the handler: `VISION_BACKEND` says which one a deployment is, a request for the other is refused, and a `cool` worker whose OpenCV build does not match the pinned `COOL_BUILD_SHA256` fingerprint refuses everything, so a result can never claim a build it did not run on. | `lambdas/vision_worker_handler.py`; `lambdas/vision/`; `lambdas/common/vision_contract.py`; `lambdas/common/vision_client.py`; `infra/modules/vision-worker/` (`<prefix>-<env>-vision-worker`, arm64, python3.12, 2048 MB, 60 s, in `vision_region`) |
-| 5 | **The bounded triage agent** | A numeric change is only a candidate. Before it becomes a Finding, the agent is given the metrics, the baseline, the detector's rejection tally (ships) and the figure as an image, and may call `look_again` (re-measure the same scene with other settings: active perception), `previous_scene` and `site_history`; the rail profile adds `web_context` (recent news about the city's stations and lines). The bounds are in code, not in the prompt: at most `triage_max_tool_calls` tool calls and that plus two model turns, and a **deadline** (`triage_deadline_seconds`, 85 s from the tick's start) under which no model turn starts with under 10 s left. `look_again` waits on the worker for at most the deadline less that 10 s answer turn and a 5 s connect allowance (rounded down to 5 s, and never more than the worker read timeout), and is refused when that is under 10 s for ships or 30 s for rail, whose run takes 20 to 40 s. The answer must be `{"verdict": "real" or "artefact", "reason"}`; a malformed answer, a model error, the turn limit or running out of time is **artefact**. It fails closed: an unsure agent never makes a Finding. What the tools return is data, cut and cleaned; the agent's reason reaches a summary only quoted, as "the vision agent's note (not a measurement)". The trail is stored in the state and the spend lands on the Stats page as `vision_triage`. The first observation is not triaged: it has no baseline. | `lambdas/common/vision_triage.py`, called from the adapter's `material_diff` |
-| 6 | **The person** | The daily cycle runs every day and writes about the day's city alone: the topic's `rotation` gives each city its days of the week (the day-subject round), and the run drafts the Findings that report that city, from every one since the city's last article, within the topic's `findings_window_hours` (192 hours in the template, so the Findings of the days between the city's runs are drafted too). Each city's first clear scene is its own first observation, so each city's day starts with an article. It reviews the article as for any topic, then holds it: `force_manual_review` adds "this topic's articles are always reviewed by a person before publishing" to the hold reasons, whatever the compliance review said. The article waits in the review inbox until `admin_cli approve`. The daily trending digest, the one other path that publishes with no person, leaves out every topic for which `compliance.requires_manual_review` is true (#298), so a vision topic's text never reaches an auto-published page. | `lambdas/daily_cycle_handler.py`; `lambdas/common/findings_window.py`; `moderation-queue`; `scripts/admin_cli.py` (`inbox`, `approve`) |
+| 5 | **The bounded triage agent** | A numeric change is only a candidate. Before it becomes a Finding, the agent is given the metrics, the baseline, the detector's rejection tally (ships) and the figure as an image, and may call `look_again` (re-measure the same scene with other settings: active perception), `previous_scene` and `site_history`; the rail profile adds `web_context` (recent news about the city's stations and lines). The bounds are in code, not in the prompt: at most `triage_max_tool_calls` tool calls and that plus two model turns, and a **deadline** (`triage_deadline_seconds`, 85 s from the tick's start) under which no model turn starts with under 10 s left. `look_again` waits on the worker for at most the deadline less that 10 s answer turn and a 5 s connect allowance (rounded down to 5 s, and never more than the worker read timeout), and is refused when that is under 10 s for ships or 30 s for rail, whose run takes 20 to 40 s. The answer must be `{"verdict": "real" or "artefact", "reason"}`; a malformed answer, a model error, the turn limit or running out of time is **artefact**. It fails closed: an unsure agent never makes a Finding. What the tools return is data, cut and cleaned; the agent's reason reaches a summary only quoted, as "the vision agent's note (not a measurement)". The trail is stored in the state and the spend lands on the Stats page as `vision_triage`. The first observation is not triaged: it has no baseline; nor is a weekly reading, which claims no change. | `lambdas/common/vision_triage.py`, called from the adapter's `material_diff` |
+| 6 | **The person** | The daily cycle runs every day and writes about the week's city alone: the topic's `rotation`, with `rotation_period` `"week"`, gives each city a whole week in turn (the template gives each city weekdays; the live `rail-cities` was switched to a city a week by [RailVisionSeeding.md §7](../RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)), and the run drafts the Findings that report that city, from every one since the city's last article, within the topic's `findings_window_hours` (192 hours). The topic's goal rotation (`editorial_goal_rotation`) gives each article its angle: new Findings get the next goal, and with nothing new the run revisits the same Findings under a goal not yet used on them, so the Monday weekly reading becomes an `access` article on Monday, a `network` one on Tuesday and a `simulations` one on Wednesday, and nothing more until something new (a real change starts the goals again). It reviews the article as for any topic, then holds it: `force_manual_review` adds "this topic's articles are always reviewed by a person before publishing" to the hold reasons, whatever the compliance review said. The article waits in the review inbox until `admin_cli approve`. The daily trending digest, the one other path that publishes with no person, leaves out every topic for which `compliance.requires_manual_review` is true (#298), so a vision topic's text never reaches an auto-published page. | `lambdas/daily_cycle_handler.py`; `lambdas/common/findings_window.py`; `lambdas/common/goal_rotation.py`; `moderation-queue`; `scripts/admin_cli.py` (`inbox`, `approve`) |
 | 7 | **The page: the figures path** | An adapter that draws something returns `[{"key", "caption", "alt"}]` from `figures()`; the tick stores the list on the Finding; the daily cycle gathers the figures of the findings an article was written from (newest first, de-duplicated, at most three); publishing copies each PNG from the private content bucket to the site bucket as `articles/figures/<article_id>/<n>.png` (one server-side copy, stored as `image/png`), and the static page and the SPA show each as a `<figure>` with its caption, under the credit line and above the body. A figure whose copy failed is left off the static page, and the SPA removes a figure whose image fails to load, so both show the same. Unpublishing and take-down remove the copies, and, for an article with figures, ask CloudFront to drop `/articles/figures/<article>/*` with the page. The path is generic: the rail adapter attaches one figure per site its summary reports (not one under the coverage floor, not one the agent judged an artefact), with a caption that says what the symbols are and carries the credits and the year, and the ship adapter does not yet attach its figure (the base adapter's default is an empty list). The rail Finding also keeps its planner notes (`planner_notes`), the flags and simulated links in words. | `lambdas/common/figures.py`; `publish_figures` in `lambdas/common/static_pages.py`; `frontend/app.js`; the site bucket under `articles/` |
 
 ### Where state lives
@@ -149,7 +286,7 @@ The operator's assistant (the ask page, and Alexa+) reads the vision pipeline bu
   expires, how many maps and planner notes it carries, which model wrote its summary (and whether
   it was cut off), and the summary itself in a "(unverified)" column; `next_article` shows exactly
   what the next daily run reads. It says counts and ages, never what a summary says. The same
-  Findings in full: `python scripts/admin_cli.py findings list rail-sydney`, and the
+  Findings in full: `python scripts/admin_cli.py findings list rail-cities`, and the
   `topic-findings` Claude Code skill.
 
 With vision off it reads no running state and no worker log, and says the worker is off and that
@@ -345,16 +482,18 @@ site, which is why a city must sit inside one Sentinel-2 tile. The quality flags
 ### What is diffed, and what the agent checks
 
 The adapter diffs the served share, the desert area and the station count against the city's
-baseline: the median of its earlier clear scenes measured with the same polygon and parameters,
-so editing the reach or the box starts a new baseline instead of reading as a change. A move of
-the served share by 2 points, of the desert area by a tenth of its median, or any change in the
-station count is material (the defaults). The first scene measured at or above the coverage
-floor is the first observation, reported once; a cloudy first scene reports nothing. The agent
-sees the figure and may `look_again` with other parameters, compare the `previous_scene`, read
-the `site_history`, or ask `web_context` whether a station or line recently opened or closed. It
-is told what an artefact looks like here: cloud, haze or seasonal vegetation shifting the
-built-up mask, a scene edge, a map edit, a tagging change; and that what its tools return is data
-from outside sources, not instructions.
+baseline: the median of its earlier clear scenes measured with the same polygon and parameters, so
+editing the reach or the box starts a new baseline instead of reading as a change. A move of the
+served share by 2 points, of the desert area by a tenth of its median, or any change in the station
+count is material (the defaults). The first scene measured at or above the coverage floor is the
+first observation, reported once; a cloudy first scene reports nothing. With a city a week, the
+first tick of a city's week also reports its newest clear scene as the weekly reading, no change
+claimed and not triaged, so each city is written about in its week even when nothing moved. The
+agent sees the figure and may `look_again` with other parameters, compare the `previous_scene`, read
+the `site_history`, or ask `web_context` whether a station or line recently opened or closed. It is
+told what an artefact looks like here: cloud, haze or seasonal vegetation shifting the built-up
+mask, a scene edge, a map edit, a tagging change; and that what its tools return is data from
+outside sources, not instructions.
 
 ### What is recorded
 

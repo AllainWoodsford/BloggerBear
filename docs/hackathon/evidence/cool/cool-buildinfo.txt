@@ -1,0 +1,109 @@
+
+General configuration for OpenCV 5.1.0-dev =====================================
+  Version control:               unknown
+
+  Platform:
+    Timestamp:                   2026-07-13T03:56:14Z
+    Host:                        Linux 6.17.0-1019-aws aarch64
+    CMake:                       3.28.3
+    CMake generator:             Ninja
+    CMake build tool:            /usr/bin/ninja
+    Configuration:               Release
+    Algorithm Hint:              ALGO_HINT_ACCURATE
+
+  CPU/HW features:
+    Baseline:                    SVE NEON FP16 NEON_DOTPROD NEON_FP16 NEON_BF16
+      requested:                 DETECT
+    Dispatched code generation:
+      requested:                 NEON_DOTPROD NEON_FP16 NEON_BF16
+
+  C/C++:
+    Built as dynamic libs?:      YES
+    C++ standard:                17
+    C++ Compiler:                /usr/bin/c++  (ver 13.3.0)
+    C++ flags (Release):         -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden   -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wsuggest-override -Wno-delete-non-virtual-dtor -Wno-comment -Wimplicit-fallthrough=3 -Wno-strict-overflow -fdiagnostics-show-option -pthread -fomit-frame-pointer -ffunction-sections -fdata-sections -flto=auto  -O3 -DNDEBUG  -DNDEBUG
+    C++ flags (Debug):           -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden   -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wsuggest-override -Wno-delete-non-virtual-dtor -Wno-comment -Wimplicit-fallthrough=3 -Wno-strict-overflow -fdiagnostics-show-option -pthread -fomit-frame-pointer -ffunction-sections -fdata-sections -flto=auto  -g  -DDEBUG -D_DEBUG
+    C Compiler:                  /usr/bin/cc
+    C flags (Release):           -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden    -O3 -DNDEBUG  -DNDEBUG
+    C flags (Debug):             -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden    -g  -DDEBUG -D_DEBUG
+    Linker flags (Release):      -Wl,-rpath,/opt/arm/armpl_25.07.1_gcc/lib -Wl,-rpath,/opt/ffmpeg/lib  -Wl,--gc-sections -Wl,--as-needed -Wl,--no-undefined  
+    Linker flags (Debug):        -Wl,-rpath,/opt/arm/armpl_25.07.1_gcc/lib -Wl,-rpath,/opt/ffmpeg/lib  -Wl,--gc-sections -Wl,--as-needed -Wl,--no-undefined  
+    ccache:                      NO
+    Precompiled headers:         NO
+    Extra dependencies:          dl m pthread rt
+    3rdparty dependencies:
+
+  OpenCV modules:
+    To be built:                 calib core dnn features flann geometry highgui imgcodecs imgproc objdetect photo ptcloud python3 stereo stitching ts video videoio
+    Disabled:                    world
+    Disabled by dependency:      -
+    Unavailable:                 java
+    Applications:                tests perf_tests
+    Documentation:               NO
+    Non-free algorithms:         NO
+
+  GUI:                           NONE
+    GTK+:                        NO
+    VTK support:                 NO
+    Built-in Unicode font:       YES
+
+  Media I/O: 
+    ZLib:                        /usr/lib/aarch64-linux-gnu/libz.so (ver 1.3)
+    JPEG:                        build-libjpeg-turbo (ver 3.1.2-70)
+      SIMD Support Request:      YES
+      SIMD Support:              YES
+    WEBP:                        build (ver decoder: 0x0210, encoder: 0x0210, demux: 0x0107)
+    AVIF:                        NO
+    PNG:                         build (ver 1.6.57)
+      Metadata Support:          EXIF XMP ICC cICP
+    TIFF:                        build (ver 42 - 4.7.1)
+    JPEG 2000:                   build (ver 2.5.3)
+    OpenEXR:                     NO
+    GIF:                         YES
+    HDR:                         YES
+    SUNRASTER:                   YES
+    PXM:                         YES
+    PFM:                         YES
+
+  Video I/O:
+    FFMPEG:                      YES
+      avcodec:                   YES (62.28.101)
+      avformat:                  YES (62.12.101)
+      avutil:                    YES (60.26.101)
+      swscale:                   YES (9.5.101)
+      avdevice:                  YES (62.3.101)
+    GStreamer:                   NO
+    v4l/v4l2:                    YES (linux/videodev2.h)
+    Orbbec:                      YES
+
+  Parallel framework:            pthreads
+
+  Trace:                         YES (with Intel ITT(3.25.4))
+
+  Other third-party libraries:
+    Lapack:                      YES (Unknown /opt/arm/armpl_25.07.1_gcc/lib/libarmpl_lp64.so /opt/arm/armpl_25.07.1_gcc/lib/libamath.so /opt/arm/armpl_25.07.1_gcc/lib/libastring.so -lgfortran -lm)
+    DNN MLAS:                    YES (SGEMM-only, vendored)
+      ASM kernels:               YES (ARM64: NEON SGEMM, NEON SGEMV)
+    Eigen:                       NO
+    Custom HAL:                  YES (carotene (ver 0.0.1) KleidiCV (ver 0.7.0))
+    Protobuf:                    build (3.19.1)
+    Flatbuffers:                 builtin/3rdparty (25.9.23)
+
+  OpenCL:                        YES (no extra features)
+    Include path:                /home/ubuntu/opencv-5x-cool/3rdparty/include/opencl/1.2
+    Link libraries:              Dynamic load
+
+  ONNX Runtime:                  NO
+
+  Python 3:
+    Interpreter:                 /home/ubuntu/build_artifacts_secure/venv_3.12/bin/python3.12 (ver 3.12.3)
+    Libraries:                   /usr/lib/aarch64-linux-gnu/libpython3.12.so (ver 3.12.3)
+    Limited API:                 NO
+    numpy:                       /home/ubuntu/build_artifacts_secure/venv_3.12/lib/python3.12/site-packages/numpy/_core/include (ver 2.5.1)
+    install path:                /home/ubuntu/build_artifacts_secure/venv_3.12/lib/python3.12/site-packages/cv2/python-3.12
+
+  Python (for build):            /home/ubuntu/build_artifacts_secure/venv_3.12/bin/python3.12
+
+  Install to:                    /home/ubuntu/build_artifacts_secure/install_3.12
+-----------------------------------------------------------------
+

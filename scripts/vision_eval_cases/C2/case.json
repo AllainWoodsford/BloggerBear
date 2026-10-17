@@ -1,0 +1,40 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C2",
+  "base": "C1",
+  "title": "A map edit: three stations mapped twice",
+  "built_as": "As C1, with the newest scene measured with fixture B', A with three stations duplicated under new ids at the same places (the station count moves); no news.",
+  "networks": {
+    "A": {
+      "file": "vision_benchmark_networks/sydney.json"
+    },
+    "B'": {
+      "from": "A",
+      "derive": "duplicate_stations",
+      "stations": 3
+    }
+  },
+  "newest": {
+    "scene": "sydney-2024-08-31",
+    "network": "B'"
+  },
+  "news": [],
+  "expected": {
+    "verdict": "artefact",
+    "stop": "answered"
+  },
+  "why": "Only the map's tagging changed: three stations appear twice at the same places. The rail prompt calls a tagging change an artefact.",
+  "scripted": [
+    {
+      "tool": "previous_scene",
+      "input": {}
+    },
+    {
+      "tool": "web_context",
+      "input": {}
+    },
+    {
+      "text": "{\"verdict\": \"artefact\", \"reason\": \"The station count rose with no new line on the map and nothing in the news: a mapping change.\"}"
+    }
+  ]
+}

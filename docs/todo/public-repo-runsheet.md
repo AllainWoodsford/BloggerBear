@@ -1,8 +1,9 @@
 # Run sheet: making the repo public
 
-**Date:** 2026-10-03 · **Status:** ready, not started (the repository was still private on
-2026-10-05) · **Why:** the Qloo and Nebius hackathons need a public repository with an open-source
-license (Amazon accepts a public one too).
+**Date:** 2026-10-03 · **Status:** the repository is public (made public by 2026-10-16; it was
+still private on 2026-10-05). Whether steps 1 to 4's settings were applied is not recorded here ·
+**Why:** the Qloo and Nebius hackathons need a public repository with an open-source license
+(Amazon accepts a public one too).
 
 **Using this for your own fork:** "Already done" below is the original repository's history, and
 does not apply to you. Steps 1 to 4 do: they are the GitHub settings a public copy should have.

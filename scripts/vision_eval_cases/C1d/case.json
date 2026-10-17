@@ -1,0 +1,42 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C1d",
+  "base": "C1",
+  "title": "A line closed",
+  "built_as": "As C1, with the newest scene measured with A less one line's ways and the stations that snap to it alone (the smallest named line with at least three); the news reports its closure.",
+  "networks": {
+    "A": {
+      "file": "vision_benchmark_networks/sydney.json"
+    },
+    "B": {
+      "from": "A",
+      "derive": "remove_line",
+      "min_stations": 3
+    }
+  },
+  "news": [
+    {
+      "title": "Suburban rail line closes for good",
+      "url": "https://news.example.com/rail/line-closes",
+      "published_at": "2024-08-25T00:00:00Z",
+      "source": "Example Transit News",
+      "snippet": "The line and its stations closed to passengers at the weekend; replacement buses now run along the route."
+    }
+  ],
+  "why": "A line and its stations left the map, and the news reports the closure: a real loss of rail access.",
+  "scripted": [
+    {
+      "tool": "look_again",
+      "input": {
+        "reach_m": 1200
+      }
+    },
+    {
+      "tool": "web_context",
+      "input": {}
+    },
+    {
+      "text": "{\"verdict\": \"real\", \"reason\": \"A line and its stations are gone from the map and the news reports the closure.\"}"
+    }
+  ]
+}

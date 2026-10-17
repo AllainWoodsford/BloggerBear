@@ -26,8 +26,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "bloggerbear.vision-eval/1"
-# The kinds that exist now; the evaluation's later subcommands add theirs here.
-KINDS = ("bench-kernels", "bench-scenes", "bench-worker", "bench-compare", "bench-controls", "eval-coverage")
+# The kinds that exist now; the evaluation's later subcommands add theirs here (an index refuses a
+# run file of any other kind).
+KINDS = (
+    "bench-kernels", "bench-scenes", "bench-worker", "bench-compare", "bench-controls", "eval-coverage",
+    "eval-replay", "eval-failures", "eval-access-baseline", "eval-agent", "eval-counterfactual",
+    "eval-stability", "eval-builtup-check",
+)  # fmt: skip
 RUNS_DIR = ROOT / "docs" / "hackathon" / "evidence" / "runs"
 # The only host a real-data run reads from (AWS Open Data's Sentinel-2 COGs, us-west-2).
 BUCKET_HOST = "sentinel-cogs.s3.us-west-2.amazonaws.com"
@@ -69,7 +74,7 @@ def cpu_slug(cpu: str) -> str:
 
 def make_run_id(kind: str, cpu: str, backend: str, tag: str | None = None, date: str | None = None) -> str:
     """`<UTC date>-<kind>-<cpu slug>-<backend>`, plus `-<tag>` when the run is one of several of
-    that kind on one day (the runsheet's `1t`, `4t-r1`)."""
+    that kind on one day (the COOL runsheet's `1t`, `4t-r1`)."""
     if kind not in KINDS:
         raise ValueError(f"unknown run kind {kind!r}")
     parts = [date or utc_now()[:10], kind, cpu_slug(cpu), re.sub(r"[^a-z0-9-]+", "-", backend.lower())]
@@ -404,7 +409,7 @@ def default_cache_dir() -> Path:
 
 def cache_dir(text: str) -> Path:
     """`--cache DIR` as a path, with `~` expanded: a shell variable that holds `--cache ~/cogs`
-    (the runsheet's `$C`) reaches the script with the tilde unexpanded, and without this the cache
+    (the runsheets' `$C`) reaches the script with the tilde unexpanded, and without this the cache
     would land in a directory named `~` under the working directory."""
     return Path(text).expanduser()
 
