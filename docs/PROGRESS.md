@@ -883,6 +883,9 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   assistant, Alexa+, and the admin CLI and API. Living docs corrected where the code had moved on
   (the rotation, the fixtures, the repository's visibility, the deploy triggers, the tracker's
   owner rows). README gains a Hackathons table and a complete Docs table
+- [x] The Musings page names the topic an article musing is for, in grey italics beside "read the
+  article": the public API's `GET /musings` adds `topic_name` to each musing, read once per page
+  from the Topics table (`None` for a topic since deleted, and then no name is shown)
 
 ## Backlog / not yet scheduled
 
