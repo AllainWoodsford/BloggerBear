@@ -65,6 +65,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import vision_runs
+from setup_repo import DEFAULT_REGION
 
 ROOT = Path(__file__).resolve().parents[1]
 LAMBDAS = ROOT / "lambdas"
@@ -89,8 +90,10 @@ TRACKER = ROOT / "docs" / "hackathon" / "rubric-tracker.md"
 # the same way): every count reports them apart from the cities.
 DEMO_TOPICS_PREFIX = "Demo topics:"
 _BACKTICKED = re.compile(r"`([^`]+)`")
-# Terraform's defaults (infra/environments/dev/variables.tf: aws_region, vision_region).
-HOME_REGION = "ap-southeast-2"
+# Terraform's defaults (infra/environments/dev/variables.tf: aws_region, vision_region). The home one
+# is scripts/setup_repo.py's copy, which its own tests hold to Terraform's, so the original region is
+# written out in one place only (lambdas/tests/test_terraform_wiring.py).
+HOME_REGION = DEFAULT_REGION
 VISION_REGION = "us-west-2"
 # The logs keep 90 days (dev main.tf and vision-worker/main.tf); the assistant reads as far back.
 LOOKBACK_DAYS = vision_evidence.EVIDENCE_LOOKBACK_DAYS
