@@ -115,7 +115,20 @@ def test_the_cases_scenes_are_the_ones_the_spec_names(manifest):
     # C4's newest is a manifest scene with coverage between 0.6 and 0.7.
     assert 0.6 <= manifest_scene(manifest, by["C4"]["newest"]["scene"])["site_coverage"] < 0.7
     assert by["C10"]["newest"]["scene"] == "sydney-2019-12-26-smoke"
-    assert {manifest_scene(manifest, s["scene"])["role"] for s in by["C10"]["history"]} == {"baseline"}
+    # C10's baseline is the clear scenes before the smoke: not the two November ones at 0.70 and 0.71.
+    assert [s["scene"] for s in by["C10"]["history"]] == ["sydney-2019-11-01", "sydney-2019-11-06",
+                                                          "sydney-2019-12-21"]  # fmt: skip
+
+
+def test_every_cases_baseline_is_clear_so_only_its_newest_scene_can_move_it(manifest):
+    # A partly unseen baseline scene moves the baseline median, and a case could then cross a
+    # threshold by cloud in its history rather than by what its newest scene shows. Clear is the
+    # manifest's own rule for a clear scene (its year set's minimum coverage, 0.95).
+    clear = manifest["sets"][agent.YEAR_SET]["min_coverage"]
+    for case in agent.load_cases(manifest):
+        for step in case["history"]:
+            coverage = manifest_scene(manifest, step["scene"])["site_coverage"]
+            assert coverage >= clear, (case["case"], step["scene"], coverage)
 
 
 def test_news_is_constructed_on_a_reserved_domain_and_c5s_headline_is_an_instruction(manifest):
@@ -350,9 +363,12 @@ def test_clouded_to_brings_the_workers_coverage_to_the_target_and_refuses_a_scen
         assert report["pixels_clouded"] > 0 and report["coverage_after"] == pytest.approx(target, abs=1e-3)
     # Outside the block the reads are the scene's own again.
     assert measure_city(city).metrics["coverage"] == clear
-    with pytest.raises(vision_client.VisionError) as refused, agent.clouded_to(0.9999, {}):
+    report = {}
+    with pytest.raises(vision_client.VisionError) as refused, agent.clouded_to(0.9999, report):
         measure_city(city)
     assert refused.value.code == "internal"  # the worker's own answer to an exception in its analysis
+    # ...so the refusal is kept where the harness reads it, not lost inside the handler.
+    assert "already under 0.9999" in report["refused"] and report["target"] == 0.9999
 
 
 def test_the_worker_masks_are_captured_and_compared_over_ground_both_scenes_saw(city):

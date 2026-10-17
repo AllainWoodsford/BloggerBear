@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 
 import pytest
+from test_vision_eval_replay import ARN as DEPLOYED_ARN
+from test_vision_eval_replay import scripted_worker
 
 import vision_eval
 import vision_eval_agent as agent
@@ -88,11 +90,13 @@ def test_the_scripted_synthetic_run_scores_every_case_and_writes_a_run_file(agen
     assert run["worker"]["kind"] == "in-process" and len(run["worker"]["code_sha256"]) == 64
     cases = run["results"]["cases"]
     assert list(cases) == ["C1", "C1c", "C1d", "C1e", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10"]
-    # C3's summer stand-in measures as its winter history did: it never reaches the agent, once.
-    assert cases["C3"]["gate"] == "within_range" and not cases["C3"]["included"]
-    assert len(cases["C3"]["runs"]) == 1
+    # C3's summer stand-in measures as its winter history did, and C10's smoke stand-in as its clear
+    # baseline (the synthetic city has no smoke): neither reaches the agent, each measured once.
+    for name in ("C3", "C10"):
+        assert cases[name]["gate"] == "within_range" and not cases[name]["included"]
+        assert len(cases[name]["runs"]) == 1
     s = run["summary"]
-    assert (s["cases"], s["gate_closed"], s["runs"]) == (13, 1, 12 * 2 + 1)
+    assert (s["cases"], s["gate_closed"], s["runs"], s["not_measured_runs"]) == (13, 2, 11 * 2 + 2, 0)
     assert all(isinstance(value, int | float) and not isinstance(value, bool) for value in s.values())
     assert s["recall_real"] == 1.0 and s["recall_artefact"] == 1.0 and s["balanced_accuracy"] == 1.0
     assert s["numeric_only_balanced_accuracy"] == 0.5 and s["always_artefact_balanced_accuracy"] == 0.5
@@ -202,9 +206,83 @@ def test_with_no_bedrock_access_every_run_is_bedrock_error_counted_and_said_neve
 def test_bedrock_without_a_model_id_and_a_bad_repeat_count_are_refused(tmp_path, capsys):
     assert agent.main(parse(["agent", "--synthetic", "--agent", "bedrock"]), vision_eval.load_manifest()) == 2
     assert "--model-id" in capsys.readouterr().err
+    # The specification's command line names --model-id alone: never a scripted run under it, unsaid.
+    for command in ("agent", "counterfactual"):
+        argv = [command, "--synthetic", "--model-id", "some.model-v1:0", "--case", "C1", "--repeats", "1"]
+        assert agent.main(parse(argv), vision_eval.load_manifest()) == 2
+        assert "--agent bedrock" in capsys.readouterr().err
     assert agent.main(parse(["agent", "--synthetic", "--repeats", "0"]), vision_eval.load_manifest()) == 2
     assert agent.main(parse(["agent", "--synthetic", "--case", "C99"]), vision_eval.load_manifest()) == 2
     assert "no case named" in capsys.readouterr().err
+
+
+def test_cases_are_named_by_case_repeated_or_by_cases_as_the_specification_writes_it():
+    for argv in (["--case", "C1", "--case", "C9"], ["--cases", "C1", "C9"], ["--cases", "C1,C9"],
+                 ["--cases", "C1,", "--case", "C9", "--case", "C1"]):  # fmt: skip
+        assert agent._case_names(parse(["agent", *argv])) == ["C1", "C9"], argv
+    assert agent._case_names(parse(["counterfactual"])) is None
+
+
+def failing_newest(monkeypatch, refuse):
+    """The worker refuses a tick's own measurement (never a `look_again`) of a scene captured on a
+    date in `refuse` ({"YYYY-MM-DD": which calls of that scene, from 1, are refused}), with
+    `worker_timeout`, as a deployed worker timing out on a cold read would."""
+    from common import vision_client
+
+    original, seen = driver.MeasureLog.tagged, {}
+
+    def tagged(self, kind, measure):
+        def call(site, scene, *args, **kwargs):
+            day = str(scene.get("captured_at"))[:10]
+            if kind == "tick" and day in refuse:
+                seen[day] = seen.get(day, 0) + 1
+                if refuse[day](seen[day]):
+                    raise vision_client.VisionError("worker_timeout", "the test's worker times out")
+            return measure(site, scene, *args, **kwargs)
+
+        return original(self, kind, call)
+
+    monkeypatch.setattr(driver.MeasureLog, "tagged", tagged)
+    return seen
+
+
+def test_a_newest_scene_the_worker_did_not_measure_is_neither_the_gates_result_nor_the_agents(
+        tmp_path, monkeypatch):  # fmt: skip
+    # C1's newest scene (31 August) times out on its second repeat; C3's (24 December) every time.
+    failing_newest(monkeypatch, {"2024-08-31": lambda k: k == 2, "2024-12-24": lambda k: True})
+    code, run = run_main(["agent", "--synthetic", "--repeats", "3", "--case", "C1", "--case", "C3"], tmp_path)
+    assert code == 1  # a failed check, never a quiet 0
+    cases = run["results"]["cases"]
+    c1 = cases["C1"]["runs"]
+    assert len(c1) == 3  # the timeout did not stop the repeats after it
+    assert [(r["code"], r["error"], r["agent_called"]) for r in c1] == [
+        ("reported", None, True), (None, "worker_timeout", False), ("reported", None, True)]
+    assert cases["C1"]["included"] and cases["C1"]["gate"] == "reported"
+    # C3 was never measured: not a gate that held, and not counted as one.
+    assert cases["C3"]["gate"] is None and not cases["C3"]["included"] and len(cases["C3"]["runs"]) == 3
+    s = run["summary"]
+    assert (s["runs"], s["not_measured_runs"], s["gate_closed"]) == (6, 4, 0)
+    # The agent answered every time it was asked: the timeouts are not its failures.
+    assert s["recall_real"] == 1.0 and s["failed_closed_task_runs"] == 0
+    matrix = run["results"]["scores"]["agent"]["confusion"]
+    assert matrix["real"] == {"real": 2, "artefact": 0, "failed_closed": 0}
+    checks = {c["name"]: c for c in run["checks"]}
+    assert not checks["C1: newest scene measured"]["pass"] and checks["C1: newest scene measured"]["got"] == (
+        "2 (worker_timeout)")
+    assert not checks["C3: newest scene measured"]["pass"]
+    # The printed table says the same: C1 two real, one not measured.
+    assert "| C1 | real | network | reported | 3 | 2 | 0 | 0 | 1 |" in agent.agent_markdown(run)
+
+
+def test_a_counterfactual_case_the_worker_did_not_measure_is_not_replaced_by_its_stand_in(
+        tmp_path, monkeypatch):  # fmt: skip
+    failing_newest(monkeypatch, {"2019-12-26": lambda k: True})  # C10's smoke scene
+    code, run = run_main(["counterfactual", "--synthetic", "--repeats", "1", "--arms", "a"], tmp_path)
+    cases = run["results"]["cases"]
+    assert code == 1 and list(cases) == ["C1", "C10"]  # C4 did not stand in for a worker timeout
+    assert cases["C10"]["gate"] is None and "replaced_by" not in cases["C10"]
+    assert [c["name"] for c in run["checks"] if not c["pass"]] == ["C10: newest scene measured"]
+    assert "| C10 | newest scene not measured |" in agent.counterfactual_markdown(run)
 
 
 # --- the real city's refusals ------------------------------------------------------------------------------
@@ -254,6 +332,48 @@ def test_a_changed_etag_refuses_the_run_before_anything_is_measured(tmp_path, ca
     assert code == 1 and "input changed" in capsys.readouterr().err
 
 
+@pytest.fixture
+def deployed(monkeypatch, tmp_path):
+    """The deployed worker, scripted as Q2a's replay tests script it (every call recorded), the
+    manifest's pinned ETags answered by a fake HEAD, and a small fixture A inside Sydney's box."""
+    from common import vision_client
+
+    import vision_benchmark
+
+    manifest = vision_eval.load_manifest()
+    pinned = vision_runs.pinned_etags(manifest)
+    monkeypatch.setattr(vision_runs, "default_head", lambda url: {"etag": pinned[url], "bytes": 1})
+    calls: list = []
+    monkeypatch.setattr(vision_client, "measure", scripted_worker(calls))
+    monkeypatch.setattr(vision_benchmark, "lambda_client", lambda arn: object())
+    monkeypatch.setattr(vision_benchmark, "deployed_code_sha256", lambda client, arn: "deployed-code")
+    stations = [{"id": f"n{i}", "name": f"S{i}", "kind": "station", "lon": 151.0 + 0.1 * i, "lat": -33.8}
+                for i in range(5)]  # fmt: skip
+    way = {"id": "w1", "points": [[151.0, -33.8], [151.4, -33.8]], "tunnel": False, "name": "L"}
+    network = {"ways": [way], "stations": stations, "pois": [], "fetched_at": "2026-10-17T03:00:00+00:00"}
+    path = tmp_path / "sydney.json"
+    path.write_text(json.dumps(network), encoding="utf-8")
+    return {"calls": calls, "network": path}
+
+
+@pytest.mark.parametrize("argv", [
+    ["agent", "--case", "C1", "--repeats", "1"],
+    ["counterfactual", "--case", "C1", "--repeats", "1", "--arms", "a"],
+    ["stability"],
+])  # fmt: skip
+def test_through_the_deployed_worker_every_site_id_is_eval_and_the_run_file_names_no_arn(deployed, tmp_path,
+                                                                                         argv):  # fmt: skip
+    code, run = run_main([*argv, "--worker", DEPLOYED_ARN, "--network", str(deployed["network"])],
+                         tmp_path / "runs")  # fmt: skip
+    assert code == 0 and deployed["calls"] and all(check["pass"] for check in run["checks"])
+    # Every site id the deployed worker was sent says it is the evaluation's, never production's...
+    assert {call["site"] for call in deployed["calls"]} == {"eval-sydney"}
+    # ...and the run file names the worker's Region and code, never its ARN or the account.
+    assert run["worker"] == {"kind": "deployed", "region": "us-west-2", "code_sha256": "deployed-code"}
+    text = json.dumps(run)
+    assert "arn:aws" not in text and "123456789012" not in text
+
+
 def test_without_a_worker_the_real_city_is_refused(capsys):
     assert agent.main(parse(["agent"]), vision_eval.load_manifest()) == 2
     assert "--worker" in capsys.readouterr().err
@@ -275,7 +395,9 @@ def test_only_the_re_measurement_differs_between_the_arms_and_the_verdict_follow
     code, run = counterfactual_run
     assert code == 0 and run["kind"] == "eval-counterfactual" and all(c["pass"] for c in run["checks"])
     cases = run["results"]["cases"]
-    assert list(cases) == ["C1", "C10"]  # C10 passed the gate on the synthetic city: C4 not needed
+    # The synthetic city has no smoke: C10's gate holds against its clear baseline, and C4 stands in.
+    assert list(cases) == ["C1", "C10", "C4"]
+    assert cases["C10"]["replaced_by"] == "C4" and cases["C4"]["stands_in_for"] == "C10"
     c1 = cases["C1"]["agent"]
     assert "station_count" in c1["moved"]  # the new line's five stations
     measured, baseline = c1["arms"]["measured"], c1["arms"]["baseline"]
@@ -289,37 +411,59 @@ def test_only_the_re_measurement_differs_between_the_arms_and_the_verdict_follow
     assert first[1]["station_count"] == c1["baseline"]["station_count"]
     assert c1["score"]["pairs"] == 2 and c1["score"]["flips"] == 2
     s = run["summary"]
+    assert cases["C4"]["agent"]["score"]["pairs"] == 2 and cases["C10"]["agent"]["score"] is None
     assert (s["agent_pairs"], s["agent_flips"], s["agent_called_look_again"]) == (4, 4, 8)
 
 
 def test_the_gate_arm_calls_the_agent_above_the_floor_and_no_model_below_it(counterfactual_run):
     run = counterfactual_run[1]
-    for name in ("C1", "C10"):
+    for name in ("C1", "C4"):
         gate = run["results"]["cases"][name]["gate_level"]
         above, below = gate["above"], gate["below"]
         assert above["coverage"] == pytest.approx(0.62, abs=1e-3)
         assert below["coverage"] == pytest.approx(0.58, abs=1e-3)
         assert above["agent_called"] and above["model_calls"] >= 1
         assert below["code"] == "below_floor" and not below["agent_called"] and below["model_calls"] == 0
-        assert not below["finding"] and gate["flipped"]
+        assert not below["finding"] and gate["flipped"] and gate["measured"]
     assert run["results"]["cases"]["C1"]["gate_level"]["above"]["finding"] is True
+    # C4 stood in for C10, so the rule's two pairs are C1's and C4's: C10's arm (b) never ran, and
+    # no model was asked for C10 at all (its gate held in arm (a)).
+    assert "skipped" in run["results"]["cases"]["C10"]["gate_level"]
+    assert not [r for r in run["agent"]["responses"] if r["case"] == "C10"]
     assert (run["summary"]["gate_pairs"], run["summary"]["gate_flips"]) == (2, 2)
 
 
-def test_c4_stands_in_when_c10_does_not_pass_the_gate(tmp_path, monkeypatch):
-    original = agent.synthetic_entry
-
-    def clear_baseline(manifest, name, seed):
-        entry = original(manifest, name, seed)
-        return {**entry, "cloud": 0.0} if name.startswith("sydney-2019-11") else entry
-
-    monkeypatch.setattr(agent, "synthetic_entry", clear_baseline)
-    code, run = run_main(["counterfactual", "--synthetic", "--repeats", "1", "--case", "C10", "--case", "C4",
-                          "--arms", "a"], tmp_path)  # fmt: skip
+def test_c4_stands_in_when_c10_does_not_pass_the_gate_and_its_gate_pair_replaces_c10s(tmp_path):
+    code, run = run_main(["counterfactual", "--synthetic", "--repeats", "1", "--cases", "C10,C4"], tmp_path)
     cases = run["results"]["cases"]
     assert cases["C10"]["replaced_by"] == "C4" and not cases["C10"]["included"]
     assert cases["C4"]["stands_in_for"] == "C10" and cases["C4"]["included"]
-    assert run["summary"]["gate_pairs"] == 0 and code == 0
+    assert "skipped" in cases["C10"]["gate_level"] and cases["C4"]["gate_level"]["measured"]
+    assert run["summary"]["gate_pairs"] == 1 and code == 0  # one pair for the two, never two
+
+
+def test_the_stand_in_named_alone_runs_as_its_own_case(tmp_path):
+    code, run = run_main(["counterfactual", "--synthetic", "--repeats", "1", "--case", "C4", "--arms", "a"],
+                         tmp_path)  # fmt: skip
+    cases = run["results"]["cases"]
+    assert code == 0 and list(cases) == ["C4"] and "stands_in_for" not in cases["C4"]
+    assert cases["C4"]["agent"]["score"]["pairs"] == 1 and run["summary"]["agent_pairs"] == 1
+
+
+def test_a_gate_pair_not_measured_at_its_coverage_fails_its_check_and_is_not_counted(tmp_path, monkeypatch):
+    # A scene already under the target cannot be clouded to it: that side is not measured, and the
+    # pair says nothing about the gate (it once passed as "the gate did not flip").
+    monkeypatch.setattr(agent, "GATE_COVERAGES", {"above": 1.01, "below": 1.005})
+    code, run = run_main(["counterfactual", "--synthetic", "--repeats", "1", "--case", "C1", "--arms", "b"],
+                         tmp_path)  # fmt: skip
+    gate = run["results"]["cases"]["C1"]["gate_level"]
+    assert code == 1 and not gate["measured"]
+    for side in ("above", "below"):
+        assert not gate[side]["measured"] and not gate[side]["at_target"]
+        assert "already under" in gate[side]["error"] and not gate[side]["agent_called"]
+    checks = {c["name"]: c["pass"] for c in run["checks"]}
+    assert checks == {"C1: measured either side of the floor": False, "C1: no model below the floor": True}
+    assert (run["summary"]["gate_pairs"], run["summary"]["gate_flips"]) == (0, 0)
 
 
 # --- stability (E3) -----------------------------------------------------------------------------------------

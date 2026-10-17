@@ -1433,11 +1433,13 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    py -3.11 scripts\vision_eval.py agent --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
    ```
 
-   It exits 1 when an unconditional case never reached the agent or a failure case did not fail
-   closed as it must; `--case C1` (repeatable) re-runs one. Without Bedrock access every case ends
-   `bedrock_error`, counted, never dropped: check the summary's `failed_closed_task_runs` before
-   committing a run that only measured that. To run the worker in this process instead, add `$C`
-   and pass `--worker in-process`; without a cache it is refused off an EC2 instance in us-west-2.
+   It exits 1 when an unconditional case never reached the agent, a failure case did not fail
+   closed as it must, or the worker did not measure a case's newest scene (the run keeps its code
+   and scores that repeat nowhere); `--case C1` (repeatable) re-runs one. Without Bedrock access
+   every case ends `bedrock_error`, counted, never dropped: check the summary's
+   `failed_closed_task_runs` before committing a run that only measured that. To run the worker
+   in this process instead, add `$C` and pass `--worker in-process`; without a cache it is refused
+   off an EC2 instance in us-west-2.
 7. **The counterfactuals (2.6.6)**: C1 and C10 (C4 in C10's place if C10 does not pass the gate),
    five repeats per arm with only `look_again`'s numbers differing, and the same scene clouded to
    coverage 0.62 and 0.58 in this process (arm (b), which needs the cache). About 22 model runs.
@@ -1450,8 +1452,8 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    py -3.11 scripts\vision_eval.py counterfactual --worker $W --cache $HOME\cogs --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
    ```
 
-   Its checks hold that no model was asked below the floor. Arm (a)'s `baseline` arm is a
-   constructed tool output, and the report says so.
+   Its checks hold that both sides were measured at their coverage and that no model was asked
+   below the floor. Arm (a)'s `baseline` arm is a constructed tool output, and the report says so.
 8. **E3, stability over the year**: the manifest's `year-2024` set (17 scenes) through the
    production rule, triage off, on one network, in this process so the built-up masks can be
    compared: about 1 GB read once into the cache, so run it on the Graviton instance or another

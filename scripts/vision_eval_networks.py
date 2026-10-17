@@ -13,17 +13,21 @@ run file records what each derivation added and removed by id. The derivations:
   (an end of a way no other way touches), outward along its last kilometre.
 - `remove_line`: A less one line (C1d): the ways of one name, and the stations that snap to them
   and to no other way; the smallest such line with at least `min_stations` stations.
-- `add_served_station`: A plus one station (C1e) between two stations of one way, inside ground
-  they already serve: the station count moves while the served share barely does.
+- `add_served_station`: A plus one station (C1e) between two neighbouring stations of one way
+  (no station between them), inside ground they already serve: the station count moves while
+  the served share barely does.
 - `duplicate_stations`: B', A with `stations` stations (three for C2) mapped twice under new ids,
   as a tagging change does: the station count moves, the city does not.
 
 A derived network keeps A's `source`, `endpoint` and `query_url`, recounts `counts`, and is stamped
 `fetched_at` one day after A's: it is a later copy of the map, so the decision ring's
 `network_changed` says the network moved, as it would in production. Added elements have ids
-starting `eval-` and names saying they are the evaluation's, so nothing derived passes for
-OpenStreetMap's. No numpy or OpenCV: distances are metres on a local plane about the site's
-centre, which is within a few metres over a city's few tens of kilometres.
+starting `eval-`, and the run file's change record lists them, so nothing derived passes for
+OpenStreetMap's. A new line's stations and way and the infill station are named as the
+evaluation's; an extension's way takes the extended line's name (it is that line, longer), and a
+duplicate its station's name (a tagging change copies it). No numpy or OpenCV: distances are
+metres on a local plane about the site's centre, which is within a few metres over a city's few
+tens of kilometres.
 """
 
 from __future__ import annotations
@@ -60,6 +64,9 @@ FARTHEST_GRID = 120
 CELL_M = 500.0
 # The infill station goes between two stations of one way this far apart (two reaches at most).
 INFILL_GAP_M = (600.0, 2 * REACH_M)
+# ...and at least this far from every station, so it is never one already mapped under a new id
+# (C2's construction, an artefact). Half the smallest gap, less slack for a way that bends.
+INFILL_CLEARANCE_M = 250.0
 # A derived copy is fetched this long after A.
 LATER = timedelta(days=1)
 
@@ -404,9 +411,11 @@ def remove_line(network: dict, polygon: list, *, min_stations: int = 3,
 
 def add_served_station(network: dict, polygon: list, *, gap_m: tuple[float, float] = INFILL_GAP_M,
                        snap_m: float = SNAP_M) -> tuple[dict, dict]:  # fmt: skip
-    """C1e: one station between two neighbouring stations that snap to the same way, `gap_m` apart
-    (the pair nearest the middle of that range), at the way point nearest their midpoint: ground
-    both already serve. The station count moves by one; the served share barely moves."""
+    """C1e: one station between two neighbouring stations that snap to the same way (next to each
+    other along it, so no station lies between), `gap_m` apart (the pair nearest the middle of
+    that range), at the way point nearest their midpoint, and INFILL_CLEARANCE_M from every
+    station: ground both already serve. The station count moves by one; the served share barely
+    moves."""
     plane = plane_for(polygon)
     ways = network.get("ways") or []
     index = WayIndex(ways, plane)
@@ -418,28 +427,49 @@ def add_served_station(network: dict, polygon: list, *, gap_m: tuple[float, floa
         if near:
             located.append((str(s["id"]), (x, y), min(near, key=lambda i: (near[i], i))))
     middle = (gap_m[0] + gap_m[1]) / 2
+    # Each way's stations in order along it: only stations next to each other make a pair.
+    along: dict[int, list] = {}
+    for sid, p, wi in located:
+        along.setdefault(wi, []).append((_along(p, [plane.xy(*q[:2]) for q in ways[wi]["points"]]), sid, p))
     pairs = []
-    for a in range(len(located)):
-        for b in range(a + 1, len(located)):
-            (ida, pa, wa), (idb, pb, wb) = located[a], located[b]
+    for wi, row in along.items():
+        row.sort()
+        for (_ta, ida, pa), (_tb, idb, pb) in zip(row, row[1:], strict=False):
             d = math.dist(pa, pb)
-            if wa == wb and gap_m[0] <= d <= gap_m[1]:
-                pairs.append((abs(d - middle), ida, idb, pa, pb, wa))
+            if gap_m[0] <= d <= gap_m[1]:
+                pairs.append((abs(d - middle), ida, idb, pa, pb, wi))
     if not pairs:
-        raise DeriveError(f"no two stations of one way are {gap_m[0]:g}-{gap_m[1]:g} m apart")
-    _off, ida, idb, pa, pb, wi = min(pairs)
-    mid = ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2)
-    points = [plane.xy(*p[:2]) for p in ways[wi]["points"]]
-    best = min(
-        (_project(mid, a, b) for a, b in zip(points, points[1:], strict=False)),
-        key=lambda p: math.dist(p, mid),
-    )
+        raise DeriveError(f"no two neighbouring stations of one way are {gap_m[0]:g}-{gap_m[1]:g} m apart")
+    everyone = [p for _sid, p, _wi in located]
+    for _off, ida, idb, pa, pb, wi in sorted(pairs):
+        mid = ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2)
+        points = [plane.xy(*p[:2]) for p in ways[wi]["points"]]
+        best = min(
+            (_project(mid, a, b) for a, b in zip(points, points[1:], strict=False)),
+            key=lambda p: math.dist(p, mid),
+        )
+        if min(math.dist(best, p) for p in everyone) >= INFILL_CLEARANCE_M:
+            break
+    else:
+        raise DeriveError(f"every gap between neighbouring stations has a station within "
+                          f"{INFILL_CLEARANCE_M:g} m")  # fmt: skip
     derived = _start(network)
     sid = new_id("n", 1)
     derived["stations"] = list(derived.get("stations") or []) + [
         _station(sid, "Evaluation infill station", plane.lonlat(*best))
     ]
     return recount(derived), change_record("add_served_station", added_stations=[sid], between=[ida, idb])
+
+
+def _along(p, points: list[tuple]) -> float:
+    """How far along the way `points` (on the plane) the way point nearest `p` is, in metres."""
+    best, best_d, walked = 0.0, math.inf, 0.0
+    for a, b in zip(points, points[1:], strict=False):
+        q = _project(p, a, b)
+        if math.dist(p, q) < best_d:
+            best, best_d = walked + math.dist(a, q), math.dist(p, q)
+        walked += math.dist(a, b)
+    return best
 
 
 def _project(p, a, b) -> tuple[float, float]:
@@ -455,7 +485,9 @@ def duplicate_stations(network: dict, polygon: list, *, stations: int = 3) -> tu
     existing = sorted(network.get("stations") or [], key=lambda s: str(s["id"]))
     if len(existing) < stations:
         raise DeriveError(f"the network has fewer than {stations} stations")
-    picks = [existing[round((k + 1) * len(existing) / (stations + 1)) - 1] for k in range(stations)]
+    # Evenly through the list, by floor: `stations` different ones even when the network has exactly
+    # that many (rounding, which halves to even, picked one station twice there).
+    picks = [existing[(k + 1) * len(existing) // (stations + 1)] for k in range(stations)]
     derived = _start(network)
     copies = []
     for k, station in enumerate(picks):

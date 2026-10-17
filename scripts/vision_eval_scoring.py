@@ -13,7 +13,8 @@ confusion matrix gives it a column of its own. A run with no Bedrock access is t
 
 **Balanced accuracy** is the mean of the per-class recalls (each a share of that class's runs), so
 the class mix cannot flatter it: the two baselines, numeric-only (every candidate that passed the
-gate reported, as with `triage: false`) and always-artefact, each score 0.5 whatever the mix.
+gate reported, as with `triage: false`) and always-artefact, each score 0.5 whatever the mix. A
+run holding one class has no balanced accuracy (not measured), only that class's recall.
 Every share carries its **Wilson 95 % interval** (`wilson`), which stays inside [0, 1] and is not
 degenerate at 0 or n, as the normal approximation is on the small n these runs have.
 """
@@ -79,8 +80,9 @@ def confusion(runs: list[dict]) -> dict:
 
 
 def class_scores(matrix: dict) -> dict:
-    """Per-class recall with its Wilson interval, and the balanced accuracy (the mean of the
-    recalls of the classes that have runs; None when neither has)."""
+    """Per-class recall with its Wilson interval, and the balanced accuracy: the mean of the two
+    recalls, None unless both classes have runs (over one class it would be that class's recall,
+    and the baselines would read 0 and 1, not 0.5)."""
     out = {}
     recalls = []
     for cls in VERDICTS:
@@ -94,7 +96,7 @@ def class_scores(matrix: dict) -> dict:
         out[f"n_{cls}"] = n
         if recall is not None:
             recalls.append(k / n)
-    out["balanced_accuracy"] = _round(sum(recalls) / len(recalls)) if recalls else None
+    out["balanced_accuracy"] = _round(sum(recalls) / len(recalls)) if len(recalls) == len(VERDICTS) else None
     out["failed_closed"] = sum((matrix.get(cls) or {}).get(FAILED_CLOSED, 0) for cls in VERDICTS)
     return out
 
@@ -214,13 +216,15 @@ def agent_scores(task_runs: list[dict], failure_runs: list[dict]) -> dict:
     return out
 
 
-def agent_summary(scores: dict, cases: int, gate_closed: int, runs: int) -> dict:
-    """The run file's flat `summary` (fixed codes to numbers) from `agent_scores`."""
+def agent_summary(scores: dict, cases: int, gate_closed: int, runs: int, not_measured: int = 0) -> dict:
+    """The run file's flat `summary` (fixed codes to numbers) from `agent_scores`; `not_measured`
+    counts the runs whose newest scene the worker did not measure (in `runs`, scored nowhere)."""
     agent, tools, money = scores["agent"], scores["tool_use"], scores["costs"]
     summary = {
         "cases": cases,
         "gate_closed": gate_closed,
         "runs": runs,
+        "not_measured_runs": not_measured,
         "recall_real": agent["recall_real"],
         "recall_artefact": agent["recall_artefact"],
         "balanced_accuracy": agent["balanced_accuracy"],
@@ -249,7 +253,8 @@ def agent_counterfactual(arms: dict[str, list[dict]]) -> dict:
     """Arm (a): `arms` holds {"measured": runs, "baseline": runs}, the same repeats of one case
     with only `look_again`'s numbers differing. Repeat k of one arm is paired with repeat k of the
     other; a pair counts when both called `look_again`, and flips when their labels differ.
-    Returns per arm how many repeats called it and their verdicts, and the pairs and flips."""
+    Returns per arm how many repeats called it and their verdicts (of the repeats that reached the
+    agent: one whose scene was not measured has no verdict), and the pairs and flips."""
     measured, baseline = arms.get("measured") or [], arms.get("baseline") or []
     called = {name: [r for r in runs if "look_again" in (r.get("tools") or [])]
               for name, runs in (("measured", measured), ("baseline", baseline))}  # fmt: skip
@@ -261,7 +266,7 @@ def agent_counterfactual(arms: dict[str, list[dict]]) -> dict:
     return {
         "repeats": {"measured": len(measured), "baseline": len(baseline)},
         "called_look_again": {name: len(runs) for name, runs in called.items()},
-        "labels": {name: dict(Counter(label(r) for r in runs))
+        "labels": {name: dict(Counter(label(r) for r in runs if r.get("agent_called", True)))
                    for name, runs in (("measured", measured), ("baseline", baseline))},  # fmt: skip
         "pairs": pairs,
         "flips": flips,
@@ -271,22 +276,25 @@ def agent_counterfactual(arms: dict[str, list[dict]]) -> dict:
 
 def gate_counterfactual(above: dict, below: dict) -> dict:
     """Arm (b): the same scene measured with coverage just above and just below the floor. Each
-    side is {"coverage", "code", "agent_called", "finding"}; the pair flips when the agent was
-    called on one side and not the other."""
+    side is {"coverage", "code", "agent_called", "finding", "at_target"}; the pair is `measured`
+    when both sides were measured at their target coverage (a side the worker did not measure says
+    nothing about the gate), and flips when the agent was called on one side and not the other."""
     flipped = bool(above.get("agent_called")) != bool(below.get("agent_called"))
-    return {"above": above, "below": below, "flipped": flipped,
+    measured = bool(above.get("at_target") and below.get("at_target"))
+    return {"above": above, "below": below, "measured": measured, "flipped": flipped,
             "finding_flipped": bool(above.get("finding")) != bool(below.get("finding"))}  # fmt: skip
 
 
 def counterfactual_summary(agent_rows: dict[str, dict], gate_rows: dict[str, dict]) -> dict:
     """The run file's `summary`: arm (a)'s pairs, how many repeats (both arms) called `look_again`,
-    and the flips; arm (b)'s pairs and flips."""
+    and the flips; arm (b)'s pairs measured either side of the floor, and their flips."""
+    measured = [row for row in gate_rows.values() if row.get("measured")]
     return {
         "agent_pairs": sum(row["pairs"] for row in agent_rows.values()),
         "agent_called_look_again": sum(sum(row["called_look_again"].values()) for row in agent_rows.values()),
         "agent_flips": sum(row["flips"] for row in agent_rows.values()),
-        "gate_pairs": len(gate_rows),
-        "gate_flips": sum(1 for row in gate_rows.values() if row["flipped"]),
+        "gate_pairs": len(measured),
+        "gate_flips": sum(1 for row in measured if row["flipped"]),
     }
 
 

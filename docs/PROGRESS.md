@@ -816,7 +816,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   the agent's re-measurement, and SCL clouded either side of the coverage floor) and `stability`
   (E3: the year set through the production rule on one network, the false-alarm rate with its
   interval, the spreads). CI runs all three scripted on the synthetic city; the live runs are the
-  operator's (submission PR Q2b; `scripts/vision_eval_agent.py`, `scripts/vision_eval_cases/`;
+  operator's (#337, submission PR Q2b; `scripts/vision_eval_agent.py`, `scripts/vision_eval_cases/`;
   [the cases](hackathon/evidence/README.md#the-agents-cases))
 
 ## Backlog / not yet scheduled

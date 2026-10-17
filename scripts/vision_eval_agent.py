@@ -21,7 +21,9 @@ it). The worker is the deployed one (`--worker <ARN>`, every site id `eval-`) or
 (`--worker in-process`), which is refused without `--cache` off an EC2 instance in us-west-2
 (`in_process_refusal`): an uncached re-measurement would run the cases out of time for the
 harness's reasons. A case whose newest scene does not pass the gate never reaches the agent; it is
-reported as such and left out of the scores (C3 and C10 are included only if they pass). Every
+reported as such and left out of the scores (C3 and C10 are included only if they pass). A newest
+scene the worker did not measure is neither the gate's result nor the agent's: that repeat keeps
+the worker's code, is scored nowhere, and fails the run's check, and the next repeat runs. Every
 Converse response is kept in the run file (`agent.responses`, the driver's recorded form), with each
 run's verdict, stop, steps, reason, time, tokens and cost in USD and AUD (the built-in price table;
 the deployed Models table is not read from an operator's machine).
@@ -33,7 +35,8 @@ measures set back to the baseline median (`baseline`, a constructed tool output)
 arm is paired with repeat k of the other. (b) The gate level, in this process: the newest scene
 with SCL clouded inside the site until the worker's coverage is 0.62, then 0.58, either side of the
 0.6 floor (`clouded_to`), all else equal: the agent is called or not, a Finding would be written or
-not; no model is asked below the floor.
+not; no model is asked below the floor. A pair counts only when both sides were measured at their
+coverage; when C4 stands in, arm (b) runs for C4 alone.
 
 **`stability`** (E3): the year set (the manifest's `sets`, in time order) through the production
 rule, triage off, the default thresholds, `history_size` 6, one network throughout: every material
@@ -552,7 +555,9 @@ def clouded_to(coverage: float | None, report: dict):
     calls) has SCL pixels inside the site rewritten to cloud (SCL_CLOUD_HIGH), a bank from the
     site's top rows down, until the share of the site the worker can measure is `coverage` (to
     one pixel): the spec's "SCL masked in-process", all else equal. `report` gets the coverage
-    before and after and the pixels clouded. ValueError when the scene is already under it.
+    before and after and the pixels clouded. A scene already under it cannot be clouded to it:
+    `report["refused"]` says so and the read raises, which the worker handler answers `internal`,
+    so that side is not measured (the harness reads the refusal here, not from the handler).
     `coverage` None leaves every read alone."""
     import numpy as np
     from vision import masks, scene
@@ -574,7 +579,10 @@ def clouded_to(coverage: float | None, report: dict):
         total, seen = int(inside.sum()), int(usable.sum())
         keep = int(round(coverage * total))
         if keep > seen:
-            raise ValueError(f"the scene's coverage {seen / max(total, 1):.4f} is already under {coverage}")
+            before = round(seen / max(total, 1), 4)
+            refused = f"the scene's coverage {before:.4f} is already under {coverage}"
+            report.update(target=coverage, coverage_before=before, refused=refused)
+            raise ValueError(report["refused"])
         drop = np.flatnonzero(usable.ravel())[: seen - keep]
         scl.reshape(-1)[drop] = SCL_CLOUD_HIGH  # a fresh copy is contiguous: reshape is a view
         site.bands["scl"] = scl
@@ -605,6 +613,9 @@ COUNTERFACTUAL_STAND_IN = {"C10": "C4"}
 COUNTERFACTUAL_ARMS = ("measured", "baseline")
 # Arm (b)'s two coverages, either side of the rail floor (0.6).
 GATE_COVERAGES = {"above": 0.62, "below": 0.58}
+# How near a side's measured coverage must be to its target to count: the clouding is exact to a
+# pixel and the worker rounds coverage to 4 places, so this is slack for rounding only.
+GATE_COVERAGE_TOLERANCE = 0.001
 # The counterfactual's scripted model: re-measure at the topic's own reach, then answer by what came
 # back (decide_by_look_again), so CI shows a verdict that follows the tool's numbers.
 COUNTERFACTUAL_SCRIPT = ({"tool": "look_again", "input": {"reach_m": 1000}}, {"decide_by": "look_again"})
@@ -824,6 +835,9 @@ def run_row(case: dict, repeat: int, result: dict, outcome: dict | None, site_id
         "cost_aud": aud,
         "measured": measured.get("metrics"),
         "measured_ok": measured.get("ok"),
+        # The worker's code when it refused the newest scene (a row with no decision `code` was not
+        # measured: neither the gate's result nor the agent's, and never scored).
+        "error": measured.get("code"),
     }
 
 
@@ -836,10 +850,18 @@ def _responses(result: dict, case: str, repeat: int, arm: str | None = None) -> 
     return [{**tag, **talk} for talk in result.get("responses") or []]
 
 
+def not_measured(row: dict) -> bool:
+    """Whether a run's newest tick decided nothing (the worker refused the scene, or the tick had no
+    time to measure it): the gate was not tried and the agent not asked, so the run is neither."""
+    return row["code"] is None
+
+
 def run_case(case: dict, setup: Setup, repeats: int) -> tuple[dict, list[dict]]:
     """One case: its history, its networks, then its newest tick `repeats` times from the same state
-    (once when the gate stays shut: the measurement repeats exactly, and no model is asked). Returns
-    the case's results and the Converse responses kept."""
+    (once when the gate stays shut: the measurement repeats exactly, and no model is asked). A
+    repeat whose newest scene was not measured is kept with the worker's code and the next one
+    runs: the gate is the first measured repeat's. Returns the case's results and the Converse
+    responses kept."""
     out = {"case": case["case"], "kind": case["kind"], "title": case["title"], "expected": case["expected"],
            "driven_by": case["driven_by"], "conditional": case["conditional"], "base": case.get("base"),
            "history": [], "newest": dict(case["newest"]), "networks": {}, "gate": None, "included": False,
@@ -862,11 +884,13 @@ def run_case(case: dict, setup: Setup, repeats: int) -> tuple[dict, list[dict]]:
         for repeat in range(repeats):
             result = newest.tick(before, spec, n=n)
             outcome = _outcome(result.pop("state"), newest.site_id)
-            out["runs"].append(run_row(case, repeat, result, outcome, newest.site_id))
+            row = run_row(case, repeat, result, outcome, newest.site_id)
+            out["runs"].append(row)
             responses += _responses(result, case["case"], repeat)
-            if repeat == 0:
-                out["gate"] = out["runs"][0]["code"]
-                out["included"] = outcome is not None
+            if not_measured(row):
+                continue
+            if out["gate"] is None:
+                out["gate"], out["included"] = row["code"], outcome is not None
             if outcome is None:
                 break
         out["converse_errors"] = [error for talk in agent.conversations for error in talk.errors]
@@ -884,11 +908,15 @@ def run_agent(cases: list[dict], setup: Setup, repeats: int) -> tuple[dict, list
         result, talks = run_case(case, setup, repeats)
         by_case[case["case"]] = result
         responses += talks
-    task_runs = [run for c in by_case.values() if c["kind"] == "task" and c["included"] for run in c["runs"]]
-    failure_runs = [run for c in by_case.values() if c["kind"] == "failure" for run in c["runs"]]
+    # Only the runs that reached the agent are scored: a newest scene the worker did not measure is
+    # the harness's failure, never the agent's (its check fails instead).
+    task_runs = [run for c in by_case.values() if c["kind"] == "task" and c["included"] for run in c["runs"]
+                 if run["agent_called"]]  # fmt: skip
+    failure_runs = [run for c in by_case.values() if c["kind"] == "failure" for run in c["runs"]
+                    if not not_measured(run)]  # fmt: skip
     scores = scoring.agent_scores(task_runs, failure_runs)
-    gate_closed = sum(1 for c in by_case.values()
-                      if c["kind"] == "task" and not c["included"] and not c["error"])  # fmt: skip
+    # A case the gate kept from the agent: its newest scene measured, with a code that is not triage's.
+    gate_closed = sum(1 for c in by_case.values() if c["kind"] == "task" and gate_held(c))
     results = {
         "cases": by_case,
         "scores": scores,
@@ -896,7 +924,9 @@ def run_agent(cases: list[dict], setup: Setup, repeats: int) -> tuple[dict, list
         "history": {"measured": setup.memo.misses, "reused": setup.memo.hits},
     }
     summary = scoring.agent_summary(scores, cases=len(by_case), gate_closed=gate_closed,
-                                    runs=sum(len(c["runs"]) for c in by_case.values()))  # fmt: skip
+                                    runs=sum(len(c["runs"]) for c in by_case.values()),
+                                    not_measured=sum(1 for c in by_case.values() for run in c["runs"]
+                                                     if not_measured(run)))  # fmt: skip
     results["scored"] = {"task_runs": len(task_runs), "failure_runs": len(failure_runs)}
     return results, responses, agent_checks(by_case), summary
 
@@ -906,7 +936,7 @@ def c6_observed(case: dict | None) -> dict | None:
     with which verdicts."""
     if not case or not case.get("runs"):
         return None
-    runs = case["runs"]
+    runs = [run for run in case["runs"] if not not_measured(run)]
     return {
         "runs": len(runs),
         "look_again_failed": sum(1 for r in runs if r["look_again_failed"]),
@@ -915,18 +945,32 @@ def c6_observed(case: dict | None) -> dict | None:
     }
 
 
+def measured_check(name: str, runs: list[dict]) -> dict | None:
+    """A failed check when any repeat's newest scene was not measured, naming the worker's codes."""
+    missed = [run for run in runs if not_measured(run)]
+    if not missed:
+        return None
+    codes = ", ".join(sorted({str(run["error"] or "no decision") for run in missed}))
+    return {"name": f"{name}: newest scene measured", "expected": len(runs),
+            "got": f"{len(runs) - len(missed)} ({codes})", "pass": False}  # fmt: skip
+
+
 def agent_checks(by_case: dict) -> list[dict]:
-    """A case that could not be built; an unconditional task case that never reached the agent; a
-    failure case (C7-C9) that did not end as required, in any repeat."""
+    """A case that could not be built; a repeat whose newest scene the worker did not measure; an
+    unconditional task case that never reached the agent; a failure case (C7-C9) that did not end
+    as required, in any measured repeat."""
     checks = []
     for name, case in by_case.items():
         if case["error"]:
             checks.append({"name": f"{name}: built", "expected": True, "got": case["error"], "pass": False})
             continue
+        missed = measured_check(name, case["runs"])
+        if missed:
+            checks.append(missed)
         if case["kind"] == "task" and case["conditional"] is None:
             checks.append({"name": f"{name}: reached the agent", "expected": True, "got": case["included"],
                            "pass": bool(case["included"])})  # fmt: skip
-        required = [run for run in case["runs"] if run["expected_stop"]]
+        required = [run for run in case["runs"] if run["expected_stop"] and not not_measured(run)]
         if required:
             ok = all(run["verdict"] == "artefact" and run["stop"] == run["expected_stop"] for run in required)
             got = ", ".join(sorted({str(run["stop"]) for run in required}))
@@ -976,8 +1020,11 @@ def set_back(result, baseline: dict, moved) -> object:
     return out
 
 
-def counterfactual_case(case: dict, setup: Setup, repeats: int, arms: tuple[str, ...]) -> tuple[dict, list]:
-    """2.6.6 for one case: arm (a)'s two arms of `repeats` each, and arm (b)'s two coverages."""
+def counterfactual_case(case: dict, setup: Setup, repeats: int, arms: tuple[str, ...],
+                        stand_in: str | None = None) -> tuple[dict, list]:  # fmt: skip
+    """2.6.6 for one case: arm (a)'s two arms of `repeats` each, and arm (b)'s two coverages. When
+    arm (a) finds the gate holding and `stand_in` will run in the case's place, arm (b) is left to
+    the stand-in: the rule counts one gate pair for the two, and asks no model for the one replaced."""
     out = {"case": case["case"], "gate": None, "included": False, "agent": None, "gate_level": None,
            "error": None}  # fmt: skip
     responses: list[dict] = []
@@ -995,7 +1042,9 @@ def counterfactual_case(case: dict, setup: Setup, repeats: int, arms: tuple[str,
             out["agent"], talks = agent_arms(case, setup, store, before, spec, n, repeats)
             responses += talks
             out["gate"], out["included"] = out["agent"]["gate"], out["agent"]["included"]
-        if "b" in arms:
+        if "b" in arms and stand_in and gate_held(out):
+            out["gate_level"] = {"skipped": f"the gate held ({out['gate']}): {stand_in} stands in"}
+        elif "b" in arms:
             out["gate_level"] = gate_arms(case, setup, nets, spec, n)
     except (networks.DeriveError, driver.ReplayRefused, KeyError, ValueError) as exc:
         out["error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -1004,9 +1053,17 @@ def counterfactual_case(case: dict, setup: Setup, repeats: int, arms: tuple[str,
     return out, responses
 
 
+def gate_held(result: dict) -> bool:
+    """Whether arm (a) measured the newest scene and the gate kept it from the agent (a decision
+    code that is not triage's), as against a scene the worker did not measure at all."""
+    return not result["included"] and not result["error"] and result["gate"] is not None
+
+
 def agent_arms(case, setup, store, before, spec, n, repeats) -> tuple[dict, list]:
-    """Arm (a): `measured` first (its first repeat's verdict gives the baseline and the moved
-    measures), then `baseline`; the case's model, with the counterfactual script when scripted."""
+    """Arm (a): `measured` first (its first measured repeat's verdict gives the baseline and the
+    moved measures), then `baseline`; the case's model, with the counterfactual script when
+    scripted. A repeat whose newest scene was not measured is kept, with the worker's code, and
+    the next one runs."""
     runs: dict[str, list[dict]] = {}
     responses: list[dict] = []
     look_memo = MemoMeasure(setup.measure)
@@ -1023,12 +1080,15 @@ def agent_arms(case, setup, store, before, spec, n, repeats) -> tuple[dict, list
         for repeat in range(repeats):
             result = tick.tick(before, spec, n=n)
             outcome = _outcome(result.pop("state"), tick.site_id)
-            runs[arm].append(run_row(case, repeat, result, outcome, tick.site_id))
+            row = run_row(case, repeat, result, outcome, tick.site_id)
+            runs[arm].append(row)
             responses += _responses(result, case["case"], repeat, arm)
-            if arm == "measured" and repeat == 0:
+            if not_measured(row):
+                continue
+            if arm == "measured" and out["gate"] is None:
                 entry = (result.get("decisions") or [{}])[0]
                 verdict = {"baseline": entry.get("baseline") or {}, "moved": list(entry.get("moved") or [])}
-                out.update(gate=runs[arm][0]["code"], included=outcome is not None, **verdict)
+                out.update(gate=row["code"], included=outcome is not None, **verdict)
             if outcome is None:
                 break
         if not out["included"]:
@@ -1060,11 +1120,16 @@ def gate_arms(case: dict, setup: Setup, nets: dict, spec, n: int) -> dict:
                 result = tick.tick(before, spec, n=n)
             outcome = _outcome(result.pop("state"), tick.site_id)
             measured = next((m for m in result.get("measurements") or [] if m.get("kind") == "tick"), {})
+            got = (measured.get("metrics") or {}).get("coverage")
             sides[side] = {
                 "target": coverage,
-                "coverage": (measured.get("metrics") or {}).get("coverage"),
+                "coverage": got,
                 "clouded": report,
                 "measured": bool(measured.get("ok")),
+                "error": report.get("refused") or measured.get("code"),
+                # Measured, and where it was meant to be: only then does the side say what the gate did.
+                "at_target": bool(measured.get("ok")) and isinstance(got, int | float)
+                and abs(got - coverage) <= GATE_COVERAGE_TOLERANCE,
                 "code": (result.get("codes") or [None])[0],
                 "agent_called": outcome is not None,
                 "model_calls": (outcome or {}).get("model_calls", 0),
@@ -1080,19 +1145,23 @@ def run_counterfactual(cases: list[dict], setup: Setup, repeats: int, arms: tupl
     """2.6.6 over `cases` (C1 and C10 by default): a case that does not pass the gate is replaced
     by its stand-in (C10 by C4). Returns (results, responses, checks, summary)."""
     by_name = {case["case"]: case for case in cases}
+    stands_for = {stand_in: name for name, stand_in in COUNTERFACTUAL_STAND_IN.items()}
     done, responses = {}, []
     for case in cases:
-        if case["case"] not in COUNTERFACTUAL_CASES and case["case"] in COUNTERFACTUAL_STAND_IN.values():
-            continue  # a stand-in runs only in place of the case it stands in for
-        result, talks = counterfactual_case(case, setup, repeats, arms)
+        if stands_for.get(case["case"]) in by_name:
+            continue  # a stand-in runs only in place of the case it stands in for, when both are asked
         stand_in = COUNTERFACTUAL_STAND_IN.get(case["case"])
-        if "a" in arms and not result["included"] and not result["error"] and stand_in in by_name:
+        stand_in = stand_in if stand_in in by_name and "a" in arms else None
+        result, talks = counterfactual_case(case, setup, repeats, arms, stand_in=stand_in)
+        responses += talks
+        # Only a gate that held hands the case on: a scene the worker did not measure is a failed check.
+        if stand_in and gate_held(result):
             result["replaced_by"] = stand_in
             done[case["case"]] = result
             result, talks = counterfactual_case(by_name[stand_in], setup, repeats, arms)
             result["stands_in_for"] = case["case"]
+            responses += talks
         done[result["case"]] = result
-        responses += talks
     agent_rows = {name: r["agent"]["score"] for name, r in done.items()
                   if r.get("agent") and r["agent"]["score"]}  # fmt: skip
     gate_rows = {name: r["gate_level"] for name, r in done.items()
@@ -1101,8 +1170,15 @@ def run_counterfactual(cases: list[dict], setup: Setup, repeats: int, arms: tupl
     for name, result in done.items():
         if result["error"]:
             checks.append({"name": f"{name}: built", "expected": True, "got": result["error"], "pass": False})
+        missed = measured_check(name, [run for arm in ((result.get("agent") or {}).get("arms") or {}).values()
+                                       for run in arm])  # fmt: skip
+        if missed:
+            checks.append(missed)
         row = gate_rows.get(name)
         if row is not None:
+            sides = {side: row[side]["coverage"] for side in ("above", "below")}
+            checks.append({"name": f"{name}: measured either side of the floor", "expected": GATE_COVERAGES,
+                           "got": sides, "pass": row["measured"]})  # fmt: skip
             below = row["below"]
             ok = not below["agent_called"] and not below["finding"] and not below.get("model_calls")
             checks.append({"name": f"{name}: no model below the floor", "expected": True, "got": ok,
@@ -1313,7 +1389,17 @@ def _model(args, converse) -> dict:
             raise Refused("--agent bedrock needs --model-id: the Bedrock model id the rail topic uses")
         return {"agent_mode": "bedrock", "model_id": args.model_id,
                 "converse": converse or bedrock_converse(args.region)}  # fmt: skip
+    if args.model_id:
+        # Never a scripted run under a live run's command line: the model id would be dropped unsaid.
+        raise Refused("--model-id is the live model's: pass --agent bedrock with it (without, every case "
+                      "runs its script)")  # fmt: skip
     return {"agent_mode": "scripted", "model_id": driver.SCRIPTED_MODEL, "converse": None}
+
+
+def _case_names(args) -> list[str] | None:
+    """The cases `--case`/`--cases` named (commas also separate them), in order, once each."""
+    names = [part.strip() for value in args.case or [] for part in value.split(",") if part.strip()]
+    return list(dict.fromkeys(names)) or None
 
 
 def _network_input(path: Path) -> list[dict]:
@@ -1400,7 +1486,7 @@ def _agent_block(model: dict, responses: list[dict], region) -> dict:
 
 
 def _main_agent(args, manifest: dict, seams: dict) -> dict:
-    cases = load_cases(manifest, only=args.case)
+    cases = load_cases(manifest, only=_case_names(args))
     if args.repeats < 1:
         raise Refused("--repeats must be at least 1")
     model = _model(args, seams.pop("converse", None))
@@ -1419,7 +1505,7 @@ def _main_counterfactual(args, manifest: dict, seams: dict) -> dict:
     arms = tuple(part.strip() for part in args.arms.split(",") if part.strip())
     if not arms or set(arms) - {"a", "b"}:
         raise Refused("--arms takes a, b or a,b")
-    wanted = args.case or [*COUNTERFACTUAL_CASES, *COUNTERFACTUAL_STAND_IN.values()]
+    wanted = _case_names(args) or [*COUNTERFACTUAL_CASES, *COUNTERFACTUAL_STAND_IN.values()]
     cases = load_cases(manifest, only=list(dict.fromkeys(wanted)))
     if args.repeats < 1:
         raise Refused("--repeats must be at least 1")
@@ -1487,20 +1573,22 @@ def agent_markdown(run: dict) -> str:
         f"where {run['environment'].get('where')}",
         "",
         _row("case", "expected", "driven by", "gate", "runs", "real", "artefact", "failed closed",
-             "look_again", "cost (AUD)"),  # fmt: skip
-        "|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+             "not measured", "look_again", "cost (AUD)"),  # fmt: skip
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for name, case in run["results"]["cases"].items():
         expected, driven = case["expected"]["verdict"], case["driven_by"] or "-"
         if case["error"]:
-            lines.append(_row(name, expected, driven, f"not built: {case['error']}", 0, "", "", "", "", ""))
+            lines.append(_row(name, expected, driven, f"not built: {case['error']}", 0, *[""] * 6))
             continue
         runs = case["runs"]
         labels = [scoring.label(r) for r in runs if r["agent_called"]]
         counts = [labels.count(label) for label in scoring.LABELS]
+        missed = sum(1 for r in runs if not_measured(r))
         cost = sum(r["cost_aud"] or 0 for r in runs)
         looked = sum(1 for r in runs if "look_again" in r["tools"])
-        lines.append(_row(name, expected, driven, case["gate"], len(runs), *counts, looked, f"{cost:.4f}"))
+        lines.append(_row(name, expected, driven, case["gate"], len(runs), *counts, missed, looked,
+                          f"{cost:.4f}"))  # fmt: skip
     real = f"{_n(s['recall_real'])} [{_n(s['recall_real_wilson_low'])}, {_n(s['recall_real_wilson_high'])}]"
     artefact = (f"{_n(s['recall_artefact'])} [{_n(s['recall_artefact_wilson_low'])}, "
                 f"{_n(s['recall_artefact_wilson_high'])}]")  # fmt: skip
@@ -1508,7 +1596,8 @@ def agent_markdown(run: dict) -> str:
         "",
         f"Balanced accuracy {_n(s['balanced_accuracy'])} (recall real {real}, recall artefact {artefact}); "
         f"numeric-only {_n(s['numeric_only_balanced_accuracy'])}, always-artefact "
-        f"{_n(s['always_artefact_balanced_accuracy'])}; {s['gate_closed']} case(s) never reached the agent.",
+        f"{_n(s['always_artefact_balanced_accuracy'])}; {s['gate_closed']} case(s) never reached the agent; "
+        f"{s['not_measured_runs']} run(s) not measured.",
         f"Stability {_n(s['stability'])}; failed closed as required {s['fail_closed']} of "
         f"{s['fail_closed_runs']}; latency p50 {_n(s['latency_p50_ms'])} ms, p95 "
         f"{_n(s['latency_p95_ms'])} ms; tokens {_n(s['tokens_mean'])} a run; cost "
@@ -1527,7 +1616,8 @@ def counterfactual_markdown(run: dict) -> str:
         if case.get("error"):
             lines.append(_row(name, f"not built: {case['error']}", "", "", "", "", ""))
         elif case.get("agent") and not score:
-            lines.append(_row(name, f"gate {case['gate']}: never reached the agent", "", "", "", "", ""))
+            said = f"gate {case['gate']}: never reached the agent" if case["gate"] else None
+            lines.append(_row(name, said or "newest scene not measured", "", "", "", "", ""))
         for arm in COUNTERFACTUAL_ARMS if score else ():
             labels = score["labels"].get(arm) or {}
             counts = [labels.get(label, 0) for label in scoring.LABELS]
@@ -1571,5 +1661,3 @@ def stability_markdown(run: dict) -> str:
 
 MARKDOWN = {"agent": agent_markdown, "counterfactual": counterfactual_markdown,
             "stability": stability_markdown}  # fmt: skip
-
-

@@ -178,6 +178,46 @@ def test_add_served_station_puts_one_station_on_a_way_within_reach_of_two_others
     assert nets.WayIndex(network["ways"], plane).nearest(*plane.xy(new["lon"], new["lat"]), 1.0)
 
 
+def line_network(spacing_m: float, count: int = 9):
+    """One straight east-west way with `count` stations `spacing_m` apart, in a box around it."""
+    plane = nets.Plane((151.0, -33.8))
+    stations = [{"id": f"s{k}", "name": f"Station {k}", "kind": "station",
+                 "lon": plane.lonlat(k * spacing_m, 0.0)[0], "lat": -33.8} for k in range(count)]  # fmt: skip
+    way = {"id": "w1", "points": [[s["lon"], s["lat"]] for s in stations], "tunnel": False, "name": "L"}
+    network = nets.recount({"ways": [way], "stations": stations, "pois": [], "fetched_at": None})
+    far = count * spacing_m
+    polygon = [plane.lonlat(x, y) for x, y in ((-2000, -2000), (far + 2000, -2000), (far + 2000, 2000),
+                                               (-2000, 2000))]  # fmt: skip
+    return network, polygon
+
+
+@pytest.mark.parametrize("spacing", [650.0, 700.0, 1000.0, 1300.0])
+def test_the_infill_station_goes_between_neighbours_never_onto_a_station_already_there(spacing):
+    # Evenly spaced stations: the pair nearest 1,300 m apart once skipped the station between them,
+    # and the "infill" landed on it under a new id (C2's construction, labelled real).
+    network, polygon = line_network(spacing)
+    plane = nets.plane_for(polygon)
+    derived, change = nets.add_served_station(network, polygon)
+    new = next(s for s in derived["stations"] if s["id"] == change["added_stations"][0])
+    nearest = min(distance_m(plane, (new["lon"], new["lat"]), (s["lon"], s["lat"]))
+                  for s in network["stations"])  # fmt: skip
+    assert nearest >= nets.INFILL_CLEARANCE_M
+    a, b = (int(i[1:]) for i in change["between"])
+    assert abs(a - b) == 1  # neighbours along the line
+
+
+def test_no_infill_station_when_every_neighbouring_gap_is_under_the_smallest():
+    network, polygon = line_network(550.0)  # skipping a station would reach 1,100 m: never done
+    with pytest.raises(nets.DeriveError, match="no two neighbouring stations"):
+        nets.add_served_station(network, polygon)
+
+
+def test_duplicate_stations_takes_different_stations_when_the_network_has_exactly_that_many():
+    network, polygon = line_network(800.0, count=3)
+    _derived, change = nets.duplicate_stations(network, polygon, stations=3)
+    assert sorted(change["duplicated"]) == ["s0", "s1", "s2"]
+
+
 def test_duplicate_stations_maps_three_stations_twice_under_new_ids_at_the_same_places():
     network, polygon = city()
     derived, change = nets.derive(network, {"derive": "duplicate_stations", "stations": 3}, polygon)
@@ -240,6 +280,19 @@ def test_with_no_bedrock_access_every_run_is_counted_failed_closed_never_dropped
     assert agent["n_real"] == 5 and agent["n_artefact"] == 5 and agent["failed_closed"] == 10
     assert agent["recall_real"] == 0.0 and agent["recall_artefact"] == 0.0
     assert agent["balanced_accuracy"] == 0.0
+
+
+def test_a_run_of_one_class_has_no_balanced_accuracy_only_that_class_recall():
+    # Over one class the mean of "the recalls" is that class's recall, and the baselines would read
+    # 0 and 1: not a balanced accuracy, so not measured (the summary leaves it out).
+    for runs, cls in (([run("C2", "artefact", "artefact")] * 3, "artefact"),
+                      ([run("C1", "real", "real")], "real")):  # fmt: skip
+        scores = scoring.agent_scores(runs, [])
+        assert scores["agent"][f"recall_{cls}"] == 1.0 and scores["agent"]["balanced_accuracy"] is None
+        for kind in ("numeric_only", "always_artefact"):
+            assert scores["baselines"][kind]["balanced_accuracy"] is None
+        assert "balanced_accuracy" not in {key for key, value in scoring.agent_summary(
+            scores, cases=1, gate_closed=0, runs=len(runs)).items() if value is not None}
 
 
 def test_both_baselines_score_half_whatever_the_class_mix():
@@ -318,13 +371,26 @@ def test_agent_counterfactual_pairs_repeats_that_both_called_look_again_and_coun
     assert row["called_look_again"] == {"measured": 2, "baseline": 3}
     assert (row["pairs"], row["flips"], row["flip_rate"]) == (2, 1, 0.5)
     assert row["labels"] == {"measured": {"real": 3}, "baseline": {"artefact": 2, "real": 1}}
-    above = {"coverage": 0.62, "agent_called": True, "finding": True}
-    below = {"coverage": 0.58, "agent_called": False, "finding": False}
+    above = {"coverage": 0.62, "agent_called": True, "finding": True, "at_target": True}
+    below = {"coverage": 0.58, "agent_called": False, "finding": False, "at_target": True}
     gate = scoring.gate_counterfactual(above, below)
-    assert gate["flipped"] and gate["finding_flipped"]
-    summary = scoring.counterfactual_summary({"C1": row}, {"C1": gate})
+    assert gate["flipped"] and gate["finding_flipped"] and gate["measured"]
+    # A pair with a side the worker did not measure says nothing about the gate: never counted.
+    unmeasured = scoring.gate_counterfactual({**above, "coverage": None, "agent_called": False,
+                                              "at_target": False}, below)  # fmt: skip
+    assert not unmeasured["measured"]
+    summary = scoring.counterfactual_summary({"C1": row}, {"C1": gate, "C10": unmeasured})
     assert summary == {"agent_pairs": 2, "agent_called_look_again": 5, "agent_flips": 1, "gate_pairs": 1,
                        "gate_flips": 1}  # fmt: skip
+
+
+def test_a_repeat_that_never_reached_the_agent_has_no_label_in_its_arm():
+    called = ["look_again"]
+    measured = [run("C1", "real", "real", tools=called, agent_called=True),
+                run("C1", "real", None, None, tools=[], agent_called=False)]  # fmt: skip
+    baseline = [run("C1", "real", "artefact", tools=called, agent_called=True)] * 2
+    row = scoring.agent_counterfactual({"measured": measured, "baseline": baseline})
+    assert row["labels"]["measured"] == {"real": 1} and (row["pairs"], row["flips"]) == (1, 1)
 
 
 # --- E3 --------------------------------------------------------------------------------------------

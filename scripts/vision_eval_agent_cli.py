@@ -46,11 +46,13 @@ def add_parsers(sub, manifest_default: Path) -> None:
         p.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
         p.add_argument("--tag", help="a suffix for the run id")
         if name in ("agent", "counterfactual"):
-            p.add_argument("--case", action="append", metavar="NAME", help="only this case (repeatable)")
+            # --cases as the specification writes it: names after one flag, or with commas.
+            p.add_argument("--case", "--cases", action="extend", nargs="+", metavar="NAME",
+                           help="only these cases (repeatable; commas also separate)")  # fmt: skip
             p.add_argument("--repeats", type=int, default=DEFAULT_REPEATS)
             p.add_argument("--agent", choices=("bedrock", "scripted"), default="scripted",
                            help="the live model (with --model-id), or each case's script")  # fmt: skip
-            p.add_argument("--model-id", help="the Bedrock model id the rail topic uses")
+            p.add_argument("--model-id", help="with --agent bedrock: the Bedrock model id the topic uses")
             p.add_argument("--region", help="Bedrock's Region, as replay takes it (default: the SDK's own)")
         if name == "counterfactual":
             p.add_argument("--arms", default="a,b", help="a (the agent), b (the gate), or both: a,b")

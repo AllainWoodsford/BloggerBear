@@ -3,7 +3,7 @@
   "case": "C10",
   "kind": "task",
   "title": "Smoke that SCL does not flag",
-  "built_as": "The clear November 2019 scenes as the baseline and sydney-2019-12-26-smoke as the newest (the 2019-20 bushfire season: aerosol optical thickness 0.44 over the site), all with fixture A. Included only when the smoke scene crosses a threshold.",
+  "built_as": "The clear scenes before the smoke as the baseline (sydney-2019-11-01, -11-06 and -12-21, each with a site coverage above 0.99; the November scenes at 0.70 and 0.71 are left out, so a partly unseen site cannot move the baseline) and sydney-2019-12-26-smoke as the newest (the 2019-20 bushfire season: aerosol optical thickness 0.44 over the site), all with fixture A. Included only when the smoke scene crosses a threshold.",
   "site": "sydney",
   "history": [
     {
@@ -15,11 +15,7 @@
       "network": "A"
     },
     {
-      "scene": "sydney-2019-11-07",
-      "network": "A"
-    },
-    {
-      "scene": "sydney-2019-11-27",
+      "scene": "sydney-2019-12-21",
       "network": "A"
     }
   ],

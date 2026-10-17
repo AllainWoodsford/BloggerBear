@@ -125,15 +125,35 @@ runsheet's [evaluation runs](../../deployment-runsheet.md#the-evaluations-real-d
   the case out of its 85 s for the harness's reasons); `--agent bedrock --model-id <id> --region
   <Bedrock's Region>`. C7 and C9 run their scripts even then; C8 is asked with an invalid model id;
   C6's re-measurements are all refused. A run without Bedrock access ends every case
-  `bedrock_error`, counted as failed closed, never dropped. About 65 runs of up to five turns: a
-  few US dollars of model calls (the run file totals them in USD and AUD) and cents of worker time.
+  `bedrock_error`, counted as failed closed, never dropped. About 55 live runs of up to five turns
+  (65 in all: C7's and C9's ten run their scripts, with no Bedrock call): a few US dollars of model
+  calls (the run file totals them in USD and AUD) and cents of worker time. A repeat whose newest
+  scene the worker did not measure keeps the worker's code, is scored nowhere and fails the run's
+  check. `--case C1` (repeatable, or `--cases C1,C2`) runs some; `--model-id` without `--agent
+  bedrock` is refused.
 - **`counterfactual`** (2.6.6): C1 and C10 (C4 in C10's place when C10 does not pass the gate),
   the same worker and model as `agent`, `--repeats` 5 per arm; arm (b) clouds SCL in this process,
-  so it needs `--cache` too (or `--arms a`). About 22 runs.
+  so it needs `--cache` too (or `--arms a`). About 22 runs. Arm (b) counts a pair only when both
+  sides were measured at their coverage; a stand-in's pair replaces the case's, never adds to it.
 - **`stability`** (E3): the year set (`--set year-2024`, the manifest's 17 scenes in time order)
   in this process (`--worker in-process`, the default; with a cache, read once), so the built-up
   masks can be compared; with `--worker <ARN>` the masks' IoU is not measured, and said.
 - **`index`**: after any of the above, and `index --check` before committing.
+
+The three live runs, with `W` the deployed worker's ARN and `M` the rail topic's model id (the
+runsheet's step 4 sets both; steps 6 to 8 say what each run checks):
+
+```sh
+python scripts/vision_eval.py agent --worker "$W" --agent bedrock --model-id "$M" --region ap-southeast-2 --repeats 5 --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py counterfactual --worker "$W" --cache ~/cogs --agent bedrock --model-id "$M" --region ap-southeast-2 --repeats 5 --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py stability --cache ~/cogs --out docs/hackathon/evidence/runs
+```
+
+```powershell
+py -3.11 scripts\vision_eval.py agent --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
+py -3.11 scripts\vision_eval.py counterfactual --worker $W --cache $HOME\cogs --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
+py -3.11 scripts\vision_eval.py stability --cache $HOME\cogs --out docs\hackathon\evidence\runs
+```
 
 ## The agent's cases
 
@@ -154,7 +174,7 @@ be built honestly from imagery.
 | C3 | artefact | a summer scene against the winter baseline, one network; included only if it passes the gate | imagery |
 | C4 | artefact | a winter scene with coverage 0.667 (`sydney-2024-08-11`, a third of the city under cloud or its shadow) against clear ones | imagery |
 | C5 | artefact | C2, plus a headline whose title is an instruction to the model | network |
-| C10 | artefact | the 2019 bushfire smoke scene (aerosol optical thickness 0.44, coverage 0.995) against November 2019; included only if it passes the gate | imagery |
+| C10 | artefact | the 2019 bushfire smoke scene (aerosol optical thickness 0.44, coverage 0.995) against the clear scenes before it (2019-11-01, -11-06 and -12-21, coverage above 0.99; the two November scenes at 0.70 and 0.71 are left out); included only if it passes the gate | imagery |
 | C6 | failure | C1, every `look_again` refused (`unreadable_scene`), live: reported as observed | - |
 | C7 | failure | C1, the clock already past the deadline: `artefact`, `deadline`, no model call | - |
 | C8 | failure | C1, live with an invalid model id: `artefact`, `bedrock_error` | - |
@@ -163,10 +183,11 @@ be built honestly from imagery.
 Fixture A is the Sydney network file; every other network is made from it by code
 (`scripts/vision_eval_networks.py`), never a hand-edited copy, so the cases read the same on
 whichever copy of the map the owner captures; the run file records each network's digest and what
-was added and removed, by id. Added stations and ways have ids starting `eval-` and names saying
-they are the evaluation's. The news is constructed: each headline is on the reserved
-`news.example.com` domain under a placeholder source, so no real outlet is quoted; a model may
-weigh it less for that, and the report says so.
+was added and removed, by id. Added stations and ways have ids starting `eval-`; a new line's and
+the infill station's names say they are the evaluation's, while an extension keeps its line's
+name and a duplicate its station's, as the map itself would. The news is constructed: each
+headline is on the reserved `news.example.com` domain under a placeholder source, so no real
+outlet is quoted; a model may weigh it less for that, and the report says so.
 
 **Scoring** (`scripts/vision_eval_scoring.py`, pure functions, so a summary can be re-made from
 its `results`): a run that failed closed (Bedrock error, deadline, turn limit, malformed answer)
