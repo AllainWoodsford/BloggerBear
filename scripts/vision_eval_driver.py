@@ -176,6 +176,9 @@ SYNTHETIC_SCENES = (
 SYNTHETIC_NETWORK_FILE = ROOT / "scripts" / "tests" / "fixtures" / "synthetic-city-network.json"
 # The tile of the GeoTIFFs the synthetic city is written as.
 GEOTIFF_TILE = 64
+# The GeoKey that names a GeoTIFF's EPSG code: ProjectedCSTypeGeoKey for a UTM band (what vision/cog.py
+# reads), GeographicTypeGeoKey for a lon/lat raster such as ESA WorldCover (E8's synthetic reference).
+PROJECTED_CS_KEY, GEOGRAPHIC_TYPE_KEY = 3072, 2048
 
 # --- the sequences ----------------------------------------------------------------------------------
 
@@ -903,10 +906,12 @@ def ring_of(state: dict | None, site_id: str) -> list[dict]:
 # --- the synthetic city ---------------------------------------------------------------------------------
 
 
-def geotiff(image, transform, epsg: int, *, tile: int = GEOTIFF_TILE, nodata: str | None = None) -> bytes:
+def geotiff(image, transform, epsg: int, *, tile: int = GEOTIFF_TILE, nodata: str | None = None,
+            geokey: int = PROJECTED_CS_KEY) -> bytes:
     """`image` (2-D, uint8 or uint16) as a little-endian tiled GeoTIFF, DEFLATE without predictor,
     georeferenced by pixel scale and tiepoint with the EPSG GeoKey: the subset vision/cog.py reads,
-    as `sentinel-cogs` lays a band out (tiles after the directory)."""
+    as `sentinel-cogs` lays a band out (tiles after the directory). `geokey` is the key the EPSG code
+    goes under: GEOGRAPHIC_TYPE_KEY for a lon/lat raster (EPSG:4326), as ESA WorldCover writes it."""
     import numpy as np
 
     image = np.ascontiguousarray(image)
@@ -923,7 +928,7 @@ def geotiff(image, transform, epsg: int, *, tile: int = GEOTIFF_TILE, nodata: st
         (256, 3, [w]), (257, 3, [h]), (258, 3, [image.dtype.itemsize * 8]), (259, 3, [8]), (277, 3, [1]),
         (317, 3, [1]), (322, 3, [tile]), (323, 3, [tile]), (324, 4, [0] * len(tiles)),
         (325, 4, [len(t) for t in tiles]), (339, 3, [1]), (33550, 12, [pixel, pixel, 0.0]),
-        (33922, 12, [0.0, 0.0, 0.0, origin_x, origin_y, 0.0]), (34735, 3, [1, 1, 0, 1, 3072, 0, 1, epsg]),
+        (33922, 12, [0.0, 0.0, 0.0, origin_x, origin_y, 0.0]), (34735, 3, [1, 1, 0, 1, geokey, 0, 1, epsg]),
     ]  # fmt: skip
     if nodata is not None:
         entries.append((42113, 2, nodata.encode("ascii") + b"\x00"))
