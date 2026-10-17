@@ -875,6 +875,9 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   they were but for their links and a note that the Sydney fixture is committed (#349, whose four
   city networks now have their `NOTICE.md` rows); the section now holds a link and what the
   session is for, and every link and mention follows it
+- [x] The Musings page names the topic an article musing is for, in grey italics beside "read the
+  article": the public API's `GET /musings` adds `topic_name` to each musing, read once per page
+  from the Topics table (`None` for a topic since deleted, and then no name is shown)
 
 ## Backlog / not yet scheduled
 
