@@ -9,6 +9,7 @@ article and the agent are given.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -3274,7 +3275,7 @@ def test_a_rota_that_names_no_site_leaves_a_site_out_or_has_no_zone_is_refused(c
 def test_a_rota_is_parsed_with_its_zone_and_a_topic_without_one_has_none():
     config = ra.parse_config({"sites": CITIES, "rotation": ROTA, "rotation_timezone": "Australia/Sydney"})
     assert config["rotation"] == {
-        "kind": "weekly", "timezone": "Australia/Sydney",
+        "kind": "weekly", "timezone": "Australia/Sydney", "period": "day",
         "slots": ("sydney", "melbourne", "singapore", "boston", "sydney", "melbourne", "singapore"),
     }  # fmt: skip
     # Without rotation_timezone, the topic's daily_timezone; without either, UTC.
@@ -3548,3 +3549,109 @@ def test_a_topic_without_a_rota_names_no_day_subject_whatever_else_its_config_ho
     # With the config mended, the rota's city.
     mended = {**broken, "adapter_config": {"sites": SITES, "rotation": ["sydney"]}}
     assert ra.RailAccessAdapter().day_subject(mended, monday).key == "sydney"
+
+
+# --- one city a week: the weekly reading (rotation_period "week") ---------------------------------
+
+TWO_CITIES = CITIES[:2]
+
+
+def weekly(**config):
+    """A rail topic over Sydney and Melbourne, a week each, read in Sydney."""
+    settings = {
+        "rotation": ["sydney", "melbourne"], "rotation_period": "week",
+        "rotation_timezone": "Australia/Sydney", "max_sites_per_tick": 2, **config,
+    }  # fmt: skip
+    return {**topic(sites=TWO_CITIES, **settings), "daily_timezone": "Australia/Sydney"}
+
+
+def _week_of(at: datetime) -> tuple[str, str]:
+    """(the week's city, its Monday) by the same rota, at `at`."""
+    rotation = day_subject_module.parse_rotation(weekly()["adapter_config"], ["sydney", "melbourne"])
+    monday = day_subject_module.rotation_period_start(rotation, at).isoformat()
+    return day_subject_module.rotation_subject(rotation, at), monday
+
+
+def _weekly_tick(adapter, n, previous, at: datetime, worker=None):
+    """One tick whose scene is S`n` (an S`n` already measured is nothing new), dated `at`."""
+    adapter.fetch_network = FakeOverpass(network())
+    adapter.http_post = scene(n, day=n)
+    both = {"sydney": {f"S{n}": metrics()}, "melbourne": {f"S{n}": metrics()}}
+    adapter.measure = worker or SiteRailWorker(both)
+    state = adapter.fetch_state(weekly(), previous_state=previous)
+    state["fetched_at"] = at.isoformat()  # the tick's time, which the rota reads
+    return state, adapter.material_diff(previous, state)
+
+
+def test_a_week_rotas_city_gets_one_weekly_reading_a_week_and_no_more(adapter, capsys):
+    monday = datetime(2026, 10, 19, 0, 30, tzinfo=SYDNEY_TIME).astimezone(UTC)
+    city, week = _week_of(monday)
+    other = "melbourne" if city == "sydney" else "sydney"
+
+    # The first tick: both cities' first observation, which is also this week's city's reading.
+    first, (changed, summary) = _weekly_tick(adapter, 1, None, monday)
+    assert changed and summary.startswith("First observation.")
+    assert first["sites"][city][ra.REPORTED_PERIOD_FIELD] == week
+    assert ra.REPORTED_PERIOD_FIELD not in first["sites"][other]
+
+    # Later that week, nothing new: the city was reported this week, so nothing is.
+    same_week, (changed, _summary) = _weekly_tick(adapter, 1, first, monday + timedelta(days=3))
+    assert not changed
+
+    # The next week, still nothing new: the other city's weekly reading, from its newest clear scene.
+    next_monday = monday + timedelta(days=7)
+    assert _week_of(next_monday)[0] == other
+    state, (changed, summary) = _weekly_tick(adapter, 1, same_week, next_monday)
+    capsys.readouterr()
+    name = {"sydney": "Sydney", "melbourne": "Melbourne"}[other]
+    assert changed and summary.startswith(f"{ra.WEEKLY_LEAD} {name}: served share 73 %")
+    assert "newest clear scene S1" in summary
+    assert adapter.subjects(state) == [other]
+    assert [f["key"] for f in adapter.figures(state)] == [state["sites"][other]["history"][-1]["image_key"]]
+    assert any("S1" in ref["url"] for ref in adapter.source_refs(state))
+    assert state["sites"][other][ra.REPORTED_PERIOD_FIELD] == _week_of(next_monday)[1]
+    assert "a weekly reading" in adapter.build_summary_prompt(weekly(), summary, state)
+
+    # ... once: a second tick that week writes nothing.
+    again, (changed, _summary) = _weekly_tick(adapter, 1, state, next_monday + timedelta(hours=5))
+    assert not changed
+
+
+def test_no_weekly_reading_from_a_cloudy_or_doubted_newest_scene(adapter, capsys):
+    monday = datetime(2026, 10, 19, 0, 30, tzinfo=SYDNEY_TIME).astimezone(UTC)
+    first, _ = _weekly_tick(adapter, 1, None, monday)
+    other = "melbourne" if _week_of(monday)[0] == "sydney" else "sydney"
+    next_monday = monday + timedelta(days=7)
+
+    cloudy = SiteRailWorker({site: {"S2": metrics(coverage=0.3)} for site in ("sydney", "melbourne")})
+    state, (changed, _summary) = _weekly_tick(adapter, 2, first, next_monday, worker=cloudy)
+    assert not changed  # the newest scene is cloudy: waits for a clear one
+    assert ra.REPORTED_PERIOD_FIELD not in state["sites"][other]
+
+    doubted = copy.deepcopy(first)
+    doubted["sites"][other]["history"][-1]["triage"] = {"verdict": "artefact", "reason": "cloud edge"}
+    state, (changed, _summary) = _weekly_tick(adapter, 1, doubted, next_monday)
+    capsys.readouterr()
+    assert not changed
+
+
+def test_a_day_rota_never_writes_a_weekly_reading(adapter, capsys):
+    monday = datetime(2026, 10, 19, 0, 30, tzinfo=SYDNEY_TIME).astimezone(UTC)
+    config = {**topic(sites=TWO_CITIES, rotation=["sydney", "melbourne"], max_sites_per_tick=2)}
+    adapter.fetch_network = FakeOverpass(network())
+    adapter.http_post = scene(1, day=1)
+    adapter.measure = SiteRailWorker({"sydney": {"S1": metrics()}, "melbourne": {"S1": metrics()}})
+    first = adapter.fetch_state(config, previous_state=None)
+    adapter.material_diff(None, first)
+    state = adapter.fetch_state(config, previous_state=first)
+    state["fetched_at"] = (monday + timedelta(days=7)).isoformat()
+    changed, _summary = adapter.material_diff(first, state)
+    capsys.readouterr()
+    assert not changed
+    assert all(ra.REPORTED_PERIOD_FIELD not in record for record in state["sites"].values())
+
+
+def test_a_rotation_period_without_a_rota_stops_the_day_subject():
+    config = {**topic(sites=TWO_CITIES, rotation_period="week"), "daily_timezone": "Australia/Sydney"}
+    with pytest.raises(ra.ConfigError, match="'rotation_period' is set but there is no 'rotation'"):
+        ra.RailAccessAdapter().day_subject(config, datetime(2026, 10, 19, tzinfo=UTC))

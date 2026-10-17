@@ -218,3 +218,70 @@ Add a site to `adapter_config.sites` (one Sentinel-2 tile, at most 8 sites) and 
 it back with `topics update rail-cities --adapter-config-json '...'`: that flag replaces the whole
 config. Keep every existing site's `id` and polygon, so its history and network still match.
 Re-check `findings_window_hours` against the longest gap between one city's days, plus a day.
+
+## 7. A city a week, written up from three sides
+
+The rota above gives each city a day or two a week, and each city writes only when research finds
+a material change, which is rare. This switch gives each city a **whole week**
+(`rotation_period` `"week"`) and three editorial goals taken in turn (`editorial_goal_rotation`,
+[configuration.md](configuration.md)):
+
+| Day of the city's week | What runs | Goal |
+|---|---|---|
+| Monday, first research tick (about 00:25 Sydney) | The **weekly reading**: the city's newest clear scene, no change claimed, with its map and planner notes | |
+| Monday 09:50 | The article from the weekly reading | `access`: served share, the area beyond reach, the map's heat and outlines |
+| Tuesday 09:50 | A revisit of the same Finding | `network`: the rule-based flags, the stations they name |
+| Wednesday 09:50 | A revisit of the same Finding | `simulations`: the simulated links, always as a what-if |
+| Thursday to Sunday | Nothing, unless research finds a material change (a new Finding starts the goals again) | |
+
+The order of the list sets whose week it is (the weeks since Monday 1970-01-05, modulo four).
+`["melbourne", "singapore", "boston", "sydney"]` gives Sydney the week of 19 October 2026, then
+Melbourne (26 October), Singapore (2 November) and Boston (9 November). The week of 12 October
+is Boston's, so the first research tick after the switch writes Boston's weekly reading and the
+Sunday 18 October run writes it up.
+
+`rail-cities` has not published, so its config is updated in place: nothing it wrote is drafted
+twice. On a topic that has published, restart it instead (section 1).
+
+**0. Both changes are deployed:** the goal rotation (#335) and the week rota are merged, and the
+latest `terraform` run on `dev` is green, with `research-tick`, `daily-cycle` and `admin-api`
+modified after it.
+
+**1. The goals** (`rail_goal_rotation.json`, outside the repository; each `primary_focus` at
+most 1000 characters; the topic's `editorial_goals.exclusion_criteria` apply to all three):
+
+```json
+[
+  {"name": "access", "primary_focus": "Rail access in the day's city through walking reach, from the findings alone. Title it plainly after what was measured. Open by saying what the measures are: built-up density from Sentinel-2 imagery and straight-line walking reach over OpenStreetMap's rail network, not ridership, frequency or travel time. Lead with the share of built-up area within reach of a station and the built-up area beyond it, then the station count, the scene's capture date and coverage, and any change against the city's earlier scenes. Point to the map once, saying what its warm colours and outlined areas show. Give the flags and simulations one sentence at most: they have their own articles."},
+  {"name": "network", "primary_focus": "The structure of the day's city's mapped rail network, from the findings alone. Title it plainly after the flag it leads with. Open by saying the flags are rule-based readings of OpenStreetMap's topology and built-up density, not ridership or service. Take each rule-based flag the findings carry in turn (single point of failure, isolated high demand, ghost line): the station or stations it names, what the flag measures (shortest paths through the network, distance to a hub, activity along a chain), and the figure behind it. Give the served share and station count once, as context. Point to the map once: flagged stations are ringed in red. Name only stations the findings name."},
+  {"name": "simulations", "primary_focus": "The simulated links for the day's city's mapped rail network, from the findings alone. Title it plainly after the simulation it leads with. Open by saying a simulation is a rule-based what-if on OpenStreetMap's topology and straight-line distances, not a plan, a cost or a recommendation. Take each simulated link the findings carry (orbital link, feeder corridor): the stations it joins, its length and the change in distance to a hub it shows, always in conditional words ('the simulation suggests', 'in the model'). Give the served share and any flag the link answers once, as context. Point to the map once: simulated links are dashed. Name only stations the findings name."}
+]
+```
+
+**2. The week rota.** `--adapter-config-json` replaces the whole config, so read it, change only
+`rotation` and add `rotation_period`, and send all of it back (every site's `id` and polygon
+unchanged, so its history and network still match):
+
+```bash
+python scripts/admin_cli.py $A topics get rail-cities > rail-cities.json
+python -c 'import json; t = json.load(open("rail-cities.json")); c = t["adapter_config"]; c["rotation"] = ["melbourne", "singapore", "boston", "sydney"]; c["rotation_period"] = "week"; print(json.dumps(c))' > adapter_config.json
+python scripts/admin_cli.py $A topics update rail-cities --adapter-config-json "$(cat adapter_config.json)" \
+    --goal-rotation-json "$(cat rail_goal_rotation.json)"
+python scripts/admin_cli.py $A topics get rail-cities
+```
+
+Check `rotation` is the list, `rotation_period` is `"week"`, the three goals are stored, and
+`editorial_goals` and `findings_window_hours` (192) are unchanged.
+
+**3. The weekly reading now:** `topics trigger rail-cities --pipeline research_tick`. The log's
+`research_tick` line says `material_change`, and `findings list rail-cities --limit 1` shows a
+Finding that starts "Weekly reading" about this week's city, with one figure and its planner notes.
+
+**4. Optional: the first article now** (otherwise at the topic's daily slot):
+`topics trigger rail-cities --pipeline daily_cycle`. The log says `day_subject=<this week's city>`
+and `editorial_goal=access revisit=False`; the article waits in the inbox. Triggered again, it
+revisits under `network` (`revisit=True`); a third time, `simulations`; a fourth writes nothing.
+
+**Watching it:** `topics get rail-cities` shows `goal_rotation_state.<city>` (the goal used last
+and the goals used on the current Finding); the research state shows each city's
+`reported_period`.

@@ -805,6 +805,13 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `revisit`; a revisit's research is not counted twice. Not yet: `findings list --next-article` and
   the assistant's `topic_findings` do not say a revisit is coming (`lambdas/common/goal_rotation.py`,
   `lambdas/daily_cycle_handler.py`; [configuration.md](configuration.md))
+- [x] A city a week: a list rota may set `rotation_period` `"week"`, so each subject has a whole
+  calendar week in turn. A rail city then comes back only after a Finding has expired, so the rail
+  adapter writes a weekly reading on the first tick of a city's week (its newest clear scene, no
+  change claimed, with its map and notes; `reported_period` keeps it to once a week), which the
+  goal rotation writes up from three sides on the days after. `rail-cities` switched over by
+  [RailVisionSeeding.md §7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)
+  (`lambdas/common/day_subject.py`, `lambdas/common/adapters/rail_access.py`)
 
 ## Backlog / not yet scheduled
 
