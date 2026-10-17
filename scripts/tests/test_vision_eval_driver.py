@@ -7,6 +7,7 @@ requests, boto3 and socket connections raise for every test: nothing here touche
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import re
@@ -224,9 +225,16 @@ def test_triage_off_is_the_production_rule_alone(blobs):
 
 def test_the_adapter_reads_the_wall_clock_only_where_the_driver_sets_it():
     source = (LAMBDAS / "common" / "adapters" / "rail_access.py").read_text(encoding="utf-8")
-    # fetch_state and prefetch_networks (never on the replay's path): a third read would escape
-    # frozen_now, and the replay's `at`s would stop being the tick's.
-    assert source.count("datetime.now(") == 2
+    # The functions that read the wall clock: fetch_state (once a tick), prefetch_networks (never on
+    # the replay's path) and _week (the week rota's fallback when the state's fetched_at is
+    # unreadable, which a replayed state's never is). frozen_now covers every `datetime.now(` in the
+    # module; a read in another function, or through another clock, needs checking against it.
+    readers = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and "datetime.now(" in ast.get_source_segment(source, node):
+            readers.add(node.name)
+    assert readers == {"fetch_state", "prefetch_networks", "_week"}, readers
+    assert "time.time(" not in source and "date.today(" not in source
     when = datetime(2024, 6, 27, 6, 6, 11, tzinfo=UTC)
     original = rail_access.datetime
     with driver_module.frozen_now(when):

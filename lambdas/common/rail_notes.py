@@ -63,10 +63,40 @@ def planner_notes(
     return flags + _notes("simulation", suggestions, _SIMULATION_RULES, rows, entry, max_simulations)
 
 
-def format_notes(notes: list[dict]) -> str:
-    """The notes as one text, introduced as what they are; "" for none."""
+def format_notes(notes: list[dict], entry: dict | None = None) -> str:
+    """The notes as one text, introduced as what they are; "" for none. With the history `entry`
+    they were written from, a last sentence says how many of each kind the pipeline found when the
+    cap left some out (`shown_of_found`), so the strongest few are never read as all of them."""
     texts = [note["text"] for note in notes or []]
-    return NOTES_LEAD + " ".join(texts) if texts else ""
+    if not texts:
+        return ""
+    counted = shown_of_found(notes, entry) if entry is not None else ""
+    return NOTES_LEAD + " ".join(texts) + (f" {counted}" if counted else "")
+
+
+def shown_of_found(notes: list[dict], entry: dict) -> str:
+    """"These are the strongest 4 of the 11 flags the pipeline found." when the notes show fewer
+    flags or simulations than the entry holds (MAX_FLAGS, MAX_SIMULATIONS, or an item that could not
+    be written), else "". Counts what the worker returned (`flags`, else `flag_count`; `suggestions`),
+    the figure the fresh-data review and the evidence see; a kind with none shown is not counted."""
+    parts = []
+    for kind, word, found in (
+        ("flag", "flags", _found(entry, "flags", "flag_count")),
+        ("simulation", "simulations", _found(entry, "suggestions", None)),
+    ):
+        shown = sum(1 for note in notes if note.get("kind") == kind)
+        if shown and found > shown:
+            parts.append(f"{shown} of the {found} {word}")
+    return f"These are the strongest {' and '.join(parts)} the pipeline found." if parts else ""
+
+
+def _found(entry: dict, key: str, count_key: str | None) -> int:
+    """How many items of `key` the entry holds: the list's length, else its stored count."""
+    items = entry.get(key) if isinstance(entry, dict) else None
+    if isinstance(items, list):
+        return len(items)
+    count = entry.get(count_key) if count_key and isinstance(entry, dict) else None
+    return int(count) if isinstance(count, int | float) and not isinstance(count, bool) else 0
 
 
 # --- one sentence per type ----------------------------------------------------------------------

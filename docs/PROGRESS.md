@@ -797,6 +797,21 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
   `lambdas/common/adapters/rail_access.py`, `scripts/rail_topics.example.json`;
   [design](enhancements/dailysubject_hook.md))
+- [x] The goal rotation: a topic may take 2 to 7 editorial goals in turn
+  (`editorial_goal_rotation`, `topics create|update --goal-rotation-json`), so one set of Findings is
+  written up from different sides. New Findings get the next goal; with nothing new, the daily run
+  revisits the last set under a goal not yet used on it, and stops once every goal has had it. Per
+  subject on a rotating topic (`goal_rotation_state`); the article keeps `editorial_goal` and
+  `revisit`; a revisit's research is not counted twice. Not yet: `findings list --next-article` and
+  the assistant's `topic_findings` do not say a revisit is coming (`lambdas/common/goal_rotation.py`,
+  `lambdas/daily_cycle_handler.py`; [configuration.md](configuration.md))
+- [x] A city a week: a list rota may set `rotation_period` `"week"`, so each subject has a whole
+  calendar week in turn. A rail city then comes back only after a Finding has expired, so the rail
+  adapter writes a weekly reading on the first tick of a city's week (its newest clear scene, no
+  change claimed, with its map and notes; `reported_period` keeps it to once a week), which the
+  goal rotation writes up from three sides on the days after. `rail-cities` switched over by
+  [RailVisionSeeding.md §7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)
+  (`lambdas/common/day_subject.py`, `lambdas/common/adapters/rail_access.py`)
 - [x] The submission package's first wave (R1): the technical report in the rubric's eight sections
   and three appendices, drafted from the code on `dev` with code anchors and R2's numbers marked as
   placeholders; the system and agent-workflow diagrams in Mermaid with their SVGs, embedded in the
@@ -828,6 +843,13 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   interval, the spreads). CI runs all three scripted on the synthetic city; the live runs are the
   operator's (#337, submission PR Q2b; `scripts/vision_eval_agent.py`, `scripts/vision_eval_cases/`;
   [the cases](hackathon/evidence/README.md#the-agents-cases))
+- [x] COOL's reconnaissance (16 October): the Graviton4 AMI, version 3.1, is offered in
+  us-west-2; its `cv2` (5.1.0-dev, built against numpy 2.5.1) loads only inside the vendor's
+  activated Python 3.12 environment; and its fingerprint is pinned from the build information,
+  committed byte for byte. The runsheet's Graviton session follows the vendor's layout: a wrapper
+  interpreter, with the benchmark's packages in a folder beside it. The repository is public
+  (`docs/hackathon/evidence/cool/`, `docs/deployment-runsheet.md`,
+  `scripts/tests/test_cool_evidence.py`)
 - [x] The submission round's evidence export (Q3): `scripts/evidence_export.py export` reads, read
   only, what the deployed system measured, decided and did (the decision rings, the evidence lines
   through the assistant's own queries and parser, Lambda's REPORT lines, the Articles and Findings

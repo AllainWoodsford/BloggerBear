@@ -10,23 +10,14 @@ the build container, never from the competition's pages themselves. Read the Dev
 before submitting: the required fields, the video's limit, the awards' opt-ins, and the judging
 dates (they decide how long the endpoint must stay up, owner step O11).
 
-## The repository: decide first (owner step O8, by Monday 19 October)
+## The repository (owner step O8: decided, public)
 
-A private repository's download needs a GitHub login with access, so a judge who is not signed in
-cannot open it. One of the two:
-
-- [ ] **Public.** Follow [the public repository runsheet](../todo/public-repo-runsheet.md): the
-      rulesets, secret scanning, and approval for workflows from forks. The form gets the
-      repository's URL and the tag.
-- [ ] **Private.** At submission, either attach the tag's archive to the form, if it takes files:
-
-      ```bash
-      git archive --format=zip -o bloggerbear-opencv-2026.zip opencv-2026-submission
-      ```
-
-      or publish a separate public snapshot repository holding only the tag's tree as one commit
-      (which also keeps the old pull requests private). The form gets that archive or that
-      snapshot's URL, and the report's front page says which.
+- [x] **Public.** The repository was made public by 16 October:
+      https://github.com/AllainWoodsford/BloggerBear. The form gets that URL and the tag; no
+      archive or snapshot repository is needed.
+- [ ] The settings [the public repository runsheet](../todo/public-repo-runsheet.md) gives a
+      public repository: the rulesets, secret scanning, and approval for workflows from forks
+      (not confirmed in the repository).
 
 Then, on Sunday 25 October, after the report's last numbers are in:
 
@@ -49,7 +40,7 @@ Then, on Sunday 25 October, after the report's last numbers are in:
 | [ ] Title | "Rail Access Monitor: an autonomous publisher that watches a city's rail network from space" ([opencv-2026-submission.md](opencv-2026-submission.md), Title) |
 | [ ] The pitch | [opencv-2026-submission.md](opencv-2026-submission.md), One-line pitch |
 | [ ] The description | [opencv-2026-submission.md](opencv-2026-submission.md): the summary and the awards' paragraphs, with a link to the report for everything else |
-| [ ] The code | the repository's URL and the tag `opencv-2026-submission`, or the archive, or the snapshot repository (above) |
+| [ ] The code | https://github.com/AllainWoodsford/BloggerBear and the tag `opencv-2026-submission` |
 | [ ] The video | the unlisted video's link, at most 5:00 ([video-script.md](video-script.md)); its duration checked below |
 | [ ] The working endpoint | the approved rail article's URL on dev's CloudFront domain; or the screen-share booking ([video-script.md, The live demonstration](video-script.md#the-live-demonstration)) |
 | [ ] The technical report | the PDF printed from the Markdown page on GitHub at the tag, `docs/hackathon/technical-report.pdf`, and the link to [technical-report.md](technical-report.md) |
