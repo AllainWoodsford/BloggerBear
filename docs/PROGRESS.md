@@ -807,6 +807,16 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   responsible use; the video script with its redaction checklist and the demo plan; the Devpost
   checklist and `scripts/submission_check.py` (#333, submission PR R1; `docs/hackathon/`,
   `scripts/submission_check.py`, `lambdas/tests/test_requirements.py`)
+- [x] The submission round's evaluation, first half (Q2a): a driver that runs the real rail adapter
+  tick by tick over pinned scenes with every outside service under the run's control (the worker in
+  this process with the cache, deployed by ARN or scripted; the agent on Bedrock, recorded or
+  scripted), the interface the agent evaluation, counterfactuals and stability build on;
+  `vision_eval.py replay` (the A2 trace, live, or recorded and re-run without AWS, held to its
+  recording; CI replays a committed synthetic recording), `failures` (the failure catalogue, its 42
+  tests named by node id and checked to be collected), `access-baseline` (E5) and `index`
+  (`docs/hackathon/evidence/RESULTS.md` and `index.json`, checked by `index --check`). The
+  real-data runs are the operator's (#336, submission PR Q2a; `scripts/vision_eval_driver.py`,
+  `scripts/vision_eval.py`; [results](hackathon/evidence/RESULTS.md))
 
 ## Backlog / not yet scheduled
 

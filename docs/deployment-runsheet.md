@@ -1312,11 +1312,142 @@ shadow them, and the handler would answer `not_cool`).
     and `stability` exist).** On the same kind of instance, with the cache from step 8:
     - give the instance role, for this hour only, one statement: `bedrock:InvokeModel` on the one
       inference profile the topics use and its foundation models, and remove it afterwards;
-    - `~/cool/bin/python scripts/vision_eval.py replay --sequence sydney-demo --agent bedrock --worker in-process --backend cool --cool-sha $SHA $C --out $E`:
+    - `~/cool/bin/python scripts/vision_eval.py replay --sequence sydney-demo --agent bedrock --model-id $M --region ap-southeast-2 --worker in-process --backend cool --cool-sha $SHA $C --out $E --tag cool`
+      (`M` as in [the evaluation's runs](#the-evaluations-real-data-runs), step 4):
       COOL then executes the agent's `look_again` re-measurements inside the agentic loop, in
       us-west-2, with production's deadline;
     - `~/stock/bin/python scripts/vision_eval.py stability --set year-2024 $C --out $E`: the year of
       clear Sydney scenes through the production rule, in-Region.
+
+### The evaluation's real-data runs
+
+The evaluation's subcommands (`scripts/vision_eval.py`; options in
+[scripts/README.md](../scripts/README.md#the-evaluation-proper-vision_evalpy-replay-failures-access-baseline-index))
+run in CI on a synthetic city with scripted parts. These are the runs on real data: the
+operator's, and their run files are the evidence the report cites
+([the evidence README](hackathon/evidence/README.md#running-the-evaluation-for-real)). Run them
+once the Sydney network fixture is committed (O2: `scripts/vision_benchmark_networks/sydney.json`;
+until then each command takes `--network <file>`), from a checkout of the code being evaluated,
+in a venv. They read the pinned scenes from `sentinel-cogs` in us-west-2 through a cache that the
+first run fills (about 54 MB a scene, eight scenes in all) and later runs read from; on the
+Graviton instance (step 8's `$C`) or any machine in us-west-2 that is fast, elsewhere it is a few
+minutes a scene through a slow link. Nothing here writes to AWS.
+
+1. **The venv and the names.**
+
+   ```sh
+   python3.11 -m venv .venv && . .venv/bin/activate
+   pip install -r lambdas/requirements-dev.txt -r scripts/requirements.txt
+   E=docs/hackathon/evidence/runs
+   C="--cache $HOME/cogs"
+   ```
+
+   ```powershell
+   py -3.11 -m venv .venv; .\.venv\Scripts\Activate.ps1
+   pip install -r lambdas\requirements-dev.txt -r scripts\requirements.txt
+   ```
+
+   `lambdas/requirements-dev.txt` is what CI installs: the Lambda and worker requirements, plus
+   pytest and moto, which `failures` needs to check that pytest collects the catalogue's tests
+   (without them it refuses rather than call the tests missing). The PowerShell lines below run
+   `python`, the activated venv's own: `py -3.11` would run the global 3.11, without the venv's
+   packages. They spell `--cache $HOME\cogs` and `--out docs\hackathon\evidence\runs` out in full.
+2. **The failure catalogue (2.5)**: every test it names is checked to be collected, then the real
+   rows run through the worker handler in this process (the cloudy and no-data scenes, the smoke
+   scene, a site off the tile, a window past the rail cap, a missing key; six scenes read).
+
+   ```sh
+   python scripts/vision_eval.py failures $C --out $E
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py failures --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   ```
+
+   It exits 1 when a row did not do what the catalogue says, and the run file says which and how.
+3. **E5, the access baseline**, on `sydney-2024-08-26`:
+
+   ```sh
+   python scripts/vision_eval.py access-baseline $C --out $E
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py access-baseline --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   ```
+4. **The replay with the deployed worker and the real model (2.6.4).** Credentials that may invoke
+   the worker (`lambda:InvokeFunction` on `<prefix>-dev-vision-worker` in us-west-2) and the
+   topics' model (`bedrock:InvokeModel` on the inference profile the topics use, in the home
+   Region); `M` is that profile's id (`python scripts/admin_cli.py model-config get` shows it).
+   An application inference profile is given by its ARN, which Converse needs; the run file and
+   the trace then name no model, because that ARN carries the account id (a system profile's ARN
+   is recorded as its id).
+   Every site id the worker is sent is `eval-sydney`, so these runs never pass for production's in
+   its logs; the run file names the worker's Region and code, never its ARN. About 10 worker calls
+   and a few cents of model calls a sequence.
+
+   ```sh
+   W=$(aws lambda get-function --function-name <prefix>-dev-vision-worker --region us-west-2 --query Configuration.FunctionArn --output text)
+   M=<the topics' inference profile id>
+   for s in sydney-demo sydney-winter sydney-c1; do
+     python scripts/vision_eval.py replay --sequence $s --worker "$W" --agent bedrock --model-id "$M" --region ap-southeast-2 --out $E --trace
+   done
+   ```
+
+   ```powershell
+   $W = aws lambda get-function --function-name <prefix>-dev-vision-worker --region us-west-2 --query Configuration.FunctionArn --output text
+   $M = "<the topics' inference profile id>"
+   foreach ($s in "sydney-demo", "sydney-winter", "sydney-c1") {
+     python scripts\vision_eval.py replay --sequence $s --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --out docs\hackathon\evidence\runs --trace
+   }
+   ```
+
+   Each writes its run file and figures to `$E` and its trace to
+   `docs/hackathon/evidence/replay/<sequence>.md`. **sydney-demo is the headline A2 trace**: with
+   the demo topic's thresholds of 0, every scene after the first goes to the agent, on the same
+   network fixture throughout, so whatever moved came from the imagery; its trace says the
+   thresholds are 0. sydney-c1's last tick adds a constructed five-station line and a constructed
+   news item, and its trace says so.
+5. **Re-run each recording without AWS**, the way a judge will (2.6.4's assertions: every
+   measurement recomputed in this process, held to the recording within 2.7.1's tolerances):
+
+   ```sh
+   for s in sydney-demo sydney-winter sydney-c1; do
+     python scripts/vision_eval.py replay --sequence $s --agent recorded --from "$(ls $E/*-eval-replay-*-$s-bedrock.json | tail -n 1)" $C --out $E
+   done
+   ```
+
+   ```powershell
+   foreach ($s in "sydney-demo", "sydney-winter", "sydney-c1") {
+     $from = (Get-ChildItem "docs\hackathon\evidence\runs\*-eval-replay-*-$s-bedrock.json" | Select-Object -Last 1).FullName
+     python scripts\vision_eval.py replay --sequence $s --agent recorded --from $from --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   }
+   ```
+
+   Each exits 0 when it reproduced its recording; a failed check names the tick and the field. A
+   recording refused before it runs ("input changed", or a recorded response that calls a tool the
+   profile no longer offers) names what moved.
+6. **Index and commit.**
+
+   ```sh
+   python scripts/vision_eval.py index && python scripts/vision_eval.py index --check
+   python scripts/pii_denylist_check.py --staged    # after `git add`
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py index; python scripts\vision_eval.py index --check
+   python scripts\pii_denylist_check.py --staged    # after `git add`
+   ```
+
+   Run `index --check` here before pushing: CI runs it too, on the pull request (python-ci lists
+   `docs/hackathon/**`), but a failure there costs a round trip. Run the PII check (your `.pii-denylist`) on what is staged, and read each trace before
+   committing it: besides scene and station ids, a trace quotes the agent's note under each
+   decision it was asked about (model text, through `redact.scrub`, of up to 300 characters),
+   which can name a suburb or a station.
+
+   Commit the run files and figures, `docs/hackathon/evidence/replay/`, `index.json` and
+   `RESULTS.md`, and update the tracker's A2 and S7 rows. A run file made before the submission tag
+   on code that changed since in a way that matters to it goes in
+   `docs/hackathon/evidence/older-code.json` with the reason, and `index` again.
 
 ## Deploying to another region
 
