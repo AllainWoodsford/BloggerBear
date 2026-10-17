@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------
 # The operator's assistant, second half: the agent (lambdas/ops_agent and
 # lambdas/ops_agent_handler.py), deployed next to the MCP server in main.tf.
-# Design: docs/enhancements/alexa-plus-operator-assistant-enhancement.md (sections 2, 5 and 6).
+# Design: docs/enhancements/archive/alexa-plus-operator-assistant-enhancement.md (sections 2, 5 and 6).
 #
 #   the page (ask.html), holding the caller's access token
 #        | POST /ask            (OPTIONS /ask is the browser's preflight, with no token)

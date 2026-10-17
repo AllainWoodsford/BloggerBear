@@ -1,6 +1,6 @@
 # =============================================================================
 # Alexa+ account linking: what an MCP client needs to find out how to sign in, and the Cognito
-# app client Alexa signs in with (docs/enhancements/alexa-plus.md, section 4.2).
+# app client Alexa signs in with (docs/enhancements/archive/alexa-plus.md, section 4.2).
 #
 # The MCP authorization spec (2025-11-25, the version the Alexa+ toolkit speaks) has a client
 # discover the authorization server from the resource server:

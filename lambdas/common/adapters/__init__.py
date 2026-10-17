@@ -13,12 +13,12 @@ WEB_SEARCH_ADAPTER_KEY = "web_search"
 
 # Adapter registry key for common/adapters/satellite_vision.py's SatelliteVisionAdapter -- counts
 # what the vision worker sees at fixed sites in Sentinel-2 scenes (OpenCV competition entry,
-# docs/enhancements/opencv-agentic-vision-enhancement.md).
+# docs/enhancements/archive/opencv-agentic-vision-enhancement.md).
 SATELLITE_VISION_ADAPTER_KEY = "satellite_vision"
 
 # Adapter registry key for common/adapters/rail_access.py's RailAccessAdapter -- maps how much of
 # a city's built-up area lies within walking reach of a rail station, from Sentinel-2 scenes and
-# OpenStreetMap's rail network (docs/enhancements/rail-access-monitor.md).
+# OpenStreetMap's rail network (docs/enhancements/archive/rail-access-monitor.md).
 RAIL_ACCESS_ADAPTER_KEY = "rail_access"
 
 # The adapters whose every article a person sees before it is published: admin_api_handler.py

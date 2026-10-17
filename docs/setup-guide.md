@@ -22,9 +22,10 @@ each tool and setting is for, then points to the detailed runsheets when you nee
 You fork the repository and run **one** Terraform apply from your own machine (the *bootstrap*).
 It creates a bucket for Terraform's state, and two IAM roles that GitHub Actions may assume
 through **OIDC**, so no AWS access keys are stored in GitHub. You then put a few names and IDs into
-your fork's GitHub settings. From then on, every merge to your `dev` branch makes GitHub Actions
-run the security scans, lint and tests, then apply Terraform to your dev environment. Nobody runs
-`terraform apply` by hand again, apart from that first bootstrap.
+your fork's GitHub settings. From then on, every merge to your `dev` branch that changes the
+code, the infrastructure or the site makes GitHub Actions run the security scans, lint and tests,
+then apply Terraform to your dev environment. Nobody runs `terraform apply` by hand again, apart
+from that first bootstrap.
 
 ```
 your machine ──(once)── terraform apply infra/bootstrap ──> state bucket + OIDC provider + deploy roles
@@ -283,7 +284,8 @@ would refuse its token, because the repository in the token would not match.
 
 ## 7. The first deploy
 
-1. Make any small change on a branch off `dev` (a line in a doc is enough), open a pull request
+1. Make any small change under `infra/`, `lambdas/` or `frontend/` on a branch off `dev` (a
+   comment is enough: a merge that changes only docs starts no deploy), open a pull request
    into `dev`, and watch the checks: the security scans, lint, tests,
    Terraform validate, and the secret and personal-data scans. They need no AWS access.
 2. Merge it. The `terraform` workflow runs the same checks again, assumes the dev role and applies
@@ -342,7 +344,7 @@ GitHub token) are SSM SecureStrings named `/<your-prefix>/dev/coingecko-api-key`
 | Deploy: `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The token's subject does not match the role's trust policy: wrong `github_repo` in the bootstrap, a run not on `dev`, or a different subject format | Check `github_repo` was `<your-github-owner>/<your-fork>`. CloudTrail's failed `AssumeRoleWithWebIdentity` event shows the exact subject GitHub sent. The roles expect GitHub's immutable form, `repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/dev`; if yours is the plain `repo:<owner>/<repo>:ref:refs/heads/dev`, `gh api repos/<your-github-owner>/<your-fork>/actions/oidc/customization/sub` shows the repository's setting |
 | Deploy: `AccessDenied` creating resources | `UNIQUE_NAME_PREFIX` differs from the bootstrap's `unique_name_prefix`, or `AWS_REGION` differs from its `aws_region` | Make them the same word / region |
 | Deploy: "AWS account ID not allowed" | The role is in a different account than `AWS_DEV_ACCOUNT_ID` | Fix whichever is wrong; the error names the real account |
-| Admin CLI: 403 | Your IP changed, or is not in `ADMIN_ALLOWED_CIDRS_DEV` | Update the secret and merge any change to redeploy |
+| Admin CLI: 403 | Your IP changed, or is not in `ADMIN_ALLOWED_CIDRS_DEV` | Update the secret, then redeploy: merge a change under `infra/`, `lambdas/` or `frontend/`, or run the `terraform` workflow by hand on `dev` |
 | Articles never appear; the daily cycle errors | The model cannot be called in your region | Re-run [step 3](#3d-make-sure-your-account-can-call-the-model) |
 | `gh` set secrets on the wrong repository | `gh` picked the upstream in a fork | Re-run the script with `--repo <your-github-owner>/<your-fork>` |
 
@@ -353,7 +355,7 @@ More, from building and running the original: [friction.md](friction.md).
 ## 10. Where next
 
 - **Production and your domain:** [production-runsheet.md](production-runsheet.md).
-- **Protect your branches** (pull requests only, no force-pushes): [todo/public-repo-runsheet.md](todo/public-repo-runsheet.md).
+- **Protect your branches** (pull requests only, no force-pushes): the archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md).
 - **The operator's assistant** (`<site>/ask.html`): create a user as in
   [After the first deploy](deployment-runsheet.md#5-after-the-first-deploy), step 5.
 - **Costs and tearing down:** [Tearing down and cost control](deployment-runsheet.md#tearing-down-and-cost-control).

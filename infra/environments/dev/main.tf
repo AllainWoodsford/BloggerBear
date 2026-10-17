@@ -630,7 +630,7 @@ resource "aws_iam_role_policy" "lambda_web_search" {
 }
 
 # -----------------------------------------------------------------------
-# Vision worker (docs/enhancements/opencv-agentic-vision-enhancement.md): OpenCV 5 on arm64 in
+# Vision worker (docs/enhancements/archive/opencv-agentic-vision-enhancement.md): OpenCV 5 on arm64 in
 # var.vision_region, beside the Sentinel-2 imagery. Only when var.vision_enabled; until then the
 # research tick's VISION_WORKER_ARN is empty and the satellite_vision adapter records every site
 # as not measured (common/vision_client.py), never as empty.
@@ -2686,7 +2686,7 @@ resource "aws_lambda_function" "sign_in_events" {
 # =========================================================================
 # The operator's assistant: the ops MCP server (lambdas/ops_mcp) behind a Cognito sign-in. See
 # infra/modules/ops-assistant, and the design in
-# docs/enhancements/alexa-plus-operator-assistant-enhancement.md.
+# docs/enhancements/archive/alexa-plus-operator-assistant-enhancement.md.
 #
 # The module makes its own Lambda package, its own read-only role, its own REST API and its own
 # user pool; nothing above is changed by it. In particular the function does NOT run as
@@ -2765,7 +2765,7 @@ module "ops_assistant" {
 
   mfa_configuration = var.ops_assistant_mfa
 
-  # Alexa+ account linking (docs/enhancements/alexa-plus.md, alexa/README.md): dev's own Alexa
+  # Alexa+ account linking (docs/enhancements/archive/alexa-plus.md, alexa/README.md): dev's own Alexa
   # add-on, signing in to dev's pool only. Empty until the one-time bootstrap prints them.
   alexa_redirect_uris = var.ops_alexa_redirect_uris
 

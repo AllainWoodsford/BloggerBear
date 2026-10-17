@@ -7,7 +7,8 @@ adapter, the cross-region plumbing, the COOL path and the vision-model triage) s
 topic later is configuration plus a prompt, not new architecture.
 **Builds on:** [supply-chain-tracker-enhancement.md](supply-chain-tracker-enhancement.md) (the
 ship-counting design, still the leading topic) and
-[docs/risks/opencv-bushfire-watch-01.md](../risks/opencv-bushfire-watch-01.md) (licences and safety).
+the bushfire watch's risk review (licences and safety), since removed: the checks that still
+apply are in [vision.md](vision.md) §9, step 4.
 
 This document started as a review of an outside strategy note ("BloggerBear x OpenCV AI Competition
 2026 Strategy"). Section 1 records what in that note was right, what was wrong and what changed as a
@@ -88,7 +89,7 @@ research tick ── SatelliteVisionAdapter.fetch_state
   `false`), so merging scaffolding deploys nothing until the operator turns it on with the
   `VISION_ENABLED` repository variable, which CI passes as `vision_enabled`. It is never set in
   `terraform.tfvars`, where a value would beat the variable
-  ([deployment-runsheet.md, Vision (optional)](../deployment-runsheet.md#vision-optional)).
+  ([deployment-runsheet.md, Vision (optional)](../../deployment-runsheet.md#vision-optional)).
 
 ## 3. Regions
 
@@ -110,7 +111,7 @@ which is slower and may cost transfer, but needs no second provider. That is the
 operator would rather not grant the deploy role a second region. In production a long home-Region
 name needs a short prefix: the worker's bucket name ends with `vision_region`, and with
 `ap-southeast-2` it passes S3's 63 characters unless the prefix is 7 characters or fewer
-([configuration.md](../configuration.md#environment-terraform-variables)).
+([configuration.md](../../configuration.md#environment-terraform-variables)).
 
 ## 4. COOL: the path that scores, and the baseline that proves it
 
@@ -276,7 +277,7 @@ measured over more ticks rather than running a tick out of time.
 ## 9. What the operator has to do (nothing here is automatic)
 
 The steps, with their checks, are in
-[deployment-runsheet.md, Vision (optional)](../deployment-runsheet.md#vision-optional); in short:
+[deployment-runsheet.md, Vision (optional)](../../deployment-runsheet.md#vision-optional); in short:
 
 1. **Merge #285** into `dev`: the integration branch, which carries this stack (#240 to #254)
    and the rail work, and supersedes merging #240 to #251 one by one. Merging deploys nothing
@@ -289,6 +290,6 @@ The steps, with their checks, are in
 4. **Create a topic**: `adapter: "satellite_vision"`, `sites` in `adapter_config`, an
    `object_noun`, and editorial goals (docs/deployment-runsheet.md, "Vision (optional)").
 5. **COOL**: subscribe, measure, pin the fingerprint
-   ([COOL benchmark runsheet](../cool-benchmark-runsheet.md)); unsubscribe after the trial if it
+   ([COOL benchmark runsheet](../../cool-benchmark-runsheet.md)); unsubscribe after the trial if it
    isn't kept.
 

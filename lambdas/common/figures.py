@@ -1,4 +1,4 @@
-"""Figures on the way from a Finding to an article page (docs/enhancements/rail-access-monitor.md
+"""Figures on the way from a Finding to an article page (docs/enhancements/archive/rail-access-monitor.md
 §4, PR C).
 
 An adapter that draws something (a map, a chart) stores the PNG in the private content bucket and

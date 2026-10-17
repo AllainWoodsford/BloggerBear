@@ -97,8 +97,8 @@ are the operator's runs, and only their run files are evidence. They read the pi
 HTTPS from `sentinel-cogs` (us-west-2): give them a cache (`--cache ~/cogs`; PowerShell
 `--cache $HOME\cogs`), which a first run fills (about 54 MB a scene) and every later run reads
 from. They need the Sydney network fixture, `scripts/vision_benchmark_networks/sydney.json`
-(the owner captures it from the deployed `vision/rail-cities/sydney/network.json`; until then
-`--network <file>`), `lambdas/requirements-vision.txt`, `lambdas/requirements.txt` and
+(committed on 17 October from the deployed `vision/rail-cities/sydney/network.json`, #349;
+`--network <file>` takes another copy), `lambdas/requirements-vision.txt`, `lambdas/requirements.txt` and
 `scripts/requirements.txt`, and for `failures`' collection check pytest and moto
 (`lambdas/requirements-dev.txt`, which holds all three `lambdas/` files). The exact session,
 with each command's PowerShell line, is the runsheet's

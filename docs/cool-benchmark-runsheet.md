@@ -9,7 +9,7 @@ report's COOL numbers come only from those files.
 - **When:** steps 2 to 11 on Monday 19 October (step 1's subscription was done on 16 October;
   step 10 is not for Monday 19); the optional agent session (step 12) on Wednesday 21.
 - **Before it:** both done. The reconnaissance (step 0) on 16 October, and the Sydney network
-  fixture (step 5) committed on 17 October (#349), with its row in
+  fixture (step 5) committed on 17 October (#349), with its row (#350) in
   `scripts/vision_benchmark_networks/NOTICE.md`.
 - **Where it came from:** this was the section "The COOL backend and the benchmark" of the
   [deployment runsheet](deployment-runsheet.md#the-cool-backend-and-the-benchmark), which now
@@ -169,10 +169,10 @@ script them into the launch.
    Two inputs must be in that checkout before the runs:
 
    - **The Sydney network fixture**, `scripts/vision_benchmark_networks/sydney.json`. Committed on
-     17 October (#349) with its row in `NOTICE.md`, so a clone of `dev` has it: check with
-     `sha256sum scripts/vision_benchmark_networks/sydney.json` against that row. The rest of this
-     item is how it was taken, for a fresh capture. It is the network
-     the deployed worker was sent, taken from Sydney's network object after the first Sydney tick
+     17 October (#349), with its row in `NOTICE.md` filled in by #350, so a clone of `dev` has
+     it: check with `sha256sum scripts/vision_benchmark_networks/sydney.json` against that row.
+     The rest of this item is how it was taken, for a fresh capture. It is the network the
+     deployed worker was sent, taken from Sydney's network object after the first Sydney tick
      (each city's network is its own object, `vision/<topic>/<site>/network.json`, not part of the
      running state: [`rail_access` topics](deployment-runsheet.md#rail_access-topics), "Where things land"), on your own
      machine. For the example topic the object is `vision/rail-cities/sydney/network.json`; for
@@ -397,9 +397,9 @@ script them into the launch.
     agent's loop; the deployed worker runs stock OpenCV 5 on Lambda arm64 (CPU named in its
     logs)". Not "COOL is deployed": a deployed COOL worker (Terraform for `VISION_COOL_WORKER_ARN`
     and a container Lambda or ECS) is out of scope until after the deadline, and whether COOL runs
-    on Lambda's CPUs is the open question in [vision.md §10](enhancements/vision.md#10-still-open).
-12. **Optional: the agent session (Wednesday 21, about an hour, once the evaluation's `replay`
-    and `stability` exist).** On the same kind of instance, with the cache from step 8:
+    on Lambda's CPUs is the open question in [vision.md §10](enhancements/archive/vision.md#10-still-open).
+12. **Optional: the agent session (Wednesday 21, about an hour).** On the same kind of instance,
+    with the cache from step 8:
     - give the instance role, for this hour only, one statement: `bedrock:InvokeModel` on the one
       inference profile the topics use and its foundation models, and remove it afterwards;
     - `~/cool/bin/python scripts/vision_eval.py replay --sequence sydney-demo --agent bedrock --model-id $M --region ap-southeast-2 --worker in-process --backend cool --cool-sha $SHA $C --out $E --tag cool`

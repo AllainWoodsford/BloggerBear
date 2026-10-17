@@ -41,7 +41,7 @@ from common.editorial_resolver import ADAPTER_DEFAULTS
 from common.figures import MAX_ALT_CHARS, MAX_CAPTION_CHARS, clean_figures
 from common.rail_notes import NOTES_LEAD, format_notes, planner_notes
 
-# The city boxes of docs/enhancements/rail-access-monitor.md §2.
+# The city boxes of docs/enhancements/archive/rail-access-monitor.md §2.
 SYDNEY = [[150.86, -34.16], [151.56, -34.16], [151.56, -33.58], [150.86, -33.58]]
 MELBOURNE = [[144.80, -37.90], [145.30, -37.90], [145.30, -37.55], [144.80, -37.55]]
 PREFIX = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/"
@@ -355,7 +355,7 @@ def test_the_adapters_import_without_numpy_opencv_or_networkx():
         {"sites": SITES, "params": 3},
         {"sites": SITES, "backend": "gpu"},
         {"sites": SITES, "min_baseline": 0},
-        # Not finite, or past a bound (docs/enhancements/rail-access-monitor.md §5 risk 1).
+        # Not finite, or past a bound (docs/enhancements/archive/rail-access-monitor.md §5 risk 1).
         {"sites": SITES, "time_budget_seconds": "nan"},
         {"sites": SITES, "time_budget_seconds": "-inf"},
         {"sites": SITES, "time_budget_seconds": 0},
@@ -2060,7 +2060,7 @@ MATERIAL_LINE = (
     f'178 stations against 178; coverage 93 %; served share moved; {NOTE}"the new line is in the news and '
     'on the map"'
 )
-# PR E's summary prompt, byte for byte (docs/enhancements/rail-access-monitor.md §4 PR E): what a
+# PR E's summary prompt, byte for byte (docs/enhancements/archive/rail-access-monitor.md §4 PR E): what a
 # summary without planner notes is still given.
 PROMPT_WITHOUT_NOTES = (
     "You are summarising a change measured in satellite imagery and OpenStreetMap data for the topic "
@@ -3219,7 +3219,7 @@ def test_a_state_from_before_reaches_the_object_through_the_research_tick(tick_e
     assert sydney["history"][-1]["network_fetched_at"] == inline["fetched_at"]
 
 
-# --- one city a day: the day-subject round (docs/enhancements/dailysubject_hook.md §4.2, §5) -------
+# --- one city a day: the day-subject round (docs/enhancements/archive/dailysubject_hook.md §4.2, §5) -------
 
 SINGAPORE = [[103.56, 1.61], [104.08, 1.61], [104.08, 1.09], [103.56, 1.09]]
 BOSTON = [[-71.30, 42.42], [-70.90, 42.42], [-70.90, 42.15], [-71.30, 42.15]]

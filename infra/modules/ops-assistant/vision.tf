@@ -1,7 +1,7 @@
 # =============================================================================
 # The assistant's vision round: vision_status, the vision topics in pipeline_health, and
 # log_review on the vision worker (lambdas/ops_mcp/vision_status.py, log_review.py;
-# docs/enhancements/ops-assistant-vision.md). Only where the root deploys the worker
+# docs/enhancements/archive/ops-assistant-vision.md). Only where the root deploys the worker
 # (vision_enabled), and least privilege:
 #
 #   1. StartQuery and ListTagsForResource on the worker's one log group, in vision_region, under

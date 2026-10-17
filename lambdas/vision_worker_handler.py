@@ -1,10 +1,11 @@
 """The vision worker: measure one site in one Sentinel-2 scene with OpenCV 5, and say so.
 
-docs/enhancements/opencv-agentic-vision-enhancement.md §2 and docs/enhancements/rail-access-monitor.md
-§3. Invoked by the research tick's adapters through common/vision_client.py, usually from another
-region: the worker runs next to the imagery (`sentinel-cogs`, us-west-2), reads only the tiles
-under the site, and sends back a few KB of metrics and one small figure. It keeps no state and
-writes nothing; the adapter stores what it is given in the home region.
+docs/enhancements/archive/opencv-agentic-vision-enhancement.md §2 and
+docs/enhancements/archive/rail-access-monitor.md §3. Invoked by the research tick's adapters through
+common/vision_client.py, usually from another region: the worker runs next to the imagery
+(`sentinel-cogs`, us-west-2), reads only the tiles under the site, and sends back a few KB of
+metrics and one small figure. It keeps no state and writes nothing; the adapter stores what it is
+given in the home region.
 
 Two tasks share the handler, chosen by the request's `task` (common/vision_contract.py's TASKS):
 
@@ -28,7 +29,7 @@ The request and reply are common/vision_contract.py's. Every reply carries the t
 record and per-stage timings (read, analyse, annotate; the rail task adds the graph stage), which
 is what the COOL benchmark compares.
 
-**One evidence line per request that returns** (`_evidence`; docs/enhancements/vision-evidence.md):
+**One evidence line per request that returns** (`_evidence`; docs/enhancements/archive/vision-evidence.md):
 after the reply is built, success or refusal, the handler prints one JSON line in exactly
 common/evidence.py's format (`vision_measure`: the request id, the task, the build's fingerprint
 prefix, the CPU, the stage timings, what was read, the coverage, the counts, the peak RSS so far
@@ -73,7 +74,7 @@ _READ_CHUNK_BYTES = 64 * 1024
 # The rail task's analysis grid: every band is put onto this one's pixels (the reference band).
 RAIL_REFERENCE_BAND = "swir16"
 # The rail task's own window cap, per side, in swir16's 20 m pixels: 3,584 px = 71.7 km, which holds
-# the four city boxes of docs/enhancements/rail-access-monitor.md §2 (Sydney's is the largest, 3,327 x
+# the four city boxes of docs/enhancements/archive/rail-access-monitor.md §2 (Sydney's is the largest, 3,327 x
 # 3,306 px with read_site's 16 px pad round it). The ships task keeps scene.MAX_WINDOW_PX (4096 px).
 # Why less: the rail analysis grows with the window and the worker has one vCPU (2048 MB). On one core
 # of a 4-core Intel Xeon at 2.10 GHz, through lambda_handler (the bands read from in-memory COGs, the

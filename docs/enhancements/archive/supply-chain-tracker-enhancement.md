@@ -4,8 +4,7 @@
 [AWS OpenCV AI Competition 2026](https://opencv26.devpost.com) (deadline **26 October 2026,
 11:45 pm PDT**).
 **Background:** chosen over a bushfire topic as the lower-stakes entry; the legal and data-licence
-findings in [docs/risks/opencv-bushfire-watch-01.md](../risks/opencv-bushfire-watch-01.md) (items
-1, 3, 4, 5 and 8) apply here too.
+findings of its risk review apply here too: the five checks in [vision.md](vision.md) §9, step 4.
 
 ## The idea
 

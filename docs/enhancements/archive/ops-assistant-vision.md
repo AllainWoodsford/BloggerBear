@@ -2,7 +2,7 @@
 
 ## Why
 
-The vision pipeline ([how it works](../architecture/blogger-vision.md)) measures fixed sites in
+The vision pipeline ([how it works](../../architecture/blogger-vision.md)) measures fixed sites in
 new Sentinel-2 scenes with a worker in another Region, and keeps why a site was not measured in
 one place: the topic's running state, `snapshots/<topic>/running-state.json`. The operator's
 assistant could read none of it. Its role read `articles/*` only, its log queries ran in the home
@@ -60,7 +60,7 @@ gone; "starved" stays for a topic whose sites keep losing the race for time.
 
 **Only where vision is on.** One variable is both the switch and the Region: `OPS_VISION_REGION`,
 `vision_region` where the root's `vision_enabled` is true and `""` elsewhere
-([configuration.md](../configuration.md#the-ops-assistants-environment-variables)). Empty, no
+([configuration.md](../../configuration.md#the-ops-assistants-environment-variables)). Empty, no
 running state is read and the worker's log is neither read nor refused.
 
 **Its own policy** (`infra/modules/ops-assistant/vision.tf`, `count = var.vision_enabled ? 1 : 0`;

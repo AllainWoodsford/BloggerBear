@@ -1,7 +1,7 @@
 # The vision worker's own dependencies (vision/ and vision_worker_handler.py). Kept out of
 # requirements.txt for the same reason as requirements-ops-mcp.txt: that file is the one zip every
 # pipeline Lambda shares, and none of them need OpenCV. The worker is packaged on its own, for arm64
-# (docs/enhancements/opencv-agentic-vision-enhancement.md §4).
+# (docs/enhancements/archive/opencv-agentic-vision-enhancement.md §4).
 #
 # opencv-python-headless 5.0.0.93: stock OpenCV 5, with manylinux2014 aarch64 and x86_64 wheels.
 # This is the baseline backend; the COOL backend swaps this cv2 for OpenCV's Graviton build and

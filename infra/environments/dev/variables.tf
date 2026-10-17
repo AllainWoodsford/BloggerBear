@@ -335,7 +335,7 @@ variable "vision_enabled" {
     var.vision_region, invoked by the satellite_vision adapter. Off by default, so merging the
     scaffolding deploys nothing. Before turning it on, the bootstrap must have been re-applied
     by hand with the same vision_region (its VisionWorker statements), or the apply is refused.
-    Design: docs/enhancements/opencv-agentic-vision-enhancement.md.
+    Design: docs/enhancements/archive/opencv-agentic-vision-enhancement.md.
   EOT
 }
 

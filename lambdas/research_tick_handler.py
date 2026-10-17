@@ -28,7 +28,7 @@ clean, structured log entry. Matches every other handler in this
 codebase now: never raises unhandled, always returns a `{"status":
 "error", ...}` dict on failure.
 
-The evidence trail (common/evidence.py, docs/enhancements/vision-evidence.md): every invocation
+The evidence trail (common/evidence.py, docs/enhancements/archive/vision-evidence.md): every invocation
 binds its ids (Lambda's request id as `tick`, a fresh `run` per attempt, the topic) so each line
 an adapter prints carries them, and prints one `research_tick` line in a `finally`: the outcome,
 whether the running state or the snapshot was stored in this attempt, how many decisions and
