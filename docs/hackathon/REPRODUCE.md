@@ -148,9 +148,15 @@ commands are bash; on Windows run them in Git Bash ([setup guide](../setup-guide
    deploy).
 3. **Create the rail topic and run one tick per city:** the runsheet's
    [`rail_access` topics](../deployment-runsheet.md#rail_access-topics), "Create the topic" and
-   "The first-deploy check". A large city's first tick fetches its network and the next one
-   measures it; each city's first clear scene is its first observation, a Finding, and then an
-   article held for you on that city's day of the rota.
+   "The first-deploy check". It is created from the template, `scripts/rail_topics.example.json`,
+   whose rota gives each city weekdays. A large city's first tick fetches its network and the next
+   one measures it; each city's first clear scene is its first observation, a Finding.
+   **Then switch it to a city a week, as the live topic is**, before any article is approved:
+   [RailVisionSeeding.md §7](../RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)
+   (the three editorial goals, the week rota, and the first weekly reading now). From then on the
+   first tick of each city's week writes its weekly reading (its newest clear scene, no change
+   claimed), and the daily run holds an article for you from it each day under the next goal:
+   access, then the network's flags, then the simulated links.
 4. **Read what it did:** the runsheet's
    [evidence queries](../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided)
    in CloudWatch Logs Insights, or ask the operator's assistant "what did the vision agent do for

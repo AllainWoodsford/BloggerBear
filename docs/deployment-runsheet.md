@@ -1568,7 +1568,28 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    false-alarm rate a quiet city would call the agent at; `results.false_alarms.by_month` breaks it
    down. If a summer scene against winter ones crossed a threshold here, C3 reaches the agent in
    step 6; otherwise its gate held, which the report says.
-9. **Index and commit.**
+9. **E8, the built-up check (2.4.1)**: the worker's built-up mask on `sydney-2024-08-26` against
+   ESA WorldCover 2021's class 50, and the served share over each mask with the fixture's stations.
+   It reads the scene from the cache and the WorldCover tile `S36E150` from the `esa-worldcover`
+   bucket (eu-central-1, no credentials) over the site's box only, about 10 MB of a 20 MB object,
+   kept in the cache too; a HEAD first checks the object's pinned ETag and size. No model, no worker
+   invocation.
+
+   ```sh
+   python scripts/vision_eval.py builtup-check $C --out $E
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py builtup-check --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   ```
+
+   Its summary's `iou`, `precision` and `recall` compare the masks over the pixels both saw;
+   `results.ours_by_reference_class` says what WorldCover calls the pixels we call built-up. "input
+   changed: reference tile S36E150" means the object is not the one pinned on 17 October
+   (`REFERENCE_PINS` in `scripts/vision_eval_reference.py`): check it with `curl -sI <the URL the
+   message names>`, and pin the new ETag and size in a commit of its own that says why, before
+   the run.
+10. **Index and commit.**
 
    ```sh
    python scripts/vision_eval.py index && python scripts/vision_eval.py index --check
@@ -1590,6 +1611,101 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    `RESULTS.md`, and update the tracker's A2, A3 and S7 rows. A run file made before the submission tag
    on code that changed since in a way that matters to it goes in
    `docs/hackathon/evidence/older-code.json` with the reason, and `index` again.
+
+### The evidence export, the trace and the labels (O9)
+
+What the deployed system measured, decided and did goes into git with
+`scripts/evidence_export.py` ([the live evidence](hackathon/evidence/README.md#the-live-evidence-live)
+says what each file holds). Run it on Saturday 24 October, and again by Thursday 29, from a checkout
+of the code being submitted, in the venv above. It only reads: nothing here writes to AWS.
+
+**What it needs.**
+
+- Credentials for the dev account (the profile you deploy with will do) that may:
+  - `s3:GetObject` on `<prefix>-dev-content` (`snapshots/<topic>/running-state.json`, each city's
+    `vision/<topic>/<site>/network.json`, the figures);
+  - `dynamodb:Scan` on `<prefix>-dev-topics`, `dynamodb:Query` on `<prefix>-dev-findings` and on
+    `<prefix>-dev-articles` (its `by_topic_created_at` index);
+  - `logs:StartQuery`, `logs:GetQueryResults` and `logs:StopQuery` on
+    `/aws/lambda/<prefix>-dev-research-tick` and `/aws/lambda/<prefix>-dev-admin-api` in the home
+    Region, and on `/aws/lambda/<prefix>-dev-vision-worker` in us-west-2;
+  - `lambda:GetFunctionConfiguration` on those three functions.
+- The Regions: the home one is `ap-southeast-2` and the vision one `us-west-2`, Terraform's defaults
+  (`--region` and `--vision-region` otherwise); the prefix is `bloggerbear` (`--prefix` otherwise).
+- `gh`, signed in (`gh auth status`), for the commit that deployed each function's code
+  (`provenance.json`); without it that commit is null, with the reason, and the export still
+  finishes.
+- Your `.pii-denylist` at the repository's root (or `PII_DENYLIST`): the export runs the check on
+  every file it writes, and refuses to start writing without a list, since nothing would then check
+  the files before they are committed. `--no-denylist` writes unchecked, and says so.
+
+The logs are read through Logs Insights, a few queries at a time, each batch waited for at most
+`--logs-wait` seconds (120); a 90-day scan of the three groups is a few GB at most, cents.
+
+1. **Export.**
+
+   ```sh
+   python scripts/evidence_export.py export --env dev --networks --figures 12
+   ```
+
+   ```powershell
+   python scripts\evidence_export.py export --env dev --networks --figures 12
+   ```
+
+   It writes `docs/hackathon/evidence/live/<UTC date>/`, and with `--networks` each city's network
+   as `scripts/vision_benchmark_networks/<site>.json` (fill each new file's row in that directory's
+   `NOTICE.md` from its `fetched_at`, `endpoint` and `query_url` and its sha256, which
+   `provenance.json` gives under `networks`). O2's Sydney fixture is left byte for byte when it
+   holds the same network (its `kept` says `unchanged`), and kept, with a line saying so, when it
+   holds another: the evaluation's real-data runs pin its sha256, and `replay --agent recorded`
+   refuses a file that changed, so do not pass `--replace-networks` once those runs are made. It
+   prints any log read that did not complete: "not_checked" means a query did not finish within
+   `--logs-wait`; run it again with `--logs-wait 300 --replace` (`--replace` removes only the
+   export's own files: your `labels.csv` stays). Exit 2 with `pii-denylist: <file>:<line> contains
+   denylist entry #n` means a personal string reached a file: the export is moved to
+   `live/<date>.refused/` (git ignores it), your `labels.csv` is left where it was, and every
+   network file it wrote is put back as it was; find where the string came from, then export
+   again. Leave out `--with-notes` for the committed export unless you have read every note it
+   adds (model and third-party text, scrubbed and labelled, but quoted).
+2. **Read it before committing**: `summary.json`'s `logs` (each `complete`), `redacted` (0
+   expected; anything else, `redacted_at` names each file, line and field: find out why),
+   `observed_failures.worker.not_checked` (worker runs whose own line was not read: 0 when every
+   log read completed), `human_control.completeness.unmatched` (a line nothing corroborates: the
+   report says so), and the traces under `traces/`.
+3. **The trace** the report and the video quote (the latest decision of a city, or of the demo
+   topic; `--scene <scene id>` for one in particular):
+
+   ```sh
+   python scripts/evidence_export.py trace --topic rail-cities --site sydney --scene latest --from docs/hackathon/evidence/live/<date>
+   python scripts/evidence_export.py trace --env dev --topic rail-sydney-demo --scene latest
+   ```
+
+   ```powershell
+   python scripts\evidence_export.py trace --topic rail-cities --site sydney --scene latest --from docs\hackathon\evidence\live\<date>
+   python scripts\evidence_export.py trace --env dev --topic rail-sydney-demo --scene latest
+   ```
+
+   The second reads live (the logs and the running state, now) and writes nothing; in the video,
+   run query (c) on the same tick id the committed trace shows.
+4. **Label (O9).** Copy `labels-template.csv` to `labels.csv` in the same directory and fill each
+   row's `label` (`agree` or `disagree` with the agent's verdict) and `reason` (one of the codes in
+   the file's header), reading the trace and the figure the row names. Save it as UTF-8 CSV. Then:
+
+   ```sh
+   python scripts/evidence_export.py agreement --from docs/hackathon/evidence/live/<date>
+   python scripts/vision_eval.py index --check
+   ```
+
+   ```powershell
+   python scripts\evidence_export.py agreement --from docs\hackathon\evidence\live\<date>
+   python scripts\vision_eval.py index --check
+   ```
+
+   `agreement` writes the k of n and its Wilson interval into that export's `summary.json`, the
+   cities and the demo topic apart.
+5. **Commit** the export directory, `docs/hackathon/evidence/live/README.md` and the network files,
+   after `python scripts/pii_denylist_check.py --staged` (PowerShell: `python
+   scripts\pii_denylist_check.py --staged`). Update the tracker's O9, S7 and A3 rows.
 
 ## Deploying to another region
 

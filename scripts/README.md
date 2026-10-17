@@ -859,6 +859,85 @@ All three run on Windows (`py -3.11 scripts\vision_eval.py ...`). Their argument
 `vision_eval_agent_cli.py`, which does not import the driver, so `pin` and `coverage` still run in a
 venv without boto3; `vision_eval_agent.py` is imported only to run one of the three.
 
+## The reference check: `vision_eval.py builtup-check` (E8)
+
+```bash
+python scripts/vision_eval.py builtup-check --cache ~/cogs --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py builtup-check --scene synthetic-1 --out DIR     # CI's: synthetic inputs
+```
+
+**`builtup-check`** (E8, `scripts/vision_eval_reference.py`) asks how far the worker's built-up
+proxy (NDBI and NDVI from Sentinel-2) agrees with an independent map: ESA WorldCover 2021 v200, class
+50 "Built-up" (10 m, CC BY 4.0, the `esa-worldcover` bucket in eu-central-1). It reads
+`sydney-2024-08-26` (`--scene`) and analyses it in this process as the worker does, reads the
+WorldCover tile under the site (`S36E150` for Sydney) over the site's box with the repository's own
+COG reader, and resamples it onto the scene's 20 m UTM grid by nearest neighbour (`cv2.remap`).
+Over the pixels both saw it reports `iou`, `precision`, `recall`, and the served share over each
+mask with the same stations and reach (`served_share_ours`, `served_share_reference`; the network
+fixture gives the stations, `--network FILE` otherwise), with each WorldCover class's share of our
+built-up pixels. The tile's ETag and size are pinned (`REFERENCE_PINS`): a HEAD first, and a moved
+object is refused ("input changed"); only the bucket's map folder is ever read, in this script, never
+through the worker. `--cache` keeps the reference's ranges beside the scene's. The run file's kind is
+`eval-builtup-check`. On Windows: `python scripts\vision_eval.py builtup-check --cache $HOME\cogs
+--out docs\hackathon\evidence\runs` in the activated venv.
+
+## The deployed system's evidence: `evidence_export.py`
+
+```bash
+python scripts/evidence_export.py export --env dev --networks --figures 12    # live/<UTC date>/
+python scripts/evidence_export.py trace --topic rail-cities --site sydney --scene latest --from docs/hackathon/evidence/live/<date>
+python scripts/evidence_export.py trace --env dev --topic rail-sydney-demo --scene latest   # live, writes nothing
+python scripts/evidence_export.py agreement --from docs/hackathon/evidence/live/<date>     # after labels.csv
+python scripts/pii_denylist_check.py --files <path> ...    # what the export runs on every file it writes
+```
+
+On Windows, in the activated venv:
+
+```powershell
+python scripts\evidence_export.py export --env dev --networks --figures 12
+python scripts\evidence_export.py trace --topic rail-cities --site sydney --scene latest --from docs\hackathon\evidence\live\<date>
+python scripts\evidence_export.py trace --env dev --topic rail-sydney-demo --scene latest
+python scripts\evidence_export.py agreement --from docs\hackathon\evidence\live\<date>
+python scripts\pii_denylist_check.py --files <path> ...
+```
+
+**`export`** reads, read-only, what the deployed system measured, decided and did into
+`docs/hackathon/evidence/live/<UTC date>/` (the [evidence README](../docs/hackathon/evidence/README.md#the-live-evidence-live)
+lists the files and their fields): each vision topic's running state and its decision ring; the
+research tick's, the vision worker's (us-west-2) and the admin API's evidence lines and Lambda's
+REPORT lines through Logs Insights; the Articles and Findings tables; the three functions' code
+identity and the deploy that produced it (`gh run list`, null with the reason when `gh` is missing
+or signed out). Topics are every topic whose adapter keeps decision evidence (`--topics a,b`
+otherwise), the demo topics (the tracker's `Demo topics:` line) counted apart; the window is the
+logs' 90 days (`--since ISO` otherwise). The queries are the operator's assistant's own
+(`ops_mcp/vision_evidence.py`), a few at a time, each batch waited for at most `--logs-wait` (120 s);
+one cut at 1,000 rows is split by time and asked again, and one that did not finish is said as not
+checked in `summary.json`, never as zero. Only schema fields are written; `--with-notes` adds the
+agent's reasons, the news hosts and the Finding summaries, through `redact.scrub`, labelled as
+unverified. A backstop replaces any ARN and any 12-digit number left, beside a hyphen too, but not
+one inside a longer hex token or a UUID, nor a code-made 12-hex `run`, `build` or `reason_sha256`
+(`summary.json`'s `redacted` says how many, 0 expected, and `redacted_at` where), and
+`pii_denylist_check.py --files` reads every file written: a hit exits 2, naming the file and line,
+puts back every network file it wrote and moves the export to `live/<date>.refused/`, which git
+ignores (the operator's `labels.csv` stays). `--networks` also writes each city's
+`scripts/vision_benchmark_networks/<site>.json` from its network object, in the fixture's shape: a
+file that already holds the same network is left byte for byte (run files pin its sha256), and one
+that holds another is kept unless `--replace-networks`. `--figures N` copies at most N figures (the
+triaged decisions' first, whatever the agent's verdict, then the reported ones). An export already in
+the directory is refused without `--replace`, which removes only the export's own files (never
+`labels.csv`); a directory that holds anything else is refused either way, and `live/README.md` is
+written only beside the exports in `live/`. Resource names come from
+`--prefix` (`bloggerbear`) and `--env`; the Regions are Terraform's defaults unless given
+(`--region`, `--vision-region`).
+
+**`trace`** prints one decision's chain (`vision_decisions.trace`, as the assistant's scene view
+renders it) as Markdown, from an export (`--from`) or live (`--env`): `--scene` is a scene id or
+`latest`, and `--site` is needed when the topic has several sites and the scene does not say which
+(the rotating `rail-cities`). **`agreement`** recounts `summary.json`'s agreement once the
+operator has filled `labels.csv` in (O9). The runsheet's
+[evidence export](../docs/deployment-runsheet.md#the-evidence-export-the-trace-and-the-labels-o9)
+gives every command in bash and PowerShell, and what the credentials must allow.
+
 ## After changing the CLI: `generate_cli_reference.py`
 
 The operator's assistant answers "how do I ...?" by showing a command's own `--help` and, when you

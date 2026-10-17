@@ -6,8 +6,9 @@ Best Use of COOL ([Appendix A](#appendix-a-best-use-of-cool)) and Agentic Vision
 
 > An autonomous publisher that measures, from free Sentinel-2 imagery and OpenStreetMap, how much
 > of a city's built-up area lies within walking reach of a rail station, with OpenCV 5 in a worker
-> beside the imagery, and writes an article only when the numbers moved, a bounded agent has
-> checked the change is real, and a person has approved it.
+> beside the imagery. It writes about one city a week: a reading of its newest clear scene, written
+> up from a different angle each day, and again when the numbers moved and a bounded agent has
+> checked the change is real. A person approves every article.
 
 **Team.** [R2: the team: each member's name and role, as the owner gives them]
 
@@ -22,8 +23,11 @@ Best Use of COOL ([Appendix A](#appendix-a-best-use-of-cool)) and Agentic Vision
 | How to build and test it | [REPRODUCE.md](REPRODUCE.md) |
 | The evidence | [evidence/README.md](evidence/README.md): every number below cites a file there or a code anchor, or is marked indicative and cites the design doc that recorded it |
 
-**What is written here.** Every section describes the code on `dev` at 4a3d1b8 (16 October). Code
-anchors are `file:line` at that commit, and are checked again at the tag. A sentence that needs a
+**What is written here.** Every section describes the code on `dev` at 4a3d1b8 (16 October),
+except the rotation as it runs: a city a week (#338), the angles of the goal rotation (#335) and
+the runsheet that set the live topic up ([RailVisionSeeding.md](../RailVisionSeeding.md), #334)
+are described as at a952db1 (17 October), the `dev` commit that brought them in. Code anchors are
+`file:line` at 4a3d1b8, and all of them are checked again at the tag. A sentence that needs a
 number not yet measured holds a marked placeholder, `[R2: ...]`, naming the run or file the number
 will come from; `scripts/submission_check.py` fails while any is left. A few numbers were measured
 before the run files existed (PR D's smoke run, the build container's timings, a workstation's
@@ -54,7 +58,8 @@ what it could not see, and never publishes a number without a person reading it.
 BloggerBear is already that pipeline for text feeds: topics, a diff-first research tick, a daily
 authoring cycle, reviews, a moderation queue and a static site. The Rail Access Monitor gives it
 eyes. One topic watches four cities (Sydney, Melbourne, Singapore and Boston) and writes about one
-a day by a fixed weekly rota.
+a week, each in turn: on the Monday a reading of the city's newest clear scene, then an article a
+day from it, each from a different angle (access, the network's flags, the simulated links).
 
 **The yardstick.** The measure resembles UN Sustainable Development Goal indicator 11.2.1, the
 proportion of the population that has convenient access to public transport. [R2: the indicator's
@@ -71,20 +76,24 @@ in a straight line from each station. Two differences are stated wherever the nu
 **Why a measured, diff-first, human-approved pipeline.** A model asked "is Sydney well served?"
 would answer from what it read; this answers from what was measured, says when, and says what was
 not measured. The diff comes first, so no model is called unless a number moved (the repository's
-rule 2). An agent then checks whether the change is real or an artefact of the imagery or the map,
-and a person approves every article, because the numbers are proxies.
+rule 2); the one exception is the week's city's weekly reading, once a week, which claims no change
+and goes to no agent. An agent checks whether a change is real or an artefact of the imagery or the
+map, and a person approves every article, because the numbers are proxies.
 
 ## 2. Users
 
 - **The operator-publisher.** One person runs BloggerBear.
   - They create the rail topic with one command (`scripts/rail_topics.example.json`, the runsheet's
-    [`rail_access` topics](../deployment-runsheet.md#rail_access-topics)), and approve or reject
-    each held article from the review inbox (`python scripts/admin_cli.py inbox`, `approve`).
+    [`rail_access` topics](../deployment-runsheet.md#rail_access-topics)), switch it to a city a
+    week with three editorial goals ([RailVisionSeeding.md §7](../RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)),
+    and approve or reject each held article from the review inbox (`python scripts/admin_cli.py
+    inbox`, `approve`).
   - They ask the operator's assistant, on its page or by voice through Alexa+, what the pipeline
     saw and why: `vision_status` (which cities were measured, and why the others were not),
-    `topic_findings` (what the next article will be written from, with the day's city) and
-    `vision_evidence` (each decision, what the agent did, what a person did), read-only
-    ([the evidence trail](../enhancements/vision-evidence.md#asking-the-assistant)).
+    `topic_findings` (the new Findings the next article on the week's city reads; on a day with
+    none, the run writes the week's earlier Findings up again under the next goal, which the tool
+    does not show) and `vision_evidence` (each decision, what the agent did, what a person did),
+    read-only ([the evidence trail](../enhancements/vision-evidence.md#asking-the-assistant)).
   - They need three things: little effort, never a wrong number published, and the evidence on
     demand.
 - **Readers.** People following their city's growth and its trains: commuters, local-news
@@ -110,10 +119,10 @@ flowchart LR
     sched["EventBridge Scheduler<br/>an hourly research heartbeat and a daily run per topic"]
     tick["Lambda: research tick, 120 s<br/>rail_access adapter: one city per tick, in turn"]
     agent["Triage agent, inside the tick<br/>bounded, fails closed"]
-    sfn["Step Functions, Lambda: daily cycle<br/>the day's city from the topic's rota;<br/>draft, reviews, held for a person"]
+    sfn["Step Functions, Lambda: daily cycle<br/>the week's city from the topic's rota,<br/>the day's angle from its goal rotation;<br/>draft, reviews, held for a person"]
     bedrock["Amazon Bedrock<br/>Converse"]
     s3c[("S3 content bucket<br/>running state and decision rings,<br/>figures, each city's network")]
-    ddb[("DynamoDB<br/>topics (rail-cities: four cities, a weekly rota),<br/>Findings with their subjects, articles, moderation")]
+    ddb[("DynamoDB<br/>topics (rail-cities: four cities, a week each in turn),<br/>Findings with their subjects, articles, moderation")]
     api["Admin API<br/>IAM auth and a WAF allowlist"]
     site[("S3, CloudFront and WAF<br/>the public site")]
     logs["CloudWatch Logs, 90 days<br/>evidence lines: research tick, admin API"]
@@ -151,9 +160,9 @@ flowchart LR
   agent -- "web_context" --> gdelt
   agent -. "web_context, when GDELT fails" .-> gateway
   tick --> s3c
-  tick -- "a Finding and its city" --> ddb
+  tick -- "a Finding and its city: a change, or the week's city's weekly reading" --> ddb
   tick --> logs
-  sfn -- "the day's city's Findings" --> ddb
+  sfn -- "the week's city's Findings" --> ddb
   sfn --> bedrock
   operator -- "admin CLI: approve or reject" --> api
   api --> ddb
@@ -175,22 +184,23 @@ flowchart LR
 
 | Piece | What it does | Where |
 |---|---|---|
-| The topic | `rail-cities`: four city polygons, `reach_m` 1,000, a weekly `rotation` read on Sydney's calendar (Sydney on Monday and Friday, Melbourne on Tuesday and Saturday, Singapore on Wednesday and Sunday, Boston on Thursday), and a 192-hour findings window, the longest gap in the rota (Boston's week) plus a day | `scripts/rail_topics.example.json`; [dailysubject_hook.md](../enhancements/dailysubject_hook.md) |
-| The research tick | Hourly, diff-first, 120 s. The rail adapter takes one city per tick in turn: the newest clear scene from Earth Search, the city's OpenStreetMap network from its own S3 object (a first fetch gets the tick's measuring time), the worker, then the diff against the city's baseline | `lambdas/research_tick_handler.py`; `lambdas/common/adapters/rail_access.py`; `lambdas/common/vision_sites.py` |
+| The topic | `rail-cities`: four city polygons, `reach_m` 1,000, a 192-hour findings window, and a `rotation` read on Sydney's calendar. The template gives each city weekdays; the live topic was switched to a city a week (`rotation_period` `"week"`, in the order Melbourne, Singapore, Boston, Sydney, which gives Sydney the week of 19 October and Melbourne that of 26 October) with three editorial goals taken in turn (`editorial_goal_rotation`: `access`, `network`, `simulations`) | `scripts/rail_topics.example.json`; [RailVisionSeeding.md §7](../RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides); [dailysubject_hook.md](../enhancements/dailysubject_hook.md) |
+| The research tick | Hourly, diff-first, 120 s. The rail adapter takes one city per tick in turn, whatever the week: the newest clear scene from Earth Search, the city's OpenStreetMap network from its own S3 object (a first fetch gets the tick's measuring time), the worker, then the diff against the city's baseline. On the first tick of a city's week it also reports that city's newest clear scene as its **weekly reading**, no change claimed, once a week (`reported_period`) | `lambdas/research_tick_handler.py`; `lambdas/common/adapters/rail_access.py`; `lambdas/common/vision_sites.py` |
 | The worker | Validates the request against the contract, range-reads only the tiles under the city, measures with OpenCV 5, draws the figure, replies with the metrics, the figure, the build record and per-stage timings, and logs one `vision_measure` line | `lambdas/vision_worker_handler.py`; `lambdas/vision/`; `lambdas/common/vision_contract.py` |
 | The agent | Asked only when a number moved past a threshold; a bounded Bedrock Converse loop with four tools; fails closed | `lambdas/common/vision_triage.py` |
-| The day subject | The daily cycle asks the rail adapter's `day_subject` hook whose day it is, drafts only that city's Findings since its last article on that city (`last_article_by_subject`), and holds the article for a person | `lambdas/common/day_subject.py`; `lambdas/common/findings_window.py`; `lambdas/daily_cycle_handler.py` |
+| The day subject and the angle | The daily cycle asks the rail adapter's `day_subject` hook whose week it is, and drafts only that city's Findings since its last article on that city (`last_article_by_subject`). The goal rotation picks the angle: new Findings get the next goal; with nothing new, the run revisits the same Findings under a goal not yet used on them, so one weekly reading becomes three articles (access on Monday, the network's flags on Tuesday, the simulated links on Wednesday) and then nothing until something new. Every article is held for a person | `lambdas/common/day_subject.py`; `lambdas/common/goal_rotation.py`; `lambdas/common/findings_window.py`; `lambdas/daily_cycle_handler.py` |
 | The person | Every vision article is held; approving it publishes the page with its map and credits | `lambdas/admin_api_handler.py`; `scripts/review_inbox.py` |
 | The assistant | Read-only tools over the state, the Findings and the evidence lines, for the ask page and Alexa+ | `lambdas/ops_mcp/` ([ops-assistant-vision.md](../enhancements/ops-assistant-vision.md)) |
 
 **The agent's workflow** (perception, decision, action and the person; every failed gate and every
 agent failure ends at "No Finding", and a worker or source failure at "Not measured", which keeps
-no decision). The source is [diagrams/agent-workflow.mmd](diagrams/agent-workflow.mmd); its SVG
+no decision; the week's city's weekly reading claims no change, so it reaches a Finding with no
+agent). The source is [diagrams/agent-workflow.mmd](diagrams/agent-workflow.mmd); its SVG
 is [diagrams/agent-workflow.svg](diagrams/agent-workflow.svg).
 
 ```mermaid
 flowchart TD
-  T["Research tick: the next city in turn<br/>(rail-cities takes its four cities one per tick)"]
+  T["Research tick: the next city in turn<br/>(rail-cities takes its four cities one per tick, whatever the week)"]
   P["Perception: the vision worker measures the city's newest scene with OpenCV 5<br/>coverage, built-up heat, reach and deserts, the rail graph, the figure"]
   E["Not measured: a worker or source error<br/>last_error kept, tried again on a later tick"]
   C{"coverage at least<br/>the floor (0.6)?"}
@@ -203,9 +213,10 @@ flowchart TD
   PS["previous_scene, site_history"]
   WC["web_context: recent news, GDELT or the AgentCore fallback<br/>(data, not instructions)"]
   V{"a strict JSON verdict?"}
+  W["Weekly reading, on the first tick of a city's week of the rota:<br/>its newest clear scene, no change claimed, so no agent"]
   F["Finding: summary, figure, planner notes,<br/>the city as its subject"]
   NF["No Finding<br/>the decision kept with its code<br/>(decision ring, evidence lines)"]
-  DC["Daily cycle on the city's day of the rota:<br/>draft and reviews, then always held<br/>for a person (manual review is forced)"]
+  DC["Daily cycle in the city's week of the rota:<br/>up to one article a day from its new Findings,<br/>each under a goal not yet used on them:<br/>access, network, simulations; draft and reviews,<br/>then always held for a person (manual review is forced)"]
   D{"a person approves?"}
   PUB["Published, with the map and the credits"]
   REJ["Rejected, never published"]
@@ -229,6 +240,8 @@ flowchart TD
   A --> V
   V -- real --> F
   V -- "artefact, or anything else" --> NF
+  T -- "the week's city, once a week" --> W
+  W --> F
   F --> DC
   DC --> D
   D -- yes --> PUB
@@ -244,8 +257,8 @@ trail](../enhancements/vision-evidence.md)):
 | Perception | `vision_measure` (build, CPU, timings, bytes read, coverage, graph size, peak memory), keyed by the worker's request id; Lambda's `REPORT` line for every run, a timed-out one included | the worker's log group in us-west-2, 90 days |
 | The gates (coverage, first observation, baseline, thresholds) | `vision_decision` (the code: `below_floor`, `first_observation`, `baseline_building`, `within_range`, `reported`, `artefact`; which measures moved; whether the network copy changed) | the research tick's log group; the city's decision ring (the last 12) in the running state |
 | The agent and its tools | `vision_triage` (each step's code-derived result, how the loop stopped, tokens, cost, the reason's SHA-256 prefix only) | the research tick's log group; the ring entry, which alone keeps the reason |
-| The Finding | `research_tick.finding` equal to the decision's time, with `stored: true` | the Findings table (14 days) |
-| The daily cycle and the hold | the article's `status`, `created_at`, `subject` and its lineage's `captured_at`s | the Articles table |
+| The Finding | `research_tick.finding` equal to the decision's time, with `stored: true`; a weekly reading has no decision of its own: its tick's `research_tick.finding`, and the city's `reported_period` (its week's Monday) | the Findings table (14 days); the running state |
+| The daily cycle and the hold | the article's `status`, `created_at`, `subject` (the week's city), `editorial_goal` (the angle), `revisit` and its lineage's `captured_at`s | the Articles table; the topic's `goal_rotation_state` |
 | The person | `moderation_decision` (approved, rejected, unpublished, sent back; with the time, never who) | the admin API's log group; the Articles table (`published_by`) |
 
 **The chain of ids.** `(topic_id, at)` joins a decision to its Finding and to the article's
@@ -324,7 +337,7 @@ cut, the sentence that no 5.x-specific call is used and the comparison was not m
 |---|---|---|
 | The vision worker | Lambda, arm64, python3.12, 2,048 MB, 60 s, in us-west-2; `opencv-python-headless` 5.0.0.93, numpy 2.4.4, networkx 3.4.2, requests 2.34.2; `VISION_BACKEND=opencv`; its log group kept 90 days, and its role may write only that log group | `infra/modules/vision-worker/main.tf:211-260`; `infra/modules/vision-worker/variables.tf:26-36`; `lambdas/requirements-vision.txt` |
 | The research tick | Lambda, python3.11, 512 MB, 120 s; started asynchronously by an EventBridge Scheduler heartbeat per topic, hourly by default (`rate(1 hour)`) | `infra/environments/dev/main.tf:691-711`; `_DEFAULT_RESEARCH_CADENCE`, `lambdas/admin_api_handler.py:172` |
-| The daily cycle | Step Functions around a Lambda (300 s), on the topic's own schedule: `rail-cities` every day at 09:05 Sydney time | `infra/environments/dev/main.tf`; `scripts/rail_topics.example.json` |
+| The daily cycle | Step Functions around a Lambda (300 s), on the topic's own schedule at its stagger slot's minute: `rail-cities` every day at 09:50 Sydney time on dev (the template's 09:05, moved by the stagger), writing about the week's city under the day's goal | `infra/environments/dev/main.tf`; `lambdas/common/stagger.py`; [RailVisionSeeding.md §1](../RailVisionSeeding.md#1-what-gets-seeded) |
 | The agent | Bedrock Converse, at most 700 output tokens a turn (`MAX_TOKENS`, `lambdas/common/vision_triage.py:66`); news from GDELT, with the AgentCore web-search gateway (ap-northeast-1 by default) as its fallback | `lambdas/common/web_search.py:13-20`; `infra/modules/web-search/variables.tf` |
 | State | S3 (`snapshots/` expire after 21 days on dev; figures and networks are kept); DynamoDB (Findings have a 14-day TTL) | `infra/environments/dev/main.tf:188-189`; `lambdas/research_tick_handler.py:68` |
 | The site | S3, CloudFront and WAF; dev's CloudFront domain is public | `infra/modules/static-site/`; `infra/environments/dev/main.tf:475` |
@@ -491,7 +504,8 @@ creation; for Sydney's measured scene, the coverage, built-up, served and desert
 share, the stations (snapped), nodes, edges and components, the hubs and the flags raised, the
 quality flags, the network's size, and the worker's read, analyse, graph and annotate times beside
 the bucket (its `vision_measure` line); the research tick's wall time with and without the agent
-(E11); the endpoint's article (a city's first observation, measured but not triaged, as §7 says)]
+(E11); the endpoint's article (one of Sydney's week, 19 to 25 October, written from its weekly
+reading or its first observation: measured but not triaged, as §7 says) and its `editorial_goal`]
 
 **The trace: OpenCV's output changing a later decision.** [R2: the headline trace, rendered by
 `vision_decisions.trace` from the replay of the `sydney-demo` sequence
@@ -538,9 +552,15 @@ REPRODUCE.md]
   E7's snap misses, if run]
 - **Every `real` agent case is network-driven.** A true, imagery-driven growth of a city's
   built-up area within the evaluation's window could not be built honestly.
-- **A small live sample.** A city's first observation is never triaged (it has no baseline), so the
-  endpoint's article is measured but not triaged, and few live decisions reach the agent before the
-  deadline. [R2: the live n, and the weather's effect on the live run]
+- **A small live sample.** A weekly reading claims no change and a city's first observation has no
+  baseline, so neither is triaged: the endpoint's article is measured but not triaged, and few live
+  decisions reach the agent before the deadline. [R2: the live n, and the weather's effect on the
+  live run]
+- **A city a week.** Each city is written about one week in four. A change found in another city's
+  week is triaged and kept as a Finding, but it is written up only if its city's week comes while
+  it is still inside the 192-hour findings window. A city whose newest scene is under the coverage
+  floor when its week starts gets its weekly reading, and its articles, only once a clear scene is
+  measured, so the angles start later in its week.
 - **The demo topic.** Its thresholds of 0 make the agent run on a known day; it is disclosed in §8.
 - **COOL is benchmarked, not deployed.** The deployed worker runs stock OpenCV 5 on Lambda arm64;
   whether COOL runs on Lambda's CPUs is open ([vision.md §10](../enhancements/vision.md#10-still-open)).
@@ -637,7 +657,7 @@ unknown verdict, a Bedrock error, no model, the turn limit or the deadline all m
 (`STOPS`, `lambdas/common/vision_triage.py:71`). Cost and time are bounded in code: at most three
 tool calls and five turns by default, the answer due 85 s after the tick started, no model turn
 with under 10 s left, `look_again` refused when a worker run could not finish, at most 700 output
-tokens a turn, and no model call at all unless a number moved.
+tokens a turn, and no agent call at all unless a number moved.
 
 **The demo topic is disclosed.** `rail-sydney-demo` ("Rail access: Sydney (demo)", site id
 `demo-sydney`) has thresholds of 0, which exist only to make the agent run for the demonstration:
@@ -705,7 +725,10 @@ logs). Not "COOL is deployed": a deployed COOL worker is out of scope until afte
 
 **The workflow (A1)** is the agent diagram in §3: perception (the worker), decision (the gates,
 then the bounded agent with `look_again`, `previous_scene`, `site_history` and `web_context`),
-action (a Finding, or a kept decision with no Finding), and the person.
+action (a Finding, or a kept decision with no Finding), and the person. Once a week the week's
+city's weekly reading is a Finding with no change claimed and no agent; the daily cycle then
+writes the week's city up from a different angle each day, and a real change found later in its
+week starts the angles again.
 
 **A trace showing OpenCV 5's output changing a later decision (A2).** The trace is one rendering for
 every reader (`vision_decisions.trace`): the same rows on the assistant's page, in the replay and

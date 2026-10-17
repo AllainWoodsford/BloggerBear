@@ -16,15 +16,18 @@ so the form's fields are re-checked against the Devpost page by hand before subm
 
 A research-and-publishing pipeline that measures a city's built-up density, the walking reach of
 its stations and its rail network as a graph from free satellite imagery and OpenStreetMap, with
-OpenCV 5 in a worker beside the imagery, and writes an article only when the numbers moved, a
-bounded agent has checked that the change is real, and a person has approved it.
+OpenCV 5 in a worker beside the imagery, writes about one city a week from different angles, and
+writes again when the numbers moved and a bounded agent has checked that the change is real. A
+person approves every article.
 
 ## The description
 
 Where a city builds and where its trains reach drift apart slowly and quietly, and the numbers that
 would show it are in open data nobody reads every week. The Rail Access Monitor reads them. One
 topic watches Sydney, Melbourne, Singapore and Boston, measuring each city's newest clear
-Sentinel-2 scene as it arrives and writing about one city a day by a fixed weekly rota.
+Sentinel-2 scene as it arrives. It writes about one city a week, each in turn: on the Monday a
+reading of the city's newest clear scene, with its map, then an article a day from it, each from a
+different angle (access, the network's flags, the simulated links).
 
 - **Perception with OpenCV 5, beside the imagery.** A stateless worker, an arm64 Lambda in
   us-west-2 next to the public Sentinel-2 bucket, range-reads only the tiles under a city (no GDAL),
@@ -32,11 +35,12 @@ Sentinel-2 scene as it arrives and writing about one city a day by a fixed weekl
   station with one labelled distance transform, outlines the built-up areas beyond walking reach,
   turns OpenStreetMap's rail lines into a graph with hit-or-miss thinning and `filter2D`, and draws
   the map the article carries.
-- **Diff first, then a bounded agent, then a person.** No model is called unless a number moved
-  against the city's own baseline. Then a triage agent on Bedrock, with at most three tool calls and
-  a deadline, may re-measure the scene with OpenCV at other settings, compare earlier scenes and
-  read the news; anything unsure is an artefact and makes no Finding. A person approves every
-  article.
+- **Diff first, then a bounded agent, then a person.** No agent is called unless a number moved
+  against the city's own baseline (the weekly reading claims no change, so it goes to none). Then a
+  triage agent on Bedrock, with at most three tool calls and a deadline, may re-measure the scene
+  with OpenCV at other settings, compare earlier scenes and read the news; anything unsure is an
+  artefact and makes no Finding. A real change in the week's city starts its angles again. A person
+  approves every article.
 - **Honest about what it measures.** Built-up area, not people; a straight line, not the walking
   route; flags and simulated links are hypotheses from proxies, never recommendations; every
   article says what was not measured, and a cloud never reads as an empty suburb.
@@ -55,7 +59,9 @@ The loop is **perception, diff, agent, person**, and each arrow is bounded in co
 1. **Perception.** The worker measures every new scene with OpenCV. No model is involved.
 2. **Diff.** The adapter compares the measurement with the city's own baseline (the median of
    earlier clear scenes measured the same way; a cloudy scene never counts). Nothing moved: the tick
-   stops, and no model is called.
+   stops, and no model is called. The one exception is the first tick of a city's week, which
+   reports that city's newest clear scene as its weekly reading, with no change claimed and no
+   agent.
 3. **Agent.** A numeric change is a candidate, not a Finding. The agent sees the map and the
    numbers and may call `look_again` (OpenCV re-measures the same scene at other settings: active
    perception), `previous_scene`, `site_history` and `web_context` (recent news, from GDELT with the
@@ -64,8 +70,9 @@ The loop is **perception, diff, agent, person**, and each arrow is bounded in co
    answer, a Bedrock error, no model, the turn limit or the deadline is "artefact". What the tools
    return is data, not instructions, and the agent's reason reaches a summary only quoted, as its
    note, not a measurement.
-4. **Person.** Every vision article is held for a person; the daily digest, which publishes with
-   no person, leaves these topics out.
+4. **Person.** The daily cycle writes the week's city up, a different angle each day, and holds
+   every vision article for a person; the daily digest, which publishes with no person, leaves
+   these topics out.
 
 **What is recorded.** The last 12 decisions per city, with each tool's result, are in the running
 state, and every decision is in the logs for 90 days, from the scene to the person's approval; the
