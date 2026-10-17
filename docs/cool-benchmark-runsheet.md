@@ -6,10 +6,11 @@ and with stock OpenCV 5, on the same pinned Sydney scenes and the same network, 
 give the same rail metrics, and commits the run files that prove which build ran and how fast. The
 report's COOL numbers come only from those files.
 
-- **When:** steps 1 to 11 on Monday 19 October; the optional agent session (step 12) on
-  Wednesday 21.
-- **Before it:** the Sydney network fixture is committed (step 5 says how), and the reconnaissance
-  is done (step 0).
+- **When:** steps 2 to 11 on Monday 19 October (step 1's subscription was done on 16 October;
+  step 10 is not for Monday 19); the optional agent session (step 12) on Wednesday 21.
+- **Before it:** both done. The reconnaissance (step 0) on 16 October, and the Sydney network
+  fixture (step 5) committed on 17 October (#349), with its row in
+  `scripts/vision_benchmark_networks/NOTICE.md`.
 - **Where it came from:** this was the section "The COOL backend and the benchmark" of the
   [deployment runsheet](deployment-runsheet.md#the-cool-backend-and-the-benchmark), which now
   points here.
@@ -167,7 +168,10 @@ script them into the launch.
 
    Two inputs must be in that checkout before the runs:
 
-   - **The Sydney network fixture**, `scripts/vision_benchmark_networks/sydney.json`: the network
+   - **The Sydney network fixture**, `scripts/vision_benchmark_networks/sydney.json`. Committed on
+     17 October (#349) with its row in `NOTICE.md`, so a clone of `dev` has it: check with
+     `sha256sum scripts/vision_benchmark_networks/sydney.json` against that row. The rest of this
+     item is how it was taken, for a fresh capture. It is the network
      the deployed worker was sent, taken from Sydney's network object after the first Sydney tick
      (each city's network is its own object, `vision/<topic>/<site>/network.json`, not part of the
      running state: [`rail_access` topics](deployment-runsheet.md#rail_access-topics), "Where things land"), on your own

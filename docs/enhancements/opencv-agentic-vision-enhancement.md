@@ -288,6 +288,7 @@ The steps, with their checks, are in
    release, unless the `production` environment sets `VISION_ENABLED` to `false`.
 4. **Create a topic**: `adapter: "satellite_vision"`, `sites` in `adapter_config`, an
    `object_noun`, and editorial goals (docs/deployment-runsheet.md, "Vision (optional)").
-5. **COOL**: subscribe, measure, pin the fingerprint (runsheet, "The COOL backend and the
-   benchmark"); unsubscribe after the trial if it isn't kept.
+5. **COOL**: subscribe, measure, pin the fingerprint
+   ([COOL benchmark runsheet](../cool-benchmark-runsheet.md)); unsubscribe after the trial if it
+   isn't kept.
 

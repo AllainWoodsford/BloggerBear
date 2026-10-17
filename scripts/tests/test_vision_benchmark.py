@@ -365,6 +365,7 @@ def test_the_deployment_runsheet_points_to_the_cool_runsheet_and_holds_no_copy_o
     deployment = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
     section = deployment.split("### The COOL backend and the benchmark", 1)[1].split("\n### ", 1)[0]
     assert "](cool-benchmark-runsheet.md)" in section
+    assert "```" not in section and len(section.split()) < 150, "the steps belong in the COOL runsheet"
     assert "~/cool/bin/python" not in deployment and "SHA=" not in deployment
 
 
