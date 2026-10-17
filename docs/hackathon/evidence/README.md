@@ -80,6 +80,9 @@ Schema `bloggerbear.vision-eval/1` (`scripts/vision_runs.py` writes and reads it
 | `eval-replay` | `vision_eval.py replay` | the real rail adapter over a pinned sequence, tick by tick (2.6.4): each tick's evidence lines as printed, the decision ring's entries, every worker call with its metrics digest, the clock's readings, and under `agent.responses` every Converse response (Bedrock or scripted), so `--agent recorded` replays it; with `--agent recorded`, the checks that it reproduced its recording |
 | `eval-failures` | `vision_eval.py failures` | the failure catalogue (2.5): per case its input, what must happen, the tests that hold it (pytest node ids, each checked to be collected) and, for the real-data rows, what the worker and the adapter did |
 | `eval-access-baseline` | `vision_eval.py access-baseline` | E5 on one scene: the production distance transform against the precise one and a straight-line buffer, each served share, the IoU of the served masks and the times |
+| `eval-agent` | `vision_eval.py agent` | the agent's evaluation (2.6.1-2.6.3): per case its history's codes, its networks (each by digest, with what the derivation added and removed), whether it passed the gate, and per repeat the verdict, stop, every step, the reason, time, tokens and cost in USD and AUD; the scores (per-class recall with Wilson intervals, balanced accuracy, the confusion matrix with failed-closed runs in their own column) for the agent and both baselines; and under `agent.responses` every Converse response |
+| `eval-counterfactual` | `vision_eval.py counterfactual` | 2.6.6: arm (a), each case's repeats with `look_again` answered by the newest scene's own re-measurement or the same with the moved measures at the baseline median, paired by repeat; arm (b), the same scene with SCL clouded to coverage 0.62 and 0.58: the code, whether the agent was called, whether a Finding would be written |
+| `eval-stability` | `vision_eval.py stability` | E3: the year set through the production rule on one network, each scene's code and measures, the false-alarm rate over the decisions with its Wilson 95 % interval and by month, and the spreads (served share, desert and built-up area, the built-up mask's IoU, the Jaccard of hubs and flags) |
 
 The first run file, `runs/2026-10-16-eval-coverage-intel-xeon-processor-2-80ghz-none.json`, is the
 coverage of every scene in `scripts/vision_eval_manifest.json`, measured on 16 October on the
@@ -118,7 +121,85 @@ with each command's PowerShell line, is the runsheet's
   rail cap, a missing key), and the cloudy row also runs the real adapter for one tick on a scene
   the search does pick under the floor.
 - **`access-baseline`** (E5): on `sydney-2024-08-26` by default (`--scene`), with the network.
+- **`agent`** (2.6.1-2.6.3): every case in `scripts/vision_eval_cases/` (below), each case's
+  history built through the real adapter, then its newest tick asked of the real agent
+  `--repeats` times (5) from the same state: `--worker <the deployed worker's ARN>` (production's
+  in-Region read and timing; site ids `eval-sydney`) or `--worker in-process --cache DIR`, which is
+  refused without the cache off an EC2 instance in us-west-2 (an uncached re-measurement would run
+  the case out of its 85 s for the harness's reasons); `--agent bedrock --model-id <id> --region
+  <Bedrock's Region>`. C7 and C9 run their scripts even then; C8 is asked with an invalid model id;
+  C6's re-measurements are all refused. A run without Bedrock access ends every case
+  `bedrock_error`, counted as failed closed, never dropped. About 55 live runs of up to five turns
+  (65 in all: C7's and C9's ten run their scripts, with no Bedrock call): a few US dollars of model
+  calls (the run file totals them in USD and AUD) and cents of worker time. A repeat whose newest
+  scene the worker did not measure keeps the worker's code, is scored nowhere and fails the run's
+  check. `--case C1` (repeatable, or `--cases C1,C2`) runs some; `--model-id` without `--agent
+  bedrock` is refused.
+- **`counterfactual`** (2.6.6): C1 and C10 (C4 in C10's place when C10 does not pass the gate),
+  the same worker and model as `agent`, `--repeats` 5 per arm; arm (b) clouds SCL in this process,
+  so it needs `--cache` too (or `--arms a`). About 22 runs. Arm (b) counts a pair only when both
+  sides were measured at their coverage; a stand-in's pair replaces the case's, never adds to it.
+- **`stability`** (E3): the year set (`--set year-2024`, the manifest's 17 scenes in time order)
+  in this process (`--worker in-process`, the default; with a cache, read once), so the built-up
+  masks can be compared; with `--worker <ARN>` the masks' IoU is not measured, and said.
 - **`index`**: after any of the above, and `index --check` before committing.
+
+The three live runs, with `W` the deployed worker's ARN and `M` the rail topic's model id (the
+runsheet's step 4 sets both; steps 6 to 8 say what each run checks):
+
+```sh
+python scripts/vision_eval.py agent --worker "$W" --agent bedrock --model-id "$M" --region ap-southeast-2 --repeats 5 --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py counterfactual --worker "$W" --cache ~/cogs --agent bedrock --model-id "$M" --region ap-southeast-2 --repeats 5 --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py stability --cache ~/cogs --out docs/hackathon/evidence/runs
+```
+
+```powershell
+py -3.11 scripts\vision_eval.py agent --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
+py -3.11 scripts\vision_eval.py counterfactual --worker $W --cache $HOME\cogs --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
+py -3.11 scripts\vision_eval.py stability --cache $HOME\cogs --out docs\hackathon\evidence\runs
+```
+
+## The agent's cases
+
+`scripts/vision_eval_cases/<case>/case.json` (`bloggerbear.vision-case/1`), one directory a case:
+the history (manifest scenes, each with the network it was measured with), the newest scene, the
+thresholds (the adapter's defaults), the news `web_context` replays (`null` would withhold the
+tool), what is expected and why, and which input moved (`driven_by`). A case may build on another
+(`base`). Every real case is network-driven: a true growth of the city within the window could not
+be built honestly from imagery.
+
+| Case | Class | Built as | Driven by |
+|---|---|---|---|
+| C1 | real | three clear winter scenes with fixture A; the newest with fixture B, A plus a five-station line laid on the largest desert of the baseline's newest measurement (the replay's own `sydney-c1` line); news of its opening | network |
+| C1c | real | as C1, with three stations extending a line from its end nearest the baseline's deserts, toward them | network |
+| C1d | real | as C1, with A less one line (the smallest named line with three stations of its own) and its stations; news of its closure | network |
+| C1e | real | as C1, with one infill station between two stations of one line, on ground both already serve | network |
+| C2 | artefact | as C1, with B': three stations mapped twice under new ids at the same places; no news | network |
+| C3 | artefact | a summer scene against the winter baseline, one network; included only if it passes the gate | imagery |
+| C4 | artefact | a winter scene with coverage 0.667 (`sydney-2024-08-11`, a third of the city under cloud or its shadow) against clear ones | imagery |
+| C5 | artefact | C2, plus a headline whose title is an instruction to the model | network |
+| C10 | artefact | the 2019 bushfire smoke scene (aerosol optical thickness 0.44, coverage 0.995) against the clear scenes before it (2019-11-01, -11-06 and -12-21, coverage above 0.99; the two November scenes at 0.70 and 0.71 are left out); included only if it passes the gate | imagery |
+| C6 | failure | C1, every `look_again` refused (`unreadable_scene`), live: reported as observed | - |
+| C7 | failure | C1, the clock already past the deadline: `artefact`, `deadline`, no model call | - |
+| C8 | failure | C1, live with an invalid model id: `artefact`, `bedrock_error` | - |
+| C9 | failure | C1, a scripted answer with no JSON: `artefact`, `malformed` | - |
+
+Fixture A is the Sydney network file; every other network is made from it by code
+(`scripts/vision_eval_networks.py`), never a hand-edited copy, so the cases read the same on
+whichever copy of the map the owner captures; the run file records each network's digest and what
+was added and removed, by id. Added stations and ways have ids starting `eval-`; a new line's and
+the infill station's names say they are the evaluation's, while an extension keeps its line's
+name and a duplicate its station's, as the map itself would. The news is constructed: each
+headline is on the reserved `news.example.com` domain under a placeholder source, so no real
+outlet is quoted; a model may weigh it less for that, and the report says so.
+
+**Scoring** (`scripts/vision_eval_scoring.py`, pure functions, so a summary can be re-made from
+its `results`): a run that failed closed (Bedrock error, deadline, turn limit, malformed answer)
+scores for neither class and has its own column in the confusion matrix; balanced accuracy is the
+mean of the per-class recalls, so numeric-only (every candidate reported) and always-artefact each
+score 0.5 whatever the class mix; every share carries its Wilson 95 % interval. A case that never
+reached the agent is reported and left out of the scores. A summary holds numbers only: what could
+not be measured is left out and listed under `results.not_measured`, never written as zero.
 
 ## How to add a run
 

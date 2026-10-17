@@ -1,0 +1,23 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C7",
+  "base": "C1",
+  "kind": "failure",
+  "title": "Out of time: the clock is past the deadline",
+  "built_as": "C1, with the triage clock already past its deadline when the agent is asked.",
+  "expected": {
+    "verdict": "artefact",
+    "stop": "deadline"
+  },
+  "why": "No time to decide is an artefact (fail closed), with no model call.",
+  "driven_by": null,
+  "run": {
+    "converse": "scripted",
+    "clock": "past_deadline"
+  },
+  "scripted": [
+    {
+      "text": "{\"verdict\": \"real\", \"reason\": \"Never asked: the deadline stops the loop first.\"}"
+    }
+  ]
+}

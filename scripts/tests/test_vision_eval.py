@@ -112,6 +112,18 @@ def test_the_manifest_parses_and_pins_only_bucket_assets():
     assert "sets as year-2024" in manifest["about"] and "never by the year role" in manifest["about"]
 
 
+def test_the_agent_cases_and_the_year_set_name_only_scenes_the_manifest_pins():
+    import vision_eval_agent
+
+    manifest = vision_eval.load_manifest()
+    pinned = {scene["name"]: scene for scene in manifest["scenes"]}
+    cases = vision_eval_agent.load_cases(manifest)  # refuses a case naming a scene the manifest lacks
+    named = vision_eval_agent.scene_names(cases)
+    assert named and all(all(asset["etag"] for asset in pinned[name]["assets"].values()) for name in named)
+    year = manifest["sets"][vision_eval_agent.YEAR_SET]["scenes"]
+    assert len(year) >= 10 and all(pinned[name]["site_coverage"] >= 0.95 for name in year)
+
+
 def test_the_bucket_urls_are_derived_from_the_scene_id_and_other_hosts_are_refused():
     assets = vision_eval.scene_assets("S2B_56HLH_20191226_0_L2A")
     assert assets["scl"]["url"] == f"{BUCKET}/56/H/LH/2019/12/S2B_56HLH_20191226_0_L2A/SCL.tif"
@@ -953,7 +965,7 @@ def test_the_runsheets_powershell_runs_the_venvs_python_and_checks_what_bash_che
     lines = [line.strip() for block in powershell for line in block.splitlines()]
     after = lines[next(n for n, line in enumerate(lines) if "Activate.ps1" in line) + 1 :]
     assert not [line for line in after if "py -3.11" in line]
-    assert sum(line.count("python scripts\\vision_eval.py") for line in after) == 6
+    assert sum(line.count("python scripts\\vision_eval.py") for line in after) == 9  # Q2a's 6, Q2b's 3
     for step in ("requirements-dev.txt", "index --check", "pii_denylist_check.py --staged"):
         assert step in bash and step in "".join(powershell), step
     assert "ids only" not in RUNSHEET_EVAL and "the agent's note" in RUNSHEET_EVAL

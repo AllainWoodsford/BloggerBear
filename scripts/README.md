@@ -802,6 +802,63 @@ would run the global 3.11, without the venv's packages). The driver they share,
 `scripts/vision_eval_driver.py`, documents in its docstring the interface the agent evaluation,
 the counterfactuals and the stability run build on.
 
+## The agent's evaluation: `vision_eval.py agent`, `counterfactual`, `stability`
+
+Built on the same driver, each writes one run file (`--out DIR`, `--tag`) and runs in CI with
+`--synthetic` (the driver's synthetic city, the worker in this process, the model scripted, no
+network); on real data they are the operator's runs (the runsheet's
+[evaluation runs](../docs/deployment-runsheet.md#the-evaluations-real-data-runs), steps 6 to 8,
+bash and PowerShell).
+
+```bash
+python scripts/vision_eval.py agent --worker <ARN> --agent bedrock --model-id <id> --region ap-southeast-2 --repeats 5 --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py agent --synthetic --repeats 2              # CI's: every case, scripted
+python scripts/vision_eval.py counterfactual --worker <ARN> --cache ~/cogs --agent bedrock --model-id <id> --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py stability --cache ~/cogs --out docs/hackathon/evidence/runs   # E3; --synthetic in CI
+```
+
+**`agent`** (2.6.1-2.6.3) reads the cases in `vision_eval_cases/<case>/case.json` (C1-C10 with
+C1c, C1d and C1e: the scenes, the network each was measured with, the thresholds, the news, what
+is expected and why, which input moved; `--case NAME`, repeatable, or `--cases A,B` picks some)
+and builds each through the real `RailAccessAdapter`: its history ticks with triage off (each
+scene measured once a run, however many cases share it), then its newest tick `--repeats` times
+(5) from that same state, with the real `vision_triage.triage`. Fixture A is `--network FILE` (default
+`vision_benchmark_networks/sydney.json`); every other network is made from it by
+`vision_eval_networks.py` (a line on the baseline's largest desert, the replay's own; a three-station
+extension toward the deserts; a line removed; an infill station; three stations mapped twice).
+The model is Bedrock (`--agent bedrock --model-id <id> [--region R]`) or each case's script
+(`--agent scripted`, the default; `--model-id` without `--agent bedrock` is refused, never dropped
+unsaid); C7 and C9 always run their scripts, C8 is asked with an invalid model id, C6's
+`look_again` is refused with `unreadable_scene`, C7's clock is past the deadline.
+The worker is the deployed one (`--worker <ARN>`, site ids `eval-sydney`) or this process
+(`--worker in-process`), refused without `--cache` off an EC2 instance in us-west-2 (naming
+`--cache`). The scores (`vision_eval_scoring.py`) are per class: recall with its Wilson interval,
+balanced accuracy, the confusion matrix with failed-closed runs in their own column, against
+numeric-only and always-artefact; stability over repeats, fail-closed, tool use, latency, tokens
+and cost in USD and AUD (the built-in price table). Every Converse response is kept in the run file
+in the driver's recorded form. It exits 1 when an unconditional case never reached the agent, a
+failure case did not fail closed as it must, or the worker did not measure a case's newest scene
+(that repeat keeps the worker's code, is scored nowhere, and the next repeat runs).
+
+**`counterfactual`** (2.6.6) takes C1 and C10 (C4 in C10's place when C10 does not pass the gate).
+Arm (a): the newest tick's repeats twice over, `look_again` answered with the newest scene's own
+re-measurement (`measured`) or the same with the moved measures at the baseline median
+(`baseline`), paired by repeat; the scripted model re-measures and answers by what came back.
+Arm (b): the same scene in this process with SCL clouded inside the site to coverage 0.62 and 0.58
+(`--cache` needed off us-west-2, or `--arms a`); its checks hold that both sides were measured at
+their coverage (only such a pair is counted) and that no model was asked below the floor. When C4
+stands in, arm (b) runs for C4 alone.
+
+**`stability`** (E3) runs the manifest's `--set` (`year-2024`) in time order through the production
+rule, triage off, `history_size` 6, the default thresholds, on one network, in this process by
+default (`--worker in-process`; it keeps no deadline, so an uncached read is only slow) so the
+worker's built-up masks are compared scene to scene and with the first; `--worker <ARN>` leaves the
+IoU unmeasured. `--synthetic --scenes N` runs N synthetic scenes.
+
+All three run on Windows (`py -3.11 scripts\vision_eval.py ...`). Their arguments are in
+`vision_eval_agent_cli.py`, which does not import the driver, so `pin` and `coverage` still run in a
+venv without boto3; `vision_eval_agent.py` is imported only to run one of the three.
+
 ## After changing the CLI: `generate_cli_reference.py`
 
 The operator's assistant answers "how do I ...?" by showing a command's own `--help` and, when you

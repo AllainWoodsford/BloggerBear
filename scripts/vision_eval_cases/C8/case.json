@@ -1,0 +1,23 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C8",
+  "base": "C1",
+  "kind": "failure",
+  "title": "Bedrock fails: an invalid model id",
+  "built_as": "C1, asked with an invalid model id, live, so Bedrock itself refuses the call.",
+  "expected": {
+    "verdict": "artefact",
+    "stop": "bedrock_error"
+  },
+  "why": "A model that cannot be called is an artefact (fail closed).",
+  "driven_by": null,
+  "run": {
+    "converse": "model",
+    "model_id": "invalid"
+  },
+  "scripted": [
+    {
+      "raise": "ValidationException"
+    }
+  ]
+}

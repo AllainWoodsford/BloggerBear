@@ -707,14 +707,17 @@ under the floor. The tables above stay as the first indicative numbers; the repo
 files.
 
 **Evaluation results: [`RESULTS.md`](../hackathon/evidence/RESULTS.md)**, the index of every run
-file, one table per kind, written by `vision_eval.py index` and checked by `index --check` (in CI on
-pull requests that touch `scripts/` or `lambdas/`). The evaluation's first half (Q2a) adds `replay`
-(the real adapter over pinned Sydney scenes, tick by tick, with the deployed worker and the real
-model, or a recording a judge re-runs without AWS: the A2 trace, rendered to
-`docs/hackathon/evidence/replay/`), `failures` (the constructed failure catalogue, its tests checked
-to be collected, its real-data rows through the worker) and `access-baseline` (E5: the production
-distance transform against the precise one and SDG 11.2.1's straight-line buffer). Their real-data
-runs are the operator's, in the
+file, one table per kind, written by `vision_eval.py index` and checked in CI. The evaluation's
+first half (Q2a) adds `replay` (the real adapter over pinned Sydney scenes, tick by tick, with the
+deployed worker and the real model, or a recording a judge re-runs without AWS: the A2 trace,
+rendered to `docs/hackathon/evidence/replay/`), `failures` (the constructed failure catalogue, its
+tests checked to be collected, its real-data rows through the worker) and `access-baseline` (E5:
+the production distance transform against the precise one and SDG 11.2.1's straight-line buffer).
+The second half (Q2b) adds `agent` (thirteen cases, balanced between the classes, scored per class
+against numeric-only and always-artefact, with the failure cases C6-C9), `counterfactual` (only
+OpenCV's output changed, at the agent's re-measurement and at the coverage gate) and `stability`
+(E3: the year set through the production rule on one network; the false-alarm rate with its
+interval). Their real-data runs are the operator's, in the
 [runsheet](../deployment-runsheet.md#the-evaluations-real-data-runs); until they are committed,
 RESULTS.md holds the coverage run alone.
 

@@ -1,0 +1,77 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C1",
+  "kind": "task",
+  "title": "A new line of five stations",
+  "built_as": "Three clear winter scenes measured with fixture A; the newest clear winter scene measured with fixture B, A plus a synthetic line of five stations laid on built-up ground beyond reach (the largest desert of the baseline's newest measurement); the news announces the line's opening.",
+  "site": "sydney",
+  "history": [
+    {
+      "scene": "sydney-2024-06-27",
+      "network": "A"
+    },
+    {
+      "scene": "sydney-2024-08-21b",
+      "network": "A"
+    },
+    {
+      "scene": "sydney-2024-08-26",
+      "network": "A"
+    }
+  ],
+  "newest": {
+    "scene": "sydney-2024-08-31",
+    "network": "B"
+  },
+  "networks": {
+    "A": {
+      "file": "vision_benchmark_networks/sydney.json"
+    },
+    "B": {
+      "from": "A",
+      "derive": "add_line",
+      "stations": 5,
+      "anchor": "largest_desert"
+    }
+  },
+  "thresholds": {
+    "coverage_floor": 0.6,
+    "min_baseline": 1,
+    "served_share_threshold": 0.02,
+    "desert_relative_threshold": 0.1
+  },
+  "news": [
+    {
+      "title": "New five-station rail line opens to passengers",
+      "url": "https://news.example.com/rail/new-line-opens",
+      "published_at": "2024-08-28T00:00:00Z",
+      "source": "Example Transit News",
+      "snippet": "The line opened this week with five stations, serving suburbs that had no station within walking distance until now."
+    }
+  ],
+  "expected": {
+    "verdict": "real",
+    "stop": "answered"
+  },
+  "why": "The mapped network gained five stations on built-up ground that no station reached, and the news reports the opening: a real change to the city's rail access.",
+  "driven_by": "network",
+  "conditional": null,
+  "run": {
+    "converse": "model"
+  },
+  "scripted": [
+    {
+      "tool": "look_again",
+      "input": {
+        "reach_m": 1200
+      }
+    },
+    {
+      "tool": "web_context",
+      "input": {}
+    },
+    {
+      "text": "{\"verdict\": \"real\", \"reason\": \"Five new stations appear on the map over built-up ground beyond reach, and the news reports the line opening.\"}"
+    }
+  ]
+}

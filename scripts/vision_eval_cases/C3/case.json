@@ -1,0 +1,63 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C3",
+  "kind": "task",
+  "title": "The season: a summer scene against a winter baseline",
+  "built_as": "Three clear winter scenes and a clear summer scene, all measured with fixture A. Included only when the summer scene crosses a threshold (E3 says whether such a pair does); otherwise it never reaches the agent, which is itself the gate working.",
+  "site": "sydney",
+  "history": [
+    {
+      "scene": "sydney-2024-06-27",
+      "network": "A"
+    },
+    {
+      "scene": "sydney-2024-08-21b",
+      "network": "A"
+    },
+    {
+      "scene": "sydney-2024-08-26",
+      "network": "A"
+    }
+  ],
+  "newest": {
+    "scene": "sydney-2024-12-24",
+    "network": "A"
+  },
+  "networks": {
+    "A": {
+      "file": "vision_benchmark_networks/sydney.json"
+    }
+  },
+  "thresholds": {
+    "coverage_floor": 0.6,
+    "min_baseline": 1,
+    "served_share_threshold": 0.02,
+    "desert_relative_threshold": 0.1
+  },
+  "news": [],
+  "expected": {
+    "verdict": "artefact",
+    "stop": "answered"
+  },
+  "why": "The network is the same; only the season moved the vegetation and so the built-up mask.",
+  "driven_by": "imagery",
+  "conditional": "gate",
+  "run": {
+    "converse": "model"
+  },
+  "scripted": [
+    {
+      "tool": "look_again",
+      "input": {
+        "ndvi_max": 0.25
+      }
+    },
+    {
+      "tool": "previous_scene",
+      "input": {}
+    },
+    {
+      "text": "{\"verdict\": \"artefact\", \"reason\": \"The map did not change; summer vegetation moved the built-up estimate.\"}"
+    }
+  ]
+}
