@@ -12,9 +12,9 @@ what went wrong along the way, and what an operator has to do to turn it on. The
 more depth is [opencv-agentic-vision-enhancement.md](opencv-agentic-vision-enhancement.md); the
 rail task's review, angle and per-PR specifications are
 [rail-access-monitor.md](rail-access-monitor.md); the pipeline step by step, with the rail concepts
-in plain words, is [../architecture/blogger-vision.md](../architecture/blogger-vision.md). The
-earlier topic ideas are [supply-chain-tracker-enhancement.md](supply-chain-tracker-enhancement.md)
-and [../risks/opencv-bushfire-watch-01.md](../risks/opencv-bushfire-watch-01.md).
+in plain words, is [../architecture/blogger-vision.md](../../architecture/blogger-vision.md). The
+earlier topic idea is [supply-chain-tracker-enhancement.md](supply-chain-tracker-enhancement.md); a
+bushfire watch came before it and was dropped as too risky (friction 9.2).
 
 ---
 
@@ -64,7 +64,7 @@ The rail task follows the same path with two additions: the adapter fetches the 
 OpenStreetMap network through the Overpass API and keeps it in an object of its own in the content
 bucket, and the Finding carries the figure to the article page. Its diagram is in
 [rail-access-monitor.md §3](rail-access-monitor.md#3-architecture) and
-[blogger-vision.md](../architecture/blogger-vision.md#part-one-the-pipeline).
+[blogger-vision.md](../../architecture/blogger-vision.md#part-one-the-pipeline).
 
 ---
 
@@ -307,7 +307,7 @@ automatically and cannot be unset.
 ### A `rail_access` topic
 
 Every key, its default and its bounds are in one table, in
-[configuration.md, A `rail_access` topic](../configuration.md#a-rail_access-topic), read from the
+[configuration.md, A `rail_access` topic](../../configuration.md#a-rail_access-topic), read from the
 adapter's `DEFAULTS` (`lambdas/common/adapters/rail_access.py`); the rail parameters `params` may
 override are the table in §4. One ready topic body, `rail-cities`, is
 `scripts/rail_topics.example.json`: the four starting cities and a `rotation` that gives each city
@@ -315,7 +315,7 @@ its days (the day-subject round, [dailysubject_hook.md](dailysubject_hook.md)), 
 09:05 Sydney time that writes about the day's city alone, and `findings_window_hours` 192 (8 days,
 more than Boston's 7 between its Thursdays), so each article drafts every Finding about its city
 since that city's last. The runsheet's
-[rail_access topics](../deployment-runsheet.md#rail_access-topics) creates it and says how the
+[rail_access topics](../../deployment-runsheet.md#rail_access-topics) creates it and says how the
 window works. What differs from a ship topic, in short: at most eight sites (`MAX_RAIL_SITES`), an
 optional rota, one city measured per tick by default, `reach_m` and each network's `osm_ttl_days`,
 the agent's `web_context`, a first observation per city, and three material rules (served share,
@@ -334,7 +334,7 @@ A refresh of a stored network keeps 30 s and 25 s a hop
 minute leaves under 45 s, so the city is measured on its next turn, against the network now
 stored; a failed one is tried again on the next tick (no 6-hour wait: nothing serves meanwhile).
 Raise `time_budget_seconds` to 80 for a heavy city; the runsheet's
-[rail_access topics](../deployment-runsheet.md#rail_access-topics) says when (§8 lesson 16).
+[rail_access topics](../../deployment-runsheet.md#rail_access-topics) says when (§8 lesson 16).
 
 ### Bounds every vision topic shares
 
@@ -352,12 +352,12 @@ a config the adapter refuses fails the topic's research tick with the reason in 
 
 | Variable | Where | Default | Meaning |
 |---|---|---|---|
-| `vision_enabled` | dev and production roots, from CI (`VISION_ENABLED`); never set in `terraform.tfvars` | `false` | Create the worker, give the research tick its ARN, and give the pipeline's shared execution role (`lambda_exec`) the right to invoke it. CI hands the variable to Terraform as `TF_VAR_vision_enabled`, and a value in `terraform.tfvars` would beat it, so the switch would no longer switch. The steps: [the runsheet's Vision (optional)](../deployment-runsheet.md#vision-optional). |
-| `vision_region` | dev and production | `"us-west-2"` | Where the worker runs. Must equal the bootstrap's. In production it and the prefix must fit the worker's bucket name, 21 characters together ([configuration.md](../configuration.md#environment-terraform-variables)). |
+| `vision_enabled` | dev and production roots, from CI (`VISION_ENABLED`); never set in `terraform.tfvars` | `false` | Create the worker, give the research tick its ARN, and give the pipeline's shared execution role (`lambda_exec`) the right to invoke it. CI hands the variable to Terraform as `TF_VAR_vision_enabled`, and a value in `terraform.tfvars` would beat it, so the switch would no longer switch. The steps: [the runsheet's Vision (optional)](../../deployment-runsheet.md#vision-optional). |
+| `vision_region` | dev and production | `"us-west-2"` | Where the worker runs. Must equal the bootstrap's. In production it and the prefix must fit the worker's bucket name, 21 characters together ([configuration.md](../../configuration.md#environment-terraform-variables)). |
 | `vision_region` | `infra/bootstrap` | `"us-west-2"` | Where the deploy roles may create `<prefix>-*-vision-*` Lambdas and log groups. |
 | `memory_size`, `timeout` | module | 2048 MB, 60 s | The worker's size; the timeout stays under the client's default 90 s. Both vision adapters give up first, at 58 s (`vision_sites.WORKER_READ_TIMEOUT`), by design. |
 
-The full list, with the switch, is [configuration.md, Vision and rail access](../configuration.md#vision-and-rail-access).
+The full list, with the switch, is [configuration.md, Vision and rail access](../../configuration.md#vision-and-rail-access).
 
 ### Environment variables
 
@@ -693,7 +693,7 @@ on one Graviton4 instance, §9):
 **The COOL and Graviton rows are still to be measured** (§9).
 
 **Evaluation.** From the submission round on, every measurement a judge reads is a run file
-under `docs/hackathon/evidence/runs/` ([its README](../hackathon/evidence/README.md) has the
+under `docs/hackathon/evidence/runs/` ([its README](../../hackathon/evidence/README.md) has the
 schema and the kinds): the benchmark writes one per run (`--out`), with the code's commit, the
 CPU, the build fingerprint, the inputs' ETags, every sample, the rail metrics and their digest,
 and on Linux the OpenCV libraries mapped during the run; `compare` puts two runs of one machine
@@ -706,7 +706,7 @@ unusable, and how many of the year's items the production search would pick only
 under the floor. The tables above stay as the first indicative numbers; the report cites the
 files.
 
-**Evaluation results: [`RESULTS.md`](../hackathon/evidence/RESULTS.md)**, the index of every run
+**Evaluation results: [`RESULTS.md`](../../hackathon/evidence/RESULTS.md)**, the index of every run
 file, one table per kind, written by `vision_eval.py index` and checked in CI. The evaluation's
 first half (Q2a) adds `replay` (the real adapter over pinned Sydney scenes, tick by tick, with the
 deployed worker and the real model, or a recording a judge re-runs without AWS: the A2 trace,
@@ -718,7 +718,7 @@ against numeric-only and always-artefact, with the failure cases C6-C9), `counte
 OpenCV's output changed, at the agent's re-measurement and at the coverage gate) and `stability`
 (E3: the year set through the production rule on one network; the false-alarm rate with its
 interval). Their real-data runs are the operator's, in the
-[runsheet](../deployment-runsheet.md#the-evaluations-real-data-runs); until they are committed,
+[runsheet](../../deployment-runsheet.md#the-evaluations-real-data-runs); until they are committed,
 RESULTS.md holds the coverage run alone.
 
 The worst cases the worker must survive were measured separately (PR J; the figures are in the
@@ -868,19 +868,23 @@ None of this is automatic.
 2. **Re-apply `infra/bootstrap` by hand**, with `vision_region` (default us-west-2). Until then
    an apply with the worker turned on is refused.
 3. **Set the `VISION_ENABLED` repository variable to `true`** and run a deploy (the
-   [runsheet](../deployment-runsheet.md#vision-optional) has the steps; nothing in `terraform.tfvars`
+   [runsheet](../../deployment-runsheet.md#vision-optional) has the steps; nothing in `terraform.tfvars`
    changes). It also turns the worker on in production at the next release, unless the
    `production` environment sets `VISION_ENABLED` to `false` until the dev trial is done.
 4. **Create the topics.** The rail topic over the four cities from `scripts/rail_topics.example.json`
-   ([rail_access topics](../deployment-runsheet.md#rail_access-topics)), and a ship topic if
+   ([rail_access topics](../../deployment-runsheet.md#rail_access-topics)), and a ship topic if
    wanted: `adapter: "satellite_vision"`, its `sites`, an `object_noun`, and editorial goals if the
-   adapter's default (§5, "Editorial goal") is not what you want. Check
-   `docs/risks/opencv-bushfire-watch-01.md` against it.
+   adapter's default (§5, "Editorial goal") is not what you want. Before it goes live, check the
+   five things the bushfire watch's risk review asked of any imagery topic: the Copernicus and
+   "processed imagery" credits are on the figure and the page; the articles say what was seen,
+   never a cause or who is to blame; each figure carries the scene's capture time and the article
+   says the imagery is days old; no private property, and nothing finer than Sentinel-2's 10 m;
+   place names come from the data, never guessed.
 5. **Run Sydney for real:** a tick with the Overpass network on the deployed worker, for the
    measurements the submission needs (the live run in
-   [the technical report](../hackathon/technical-report.md#6-evaluation) §6).
+   [the technical report](../../hackathon/technical-report.md#6-evaluation) §6).
 6. **COOL:** the Graviton session, exactly as the
-   [COOL benchmark runsheet](../cool-benchmark-runsheet.md) gives
+   [COOL benchmark runsheet](../../cool-benchmark-runsheet.md) gives
    it: the reconnaissance (done on 16 October, `docs/hackathon/evidence/cool/recon.md`: an AMI,
    COOL 3.1 with `cv2` 5.1.0-dev, us-west-2, Python 3.12), a `c8g.xlarge` (or `c8g.2xlarge`) from the COOL AMI with
    IMDSv2 and SSM, COOL's interpreter on the vendor's own activated environment (a wrapper, with
@@ -891,9 +895,9 @@ None of this is automatic.
    instance and unsubscribe if not kept.
 7. **For the submission:** the benchmark table (x86, Graviton stock, Graviton COOL), a run of the
    loop on dev showing an artefact rejected and a real change held for review, and the video. The
-   package is in `docs/hackathon/`: the [technical report](../hackathon/technical-report.md), the
-   system and agent [diagrams](../hackathon/diagrams/README.md), the
-   [reproduction guide](../hackathon/REPRODUCE.md) and the [video script](../hackathon/video-script.md).
+   package is in `docs/hackathon/`: the [technical report](../../hackathon/technical-report.md), the
+   system and agent [diagrams](../../hackathon/diagrams/README.md), the
+   [reproduction guide](../../hackathon/REPRODUCE.md) and the [video script](../../hackathon/video-script.md).
 
 ---
 
@@ -917,7 +921,7 @@ None of this is automatic.
    rows, and the 1.3 times slower arm64 core that the rail window cap assumes, are not measured.
    The benchmark now records what that session needs (the run files, the rail metrics and their
    parity, the mapped libraries, the negative controls, the 4.x row) and the
-   [COOL benchmark runsheet](../cool-benchmark-runsheet.md) is the session's script; what remains is to run it. The Sydney network fixture the
+   [COOL benchmark runsheet](../../cool-benchmark-runsheet.md) is the session's script; what remains is to run it. The Sydney network fixture the
    rail scenes need is captured after the deploy's first tick (the COOL runsheet's step 5), into
    `scripts/vision_benchmark_networks/`, whose `NOTICE.md` is in place.
 8. **Grade-separated crossings read as junctions.** Two lines crossing on a bridge are crossing
@@ -954,7 +958,7 @@ None of this is automatic.
     (`infra/modules/vision-worker/main.tf`), so production needs the prefix and `vision_region` 21
     characters together: a 13- or 14-character prefix, which the prefix rule allows, or a
     home-Region `ap-southeast-2` with the default prefix, fails the apply. The docs state the limit
-    ([configuration.md](../configuration.md#environment-terraform-variables)); a shorter name (no
+    ([configuration.md](../../configuration.md#environment-terraform-variables)); a shorter name (no
     Region, or a short hash) and the module's bucket in
     `test_the_longest_names_still_fit_with_the_longest_prefix` would remove it.
 18. **The admin CLI stops waiting for a research tick after 30 s** (`_RESEARCH_TICK_TIMEOUT_SECONDS`
@@ -966,3 +970,6 @@ None of this is automatic.
     research tick's whole environment, so a value set in the console lasts until the next apply,
     and both then fall back to the `sentinel-cogs` default. Keeping one needs a variable passed to
     both functions.
+20. **Fixed platforms, buoys and rigs inside a ship site are counted as vessels.** The `ships`
+    task subtracts no known static objects; a per-site list of them was proposed
+    ([supply-chain-tracker-enhancement.md](supply-chain-tracker-enhancement.md)) and not built.

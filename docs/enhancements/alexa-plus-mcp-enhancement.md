@@ -2,7 +2,7 @@
 
 **Status:** **parked** (2026-10-04) — not planned, and not part of the hackathon entry. Kept for
 reference in case a reader-facing assistant is wanted later.
-**The entry is:** [alexa-plus-operator-assistant-enhancement.md](alexa-plus-operator-assistant-enhancement.md)
+**The entry is:** [alexa-plus-operator-assistant-enhancement.md](archive/alexa-plus-operator-assistant-enhancement.md)
 — the operator's briefing. It holds the rules check, the prizes, the submission checklist and the
 plan. Read this document as a sketch of what a public version would add to it, written before the
 operator design settled; check it against that document before building anything from it.

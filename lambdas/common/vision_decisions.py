@@ -1,7 +1,7 @@
 """The decision ring: one entry per verdict in each site's running state, its evidence lines, and
 the trace a reader builds from an entry.
 
-docs/enhancements/vision-evidence.md. The two vision adapters share this module, so their records
+docs/enhancements/archive/vision-evidence.md. The two vision adapters share this module, so their records
 cannot drift (vision_sites.site_status is the pattern). It knows no adapter: what is adapter-specific
 (the measure keys and their words, which input each measure depends on, the look_again settings)
 comes in through the adapter's `decision_vocabulary()`. No cv2 or numpy: the adapter registry

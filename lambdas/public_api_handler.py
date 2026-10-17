@@ -718,12 +718,17 @@ def _list_musings(event: dict) -> dict:
     if page is None:
         return _error(400, "'page' must be a whole number of at least 1")
     items, paging = _paginate(list_musings(limit=None), page, MUSINGS_PAGE_SIZE)
+    # The topic's name, shown beside "read the article" on the Musings page. A musing holds only
+    # its topic_id, so the names are read once per page from the Topics table; a topic since
+    # deleted gives None, and the page then shows no name.
+    topic_names = {t.get("topic_id"): t.get("name") for t in list_topics()} if items else {}
     musings = [
         {
             "musing_id": m.get("musing_id"),
             "kind": m.get("kind"),
             "article_id": m.get("article_id"),
             "topic_id": m.get("topic_id"),
+            "topic_name": topic_names.get(m.get("topic_id")),
             "text": m.get("text"),
             "mood": m.get("mood"),
             "created_at": m.get("created_at"),

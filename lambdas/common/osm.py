@@ -1,6 +1,6 @@
 """OpenStreetMap rail networks through the Overpass API: fetch, decimate, cap, cache rules.
 
-The rail access task (docs/enhancements/rail-access-monitor.md §3, PR B) needs the rail lines,
+The rail access task (docs/enhancements/archive/rail-access-monitor.md §3, PR B) needs the rail lines,
 stations and intermodal points inside a site polygon. The adapter fetches them here, keeps the
 result in its running state for `osm_ttl_days` (`is_stale` says when to fetch again), and sends it
 inline to the vision worker, whose egress stays "public imagery over HTTPS, nothing else". So the

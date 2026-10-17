@@ -116,7 +116,7 @@ _INSTRUCTIONS = (
     "a token or a key; an address only by its last part, as the tools give it. A topic can be "
     "passed as the operator said it: if a result says which topic it took, say that first so "
     "the operator can stop you; if it asks \"did you mean\", ask the operator. "
-    # The third round (docs/enhancements/ops-assistant-log-reader.md), which the agent's prompt
+    # The third round (docs/enhancements/archive/ops-assistant-log-reader.md), which the agent's prompt
     # also holds: a client that reads only this was left with the old behaviour.
     "Asked to look at or check something, look: never answer with what you cannot do. Never "
     "give a Lambda success rate; for how the APIs are doing, say api_errors' counts by status "

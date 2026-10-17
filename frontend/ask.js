@@ -1,5 +1,5 @@
 /* The operator's assistant page (ask.html): sign in, ask, hear the answer, see what to do.
-   Design: docs/enhancements/alexa-plus-operator-assistant-enhancement.md, sections 3, 5 and 7.
+   Design: docs/enhancements/archive/alexa-plus-operator-assistant-enhancement.md, sections 3, 5 and 7.
 
    Sign-in is Cognito's hosted page, authorization code with PKCE (S256). The page makes a random
    verifier and state, keeps them in sessionStorage only for the trip to the hosted page and back,

@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------
 # The vision worker: OpenCV 5 on Graviton (arm64), next to the imagery.
-# Design: docs/enhancements/opencv-agentic-vision-enhancement.md (sections 2 to 4).
+# Design: docs/enhancements/archive/opencv-agentic-vision-enhancement.md (sections 2 to 4).
 #
 #   research tick (home region) -- satellite_vision adapter -- common/vision_client.py
 #        | lambda:InvokeFunction, across regions (the client uses the region in this ARN)

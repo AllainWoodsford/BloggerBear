@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------
 # One environment each: the dev assistant reads dev's things, production's reads production's.
-# Design: docs/enhancements/alexa-plus-operator-assistant-enhancement.md, section 6, "What each
+# Design: docs/enhancements/archive/alexa-plus-operator-assistant-enhancement.md, section 6, "What each
 # environment's assistant can read".
 #
 # Dev and production are one AWS account, told apart by names and by IAM. The separation is built

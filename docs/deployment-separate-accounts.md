@@ -11,6 +11,20 @@ Account IDs on this page are placeholders: `111111111111` is the dev account and
 is the production account. `your-name/your-fork` is your repository and `acme-blog` is your name
 prefix. Use your own.
 
+## Contents
+
+- [Should you?](#should-you)
+- [What you do twice](#what-you-do-twice)
+- [Bootstrap, once per account](#bootstrap-once-per-account)
+- [GitHub settings that differ](#github-settings-that-differ)
+- [What the OIDC side looks like](#what-the-oidc-side-looks-like)
+- [In one account, each role is refused the other environment](#in-one-account-each-role-is-refused-the-other-environment)
+- [The firewall](#the-firewall)
+- [Logs, alarms and dashboards](#logs-alarms-and-dashboards)
+- [Vision (optional)](#vision-optional)
+- [Checklist before the first deploy](#checklist-before-the-first-deploy)
+- [Enhancement: a deployment account that assumes a role in each environment's account](#enhancement-a-deployment-account-that-assumes-a-role-in-each-environments-account)
+
 ## Should you?
 
 **One account is the simpler choice, and it is what the original deployment uses.** Names never
@@ -318,7 +332,7 @@ There are two kinds of web ACL, and two accounts treats them differently.
 | Web ACL | Scope | Created by | With two accounts |
 |---|---|---|---|
 | `<prefix>-shared`, in front of the CloudFront distributions | Global (CloudFront), kept in `us-east-1` | Production only | Protects production. **Dev cannot use it.** |
-| `<prefix>-<env>-public-api` and `<prefix>-<env>-admin`, in front of the APIs | Regional | Each environment, for itself | Dev and production each have their own. Nothing is lost. |
+| `<prefix>-<env>-public-api` and `<prefix>-<env>-admin-api`, in front of the APIs | Regional | Each environment, for itself | Dev and production each have their own. Nothing is lost. |
 
 The region is not what gets in the way. A CloudFront web ACL is global, but AWS WAF can only
 attach it to distributions in the account that owns it.
@@ -336,8 +350,9 @@ attach it to distributions in the account that owns it.
 
 - Each environment's log groups, alarms, dashboards and alert topic are in its own account. To
   look at production you sign in to the production account.
-- Dev's dashboard has a panel for the shared web ACL. It stays empty, because those
-  metrics are in the production account.
+- Dev has no firewall dashboard: the edge dashboard, the only one with web ACL panels, is
+  production's alone (`edge_dashboard_enabled`). If you turn it on for dev, its panel for the
+  shared web ACL stays empty, because those metrics are in the production account.
 - The operator's assistant in each environment reads only its own account. Production's
   firewall review reads the shared ACL's logs, which are in its account already.
 - Alert emails are separate settings (`ALERT_EMAIL_DEV`, `ALERT_EMAIL_PROD`), and each needs its

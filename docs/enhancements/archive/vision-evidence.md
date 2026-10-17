@@ -20,7 +20,7 @@ The evidence has three homes:
 - **One JSON line per step, in the logs** (`lambdas/common/evidence.py`): the research tick, the
   two vision adapters, the vision worker and the admin API each print one line per step. The logs
   are kept 90 days in both Regions, and Logs Insights reads them in the console (the
-  queries are in the [deployment runsheet](../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided));
+  queries are in the [deployment runsheet](../../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided));
   the operator's assistant and Alexa+ read them with `vision_evidence`
   ([Asking the assistant](#asking-the-assistant)).
 - **A decision ring in the running state** (`lambdas/common/vision_decisions.py`): per site, the

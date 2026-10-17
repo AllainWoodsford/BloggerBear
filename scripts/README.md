@@ -88,6 +88,11 @@ python scripts/admin_cli.py topics create --topic-id security-trends \
     --editorial-goals-json '{"primary_focus": "Identify unpatched zero-day exploits actively observed in production.", "exclusion_criteria": "Ignore marketing press releases or compliance frameworks."}'
 # replaces the whole editorial_goals block; '{}' clears it (back to the default goal)
 python scripts/admin_cli.py topics update security-trends --editorial-goals-json '{}'
+# Several goals taken in turn (2 to 7, each {"name", "primary_focus"}; the topic's
+# exclusion_criteria apply to all): new findings get the next goal, and with nothing new the
+# last findings are revisited under a goal not yet used on them. Replaces the whole list; '[]'
+# clears it. Also on `topics create` (docs/configuration.md; rail-cities: docs/RailVisionSeeding.md section 7).
+python scripts/admin_cli.py topics update rail-cities --goal-rotation-json "$(cat rail_goal_rotation.json)"
 python scripts/admin_cli.py topics update github-trending --name "Renamed" --financial
 # New topics run their daily article at 9 AM Australia/Sydney (follows daylight
 # saving). A topic created before --daily-timezone existed is still on UTC until
@@ -110,8 +115,8 @@ python scripts/admin_cli.py pipeline-config set --research-interval-hours ""
 # 14 days); '' clears it. Also on `topics create`. Editing `findings_window_hours` in DynamoDB works too.
 python scripts/admin_cli.py topics update rail-sydney --findings-window-hours 192
 python scripts/admin_cli.py topics update rail-sydney --findings-window-hours ""
-# A topic that rotates through its subjects, one a day (docs/enhancements/dailysubject_hook.md;
-# read by an adapter that names a day subject: rail_access, whose sites are the subjects). Two
+# A topic that rotates through its subjects, one a day (docs/enhancements/archive/dailysubject_hook.md;
+# read by an adapter that names a day subject: rail_access, whose sites are the subjects). Three
 # keys of its adapter_config (--config-json on create, --adapter-config-json on update, each the
 # whole config: read it with `topics get`, edit it, send all of it back):
 #   "rotation": the seven weekdays each naming a subject, every subject at least once,
@@ -120,6 +125,8 @@ python scripts/admin_cli.py topics update rail-sydney --findings-window-hours ""
 #     or a list of subjects cycled one a day: ["sydney", "melbourne", "singapore", "boston"]
 #   "rotation_timezone": the IANA zone whose calendar day decides, e.g. "Australia/Sydney"
 #     (unset: the topic's daily_timezone when its adapter passes it, else UTC)
+#   "rotation_period": with a list only, "day" (the default) or "week": each subject in turn has a
+#     whole calendar week, Monday to Sunday (rail-cities: docs/RailVisionSeeding.md section 7)
 # Set --findings-window-hours to the longest gap between one subject's days, plus a day (24 h a
 # day). Give a rota to a new topic, not to one that has published: each subject's first window
 # starts from the findings window, not from the topic's last article, so it would draft again
@@ -170,6 +177,8 @@ python scripts/admin_cli.py topics findings github-trending
 # window, at most 48. --limit is 1 to 20 (default 5); --days 1 to 14; --since an ISO timestamp.
 # With --next-article, --subject KEY is for a topic that rotates through subjects: what its next
 # article on that subject reads (from that subject's last article, its Findings only).
+# A topic with a goal rotation and nothing new revisits its last set of Findings instead (not
+# listed here; `topics get` shows `goal_rotation_state`).
 # The ops assistant's topic_findings tool and the topic-findings Claude Code skill
 # (.claude/skills/) show the same window.
 python scripts/admin_cli.py findings list rail-sydney
@@ -235,6 +244,9 @@ is a complete admin API topic body in [`rail_topics.example.json`](rail_topics.e
 `topics create` takes a topic as flags, not a file:
 [docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics)
 has the lines that read each field out of the file, and how to add a city and check its box.
+The file gives each city weekdays; the live `rail-cities` was switched to a city a week
+(Melbourne, Singapore, Boston, Sydney) with a weekly reading and three goals taken in turn:
+[docs/RailVisionSeeding.md §7](../docs/RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides).
 
 Setting the registry up on a new deployment, with a sample `model-config` item, is in
 [docs/deployment-runsheet.md](../docs/deployment-runsheet.md#the-model-registry-seeding-and-rotation).
@@ -599,7 +611,7 @@ existing manifest without `--force`. It needs Terraform and read access to that 
 
 ## Timing the vision worker: `vision_benchmark.py`
 
-The vision worker (`lambdas/vision_worker_handler.py`; [docs/enhancements/vision.md](../docs/enhancements/vision.md))
+The vision worker (`lambdas/vision_worker_handler.py`; [docs/enhancements/archive/vision.md](../docs/enhancements/archive/vision.md))
 is benchmarked with one script, run the same way on every machine so the rows compare like with
 like: stock OpenCV 5 against OpenCV's COOL build, x86 against Graviton, OpenCV 5 against 4. It
 needs `lambdas/requirements-vision.txt` installed (`worker` mode also needs boto3 and AWS
@@ -675,13 +687,15 @@ takes `--scene NAME` (required), `--scenes-file` and `--out`. The worker runs on
 CPU's rows are closest to it with the run pinned to one core.
 
 A `rail_access` scene also needs its OpenStreetMap network, which the worker is sent with the
-request. The scenes file names `vision_benchmark_networks/sydney.json` for both Sydney scenes; the
-directory's `NOTICE.md` carries the Open Database Licence attribution and the row to fill in when
-the file lands ([the COOL benchmark runsheet](../docs/cool-benchmark-runsheet.md), step 5, says how to take it
-from the deployed city's network object, or `fetch-network` asks Overpass for the scene's polygon through `lambdas/common/osm.py`, the
-same client the adapter uses). Until the file exists, the rail scenes' rows read
-`error: network_file missing`. Overpass is not reachable from the build containers, so the file
-is captured on a machine that can reach it, checked with `pii_denylist_check.py --staged`, and
+request. The scenes file names `vision_benchmark_networks/sydney.json` for both Sydney scenes. The
+four cities' networks (`sydney`, `melbourne`, `singapore` and `boston`) were committed on 17 October
+(#349), and the directory's `NOTICE.md` carries the Open Database Licence attribution and each
+file's row: where and when it was fetched, and its sha256. A fresh capture is step 5 of
+[the COOL benchmark runsheet](../docs/cool-benchmark-runsheet.md): from the deployed city's network
+object, or `fetch-network`, which asks Overpass for the scene's polygon through
+`lambdas/common/osm.py`, the same client the adapter uses. Without the file, the rail scenes' rows
+read `error: network_file missing`. Overpass is not reachable from the build containers, so a new
+file is captured on a machine that can reach it, checked with `pii_denylist_check.py --staged`, and
 committed, so later reports say (`fetched_at`, and the file's sha256 in `inputs.networks`) which
 network they measured.
 
@@ -992,8 +1006,7 @@ python scripts/admin_cli.py failed-executions list
 
 and check `aws logs tail /aws/lambda/bloggerbear-dev-dlq-handler --since 5m`
 for the `dlq_handler: daily_cycle failed for topic_id=test-topic: ...` log
-line. If `pipeline_dlq_url` isn't an existing Terraform output yet, get the
-queue URL instead with
+line. Without Terraform, get the queue URL with
 `aws sqs get-queue-url --queue-name bloggerbear-dev-pipeline-dlq`. (Both names start with
 your `UNIQUE_NAME_PREFIX`; `bloggerbear` is the default.)
 

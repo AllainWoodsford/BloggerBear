@@ -9,44 +9,14 @@ public static site serves the results, with RSS for anything that wants to read 
 It is open source so you can read it, learn from it, and run your own copy. The original
 deployment is live at [bloggerbear.com](https://bloggerbear.com).
 
-> **Judges of the OpenCV AI Competition 2026: start here.** The entry is the Rail Access Monitor
-> ([below](#vision-satellite-imagery-and-the-rail-access-monitor)). The
-> [technical report](docs/hackathon/technical-report.md) describes it, with every number cited to a
-> run file; [REPRODUCE.md](docs/hackathon/REPRODUCE.md) builds and tests it, starting with CI's own
-> commands (about ten minutes, no AWS account); the
-> [diagrams](docs/hackathon/diagrams/README.md) show the system and the agent's workflow.
+## Hackathons
 
-## Quick start
+BloggerBear has been entered in two. Judges of either: start here.
 
-To run your own copy you need an AWS account (two is better: one for dev, one for production), a
-fork of this repository, Terraform, the AWS CLI, Python 3.11+ and the GitHub CLI.
-
-1. **Bootstrap AWS, once, from your own machine.** This creates the Terraform state bucket and
-   the roles GitHub deploys with:
-   ```bash
-   cd infra/bootstrap && terraform init
-   terraform apply -var="github_repo=your-name/your-fork" \
-     -var="state_bucket_name=yourname-bloggerbear-terraform-state" \
-     -var="unique_name_prefix=acme-blog" -var="domain_name="
-   ```
-   `unique_name_prefix` is what every resource name starts with (`acme-blog-dev-topics`). Pick
-   your own, and give the setup script the same word when it asks for `UNIQUE_NAME_PREFIX`.
-2. **Run the setup script.** It asks for every GitHub secret and variable a deployment needs,
-   checks each answer, and sets them. Start with the dry run, which changes nothing:
-   ```bash
-   python scripts/setup_repo.py --dry-run
-   python scripts/setup_repo.py
-   ```
-3. **Merge a pull request into `dev`.** GitHub Actions runs the security scans, lint and tests,
-   then deploys the dev environment.
-4. **Seed a topic** with the admin CLI, and it runs by itself from there. The admin CLI quick
-   start ([scripts/QUICKSTART.md](scripts/QUICKSTART.md)) points the CLI at your environment and
-   shows the first commands.
-
-Each step, with what to check and what can go wrong, is in the deployment runsheet
-([docs/deployment-runsheet.md](docs/deployment-runsheet.md)). New to Terraform, AWS or GitHub
-Actions? The [setup guide](docs/setup-guide.md) starts earlier, from installing the tools and
-setting up your AWS account and CLI, with a placeholder for each value you choose.
+| Entry | What was built | Where to look |
+|---|---|---|
+| [OpenCV AI Competition 2026](https://opencv26.devpost.com): the Rail Access Monitor | Sentinel-2 imagery, OpenStreetMap and OpenCV 5 measure how well four cities' rail networks serve their built-up areas; a bounded agent triages what changed; a person approves every article. One city a week, live on dev. | The [technical report](docs/hackathon/technical-report.md), with every number cited to a run file; [REPRODUCE.md](docs/hackathon/REPRODUCE.md), which builds and tests it with CI's own commands (about ten minutes, no AWS account); the [diagrams](docs/hackathon/diagrams/README.md) and the rest of [`docs/hackathon/`](docs/hackathon/); the feature itself in [architecture/blogger-vision.md](docs/architecture/blogger-vision.md); and the code in [`lambdas/vision/`](lambdas/vision/), [`infra/modules/vision-worker/`](infra/modules/vision-worker/) and [`scripts/vision_eval.py`](scripts/vision_eval.py). |
+| [Amazon Build, Ship, Shape](https://amazonappdev2026.devpost.com), Alexa+ track: the operator's assistant | A read-only MCP server and a Strands agent that say what needs the operator's attention and put the fix on screen, from a web page or by voice through Alexa+. The page runs in both environments; the Alexa+ link waits on Amazon's gated toolkit. | [architecture/ops-mcp-agent.md](docs/architecture/ops-mcp-agent.md) and [architecture/alexa-plus.md](docs/architecture/alexa-plus.md); the add-on's set-up in [alexa/README.md](alexa/README.md); and the code in [`lambdas/ops_mcp/`](lambdas/ops_mcp/), [`lambdas/ops_agent/`](lambdas/ops_agent/) and [`infra/modules/ops-assistant/`](infra/modules/ops-assistant/). Read [`friction log'](https://github.com/AllainWoodsford/BloggerBear/blob/dev/docs/friction.md)|
 
 ## Docs
 
@@ -55,23 +25,23 @@ In the order you are likely to need them.
 | Doc | What it is for |
 |---|---|
 | [Setup guide](docs/setup-guide.md) | Your first deploy, for a first-time forker: installing Terraform and the tools, an AWS account and CLI profile, the bootstrap and the GitHub OIDC roles, your GitHub settings, the first deploy and topic, and what to do when it fails. |
-| [Deployment runsheet](docs/deployment-runsheet.md) | Your first deploy: bootstrap, GitHub settings, one AWS account or two, the dev environment, seeding a topic, the model registry, another region, local development. |
+| [Deployment runsheet](docs/deployment-runsheet.md) | Your first deploy, step by step: bootstrap, GitHub settings, one AWS account or two, the dev environment, seeding a topic, the model registry, vision, the evidence queries, another region, local development. |
 | [Separate AWS accounts](docs/deployment-separate-accounts.md) | Dev in one account and production in another: what you do twice, both bootstrap commands, the GitHub OIDC trust for your fork, the firewall, a checklist. |
 | [Configuration](docs/configuration.md) | Every setting in one table, and where it goes: GitHub, Terraform, SSM, DynamoDB, your machine. |
 | [Cost saving](docs/cost-saving.md) | The firewall switches: what each one saves, what it gives up, how to set it, and why the admin API's allowlist stays on whatever you switch off. Hardened by default; at your own risk. |
 | [Admin CLI quick start](scripts/QUICKSTART.md) | `scripts/QUICKSTART.md`: point the CLI at your environment, run your first commands, and where to look when one fails. |
-| [Admin CLI reference](scripts/README.md) | Every command: topics, the review inbox, models, pipeline settings, feedback. |
+| [Admin CLI reference](scripts/README.md) | Every command: topics, the review inbox, models, pipeline settings, feedback, and the evaluation and benchmark scripts. |
+| [Rail vision seeding](docs/RailVisionSeeding.md) | Creating the rail topic from the example, running its first ticks, and switching it to a city a week with three angles in turn. |
 | [COOL benchmark runsheet](docs/cool-benchmark-runsheet.md) | Optional, for the OpenCV competition: the Graviton4 session that times the vision worker under COOL against stock OpenCV 5. |
 | [Production runsheet](docs/production-runsheet.md) | Your domain, DNS, the first production release, rolling back, what it costs. |
-| [Repository protection](docs/todo/public-repo-runsheet.md) | The GitHub settings for a public repository: rulesets, required reviewers, secret scanning. |
-| [Alexa+ add-on](alexa/README.md) | Optional: putting the operator's assistant on Alexa+. |
-| [Architecture by feature](docs/architecture/README.md) | The project one feature at a time, across the layers. First: [article research](docs/architecture/article-research.md), from a data source and its API keys to an article in S3. Then [vision](docs/architecture/blogger-vision.md), from a satellite scene to a map on the page, with the rail concepts explained. |
+| [Repository protection](docs/configuration.md#github-repository-settings) | The GitHub settings for a public repository: rulesets, required reviewers, secret scanning. The commands are in the archived [public-repo runsheet](docs/enhancements/archive/public-repo-runsheet.md). |
+| [Architecture by feature](docs/architecture/README.md) | The project one feature at a time, across the layers: [article research](docs/architecture/article-research.md), from a data source to an article in S3; [vision](docs/architecture/blogger-vision.md), from a satellite scene to a map on the page; [the operator's assistant](docs/architecture/ops-mcp-agent.md); [Alexa+](docs/architecture/alexa-plus.md); and [the admin CLI and API](docs/architecture/admin-cli.md). |
 | [Project plan](docs/project-plan.md) | The design and the reasons behind it. Long; read it before a non-trivial change. |
+| [Progress](docs/PROGRESS.md) | The build history, phase by phase, and the backlog. |
 | [Friction log](docs/friction.md) | Problems met while building and deploying this, and what fixed them. |
+| [Enhancements](docs/enhancements/) | Designs not built yet. The designs that were built are in [`docs/enhancements/archive/`](docs/enhancements/archive/README.md), each with what shipped and what did not. |
+| [Hackathon package](docs/hackathon/) | The OpenCV entry: the technical report, how to reproduce it, the evidence and its index, the rubric tracker, the video script. |
 | [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md) | How to take part, and how to report a vulnerability. |
-
-`docs/enhancements/` holds designs (some built, some not), `docs/risks/` known weaknesses, and
-`docs/PROGRESS.md` the build history.
 
 ## Architecture
 
@@ -167,411 +137,6 @@ flowchart TB
     jobs --> cost
     github -->|"OIDC role, Terraform"| web
 ```
-
-- **Region:** one home region for everything, `ap-southeast-2` (Sydney) by default and
-  configurable. Two things are fixed by AWS: CloudFront's web ACL and certificate live in
-  `us-east-1`, and the web search gateway runs in one of the few regions that offer it. Where
-  vision is turned on, its worker runs in `us-west-2`, beside the Sentinel-2 imagery, and keeps
-  nothing ([the whole vision architecture](docs/hackathon/diagrams/README.md)).
-- **Compute:** AWS Lambda functions in Python, built from one shared package (`lambdas/`) with
-  one execution role: the research tick, the daily cycle, the two APIs and the scheduled jobs.
-  The operator's assistant adds its own functions, each with its own package and role.
-- **AI:** Amazon Bedrock through the Converse API, so any provider's model works. Every call goes
-  through `lambdas/common/bedrock.py`; tracked calls record tokens and cost into each article's
-  lineage and the weekly Stats. Models live in a DynamoDB registry with a global default,
-  per-topic overrides and per-topic rotation. Research falls back from GDELT to AgentCore web
-  search.
-- **Storage:** DynamoDB tables (`infra/modules/app-data`) and a private S3 bucket for article
-  bodies and raw source snapshots, separate from the public site's bucket.
-- **Frontend:** a static site (S3, CloudFront, Origin Access Control) in plain HTML, CSS and
-  JavaScript, with no framework. Published articles are also rendered as static pages. A public
-  Stats page shows AI and AWS spend.
-- **Admin console:** not a web app. A local CLI (`scripts/admin_cli.py`) signs requests with AWS
-  SigV4 and talks to an IAM-authenticated, IP-allowlisted API. A browser app would need more
-  infrastructure just to hold credentials safely than a single operator needs. `findings list`
-  shows a topic's research Findings newest first, and the `topic-findings` Claude Code skill
-  (`.claude/skills/`) teaches a developer's session to read them safely.
-- **Public API:** a second, unauthenticated API Gateway: topics, articles, an anonymous view
-  counter, anonymous feedback and an RSS feed. It is rate-limited by WAF and throttled at API
-  Gateway, and the site reaches it through its own CloudFront distribution, which caches what
-  the API marks cacheable.
-- **Security:** CloudFront, WAF (managed rules, rate limiting, logging) and Shield Standard. The
-  admin API also sits behind IAM auth and an IP allowlist that fails closed: an empty allowlist
-  lets nothing in. Blocked requests and comments dropped as attacks are grouped into incidents
-  (category, severity, next steps; a keyed hash of the client, never the IP), and a
-  high-severity incident emails an alarm. Sign-ins to the operator's assistant are logged, and
-  a user is locked out after repeated failures, which is such an incident. Two trends are
-  incidents too, rising from low to high as they grow: comments dropped by screening in a day,
-  and errors answered by the admin API in an hour. The operator lists, acknowledges, resolves
-  and opens incidents from the CLI.
-- **Observability:** CloudWatch alarms and dashboards, a daily Cost Explorer poll that feeds the
-  Stats page, and an AWS Budget alarm on Bedrock spend.
-- **Operator's assistant:** a read-only assistant that tells the operator, by voice, what needs
-  attention, and suggests the `admin_cli` command for each thing without ever running one. See
-  [The operator's assistant and Alexa+](#the-operators-assistant-and-alexa).
-- **Infrastructure as code:** Terraform, applied by GitHub Actions through OIDC role federation.
-  No long-lived AWS keys are stored anywhere.
-
-### The pipeline
-
-```
-Research tick (heartbeat)            Daily authoring cycle (9 AM, topic's zone)
-─────────────────────────            ─────────────────────────────────────────
-due yet? (research_interval_hours)   load topic + every finding since its
-  no  -> stop                          last article (+ today's editorial goal)
-load topic + adapter                 ideate 3 angles -> pick one
-fetch current source state           draft article (Bedrock), folding in the
-diff vs prior snapshot                 bear's equipped prompt refinements,
-  no change?  -> stop                  a top-voted past excerpt, and
-  changed?    -> summarize             financial guidance (if applicable)
-               (Bedrock) & store     fresh-data review (claims vs. the
-               a Finding               source now; shadow or enforce)
-                                     compliance review
-                                       financial topic? -> always manual
-                                       else -> Bedrock review, pass/fail
-                                     publish (static page + musing), or
-                                       queue for moderation
-```
-
-Both cadences are per topic. The admin API creates, updates and deletes each topic's EventBridge
-Scheduler schedules as topics change: topics are runtime data, not Terraform. The research
-schedule is a heartbeat; each tick decides from DynamoDB whether it is due. A Step Functions
-wrapper gives the daily cycle retries and a dead-letter queue; the research tick bypasses Step
-Functions. Topics take turns: each has a **slot**, and the pipeline's **stagger** (5 minutes by
-default) puts slot 1's heartbeat at :05 past the hour, slot 2's at :10, and every daily cycle
-after the hour's heartbeats, one slot apart, so no two topics call their sources or Bedrock at
-once (`admin_cli topics schedule`). A topic can be **paused** (`topics pause`): nothing of it
-runs until it is resumed, its page says so, and the bear muses about it.
-
-Held articles wait in the review inbox (`admin_cli approve`), where they can be approved,
-rejected, or **re-written** in the background by a chosen model, which runs the reviews again.
-
-More jobs run on fixed, Terraform-managed schedules: a **daily cross-topic digest** ("Trending
-Everywhere") that publishes through the same review path, leaving out any topic whose articles
-always wait for a person (`force_manual_review`, the vision topics); a **weekly reflection** that
-reads reader feedback and proposes prompt refinements, which become **gear** the bear wears once
-approved; **musings** (BloggerBear's short reflections on articles and feedback); a weekly
-**Stats rollover**; and a daily **Cost Explorer poll**.
-
-### Hard constraints (enforced in code, not just documented)
-
-1. No PII is collected or persisted. A public feedback comment is kept only if it passes code
-   checks (length, PII shapes, links, injection patterns) and then a one-word Bedrock KEEP/DROP
-   screen; anything else is dropped, never redacted-and-stored (`common/comment_screening.py`).
-2. Research ticks always diff first: Bedrock is never called unless the adapter reports a
-   material change.
-3. Drafts always pass compliance review before publish, or they land in a moderation queue. A
-   Re-Write never publishes; a person does.
-4. Financial or investment-adjacent topics (`is_financial`) always go to manual moderation,
-   whatever the review says. The routing is deterministic, not something a model call could
-   override, and comes with stricter drafting guidance and a standing "not financial advice"
-   disclaimer. The one adapter that deals in financial data (`crypto_feed`) has `is_financial`
-   forced on server-side, so an operator cannot forget the flag.
-5. New data sources are adapters (`fetch_state` / `material_diff` / `source_refs`), never
-   branches in the core pipeline. A new adapter must also declare its data sources (`sources`),
-   which is what credits them under every article and topic title; see "Adding an adapter" in
-   `docs/project-plan.md` §6.
-6. Terraform never applies ad hoc: see the branch and release model below.
-7. Security scans (Trivy, Checkov, Bandit), lint and tests must pass before any apply, dev or production,
-   in the same workflow run. They run on pull requests too.
-
-## The operator's assistant and Alexa+
-
-The design is [docs/enhancements/alexa-plus-operator-assistant-enhancement.md](docs/enhancements/alexa-plus-operator-assistant-enhancement.md)
-(the assistant) and [docs/enhancements/alexa-plus.md](docs/enhancements/alexa-plus.md) (how Alexa+ fits on
-top). It was built for the Alexa+ track of the
-[Amazon Build, Ship, Shape](https://amazonappdev2026.devpost.com) hackathon.
-
-A self-hosted **MCP server** (the official Python SDK, Streamable HTTP) exposes the pipeline as
-read-only tools; a **Strands Agents** agent on Bedrock orchestrates them; the voice is the
-browser's speech on `/ask.html` and, for a real Alexa+ add-on, the same MCP server with OAuth
-account linking. It has its own Cognito sign-in (MFA in production) and its own read-only roles.
-
-```
- /ask.html (voice: tap to talk,         Alexa+ add-on (US, account-linked
- answer spoken, suggestion cards)        through the same Cognito pool)
-        │ POST /ask                              │ MCP 2025-11-25, OAuth 2.1 + PKCE
-        v                                        v
- agent Lambda (Strands, Bedrock) ──MCP──> ops MCP server Lambda ──> the app's tables (read),
-   briefing: follows leads,                start_briefing ──async──> agent   alarms, S3 bodies,
-   8 tool calls at most                    latest_briefing (1 read)          its env's Lambda and
-                                                                             API logs (by tag),
-                                                                             WAF logs (prod only)
-```
-
-- **What it can do:** briefings (`pipeline_health`, `admin_inbox`, `content_checks`,
-  `security_events`, `alarms`, `spend`), memory across sessions (`follow_up`, `dismiss`, `watch`),
-  the Admin CLI guide (`cli_help` and `cli_guides`, which put a suggested exact command under each
-  help and each step, with a ⚠️ double-check warning and a `topic-setup` guide that mocks up a new
-  topic; `cli_command`, `topics_overview`), and in production only `firewall_review`. Topic names
-  are matched forgivingly: "Finance and Crypto" finds Crypto & Investing, and the answer says so
-  first ("did you mean…"). Every suggested
-  command comes from a fixed catalogue or the CLI reference in code, never from the model, carries a
-  warning to double-check it, and nothing it can call changes the pipeline.
-- **It reads the logs** ([design](docs/enhancements/ops-assistant-log-reader.md)): `log_review`
-  (Lambda errors, a topic's runs and its adapter, a time range) and `api_errors` (failed requests by
-  status and who answered, with every request counted by HTTP status code, the 200s too) find each error's root cause in code and say whether it needs a code fix,
-  a settings change or just time, with how to check it yourself on screen: the query, with a
-  `SOURCE` line for each of the closest log groups and the time range, in a box you can edit before
-  you copy it. It gives no Lambda success rate (a run completes even when its source was rate
-  limited, so the number said nothing). Findings are written to
-  its suggestions table; it offers to watch a function or a table, and the next "what needs my
-  attention?" says whether it is still happening or has calmed down. Read-only, by environment,
-  project and ManagedBy tag; personal data swept out (addresses only as `123.XXX.XXX.34`); a log
-  line that reads like instructions is withheld, never obeyed, and reported with the function it
-  was in and without alarm (its own log, which talks about tool calls, is not reported at all).
-  The phrase counts when it lies within the line's swept start, four times the shown limit; one
-  wholly past it is never shown, since the line is cut first, and so is not counted
-  ([how](docs/enhancements/ops-assistant-vision.md#redactscrub-hardened-first)).
-- **The architecture, a layer at a time:** "how does the project work?" names nine layers (edge,
-  presentation, API gateways, identity and access, orchestration, compute, AI, data and storage,
-  observability) and asks which one; a layer gives its AWS services and our resources in it;
-  "everything" is the full table.
-- **A feature, step by step:** "how is an article researched?" walks through
-  [article research](docs/architecture/article-research.md) across the layers, from the topic,
-  its adapter and API keys, through the research tick, findings and candidate ideas, to the
-  drafted, reviewed article in S3, with this environment's resource names on screen. "How does
-  the vision pipeline work?" walks through [the vision pipeline](docs/architecture/blogger-vision.md)
-  the same way.
-- **The vision pipeline** ([design](docs/enhancements/ops-assistant-vision.md)), where vision is
-  on: `vision_status` says whether the worker is on and in which Region, and for each vision topic
-  how many sites were measured and why the others were not (the worker off, a sites config that
-  cannot be used, a site the worker refuses, a worker or source error, sites waiting for time),
-  each problem a card with its fix; "what needs my attention?" includes it. `log_review` reads the
-  vision worker's log in the vision Region beside the home Region's functions, and
-  `investigate("vision")` and `cli_guides("vision")` cover checking it yourself and setting up a
-  topic. Site names and error text are on the page only, in "(unverified)" columns; Alexa+ hears
-  counts and reasons. The assistant never fills in a sites config, and after reading text written
-  outside the project it changes no list and repeats none of that text aloud. `vision_evidence`
-  answers "what did the vision agent do for rail Sydney this week?" from the pipeline's
-  [evidence lines](docs/enhancements/vision-evidence.md#asking-the-assistant) in the logs: each
-  decision, what the agent did (OpenCV re-measurements included), whether a finding was written
-  and what a person did with its article, or one decision step by step.
-- **A topic's findings:** "what did research find for rail Sydney?" and "what will the next crypto
-  article be written from?" call `topic_findings`, which puts the topic's research Findings on
-  screen newest first (captured, age, expiry, maps, planner notes, sources, the model, the
-  summary) and says how many there are and how old the newest is, never what one says; with
-  `next_article` it shows exactly what the next daily run reads. The same view at a terminal is
-  `python scripts/admin_cli.py findings list <topic_id>`, and for a developer's Claude Code session
-  the `topic-findings` skill in `.claude/skills/`
-  ([design](docs/enhancements/ops-assistant-vision.md#topic-findings)).
-- **Findings you have dealt with:** every finding's card has a **Dismiss** button (no model call;
-  it changes only the assistant's own list). Where the pipeline's tables show you have already
-  acted, such as an article sent for a rewrite that has not replaced the old one yet, the finding
-  says so and the assistant suggests dismissing it, after you check. It never dismisses by itself.
-- **Woken at sign-in:** the page sends one background call as you sign in, which starts the
-  agent's and the MCP server's Lambdas so the first question does not wait for them. No model, no
-  data, nothing shown, and at most one every five minutes.
-- **Alexa+ cannot wait for the agent** (its limit is 500 ms; a briefing takes 10–25 s), so Alexa
-  starts a briefing in the background (`start_briefing`, which invokes the agent as the caller)
-  and reads the last one back (`latest_briefing`). Every briefing asked on the page is kept too.
-- **Each environment is its own.** Dev's assistant reads dev's tables, bucket, alarms and logs; it
-  has no firewall tool and no right to any WAF log, never reads production's or shared logs, and
-  never reports the AWS bill. Production's reads production's, plus what is shared, the bill and
-  the firewall (all the account's). Each has its own
-  Cognito pool and, if linked, its own Alexa+ add-on.
-- **The access switch:** `python scripts/admin_cli.py pipeline-config set --assistant-access
-  open|allowlist|off` (no deploy). Alexa+ calls from Amazon's addresses, so it needs `open`.
-- **What it costs:** every agent run's tokens and cost go onto the Stats page as the "Operator
-  assistant" row of each section's estimate table (and into the `spend` tool), per environment,
-  the week they are spent; each user may
-  ask 100 questions a UTC day (`agent_daily_question_cap`). Its Lambda, API Gateway, DynamoDB and
-  Cognito use is in the bill's Infrastructure group, from the daily Cost Explorer poll.
-
-To try it: create a user in the environment's pool (`ops_user_pool_id` output; `aws cognito-idp
-admin-create-user`, then `admin-set-user-password --permanent`), open `<site>/ask.html` in Chrome or
-Edge, sign in, press **Test voice**, then **What needs my attention?**. The Alexa+ add-on is a
-one-time bootstrap per environment: [alexa/README.md](alexa/README.md).
-
-## Vision: satellite imagery and the Rail Access Monitor
-
-BloggerBear can watch places as well as feeds. A vision topic names a few sites as lon/lat
-polygons. On each research tick its adapter finds the newest Sentinel-2 scene over each site
-and asks a small **vision worker** (OpenCV 5 on an arm64 Lambda in us-west-2, beside the
-imagery) to measure it; the worker reads only the tiles under the site and keeps nothing. The
-numbers are diffed against the site's own baseline, so no model is called unless something
-moved (rule 2), or a rail city's week has begun (its weekly reading, below). A bounded **triage
-agent** then looks at a change's figure, may re-measure the scene, and says "real" or "artefact";
-anything unsure is an artefact. A person approves every article
-(`force_manual_review`; the daily digest leaves these topics out), which carries the data
-credits; the rail task's map reaches the page through the figures path, with a caption that says
-what its symbols are.
-
-Two tasks share the worker:
-
-- **`ships`**: bright, elongated objects on water at a fixed site, counted scene by scene.
-- **`rail_access`**, the Rail Access Monitor: a city's built-up density from the imagery, the
-  walking reach of its stations, and its rail network as a graph from OpenStreetMap, reported
-  as the served share, the transit deserts, the hubs, the isolated stations and simulated links,
-  with the flags and simulations also written out as plain sentences (planner notes). One
-  ready-made topic, `rail-cities` in
-  [`scripts/rail_topics.example.json`](scripts/rail_topics.example.json), watches four starting
-  cities, Sydney, Melbourne, Singapore and Boston. The live topic writes about one of them a week
-  ([switched over](docs/RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides) from
-  the template's weekdays): on the Monday a weekly reading of the city's newest clear scene, no
-  change claimed, then an article a day from it under three editorial goals in turn (access, the
-  network's flags, the simulated links), each held for a person.
-
-Deployment is **opt-in and off by default**: nothing of it is created until the `VISION_ENABLED`
-repository variable is `true`
-([configuration](docs/configuration.md#vision-and-rail-access),
-[runsheet](docs/deployment-runsheet.md#vision-optional)). It was built for the
-[OpenCV AI Competition 2026](https://opencv26.devpost.com): the submission's
-[technical report](docs/hackathon/technical-report.md) and
-[reproduction guide](docs/hackathon/REPRODUCE.md). The pipeline step by step, and the
-rail concepts in plain words: [docs/architecture/blogger-vision.md](docs/architecture/blogger-vision.md).
-The design, every setting and what was measured: [docs/enhancements/vision.md](docs/enhancements/vision.md).
-The rail task and one specification per pull request:
-[docs/enhancements/rail-access-monitor.md](docs/enhancements/rail-access-monitor.md).
-
-## What's in the repo
-
-```
-lambdas/                    Python 3.11, one shared deployment package
-  research_tick_handler.py    heartbeat: due? -> diff-first, per-topic
-  daily_cycle_handler.py      daily: ideate -> draft -> review -> publish;
-                                also runs Re-Writes (async event)
-  admin_api_handler.py        IAM-authenticated admin API
-  public_api_handler.py       unauthenticated public API + RSS + feedback
-  dlq_handler.py              pipeline DLQ -> FailedExecutions records
-  weekly_reflection_handler.py   weekly: feedback -> prompt refinements
-  trending_digest_handler.py     daily: cross-topic digest
-  musing_feedback_handler.py     the bear's musings on reader feedback
-  stats_rollover_handler.py      weekly: roll Stats into history
-  cost_explorer_poll_handler.py  daily: the AWS bill, every service
-  security_events_handler.py     WAF blocks -> SecurityEvents incidents
-  vision_worker_handler.py    the vision worker: OpenCV on one site in one
-                                scene, in its own package, in us-west-2
-  vision/                     the vision core: masks, detection, figures,
-                                the GeoTIFF reader and UTM; the rail task's
-                                built-up heat, reach, network graph and map;
-                                no AWS
-  ops_agent_handler.py        the assistant's POST /ask, and its async briefings
-  ops_agent/                  the Strands agent and its policy (budget, deep dives)
-  ops_mcp/                    the ops MCP server: tools, memory, briefings,
-                                the CLI guide, firewall_review, access switch
-  common/                     shared modules; the main ones:
-    adapters/                  base.py (contract), registry.py, and one
-                                module per domain: github_trending.py,
-                                hacker_news.py, crypto_feed.py, web_search.py,
-                                satellite_vision.py, rail_access.py
-    vision_contract.py, vision_client.py, vision_triage.py
-                                the worker's contract, its caller, the agent
-    vision_sites.py            what the two vision adapters share
-    rail_notes.py              the rail flags and simulations in words
-    osm.py                     OpenStreetMap rail networks through Overpass
-    figures.py                 figures from Findings to article pages
-    bedrock.py                 every Bedrock call (Converse API)
-    model_routing.py, costing.py, stats_tracking.py
-                                which model, what it cost, weekly totals
-    compliance.py               compliance review, financial guidance/disclaimer
-    fresh_review.py             the fresh-data review of a draft
-    rewrite.py                  the background Re-Write of a held article
-    comment_screening.py        keep-or-drop screening of feedback comments
-    static_pages.py             rendering published articles to S3
-    musings.py, equipment.py, gear.py   the bear's musings and gear
-    dynamo.py                   every DynamoDB access, one file
-    scheduler.py                per-topic EventBridge Scheduler CRUD
-  tests/                      pytest + moto, one file per handler/module
-
-infra/
-  bootstrap/                 state bucket + OIDC provider + deploy roles +
-                              Route 53 zone -- applied locally, never via CI
-  modules/
-    app-data/                 the DynamoDB tables
-    static-site/               S3 + CloudFront + OAC, reused by both envs
-    rest-api/                  the admin and public REST APIs
-    observability/             CloudWatch alarms and dashboards, reused
-                                by both envs
-    ops-assistant/             the operator's assistant: MCP server, agent,
-                                Cognito, OAuth metadata for Alexa+, briefings,
-                                firewall_review (production), isolation
-    vision-worker/             the vision worker in us-west-2, only when
-                                VISION_ENABLED is true
-  environments/
-    dev/                       auto-deploys on push to `dev`
-    production/                deploys only on a GitHub Release from `prod`
-
-frontend/                   plain HTML/CSS/JS, no framework
-  index.html, app.js, styles.css   hash-routed SPA: topics, articles,
-                                    feedback, the digest, musings, Stats
-  terms.html, privacy.html, about.html   static pages
-  ask.html, ask.js, ask.css      the operator's assistant: sign-in, voice,
-                                    suggestion cards (unlinked, noindex)
-
-alexa/                      the Alexa+ add-on: runbook and manifest template
-
-scripts/
-  setup_repo.py              first-time setup: the GitHub secrets and variables
-  admin_cli.py               the operator's "admin UI" -- SigV4-signed
-                              requests against the admin API
-  review_inbox.py            `inbox` / `approve`: the one-keystroke review loop
-  minify_frontend.py         builds frontend-dist/ for deploy
-  domain_check.py            read-only: is the custom domain wired up yet?
-  alexa_addon_values.py      the values the Alexa+ bootstrap needs
-  gear_create.py             `equipment create` / `delete`: gear written by hand
-  repair_stats_week.py       mends Stats history after a missed weekly rollover
-  generate_cli_reference.py  rewrites the CLI reference the assistant reads
-  pii_denylist_check.py      CI: refuses a change that adds the owner's own
-                              personal strings
-  vision_benchmark.py        times the vision worker's OpenCV work (stock
-                              against COOL); fetches a rail scene's network
-  submission_check.py        the competition submission's pre-submit check
-                              (placeholders, links, the tracker, run files)
-  rail_topics.example.json   the Rail Access Monitor's topic template: four
-                              cities by weekday (the live one: a city a week)
-  README.md                  the full CLI reference
-  tests/                     pytest coverage for the scripts
-
-.claude/skills/
-  topic-findings/SKILL.md    a Claude Code skill: interrogate a topic's
-                              Findings with the CLI, and the rules for the
-                              text they carry (scripts/tests/test_claude_skills.py)
-
-.github/workflows/
-  terraform.yml               on merge to dev: security + lint/test, then
-                                apply -- one run
-  terraform-production-release.yml   the same checks, then apply to
-                                production on Release
-  pr-checks.yml                 PRs only: terraform fmt/validate/test, and
-                                trufflehog, gitleaks and the personal-data
-                                denylist over the PR's commits
-  on-demand-scan.yml            by hand or a `security-scan` PR label: every
-                                security, secret and personal-data check over
-                                the whole repo and history, every severity
-                                reported; terraform fmt/validate/test; never
-                                deploys
-  destroy-dev.yml              manual, typed-confirmation teardown of dev
-  python-ci.yml                 pytest + ruff on lambdas/scripts (PRs;
-                                called before each apply)
-  security.yml                   trivy (config; dependencies + secrets of the
-                                whole repo, MEDIUM reported, HIGH+ fails) +
-                                checkov on infra/ (.checkov.yaml) + bandit
-                                on lambdas/ and scripts/ (every PR; called
-                                before each apply)
-
-docs/
-  setup-guide.md                your first deploy, from installing the tools
-  deployment-runsheet.md        your first deploy, step by step
-  deployment-separate-accounts.md  dev and production in two AWS accounts
-  configuration.md              every setting and where it goes
-  cost-saving.md                the firewall switches, hardened by default
-  architecture/                 the project by feature: article research, ...
-  cool-benchmark-runsheet.md    the COOL session on Graviton4, by hand
-  production-runsheet.md        production + domain, step by step
-  project-plan.md               architecture, rules, data model -- source
-                                of truth for "why"
-  PROGRESS.md                   the build history, phase by phase
-  friction.md                   problems met along the way, and the fixes
-  todo/public-repo-runsheet.md  the GitHub settings for a public repository
-  specs/                        the original Phase 0 build spec
-  risks/                        known weaknesses, e.g. scaling-findings-01.md
-  enhancements/                 designs, built and not yet built
-  hackathon/                    the OpenCV AI Competition 2026 submission: the
-                                technical report, diagrams, reproduction guide,
-                                dependency audit, video script, Devpost checklist
-```
-
 ### Branch & release model
 
 - `dev` is the default branch. Every change lands here by pull request, never a direct push.
@@ -589,7 +154,7 @@ docs/
 - A ruleset on both branches (pull requests only, no force-pushes, no deletions), secret scanning
   and approval for workflows from fork pull requests are GitHub settings, not code. GitHub offers
   them on public repositories or paid plans:
-  [docs/todo/public-repo-runsheet.md](docs/todo/public-repo-runsheet.md) has the commands.
+  [docs/enhancements/archive/public-repo-runsheet.md](docs/enhancements/archive/public-repo-runsheet.md) has the commands.
 
 ## License
 
@@ -611,7 +176,7 @@ apply to you. The credits each source asks for are below; keep them wherever the
 | **Amazon Bedrock AgentCore web search** | Web search, as the fallback and for topics that ask for it | An AWS service, used under the AWS Customer Agreement. Articles link to the pages they cite. |
 | **Copernicus Sentinel-2** | The vision topics (`lambdas/common/adapters/satellite_vision.py` and `rail_access.py`): the imagery the vision worker measures | Contains modified Copernicus Sentinel data [year]. Free, full and open under the [Copernicus Sentinel data legal notice](https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice), which asks derived products to carry that sentence with the year of the data. The credit sits under each vision article and on the About page (the adapters' `sources`); the ship figure carries a "Processed imagery" notice; the rail figure carries the sentence with the year in the strip under the map, and its page caption repeats it. No key. |
 | **Registry of Open Data on AWS** | The same: the worker reads Sentinel-2 Cloud-Optimized GeoTIFFs from the public `sentinel-cogs` bucket, and the adapter finds scenes through the Earth Search STAC API | Sentinel-2 Cloud-Optimized GeoTIFFs accessed from the [Registry of Open Data on AWS](https://registry.opendata.aws/sentinel-2-l2a-cogs/), which asks to be cited as the source of the copy. No key. |
-| **OpenStreetMap** | The Rail Access Monitor (`lambdas/common/osm.py`, `lambdas/common/adapters/rail_access.py`): rail lines, stations and intermodal points through the Overpass API | Map data © OpenStreetMap contributors, available under the [Open Database Licence](https://www.openstreetmap.org/copyright), which asks for that credit wherever the data is shown: in the rail figure's caption strip (as "(c)": its font has no ©), in its page caption, under each rail article and on the About page (the rail adapter's `sources`). No key. |
+| **OpenStreetMap** | The Rail Access Monitor (`lambdas/common/osm.py`, `lambdas/common/adapters/rail_access.py`): rail lines, stations and intermodal points through the Overpass API | Map data © OpenStreetMap contributors, available under the [Open Database Licence](https://www.openstreetmap.org/copyright), which asks for that credit wherever the data is shown: in the rail figure's caption strip (as "(c)": its font has no ©), in its page caption, under each rail article and on the About page (the rail adapter's `sources`). The repository also holds four city extracts as test fixtures, `scripts/vision_benchmark_networks/*.json`, under the same licence (their `NOTICE.md`). No key. |
 
 Articles are written by a language model through Amazon Bedrock, and every article lists the
 sources it drew on and says how it was written and reviewed.

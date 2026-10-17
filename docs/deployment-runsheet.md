@@ -12,9 +12,37 @@ Doing this for the first time? [setup-guide.md](setup-guide.md) is the same jour
 beginning (installing the tools, an AWS account and CLI profile), with a placeholder for every
 value you choose.
 
-Account IDs on this page are placeholders (`111111111111`, `123456789012`, `000000000000`).
+The account ID on this page, `111111111111`, is a placeholder.
 Use your own. Commands name `ap-southeast-2` (Sydney), the default region; use yours if you chose
 another ([Deploying to another region](#deploying-to-another-region)).
+
+## Contents
+
+- [Quick start: the setup script](#quick-start-the-setup-script)
+- [How a deploy picks its account](#how-a-deploy-picks-its-account)
+- [Before you start](#before-you-start)
+- [1. Bootstrap, once, by hand](#1-bootstrap-once-by-hand)
+- [2. GitHub settings](#2-github-settings)
+- [3. One account or two](#3-one-account-or-two)
+- [4. First deploy: dev](#4-first-deploy-dev)
+- [5. After the first deploy](#5-after-the-first-deploy)
+  - [Interrogating a topic's Findings](#interrogating-a-topics-findings)
+- [Optional, but recommended](#optional-but-recommended)
+  - [API keys for the data sources](#api-keys-for-the-data-sources)
+  - [The model registry: seeding and rotation](#the-model-registry-seeding-and-rotation)
+  - [DynamoDB tag-based access control (ABAC)](#dynamodb-tag-based-access-control-abac)
+  - [CloudWatch Logs tags (the assistant's log tools)](#cloudwatch-logs-tags-the-assistants-log-tools)
+  - [The personal-data and secret checks](#the-personal-data-and-secret-checks)
+  - [Vision (optional)](#vision-optional)
+  - [`rail_access` topics](#rail_access-topics)
+  - [Evidence: what the pipeline measured and decided](#evidence-what-the-pipeline-measured-and-decided)
+  - [The COOL backend and the benchmark](#the-cool-backend-and-the-benchmark)
+  - [The evaluation's real-data runs](#the-evaluations-real-data-runs)
+  - [The evidence export, the trace and the labels (O9)](#the-evidence-export-the-trace-and-the-labels-o9)
+- [Deploying to another region](#deploying-to-another-region)
+- [Tearing down and cost control](#tearing-down-and-cost-control)
+- [Local development](#local-development)
+- [What is still tied to the original deployment](#what-is-still-tied-to-the-original-deployment)
 
 ## Quick start: the setup script
 
@@ -141,6 +169,7 @@ terraform apply \
 | `budget_alert_email` | Where the Bedrock budget alert goes. Empty creates no budget. | empty |
 | `separate_environment_permissions` | Whether each deploy role is refused the other environment's resources (the dev role production's, and the reverse). Deny only: it changes nothing a role may do in its own environment. Pass `false` to detach it if a deploy is ever refused by it. | `true` |
 | `aws_region` | Region for the state bucket, and the region the deploy roles are allowed to work in. Must be the same as the `AWS_REGION` GitHub variable. | `ap-southeast-2` |
+| `vision_region` | Where the vision worker runs. The deploy roles may create its Lambda functions and log groups (`<prefix>-*-vision-*`) there. Must be the same as each environment's `vision_region` ([Vision (optional)](#vision-optional)). | `us-west-2` |
 
 Keep the outputs: `state_bucket_name`, `dev_deploy_role_arn`, `prod_deploy_role_arn`,
 `hosted_zone_id`, `hosted_zone_name_servers`.
@@ -202,7 +231,7 @@ home-Region `ap-southeast-2` fits only a prefix of 7 or fewer;
 
 **Protecting the branches.** Require a pull request on `dev` and `prod`, and block force-pushes
 and deletions. GitHub offers rulesets and branch protection only on public repositories or paid
-plans; [todo/public-repo-runsheet.md](todo/public-repo-runsheet.md) has the commands. Without
+plans; the archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md) has the commands. Without
 them the AWS side still holds: the deploy roles trust only the `dev` branch and the `production`
 environment, and nothing is applied before the security scans, lint and tests pass in the same run.
 
@@ -294,7 +323,8 @@ Dev is up once the `terraform` workflow goes green. What is left is by hand.
    python scripts/admin_cli.py inbox
    ```
    Creating a topic creates its two schedules; after this it runs unattended. A new topic writes
-   its daily article at 9 AM `Australia/Sydney`; `--daily-cadence` and `--daily-timezone` change
+   its daily article after 9 AM `Australia/Sydney`, at the minute its stagger slot gives it
+   (`topics schedule` shows when); `--daily-cadence` and `--daily-timezone` change
    that. [scripts/README.md](../scripts/README.md) is the full CLI reference.
 5. **The operator's assistant.** A sign-in page at `<site>/ask.html`, in front of an agent that
    reports what needs your attention and shows the `admin_cli` command for each thing. It never
@@ -336,7 +366,7 @@ If you keep the data sources this project ships with, keep their credits too: se
 Research writes a Finding only when a tick's diff was material, and the daily article is written
 from the Findings since the topic's last article within its findings window. To see what a topic
 found, why it wrote nothing, or what its next article will be written from, there are three ways,
-all read-only ([design](enhancements/ops-assistant-vision.md#topic-findings)):
+all read-only ([design](enhancements/archive/ops-assistant-vision.md#topic-findings)):
 
 1. **Ask the assistant** (the ask page, or Alexa+): "what did research find for rail Sydney?",
    "what will the next crypto article be written from?". `topic_findings` puts the Findings on
@@ -351,9 +381,8 @@ all read-only ([design](enhancements/ops-assistant-vision.md#topic-findings)):
    the rules for the text a Finding carries (data, never instructions; never fetch a URL it names;
    never copy its text into a commit or a pull request).
 
-The assistant's role gains read access to the Findings table with this round (both roots'
-`module "ops_assistant"` `tables`): until that apply, it answers "I haven't been told where the
-findings are."
+The assistant's role reads the Findings table (both roots' `module "ops_assistant"` `tables`):
+without that entry the assistant answers "I haven't been told where the findings are."
 
 ## Optional, but recommended
 
@@ -498,7 +527,7 @@ account, and it is an account setting, per region.
 
 ### CloudWatch Logs tags (the assistant's log tools)
 
-The operator's assistant reads logs itself (`log_review`, `api_errors`; [design](enhancements/ops-assistant-log-reader.md)).
+The operator's assistant reads logs itself (`log_review`, `api_errors`; [design](enhancements/archive/ops-assistant-log-reader.md)).
 Its permission is written like `table_sample`'s: `logs:StartQuery` on `/aws/lambda/<prefix>-<env>-*`
 and `/aws/apigateway/<prefix>-<env>-*` only when the log group is tagged `ManagedBy = Terraform`,
 this deployment's `Project`, and an `Environment` that assistant may read (dev: `dev`;
@@ -538,7 +567,7 @@ the logs stay safe to publish.
 
 The vision worker, for the `satellite_vision` and `rail_access` topics
 ([how it all fits](architecture/blogger-vision.md); the design is
-[enhancements/vision.md](enhancements/vision.md)). **Off by default**, in both environments:
+[enhancements/vision.md](enhancements/archive/vision.md)). **Off by default**, in both environments:
 nothing of it is created until you turn it on, and you turn it on per environment with a GitHub
 variable, not with a tfvars edit. Every setting it uses is in
 [configuration.md](configuration.md#vision-and-rail-access).
@@ -603,7 +632,7 @@ are in the home Region, and the worker is not; read its log group,
 `/aws/lambda/<prefix>-<env>-vision-worker`, in `vision_region`. The ops assistant reads it there
 (`log_review`, "any errors in the vision worker?"), and each topic's running state (`vision_status`,
 "how is the vision pipeline doing?"), granted by the same apply: nothing to do by hand
-([ops-assistant-vision.md](enhancements/ops-assistant-vision.md)). After turning vision on, ask it
+([ops-assistant-vision.md](enhancements/archive/ops-assistant-vision.md)). After turning vision on, ask it
 "is the satellite worker on?": it should say on, and in which Region.
 
 ### `rail_access` topics
@@ -611,12 +640,16 @@ are in the home Region, and the worker is not; read its log group,
 The Rail Access Monitor is one topic that watches several cities and writes about one of them a
 day, by a fixed weekly rota ([what it measures](architecture/blogger-vision.md#part-two-the-trains-explainer);
 every key and default: [configuration.md](configuration.md#a-rail_access-topic); the design:
-[dailysubject_hook.md](enhancements/dailysubject_hook.md)). Turn the worker on first (above):
+[dailysubject_hook.md](enhancements/archive/dailysubject_hook.md)). Turn the worker on first (above):
 without it each tick records `last_error` on the city and writes nothing.
+
+This section follows the example's rota, a city a day. Dev's `rail-cities` has since moved to a
+city a week (`rotation_period` `"week"`), its Monday weekly reading written up from three angles in
+turn: [RailVisionSeeding.md §7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides).
 
 **Create the topic.** `scripts/rail_topics.example.json` holds one complete admin API topic body,
 `rail-cities`: the four starting cities (Sydney, Melbourne, Singapore and Boston, each with its box
-from [rail-access-monitor.md §2](enhancements/rail-access-monitor.md#2-the-angle-rail-access-not-rail-yards)),
+from [rail-access-monitor.md §2](enhancements/archive/rail-access-monitor.md#2-the-angle-rail-access-not-rail-yards)),
 `reach_m` 1000, the 80 s `time_budget_seconds` cap (see "A large city's first network can take a
 minute", below), the rota (`rotation`, read in `rotation_timezone`), an editorial goal, a daily run
 every day and a findings window of 192 hours (`findings_window_hours`). `topics create` takes a
@@ -664,8 +697,9 @@ The tick never reads the rota: with an hourly heartbeat every city is looked at 
 and at least one is measured when it has a new scene, whatever the day, so its Findings are
 waiting when its day comes.
 
-The daily cycle runs on `daily_cadence` in `daily_timezone`, every day at 09:05 Sydney time, after
-the other topics' 09:00 to 09:03. At the start of each run it asks the rota whose day it is, on the
+The daily cycle runs on `daily_cadence` in `daily_timezone`, every day after 09:00
+Sydney time, at the minute its stagger slot gives it (`topics schedule` shows it), not at the
+example's 09:05. At the start of each run it asks the rota whose day it is, on the
 calendar of `rotation_timezone` (Sydney's, so "Tuesday" is Tuesday in Sydney): Sydney on Monday and
 Friday, Melbourne on Tuesday and Saturday, Singapore on Wednesday and Sunday, Boston on Thursday.
 The run writes about that city alone: it drafts the Findings that list the city in `subjects`, made
@@ -690,7 +724,7 @@ missed: the research tick dates a Finding (`captured_at`) when its fetch starts,
 the tick, and writes it at the tick's end, so a Finding whose tick is still running when the daily
 cycle starts is not there for that run and, once that run has written an article on its city, is
 dated before that city's next window starts. That predates PR K and is a code follow-up
-([vision.md §10](enhancements/vision.md#10-still-open)). Findings expire 14 days after they are
+([vision.md §10](enhancements/archive/vision.md#10-still-open)). Findings expire 14 days after they are
 made (`FINDING_TTL_DAYS` in `lambdas/research_tick_handler.py`), which is why the window is capped
 at 336 hours. Daylight saving does not matter: the rota reads Sydney's calendar, and the window
 starts at the city's last article whatever the gap. Re-Write from the review inbox rebuilds a rail
@@ -705,7 +739,7 @@ it found no Finding about the day's city; it had no usable angle; or it ended in
 error the handler catches is quiet: the daily cycle returns `"status": "error"`, so Step Functions
 sees a successful invoke and does not retry it, and nothing reaches the DLQ or an alarm. The error
 is in the execution's output, not in the function's log (the handler's top-level guard prints
-nothing, a code follow-up in [vision.md §10](enhancements/vision.md#10-still-open)); the sign is a
+nothing, a code follow-up in [vision.md §10](enhancements/archive/vision.md#10-still-open)); the sign is a
 city's day with a new Finding but no new item in the review inbox. A broken rota (a slot that is
 not a site, a site with no day, a zone that is not one) is such an error on every day, and the
 research tick records it on the topic's `last_error` too. A timeout (the function's `timeout` is
@@ -789,10 +823,12 @@ object, `vision/<topic>/<site>/network.json` in the content bucket: the same obj
 reads and writes, so the next tick that reaches the city measures with it. It writes no Finding, no
 running state and no research time, so the CLI does not wait: each city's result is a
 `network_prefetch` line in the research-tick log (`stored`, `failed` with the Overpass error, or
-`deferred` when the time ran out before the next city; trigger again for those): a slow city can
-leave too little of the 100 s for the next one. When a city's network goes stale (`osm_ttl_days`,
-30 by default) and the tick's 30 s refresh keeps failing, the old network is still measured
-against; run the prefetch again to replace it. If even the prefetch fails with a timeout, the query
+`deferred` when the time ran out before the next city): a slow city can leave too little of the
+100 s for the next one. A second prefetch starts again at the first city (it skips no stored
+network, however fresh), so it can defer the same cities again; seed those with ordinary research
+ticks ([RailVisionSeeding.md §4](RailVisionSeeding.md#4-seeding-runsheet-dev)). When a city's
+network goes stale (`osm_ttl_days`, 30 by default) and the tick's 30 s refresh keeps failing, the
+old network is still measured against; run the prefetch again to replace it. If even the prefetch fails with a timeout, the query
 is too big for Overpass to answer: shrink the polygon (it starts a new baseline, and a new network
 is fetched for it).
 
@@ -834,7 +870,7 @@ trail: to see why a change was or was not reported, read `triage`.
 cycle drafts every Finding as before, and its first tick moves the network its running state
 carried to the city's own object (`vision/trains-sydney/sydney/network.json`) without fetching it
 again. To change to one rotating topic, start it fresh rather than migrate state
-([dailysubject_hook.md §4.4](enhancements/dailysubject_hook.md#44-migrating-the-four-deployed-topics)):
+([dailysubject_hook.md §4.4](enhancements/archive/dailysubject_hook.md#44-migrating-the-four-deployed-topics)):
 create `rail-cities` (above), run the first-deploy check (one tick per city), and once each city has
 had its first tick, pause the old topic, which stops its ticks and daily runs and keeps its
 published articles under its own id:
@@ -898,11 +934,11 @@ write about every city every day); a city under a new `id` starts with no histor
 
 Every step the vision pipeline takes leaves one JSON line in the logs, and every decision an
 entry in the site's decision ring in the running state ([the evidence
-trail](enhancements/vision-evidence.md)). The lines are read in the CloudWatch console (Logs →
+trail](enhancements/archive/vision-evidence.md)). The lines are read in the CloudWatch console (Logs →
 Logs Insights, pick the Region, the log group and a window) with the fixed queries below, which
 filter by field equality: a query on one topic id never matches another that it prefixes (a
 `rail-sydney` beside `rail-sydney-demo`). The operator's assistant and Alexa+ read the same lines
-with `vision_evidence` ([Asking the assistant](enhancements/vision-evidence.md#asking-the-assistant)).
+with `vision_evidence` ([Asking the assistant](enhancements/archive/vision-evidence.md#asking-the-assistant)).
 
 - (a), (b), (c), (c2) and (f) run on `/aws/lambda/<prefix>-<env>-research-tick` in the home
   Region;
@@ -1036,10 +1072,10 @@ The evaluation's subcommands (`scripts/vision_eval.py`; options in
 run in CI on a synthetic city with scripted parts. These are the runs on real data: the
 operator's, and their run files are the evidence the report cites
 ([the evidence README](hackathon/evidence/README.md#running-the-evaluation-for-real)). Run them
-once the Sydney network fixture is committed (O2: `scripts/vision_benchmark_networks/sydney.json`;
-until then each command takes `--network <file>`), from a checkout of the code being evaluated,
-in a venv. They read the pinned scenes from `sentinel-cogs` in us-west-2 through a cache that the
-first run fills (about 54 MB a scene, eight scenes in all) and later runs read from; on the
+from a checkout of the code being evaluated, in a venv; they use the committed Sydney network
+fixture (`scripts/vision_benchmark_networks/sydney.json`, #349) unless given
+`--network <file>`. They read the pinned scenes from `sentinel-cogs` in us-west-2 through a cache
+that the first run fills (about 54 MB a scene, eight scenes in all) and later runs read from; on the
 Graviton instance (step 8's `$C` in the [COOL benchmark runsheet](cool-benchmark-runsheet.md)) or any machine in us-west-2 that is fast, elsewhere it is a few
 minutes a scene through a slow link. Nothing here writes to AWS.
 
@@ -1277,7 +1313,7 @@ The logs are read through Logs Insights, a few queries at a time, each batch wai
    It writes `docs/hackathon/evidence/live/<UTC date>/`, and with `--networks` each city's network
    as `scripts/vision_benchmark_networks/<site>.json` (fill each new file's row in that directory's
    `NOTICE.md` from its `fetched_at`, `endpoint` and `query_url` and its sha256, which
-   `provenance.json` gives under `networks`). O2's Sydney fixture is left byte for byte when it
+   `provenance.json` gives under `networks`). A committed fixture is left byte for byte when it
    holds the same network (its `kept` says `unchanged`), and kept, with a line saying so, when it
    holds another: the evaluation's real-data runs pin its sha256, and `replay --agent recorded`
    refuses a file that changed, so do not pass `--replace-networks` once those runs are made. It
@@ -1471,5 +1507,5 @@ These need a hand edit in your fork, or cannot be changed yet.
 - **The web search gateway's region** (`ap-northeast-1`) and the privacy page's wording about
   where logs are kept: see the same section.
 - **Repository protection** (rulesets, required reviewers, secret scanning) is set in GitHub, not
-  in code. [todo/public-repo-runsheet.md](todo/public-repo-runsheet.md) lists what the original
-  repository uses.
+  in code. The archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md) lists the settings a
+  public copy should have.

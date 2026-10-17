@@ -271,7 +271,7 @@ def is_financial_topic(topic: dict) -> bool:
 # financial guidance, no disclaimer, and the review still runs, so the moderator sees its verdict);
 # it only takes away automatic publishing. admin_api_handler.py sets it on every topic whose adapter
 # is in common/adapters MANUAL_REVIEW_ADAPTERS (satellite_vision, rail_access): no imagery article
-# without a human (docs/risks/opencv-bushfire-watch-01.md item 9).
+# without a human.
 MANUAL_REVIEW_REASON = "this topic's articles are always reviewed by a person before publishing"
 
 

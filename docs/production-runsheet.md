@@ -13,6 +13,21 @@ Wherever it says **check it**, `python scripts/domain_check.py` is the read-only
 the domain stands. It reads the domain from production's `terraform.tfvars` (or pass one:
 `python scripts/domain_check.py example.com`), needs no AWS login and changes nothing.
 
+## Contents
+
+- [Before you start](#before-you-start)
+- [1. Create the DNS zone and the budget alarm (you, locally, once)](#1-create-the-dns-zone-and-the-budget-alarm-you-locally-once)
+- [2. Point your registrar at Route 53 (you, at the registrar)](#2-point-your-registrar-at-route-53-you-at-the-registrar)
+- [3. Wait for the change to spread, then check it](#3-wait-for-the-change-to-spread-then-check-it)
+- [4. Put the domain and zone ID in production (a small PR)](#4-put-the-domain-and-zone-id-in-production-a-small-pr)
+- [5. GitHub setup for production (you)](#5-github-setup-for-production-you)
+- [6. Release to production (you approve, CI applies)](#6-release-to-production-you-approve-ci-applies)
+- [7. After the first apply](#7-after-the-first-apply)
+- [Vision (optional)](#vision-optional)
+- [Rolling back](#rolling-back)
+- [What it costs (list prices, roughly)](#what-it-costs-list-prices-roughly)
+- [Not done, on purpose](#not-done-on-purpose)
+
 ## Before you start
 
 | You need | How to tell |
@@ -49,8 +64,9 @@ terraform plan  -var domain_name=example.com -var budget_alert_email=you@example
 ```
 
 Pass the same other variables you used for the first bootstrap apply (`aws_account_id`,
-`github_repo`, `state_bucket_name`, `aws_region`). **Check the plan only adds the zone and the
-budget.** If it shows anything else being changed or destroyed, stop and find out why. Then:
+`github_repo`, `state_bucket_name`, `unique_name_prefix`, `aws_region`, and `vision_region` if you
+set it). **Check the plan only adds the zone and the budget.** If it shows anything else being
+changed or destroyed, stop and find out why. Then:
 
 ```bash
 terraform apply -var domain_name=example.com -var budget_alert_email=you@example.com
@@ -155,7 +171,7 @@ Also worth doing while you are in Settings:
 
 - Protect `dev` and `prod` (require a pull request, block force-pushes and deletions). On a
   private repository this needs a paid GitHub plan; the AWS trust policy still gates production
-  either way. The commands are in [todo/public-repo-runsheet.md](todo/public-repo-runsheet.md).
+  either way. The commands are in the archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md).
 - Check no credential is stored as a repository **variable**. Variables are shown in plain text and
   are not masked in logs; a credential should only ever be a secret.
 
@@ -167,9 +183,10 @@ gh pr create --base prod --head dev --title "Release v0.1.0" --body "First produ
 gh release create v0.1.0 --target prod --title v0.1.0 --generate-notes
 ```
 
-Publishing the release starts `terraform-production-release`. It confirms the tagged commit is on
-`prod`, waits for your approval on the `production` environment, then applies. Watch it in the
-Actions tab. Later releases are the same two commands with the next version number.
+Publishing the release starts `terraform-production-release`. It runs the security scans, lint and
+tests on the tag, waits for your approval on the `production` environment, confirms the tagged
+commit is on `prod`, then applies. Watch it in the Actions tab. Later releases are the same two
+commands with the next version number.
 
 Expect 15 to 25 minutes on the first run: a few hundred resources, the certificate has to validate,
 and a new CloudFront distribution takes 5 to 15 minutes to deploy. If it stops on the certificate,
@@ -215,7 +232,7 @@ Then, in order:
    `terraform output wafv2_web_acl_arn` into `infra/environments/dev/terraform.tfvars` as
    `web_acl_arn` if you want dev to share it. It cannot be shared across accounts.
 
-7. **The operator's assistant** (`/ask.html`; README, "The operator's assistant and Alexa+"). Its
+7. **The operator's assistant** (`/ask.html`; [how it works](architecture/ops-mcp-agent.md)). Its
    user pool has self-sign-up off and MFA required, so make your own user by hand:
    ```bash
    POOL=$(terraform -chdir=infra/environments/production output -raw ops_user_pool_id)
@@ -262,11 +279,14 @@ satisfactory, in order:
 2. Set the `VISION_ENABLED` variable to `true` on the `production` environment and publish a
    release. The worker lands in `vision_region`; in the home region the research tick gets the
    worker's ARN (`VISION_WORKER_ARN`) and the pipeline's shared execution role one policy to
-   invoke it; nothing else in production changes.
+   invoke it. The operator's assistant may read the worker's log in `vision_region` and each topic's
+   running state. Nothing else in production changes.
 3. Create the topic in production with the same `adapter_config` that worked on dev (for the
-   rail cities, the same body from `scripts/rail_topics.example.json`, as in the runsheet's
-   [`rail_access` topics](deployment-runsheet.md#rail_access-topics), one topic over the four
-   cities), and trigger its first tick by hand (for the rail topic, one tick per city). A large rail city's first tick only fetches its OpenStreetMap network and measures
+   rail cities, one topic over the four cities: created from `scripts/rail_topics.example.json` as in
+   [RailVisionSeeding.md §4](RailVisionSeeding.md#4-seeding-runsheet-dev), then switched to a city a
+   week with three goals, as in [§7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)),
+   and trigger its first tick by hand (for the rail topic, one tick per city). A large rail city's
+   first tick only fetches its OpenStreetMap network and measures
    nothing (Sydney's takes most of a minute: the runsheet's "A large city's first network can take
    a minute"), so trigger a second tick, or wait for the next hourly one, to measure it. The CLI
    waits 30 s for the Finding and a vision tick that measures a scene can run longer, so "No new

@@ -1,10 +1,10 @@
 """The vision worker's request and response, shared by the worker and the pipeline's client.
 
-docs/enhancements/opencv-agentic-vision-enhancement.md §2 and docs/enhancements/rail-access-monitor.md
-§3: the research tick's adapter (home region) asks the vision worker (the vision region, next to
-the imagery) to measure one site in one scene. This module is the contract between them and
-nothing else, so it imports no OpenCV and nothing from the pipeline, and can sit in the shared
-pipeline zip as well as the worker's.
+docs/enhancements/archive/opencv-agentic-vision-enhancement.md §2 and
+docs/enhancements/archive/rail-access-monitor.md §3: the research tick's adapter (home region) asks
+the vision worker (the vision region, next to the imagery) to measure one site in one scene. This
+module is the contract between them and nothing else, so it imports no OpenCV and nothing from the
+pipeline, and can sit in the shared pipeline zip as well as the worker's.
 
 A request names a `task` (`TASKS`; "ships" when absent, so older callers are unchanged):
 

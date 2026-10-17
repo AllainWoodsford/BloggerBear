@@ -1,6 +1,6 @@
 """The day-subject round: one topic that rotates through the subjects it is configured to watch.
 
-docs/enhancements/dailysubject_hook.md (PR S1). The crypto feed varies its subject day by day
+docs/enhancements/archive/dailysubject_hook.md (PR S1). The crypto feed varies its subject day by day
 because its day goal is a pure function of the date (common/editorial_goals.py). This is that idea
 for any adapter, through two optional hooks (common/adapters/base.py):
 

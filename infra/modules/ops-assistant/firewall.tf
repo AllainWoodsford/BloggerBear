@@ -1,6 +1,6 @@
 # =============================================================================
 # firewall_review: the deep dive into the firewall's logs (lambdas/ops_mcp/firewall.py;
-# docs/enhancements/alexa-plus.md, section 4.4). Production only.
+# docs/enhancements/archive/alexa-plus.md, section 4.4). Production only.
 #
 # The operator's rule: dev's assistant must not be able to see or reason about the firewall;
 # production's may. The firewall's logs are not one environment's (the CloudFront firewall in

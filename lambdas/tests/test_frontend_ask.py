@@ -92,7 +92,7 @@ def test_dev_gives_the_page_its_settings_from_the_modules_outputs():
 
 @pytest.mark.parametrize("env", ["dev", "production"])
 def test_each_environment_gives_the_page_its_own_settings(env):
-    """Production has the assistant too (docs/enhancements/alexa-plus.md, section 4.4): the same
+    """Production has the assistant too (docs/enhancements/archive/alexa-plus.md, section 4.4): the same
     settings from its own module, and the environment named so a copied command says which admin
     API it is for."""
     text = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")

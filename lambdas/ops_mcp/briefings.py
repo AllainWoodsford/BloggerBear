@@ -1,5 +1,5 @@
 """The latest briefing per user: how Alexa+ (or any MCP client) gets the Strands agent's work
-without waiting for it (docs/enhancements/alexa-plus.md, section 4.3).
+without waiting for it (docs/enhancements/archive/alexa-plus.md, section 4.3).
 
 Alexa+ asks for an answer in well under a second; a briefing, the agent following leads across the
 MCP tools, takes ten to twenty-five. So the two are split:

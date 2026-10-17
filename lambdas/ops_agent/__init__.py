@@ -1,6 +1,6 @@
 """The operator's assistant: the agent that answers a question by calling the ops MCP server.
 
-docs/enhancements/alexa-plus-operator-assistant-enhancement.md is the design (section 2). The
+docs/enhancements/archive/alexa-plus-operator-assistant-enhancement.md is the design (section 2). The
 model decides which tools to call and which lead to follow; the code decides everything that must
 be exact. The modules, from the one with the fewest dependencies:
 

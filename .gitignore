@@ -18,7 +18,7 @@ lambda-build/
 # every apply (see infra/environments/*/main.tf's frontend_dir comment) -- never commit it either
 frontend-dist/
 
-# Raw evidence pulled from CloudWatch by hand (docs/enhancements/vision-evidence.md): log lines
+# Raw evidence pulled from CloudWatch by hand (docs/enhancements/archive/vision-evidence.md): log lines
 # as the pipeline printed them, before the export checks them. Never committed as they are.
 evidence-raw/
 
@@ -40,7 +40,7 @@ crash.*.log
 # Exception: the tracked per-environment tfvars under infra/environments/*
 # hold no secrets (booleans and non-sensitive placeholders only, e.g.
 # force_destroy, domain_name TODOs) and are required by design -- see
-# docs/specs/phase-0-foundations.md's directory layout.
+# docs/enhancements/archive/phase-0-foundations.md's directory layout.
 !infra/environments/*/terraform.tfvars
 
 # Ignore override files as they are usually used to override resources locally and so

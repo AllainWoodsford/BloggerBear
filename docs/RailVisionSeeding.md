@@ -1,14 +1,28 @@
 # Rail vision seeding: the `rail-cities` runsheet
 
 How to seed the rotating rail topic: one `rail_access` topic that watches four cities and writes
-about one of them a day. This covers the editorial goal it is created with, what each article
-shows (its text and its maps), how to create and check it, and how it differs from the
-"weekly city rotation" prompt template it was adapted from.
+about one of them at a time: one a day as first seeded, one a week since the switch in
+[section 7](#7-a-city-a-week-written-up-from-three-sides). This covers the editorial goal it is
+created with, what each article shows (its text and its maps), how to create and check it, and how
+it differs from the "weekly city rotation" prompt template it was adapted from.
 
 Background, not repeated here: [what the rail task measures](architecture/blogger-vision.md#part-two-the-trains-explainer),
 every config key ([configuration.md, A `rail_access` topic](configuration.md#a-rail_access-topic)),
-the rota design ([dailysubject_hook.md](enhancements/dailysubject_hook.md)) and the cadence in
+the rota design ([dailysubject_hook.md](enhancements/archive/dailysubject_hook.md)) and the cadence in
 detail ([deployment-runsheet.md, rail_access topics](deployment-runsheet.md#rail_access-topics)).
+
+## Contents
+
+- [1. What gets seeded](#1-what-gets-seeded)
+- [2. What an article is made of](#2-what-an-article-is-made-of)
+  - [The text](#the-text)
+  - [The figures](#the-figures)
+- [3. The editorial goal](#3-the-editorial-goal)
+  - [What was kept from the "weekly city rotation" template, and what was not](#what-was-kept-from-the-weekly-city-rotation-template-and-what-was-not)
+- [4. Seeding runsheet (dev)](#4-seeding-runsheet-dev)
+- [5. Reviewer checklist (before `approve`)](#5-reviewer-checklist-before-approve)
+- [6. Adding a city later](#6-adding-a-city-later)
+- [7. A city a week, written up from three sides](#7-a-city-a-week-written-up-from-three-sides)
 
 ## 1. What gets seeded
 
@@ -33,10 +47,11 @@ not edited. Its Findings and articles stay, and it can be resumed or deleted lat
 ## 2. What an article is made of
 
 Each day's article is drafted only from the day's city's Findings since that city's last article
-(at most 48, newest first). A Finding is written only for a city's first clear scene or a material
+(at most 48, newest first). A Finding is written only for a city's first clear scene, a material
 change (a served-share move of 2 points or more, a desert-area move of 10% (at least 1 km²) or more,
-or a changed station count), so a city with nothing new gets no article that day (`no_findings`, no
-model call).
+or a changed station count) or, on a week rota, the city's weekly reading (section 7). A city with
+nothing new gets no article that day (`no_findings`, no model call), unless a goal rotation still
+has a goal to write its last Findings up under (section 7).
 
 ### The text
 
@@ -214,10 +229,13 @@ day, and the daily run writes about the day's city whenever it has a new Finding
 ## 6. Adding a city later
 
 Add a site to `adapter_config.sites` (one Sentinel-2 tile, at most 8 sites) and give it a day in
-`rotation`. Every site needs one. Read the whole config with `topics get`, edit it, and send all of
-it back with `topics update rail-cities --adapter-config-json '...'`: that flag replaces the whole
-config. Keep every existing site's `id` and polygon, so its history and network still match.
-Re-check `findings_window_hours` against the longest gap between one city's days, plus a day.
+`rotation` (on section 7's week rota, a place in the list: the weeks are counted modulo the list's
+length, so a longer list changes whose week it is from then on). Every site needs one. Read the
+whole config with `topics get`, edit it, and send all of it back with
+`topics update rail-cities --adapter-config-json '...'`: that flag replaces the whole config. Keep
+every existing site's `id` and polygon, so its history and network still match. Re-check
+`findings_window_hours` against the longest gap between one city's days, plus a day (on the week
+rota, at least 24).
 
 ## 7. A city a week, written up from three sides
 

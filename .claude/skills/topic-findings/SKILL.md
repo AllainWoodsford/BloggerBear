@@ -78,8 +78,16 @@ python scripts/admin_cli.py findings list <topic_id> | jq '.findings[] | {captur
   day subject's own last article (`last_article_by_subject`) instead, and keeps only the Findings
   that list the subject in `subjects`.
 - A topic with editorial goals (the crypto feed) may use only the Findings of the day's goal.
+- A topic with a goal rotation (`editorial_goal_rotation` in `topics get`, as on `rail-cities`)
+  writes even when the window is empty: it revisits its last set of Findings under the next goal
+  not yet used on them (`goal_rotation_state`). `--next-article` lists only new Findings, so an
+  empty list there does not mean no article. It writes nothing (`no_findings`) once every goal
+  has had the set, or its Findings have expired.
 - A vision topic writes a Finding only for a new clear scene that changed against its baseline.
-  Its first clear scene is a "first observation", also a Finding.
+  Its first clear scene is a "first observation", also a Finding. On a week rota
+  (`rotation_period` `"week"`, as on `rail-cities`), the first tick of a city's week that reports
+  nothing else about it also writes its newest clear scene as a "Weekly reading", no change
+  claimed, once a week.
 - The daily run wrote nothing (`no_findings`) when the window above was empty: either no tick
   found a change since the last article, or the window is narrower than the topic's cadence. Or
   the topic is paused: `topics get <topic_id>` shows `paused`, and the daily run returns

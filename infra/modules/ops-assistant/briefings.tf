@@ -1,6 +1,6 @@
 # =============================================================================
 # The latest briefing per user, and how a client that cannot wait for the agent gets one
-# (lambdas/ops_mcp/briefings.py; docs/enhancements/alexa-plus.md, section 4.3).
+# (lambdas/ops_mcp/briefings.py; docs/enhancements/archive/alexa-plus.md, section 4.3).
 #
 # Alexa+ wants an answer in well under a second; a briefing takes the agent ten to twenty-five.
 # So the MCP server's start_briefing invokes the agent asynchronously, as the caller (their own

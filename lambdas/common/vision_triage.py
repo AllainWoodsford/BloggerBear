@@ -1,11 +1,11 @@
 """The vision agent's decision: is a measured change real, or an artefact of the scene?
 
-docs/enhancements/opencv-agentic-vision-enhancement.md §5 and docs/enhancements/rail-access-monitor.md
-§4 (PR E). A vision adapter's diff finds a metric that moved past its thresholds; before that
-becomes a Finding, Claude looks at the evidence: the metrics, the site's baseline, why the
-detector dropped what it dropped, and the annotated figure itself (an image block, through
-Bedrock Converse). It may use a few tools before it answers, which is what makes this a loop
-rather than a single classification:
+docs/enhancements/archive/opencv-agentic-vision-enhancement.md §5 and
+docs/enhancements/archive/rail-access-monitor.md §4 (PR E). A vision adapter's diff finds a metric
+that moved past its thresholds; before that becomes a Finding, Claude looks at the evidence: the
+metrics, the site's baseline, why the detector dropped what it dropped, and the annotated figure
+itself (an image block, through Bedrock Converse). It may use a few tools before it answers, which
+is what makes this a loop rather than a single classification:
 
 - `look_again`     re-measure the same scene with different settings (active perception: a
                    different size band or shore buffer for ships; another reach or built-up
