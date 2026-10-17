@@ -13,14 +13,15 @@ output to check. Every command has its PowerShell line beside the bash one.
 | [3](#tier-3-cool-on-graviton4) | COOL against stock OpenCV on Graviton4 | an AWS account and the COOL Marketplace subscription | about 3 hours |
 
 Clone the repository at the submission tag first ([R2: the repository's URL, or the archive's,
-from owner step O8]):
+from owner step O8; the same URL goes in both commands below, or, if an archive is submitted,
+its download-and-unpack commands replace them]):
 
 ```bash
-git clone <the repository URL> BloggerBear && cd BloggerBear && git checkout opencv-2026-submission
+git clone <R2: the repository URL> BloggerBear && cd BloggerBear && git checkout opencv-2026-submission
 ```
 
 ```powershell
-git clone <the repository URL> BloggerBear; cd BloggerBear; git checkout opencv-2026-submission
+git clone <R2: the repository URL> BloggerBear; cd BloggerBear; git checkout opencv-2026-submission
 ```
 
 ## Tier 1a: the CI commands
@@ -52,8 +53,9 @@ ruff check lambdas\ scripts\
 pytest lambdas\ scripts\
 ```
 
-**What to check.** `ruff` prints `All checks passed!`; `pytest` ends with [R2: the count at the
-tag, "N passed, M skipped", from CI's run on the tag]. CI runs this on Ubuntu with Python 3.11; on
+**What to check.** `ruff` prints `All checks passed!`; `pytest` ends with [R2: "N passed, M
+skipped", from a python-ci run of R2's pull request whose tests are the tag's, with the run's URL;
+nothing runs CI on the tag itself]. CI runs this on Ubuntu with Python 3.11; on
 Windows the same commands install and run, but only Linux is checked by CI, so WSL2 gives the
 like-for-like result. The constraints file is Linux CI's own `pip freeze --all`, so on Windows or
 macOS pip also resolves the few packages that exist only there (`colorama` for `click`, for one)

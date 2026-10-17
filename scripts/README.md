@@ -825,11 +825,13 @@ python scripts/submission_check.py --ref HEAD --video-seconds 287  # before the 
 ```
 
 PowerShell: `py -3.11 scripts\submission_check.py --video-seconds 287`. Five checks, each listing
-every failure: no placeholder (`[R2: ...]`, or any bracketed text that is not a link) left in the
-report, the reproduction guide, the dependency audit, the video script, the Devpost text or the
-checklist; every repository-relative link in them resolves (external ones are listed to open by
+every failure: no placeholder (`[R2: ...]`, any bracketed text that is not a link, or `<R2: ...>`
+inside code), unclosed code fence or stray backtick left in the report, the reproduction guide, the
+dependency audit, the video script, the Devpost text or the checklist; every repository-relative
+link in them resolves (external ones are listed to open by
 hand); no `missing` row in the rubric tracker but O7, O10 and O11 (the form itself, the optional
 production release, keeping the site up) and any passed with `--accept ID`, all listed; every run
 file under `docs/hackathon/evidence/runs/` measured on vision code equal to the checked commit's,
-or listed in `docs/hackathon/evidence/RESULTS.md` as "measured on older code" with its reason; and
+from a clean checkout, or listed in `docs/hackathon/evidence/RESULTS.md` as "measured on older
+code" with its reason; and
 the video's length, entered by hand, at most 300 seconds. Exit 0 when all pass, 1 otherwise.

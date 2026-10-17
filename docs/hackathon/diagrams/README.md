@@ -44,4 +44,8 @@ tool at the browser with a Puppeteer configuration file, `-p puppeteer.json`, ho
 plain SVG text for the labels, rather than the tool's default embedded web font and HTML labels, so
 an SVG is small, holds no font file, and opens in an image viewer or a video editor as well as in a
 browser. The SVGs are vectors: for the video, zoom into the part being named rather than exporting
-crops.
+crops. Many video editors rasterise an imported SVG at its own size (`architecture.svg` is about
+2,840 px wide), which leaves a 3 times zoom with fewer source pixels than a 1080p frame; for those,
+import an 8,000 px PNG instead, made by the same command with `--size 8000` and a `.png` output
+(`-o architecture.png`), and zoom into that. The PNGs are working files for the video, not
+committed.

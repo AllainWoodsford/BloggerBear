@@ -76,7 +76,8 @@ jobs:
           fi
 
       # Prints only: the exact environment the tests ran in. The submission's constraints-py311.txt
-      # is this output, copied from the tagged commit's run (docs/hackathon/dependencies.md).
+      # is this output, copied from a run on R2's pull request before the tag (nothing runs this
+      # workflow on a tag; docs/hackathon/dependencies.md).
       - name: Print the installed packages
         run: pip freeze --all
 

@@ -15,7 +15,10 @@ The rest of the submission package is held here too: the technical report keeps 
 sections in order; each diagram's Mermaid source has its SVG, appears verbatim in every page that
 embeds it, and names what the rubric asks for; README.md sends judges to the package first; every
 placeholder is marked for R2 in one form; and REPRODUCE.md's tier 1a is CI's own commands with only
-the judges' constraints file added, parsed from `python-ci.yml`, so it cannot drift unseen.
+the judges' constraints file added, parsed from `python-ci.yml`, so it cannot drift unseen. The
+review fixes are held too: each SVG carries every word of its source whole, the workflow's captions
+match the diagram and the code, no page names a CI run on the tag as the freeze's source, and a
+number taken from a design doc is marked indicative.
 
 The parser is deliberately plain: a cell holds no `|`, so a row is split on it. The "Say" list is
 `SAY_PHRASES` until `scripts/submission_index.py` exists; the test then imports it from there.
@@ -24,6 +27,7 @@ Nothing here touches the network.
 
 from __future__ import annotations
 
+import html
 import re
 import sys
 from datetime import date
@@ -31,11 +35,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
+import yaml
 
 # ops_mcp imports common.*: scripts/pyproject.toml puts only scripts/ on the path when a scripts
 # test runs on its own, so the test adds lambdas/ the way scripts/vision_benchmark.py does.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lambdas"))
 
+from common import vision_triage
 from ops_mcp import redact, suggestions
 
 import submission_check
@@ -498,8 +504,9 @@ DIAGRAM_WORDS = {
         "No Finding", "a person", "rota",
     ),
 }
-# The one form every placeholder in the package takes, so R2 (and submission_check.py) find them all.
-PLACEHOLDER_PREFIX = "[R2: "
+# The one form every placeholder in the package takes, so R2 (and submission_check.py) find them all:
+# in brackets in prose, in angle brackets inside code (where brackets are code).
+PLACEHOLDER_PREFIXES = ("[R2: ", "<R2: ")
 CONSTRAINTS_FLAG = ("-c", "constraints-py311.txt")
 
 
@@ -604,9 +611,9 @@ def test_every_placeholder_in_the_package_is_marked_for_r2():
         (doc.as_posix(), line, span)
         for doc in submission_check.PACKAGE_DOCS
         for line, span in submission_check.placeholders((ROOT / doc).read_text(encoding="utf-8"))
-        if not span.startswith(PLACEHOLDER_PREFIX)
+        if not span.startswith(PLACEHOLDER_PREFIXES)
     ]
-    assert not unmarked, f"a placeholder not in the form {PLACEHOLDER_PREFIX}...]: {unmarked}"
+    assert not unmarked, f"a placeholder not in the form [R2: ...] or <R2: ...>: {unmarked}"
 
 
 def _is_pip_install(command: list[str]) -> bool:
@@ -656,3 +663,168 @@ def test_tier_1a_parsing_reads_cis_three_installs_and_its_two_checks():
     ]
     assert ci["ruff"] == [["ruff", "check", "lambdas/", "scripts/"]]
     assert ci["pytest"] == [["pytest", "lambdas/", "scripts/"]]
+
+
+# --- the package's review fixes ------------------------------------------------------------------
+
+
+def _label_words(mmd: str) -> set[str]:
+    """Every word of a Mermaid source's quoted labels, node and edge alike."""
+    words = set()
+    for label in re.findall(r'"([^"]*)"', mmd):
+        words.update(re.sub(r"<br\s*/?>", " ", label).split())
+    return words
+
+
+def _svg_words(svg: str) -> set[str]:
+    """Every word of an SVG's text elements, its wrapped rows joined as one line each."""
+    words = set()
+    for text in re.findall(r"<text\b[^>]*>(.*?)</text>", svg, re.S):
+        rows = re.split(r'<tspan class="text-outer-tspan row"[^>]*>', text)
+        words.update(html.unescape(" ".join(re.sub(r"<[^>]*>", "", row) for row in rows)).split())
+    return words
+
+
+@pytest.mark.parametrize("name", sorted(DIAGRAM_PAGES))
+def test_every_word_of_a_diagram_is_whole_in_its_svg(name):
+    """The SVG is the export of the source as it is now, and Mermaid wrapped no word mid-way
+    ("(force_manual_revi" / "ew)"), which a zoom in the video would show."""
+    source = (DIAGRAMS / f"{name}.mmd").read_text(encoding="utf-8")
+    svg = (DIAGRAMS / f"{name}.svg").read_text(encoding="utf-8")
+    missing = sorted(_label_words(source) - _svg_words(svg))
+    assert not missing, f"{name}.svg lacks these words whole; export it again (diagrams/README.md): {missing}"
+
+
+def test_the_svg_word_check_sees_a_word_split_across_rows():
+    svg = (
+        '<svg><text><tspan class="text-outer-tspan row" x="0">(force_manual_revi</tspan>'
+        '<tspan class="text-outer-tspan row" x="0">ew)</tspan></text></svg>'
+    )
+    assert _label_words('DC["(force_manual_review)"]') - _svg_words(svg) == {"(force_manual_review)"}
+
+
+def test_the_diagrams_look_again_cut_off_is_the_codes():
+    """look_again is refused when its worker wait, the time left less the answer turn and the
+    connect allowance, rounded down to a step, is under the rail minimum: that many seconds before
+    the deadline, not the minimum itself."""
+    rail = vision_triage.RAIL_MIN_LOOK_AGAIN_SECONDS
+    cut_off = next(
+        left for left in range(0, 120)
+        if vision_triage.look_again_timeout(None, float(left), lambda: 0.0) >= rail
+    )  # fmt: skip
+    assert cut_off == 45
+    label = f"(refused with under {cut_off} s to the deadline)"
+    for page in (DIAGRAMS / "agent-workflow.mmd", REPORT, BLOGGER_VISION):
+        assert label in page.read_text(encoding="utf-8"), page.name
+
+
+def test_the_captions_say_where_each_failure_edge_ends():
+    """The worker's or a source's failure ends at "Not measured", which keeps no decision; only the
+    gates' and the agent's failures end at "No Finding"."""
+    workflow = (DIAGRAMS / "agent-workflow.mmd").read_text(encoding="utf-8")
+    assert re.search(r'P -- "the worker or a source failed" --> E\b', workflow)
+    assert 'E["Not measured' in workflow
+    for page in (REPORT, BLOGGER_VISION):
+        text = " ".join(page.read_text(encoding="utf-8").split())
+        assert "Every failure edge" not in text and "every failure edge" not in text, page.name
+        assert '"Not measured"' in text, page.name
+
+
+def _workflow_triggers(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    on = data.get("on", data.get(True))  # YAML 1.1 reads a bare `on` key as True
+    if isinstance(on, str):
+        return {on: None}
+    if isinstance(on, list):
+        return dict.fromkeys(on)
+    return on or {}
+
+
+def _runs_on_a_tag_push(triggers: dict) -> bool:
+    if "create" in triggers:
+        return True
+    if "push" not in triggers:
+        return False
+    push = triggers["push"] or {}
+    # A push filtered by branches alone never runs for a tag; one with no filter, or a tags filter, does.
+    return "tags" in push or "tags-ignore" in push or not ({"branches", "branches-ignore"} & set(push))
+
+
+# Where R2 is told the constraints file and the test counts come from.
+FREEZE_SOURCES = (
+    ROOT / "constraints-py311.txt",
+    PYTHON_CI,
+    HACKATHON / "dependencies.md",
+    REPRODUCE,
+    TRACKER,
+)
+
+
+def test_no_workflow_runs_on_a_tag_so_the_freeze_comes_from_r2s_pull_request():
+    """No CI runs on the submission tag, and a commit cannot hold its own run's output, so the
+    freeze and the test counts come from python-ci's run on R2's pull request, which runs it
+    because it touches docs/hackathon/."""
+    workflows = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    assert workflows
+    on_tag = [path.name for path in workflows if _runs_on_a_tag_push(_workflow_triggers(path))]
+    assert not on_tag, f"a workflow runs on a tag push; the freeze's source may be the tag's run: {on_tag}"
+    assert TRACKER_PATH_FILTER in python_ci_pull_request_paths()
+    for path in FREEZE_SOURCES:
+        text = " ".join(path.read_text(encoding="utf-8").replace("#", " ").split())
+        assert not re.search(r"tag's CI|tagged commit's run|CI's run on the tag|CI freeze", text), path.name
+        assert re.search(r"R2's (own )?pull request", text), path.name
+
+
+@pytest.mark.parametrize(
+    ("triggers", "on_tag"),
+    [
+        ({"push": {"branches": ["dev"], "paths": ["x/**"]}}, False),
+        ({"push": {"tags": ["v*"]}}, True),
+        ({"push": None}, True),
+        ({"create": None}, True),
+        ({"pull_request": None, "workflow_call": None}, False),
+    ],
+)
+def test_the_tag_rule_reads_branch_and_tag_filters(triggers, on_tag):
+    assert _runs_on_a_tag_push(triggers) is on_tag
+
+
+def test_the_text_diagram_keeps_each_network_in_its_own_object():
+    """blogger-vision.md's text diagram says what the Mermaid one does: the network is its own S3
+    object, never the running state, and the day's city is chosen by the rotation."""
+    text = BLOGGER_VISION.read_text(encoding="utf-8")
+    start = text.index("**The same, in text:**")
+    block = " ".join(_fenced_after(text[start:], "**The same, in text:**", "").split())
+    assert "vision/<topic>/<site>/network.json" in block
+    assert "cached in the running state" not in block and "sent inline" not in block
+    assert "rotation" in block and "day's subject" in block
+
+
+def test_the_reports_window_budget_is_the_codes():
+    """The report's worst case at the rail cap says what the code's comment says: the read scales
+    with the window, and a full read on top would not fit."""
+    handler = (ROOT / "lambdas" / "vision_worker_handler.py").read_text(encoding="utf-8")
+    assert "41-56 s in all" in handler and "would not fit" in handler
+    report = " ".join(REPORT.read_text(encoding="utf-8").split())
+    assert "41 to 56 s with the read" in report
+    assert "a full 30 s read on top of the worst case would not fit" in report
+
+
+def _passages(text: str) -> list[str]:
+    """A page's paragraphs, each table row on its own."""
+    passages = []
+    for block in re.split(r"\n\s*\n", text):
+        lines = [line for line in block.split("\n") if line.strip()]
+        passages += lines if lines and all(line.startswith("|") for line in lines) else ["\n".join(lines)]
+    return passages
+
+
+def test_numbers_from_the_design_docs_are_marked_indicative():
+    """The front page's rule: a number cites the evidence or a code anchor, or is marked indicative
+    and cites the design doc that recorded it (vision.md §7, friction.md)."""
+    report = REPORT.read_text(encoding="utf-8")
+    design = re.compile(r"\]\((?:\.\./)*(?:friction\.md|enhancements/vision\.md#7-measured)")
+    unmarked = [p[:80] for p in _passages(report) if design.search(p) and "indicative" not in p]
+    assert not unmarked, f"cites a design doc for a number without saying indicative: {unmarked}"
+    front = report[: report.index("## 1. The problem")]
+    assert "is marked indicative and cites the design doc that recorded it" in front

@@ -13,7 +13,11 @@ Five checks, each reported with every failure it found:
   is bracketed text that is not a link: the package marks each number or detail still to come as
   `[R2: what goes here, and its source]`, and anything else in brackets (`[n]`, `[0.xx]`) counts too.
   Code blocks and inline code are skipped (Mermaid's `node["label"]` is not a placeholder), and so
-  are links, reference definitions, footnotes and task-list boxes (`[ ]`, `[x]`).
+  are links, reference definitions, footnotes and task-list boxes (`[ ]`, `[x]`). A bracket counts
+  as a link's text only when a link follows it: an inline target in the form the links check reads,
+  or a reference label with its definition on the page. Inside code, where brackets are code, a
+  placeholder is written `<R2: ...>` and found there too. An unclosed code fence, or a backtick left
+  unmatched in its paragraph, fails as well: either would hide what follows from this check.
 - **links**: every repository-relative link in those documents resolves to a file inside the
   checkout. External links are listed for the owner to open by hand.
 - **tracker**: docs/hackathon/rubric-tracker.md has no `missing` row except those that come after
@@ -21,8 +25,10 @@ Five checks, each reported with every failure it found:
   the site up through judging) and those passed with `--accept`; every accepted row is listed.
 - **runs**: every run file under docs/hackathon/evidence/runs/ was measured on code equal to the
   checked commit's in the vision paths (VISION_PATHS), by `git diff --quiet <its git_sha> <ref> --
-  <paths>`, or docs/hackathon/evidence/RESULTS.md lists it as "measured on older code" with its reason
-  (the evaluation's index writes that file).
+  <paths>`, and from a clean checkout (`code.dirty` false), or docs/hackathon/evidence/RESULTS.md
+  lists it as "measured on older code" with its reason (the evaluation's index writes that file). A
+  run with no checkout (`code.dirty` null: a container's, its commit from BLOGGERBEAR_GIT_SHA) is
+  noted, since only its commit is known.
 - **video**: the video's duration, entered by hand with `--video-seconds`, is at most 300 seconds.
 
 Exit 0 when every check passes, 1 when any fails, 2 on a usage error. Runs on Windows as well as
@@ -71,13 +77,18 @@ VIDEO_MAX_SECONDS = 300
 GIT_TIMEOUT_SECONDS = 30
 
 _FENCE = re.compile(r"^\s*(```|~~~)")
-_INLINE_CODE = re.compile(r"(`+)(?:(?!\1).)+?\1", re.S)
+# A code span, within its paragraph: CommonMark never lets one cross a blank line, so a stray
+# backtick cannot pair with one paragraphs later and hide everything between them.
+_INLINE_CODE = re.compile(r"(`+)(?:(?!\1)(?!\n[ \t]*\n).)+?\1", re.S)
 # The innermost bracketed span: no bracket inside it, over line breaks (a placeholder wraps).
 _BRACKETS = re.compile(r"\[([^\[\]]*)\]")
 _DEFINITION = re.compile(r"^[ \t]*$")
 _CHECKBOX = frozenset({" ", "x", "X"})
 _LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\)")
 _LINK_DEFINITION = re.compile(r"^[ \t]*\[(?!\^)[^\]]+\]:[ \t]*(\S+)", re.M)
+_DEFINED_LABEL = re.compile(r"^[ \t]*\[(?!\^)([^\]]+)\]:", re.M)
+# The placeholder's form inside code (a clone command's URL), where square brackets are code.
+_CODE_PLACEHOLDER = re.compile(r"<R2:[^<>\n]*>")
 _SEPARATOR_CELL = re.compile(r"^:?-+:?$")
 
 
@@ -110,6 +121,21 @@ def prose(text: str) -> str:
     return _INLINE_CODE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), blanked)
 
 
+def open_fence(text: str) -> int | None:
+    """The line of a code fence still open at the end of `text`, or None. CommonMark runs an
+    unclosed fence to the end of the page, so prose() blanks everything after it."""
+    opened = None
+    for number, line in enumerate(text.split("\n"), 1):
+        if _FENCE.match(line):
+            opened = None if opened else number
+    return opened
+
+
+def _label(text: str) -> str:
+    """A reference label as CommonMark matches it: case and runs of white space aside."""
+    return " ".join(text.split()).casefold()
+
+
 def _line_of(text: str, position: int) -> int:
     return text.count("\n", 0, position) + 1
 
@@ -118,29 +144,44 @@ def _blank(text: str, start: int, end: int) -> str:
     return text[:start] + re.sub(r"[^\n]", " ", text[start:end]) + text[end:]
 
 
+def _link_end(text: str, start: int, end: int, inner: str, defined: set[str]) -> int | None:
+    """Where the link whose text is the span text[start:end] ends, or None when no link follows
+    it: an inline target in _LINK's form, or a reference label (`[y]`, or `[]` for the text's own)
+    that the page defines."""
+    if text[end : end + 1] == "(":
+        link = _LINK.match(text, start)
+        return link.end() if link else None
+    if text[end : end + 1] == "[":
+        close = text.find("]", end + 1)
+        if close != -1 and _label(text[end + 1 : close] or inner) in defined:
+            return close + 1
+    return None
+
+
 def placeholders(text: str) -> list[tuple[int, str]]:
     """(line, the placeholder on one line) for every bracketed span of `text` that is not a link,
-    a reference definition, a footnote or a task-list box, and every `[` or `]` left unmatched.
+    a reference definition, a footnote or a task-list box; every `[` or `]` left unmatched; every
+    `<R2: ...>` (code included); a backtick left unmatched in its paragraph; and an unclosed fence.
     Innermost spans first: a link inside a placeholder is removed, then the placeholder is found.
     The span is quoted from `text` itself, inline code included (prose keeps every position)."""
     original, text = text, prose(text)
-    found = []
+    defined = {_label(label) for label in _DEFINED_LABEL.findall(text)}
+    found = [(_line_of(original, m.start()), m.group(0)) for m in _CODE_PLACEHOLDER.finditer(original)]
     while match := _BRACKETS.search(text):
         inner, start, end = match.group(1), match.start(), match.end()
-        after = text[end : end + 1]
-        stop = end
-        if after in ("(", "["):  # an inline link's text, or a reference link's: blank its target too
-            close = text.find(")" if after == "(" else "]", end)
-            stop = close + 1 if close != -1 else end
-        else:
+        stop = _link_end(text, start, end, inner, defined)
+        if stop is None:  # not a link's text: a placeholder, unless it is one of the other forms
+            stop = end
             line_start = text.rfind("\n", 0, start) + 1
-            is_definition = after == ":" and _DEFINITION.match(text[line_start:start])
+            is_definition = text[end : end + 1] == ":" and _DEFINITION.match(text[line_start:start])
             if not (is_definition or inner.startswith("^") or inner in _CHECKBOX):
                 found.append((_line_of(text, start), " ".join(original[start:end].split())))
         text = _blank(text, start, stop)
     for position, char in enumerate(text):
-        if char in "[]":
+        if char in "[]`":
             found.append((_line_of(text, position), f"an unmatched {char!r}"))
+    if (line := open_fence(original)) is not None:
+        found.append((line, "an unclosed code fence: everything after it reads as code"))
     return sorted(found)
 
 
@@ -249,7 +290,8 @@ def older_code_runs(root: Path) -> set[str]:
     listed = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         if OLDER_CODE in line.lower():
-            listed.update(re.findall(r"\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+", line))
+            # A run id never ends in a full stop, so one that ends a sentence is read without it.
+            listed.update(re.findall(r"\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]*[A-Za-z0-9_-]", line))
     return {run.removesuffix(".json") for run in listed}
 
 
@@ -270,7 +312,8 @@ def check_runs(root: Path, ref: str = TAG) -> Result:
         try:
             run = json.loads(path.read_text(encoding="utf-8"))
             run_id = run.get("run_id") or path.stem
-            sha = (run.get("code") or {}).get("git_sha")
+            code = run.get("code") or {}
+            sha, dirty = code.get("git_sha"), code.get("dirty")
         except (ValueError, AttributeError):
             result.failures.append(f"{path.name}: not a run file")
             continue
@@ -278,16 +321,23 @@ def check_runs(root: Path, ref: str = TAG) -> Result:
             result.failures.append(f"{run_id}: names no commit (code.git_sha)")
             continue
         diff = git(root, "diff", "--quiet", sha, ref, "--", *VISION_PATHS)
-        if diff.returncode == 0:
-            continue
-        if diff.returncode != 1:
+        if diff.returncode not in (0, 1):
             result.failures.append(f"{run_id}: its commit {sha[:12]} is not in this repository's history")
-        elif run_id in listed:
-            result.notes.append(f"{run_id}: measured on older code, listed in {RESULTS.as_posix()}")
+            continue
+        why = []
+        if diff.returncode == 1:
+            why.append(f"measured on {sha[:12]}, whose vision code differs from {ref}'s")
+        if dirty is True:  # its sha's code, plus edits nobody committed: not the submitted code
+            why.append(f"measured with uncommitted changes to {sha[:12]} (code.dirty)")
+        if not why:
+            if dirty is None:  # a container's run: no checkout, its sha from BLOGGERBEAR_GIT_SHA
+                result.notes.append(f"{run_id}: no checkout (code.dirty is null): only its commit is known")
+            continue
+        if run_id in listed:
+            result.notes.append(f"{run_id}: {'; '.join(why)}; listed in {RESULTS.as_posix()}")
         else:
             result.failures.append(
-                f"{run_id}: measured on {sha[:12]}, whose vision code differs from {ref}'s, and "
-                f"{RESULTS.as_posix()} does not list it as {OLDER_CODE!r}"
+                f"{run_id}: {', and '.join(why)}, and {RESULTS.as_posix()} does not list it as {OLDER_CODE!r}"
             )
     return result
 

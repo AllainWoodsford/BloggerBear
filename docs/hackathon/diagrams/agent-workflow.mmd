@@ -8,13 +8,13 @@ flowchart TD
   M{"served share, desert area<br/>or station count moved<br/>past its threshold?"}
   TR{"triage on<br/>for the topic?"}
   A["Agent: a Bedrock Converse loop<br/>at most 3 tool calls and 5 turns, its answer due<br/>85 s after the tick started (topic defaults)"]
-  LA["look_again: the worker re-measures the same scene<br/>at other settings, with OpenCV 5<br/>(refused with under 30 s left)"]
+  LA["look_again: the worker re-measures the same scene<br/>at other settings, with OpenCV 5<br/>(refused with under 45 s to the deadline)"]
   PS["previous_scene, site_history"]
   WC["web_context: recent news, GDELT or the AgentCore fallback<br/>(data, not instructions)"]
   V{"a strict JSON verdict?"}
   F["Finding: summary, figure, planner notes,<br/>the city as its subject"]
   NF["No Finding<br/>the decision kept with its code<br/>(decision ring, evidence lines)"]
-  DC["Daily cycle on the city's day of the rota:<br/>draft and reviews, then held for a person<br/>(force_manual_review)"]
+  DC["Daily cycle on the city's day of the rota:<br/>draft and reviews, then always held<br/>for a person (manual review is forced)"]
   D{"a person approves?"}
   PUB["Published, with the map and the credits"]
   REJ["Rejected, never published"]

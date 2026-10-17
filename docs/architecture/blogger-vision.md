@@ -102,7 +102,8 @@ flowchart LR
 ```
 
 **The agent's workflow**: perception, the gates, the bounded agent, the Finding and the person, with
-every failure edge ending at "No Finding" ([agent-workflow.mmd](../hackathon/diagrams/agent-workflow.mmd),
+every failed gate and every agent failure ending at "No Finding", and a worker or source failure at
+"Not measured", which keeps no decision ([agent-workflow.mmd](../hackathon/diagrams/agent-workflow.mmd),
 [SVG](../hackathon/diagrams/agent-workflow.svg)).
 
 ```mermaid
@@ -116,13 +117,13 @@ flowchart TD
   M{"served share, desert area<br/>or station count moved<br/>past its threshold?"}
   TR{"triage on<br/>for the topic?"}
   A["Agent: a Bedrock Converse loop<br/>at most 3 tool calls and 5 turns, its answer due<br/>85 s after the tick started (topic defaults)"]
-  LA["look_again: the worker re-measures the same scene<br/>at other settings, with OpenCV 5<br/>(refused with under 30 s left)"]
+  LA["look_again: the worker re-measures the same scene<br/>at other settings, with OpenCV 5<br/>(refused with under 45 s to the deadline)"]
   PS["previous_scene, site_history"]
   WC["web_context: recent news, GDELT or the AgentCore fallback<br/>(data, not instructions)"]
   V{"a strict JSON verdict?"}
   F["Finding: summary, figure, planner notes,<br/>the city as its subject"]
   NF["No Finding<br/>the decision kept with its code<br/>(decision ring, evidence lines)"]
-  DC["Daily cycle on the city's day of the rota:<br/>draft and reviews, then held for a person<br/>(force_manual_review)"]
+  DC["Daily cycle on the city's day of the rota:<br/>draft and reviews, then always held<br/>for a person (manual review is forced)"]
   D{"a person approves?"}
   PUB["Published, with the map and the credits"]
   REJ["Rejected, never published"]
@@ -157,12 +158,15 @@ flowchart TD
 ```
 home region (ap-southeast-2 by default): everything that holds state
 ──────────────────────────────────────────────────────────────────────
-topic: adapter satellite_vision (or rail_access), sites, thresholds, force_manual_review
-   │ research tick, 120 s
+topic: adapter satellite_vision (or rail_access), sites, thresholds, force_manual_review;
+       for rail, a weekly rotation that gives each city its days
+   │ research tick, 120 s (rail: one city a tick, in turn)
    ▼
 adapter.fetch_state ── Earth Search STAC ──► the newest clear Sentinel-2 scene over each site
-   │                ── Overpass (rail) ────► rail ways, stations, intermodal points, cached in
-   │                                         the running state and sent inline to the worker
+   │                ── Overpass (rail) ────► rail ways, stations, intermodal points, cached
+   │                                         30 days in the city's own object,
+   │                                         vision/<topic>/<site>/network.json, and sent to
+   │                                         the worker
    │ a scene the site already has? nothing new
    │ vision_client.measure: one request, across regions   us-west-2, beside the imagery
    ├─────────────────────────────────────────────────────► vision worker (arm64, OpenCV 5)
@@ -178,7 +182,9 @@ triage agent: the figure and the metrics, tools, a budget, a deadline; unsure �
    ▼
 Finding {summary, figures: [{key, caption, alt}]}
    ▼
-daily cycle → draft → fresh-data and compliance reviews → held: force_manual_review
+daily cycle → the day's subject (rail: the city whose day it is by the rotation)
+   │ → draft from its Findings since its last article on that city
+   │ → fresh-data and compliance reviews → held: force_manual_review
    ▼
 a person approves → the article page, with the figure at articles/figures/<article>/<n>.png
                     and the Copernicus, AWS Open Data and OpenStreetMap credits

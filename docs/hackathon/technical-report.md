@@ -20,13 +20,16 @@ Best Use of COOL ([Appendix A](#appendix-a-best-use-of-cool)) and Agentic Vision
 | The working endpoint | [R2: the approved rail article's URL on dev's CloudFront domain] |
 | The Devpost page | [R2: the Devpost submission's URL] |
 | How to build and test it | [REPRODUCE.md](REPRODUCE.md) |
-| The evidence | [evidence/README.md](evidence/README.md): every number below cites a file there, or a code anchor |
+| The evidence | [evidence/README.md](evidence/README.md): every number below cites a file there or a code anchor, or is marked indicative and cites the design doc that recorded it |
 
 **What is written here.** Every section describes the code on `dev` at 4a3d1b8 (16 October). Code
 anchors are `file:line` at that commit, and are checked again at the tag. A sentence that needs a
 number not yet measured holds a marked placeholder, `[R2: ...]`, naming the run or file the number
-will come from; `scripts/submission_check.py` fails while any is left. No number here is typed from
-memory.
+will come from; `scripts/submission_check.py` fails while any is left. A few numbers were measured
+before the run files existed (PR D's smoke run, the build container's timings, a workstation's
+Overpass query): each is marked indicative and cites the design doc that recorded it,
+[vision.md §7](../enhancements/vision.md#7-measured) or [friction.md](../friction.md). No number
+here is typed from memory.
 
 **The status of the evidence.** Each result below says which of four kinds it is.
 
@@ -180,8 +183,9 @@ flowchart LR
 | The person | Every vision article is held; approving it publishes the page with its map and credits | `lambdas/admin_api_handler.py`; `scripts/review_inbox.py` |
 | The assistant | Read-only tools over the state, the Findings and the evidence lines, for the ask page and Alexa+ | `lambdas/ops_mcp/` ([ops-assistant-vision.md](../enhancements/ops-assistant-vision.md)) |
 
-**The agent's workflow** (perception, decision, action and the person; every failure edge ends at
-"No Finding"). The source is [diagrams/agent-workflow.mmd](diagrams/agent-workflow.mmd); its SVG
+**The agent's workflow** (perception, decision, action and the person; every failed gate and every
+agent failure ends at "No Finding", and a worker or source failure at "Not measured", which keeps
+no decision). The source is [diagrams/agent-workflow.mmd](diagrams/agent-workflow.mmd); its SVG
 is [diagrams/agent-workflow.svg](diagrams/agent-workflow.svg).
 
 ```mermaid
@@ -195,13 +199,13 @@ flowchart TD
   M{"served share, desert area<br/>or station count moved<br/>past its threshold?"}
   TR{"triage on<br/>for the topic?"}
   A["Agent: a Bedrock Converse loop<br/>at most 3 tool calls and 5 turns, its answer due<br/>85 s after the tick started (topic defaults)"]
-  LA["look_again: the worker re-measures the same scene<br/>at other settings, with OpenCV 5<br/>(refused with under 30 s left)"]
+  LA["look_again: the worker re-measures the same scene<br/>at other settings, with OpenCV 5<br/>(refused with under 45 s to the deadline)"]
   PS["previous_scene, site_history"]
   WC["web_context: recent news, GDELT or the AgentCore fallback<br/>(data, not instructions)"]
   V{"a strict JSON verdict?"}
   F["Finding: summary, figure, planner notes,<br/>the city as its subject"]
   NF["No Finding<br/>the decision kept with its code<br/>(decision ring, evidence lines)"]
-  DC["Daily cycle on the city's day of the rota:<br/>draft and reviews, then held for a person<br/>(force_manual_review)"]
+  DC["Daily cycle on the city's day of the rota:<br/>draft and reviews, then always held<br/>for a person (manual review is forced)"]
   D{"a person approves?"}
   PUB["Published, with the map and the credits"]
   REJ["Rejected, never published"]
@@ -288,8 +292,10 @@ it was measured with, so a result can be reproduced. (`lambdas/common/vision_con
 **The limits, and why.** The rail window is capped at 3,584 px a side, 71.7 km at 20 m
 (`RAIL_MAX_WINDOW_PX`, `lambdas/vision_worker_handler.py:90`): on one core of the build
 container's Xeon, the worst contract-valid network built for the test took up to 25.5 s and
-1.32 GB there, against 37.5 s at 4,096 px, which with an assumed 1.3 times slower arm64 core and a
-10 to 30 s read would pass the client's 58 s ([vision.md §7](../enhancements/vision.md#7-measured);
+1.32 GB there, against 37.5 s at 4,096 px. With an assumed 1.3 times slower arm64 core that is
+about 33 s, and 41 to 56 s with the read (10 to 30 s for a 4,096 px window, scaled to this one's
+77 % of the pixels), under the client's 58 s; a full 30 s read on top of the worst case would not
+fit (the comment on `RAIL_MAX_WINDOW_PX`; [vision.md §7](../enhancements/vision.md#7-measured);
 indicative: a shared x86 container). No graph is built past 10,000 node clusters
 (`MAX_GRAPH_NODES`), and betweenness is exact within a work budget of 600,000 and sampled from 20
 to 200 seeded sources above it, said by the `betweenness_sampled` flag (`BETWEENNESS_WORK`,
@@ -328,8 +334,8 @@ cut, the sentence that no 5.x-specific call is used and the comparison was not m
 | The COOL bench | EC2 `c8g.xlarge` in us-west-2, from the Marketplace product; by hand, not in Terraform | the runsheet's [COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark); [R2: the delivery type and image or AMI, from `evidence/cool/recon.md`] |
 
 **Why two Regions.** The Sentinel-2 COGs are in `sentinel-cogs`, us-west-2. The worker reads beside
-them with HTTP range requests (about 54 MB for the whole Sydney box at 20 m, in PR D's smoke run,
-[vision.md §7](../enhancements/vision.md#7-measured)) and sends back a few KB of metrics and one
+them with HTTP range requests (about 54 MB for the whole Sydney box at 20 m, in PR D's smoke run;
+indicative, [vision.md §7](../enhancements/vision.md#7-measured)) and sends back a few KB of metrics and one
 PNG. Everything with state stays in the home Region, so the vision Region holds nothing to migrate
 and can be torn down at any time. The tick calls the worker with one cross-Region
 `lambda:InvokeFunction`.
@@ -447,8 +453,9 @@ topic on dev (`trains-sydney`, created on 16 October) measured nothing on its fi
 log showed three defects in turn, each hidden behind the one before: every tick failed reading a
 missing running state, because S3 answers 403 rather than `NoSuchKey` to a role without
 `s3:ListBucket` (fixed by #305); every Overpass request was refused with a 406 for want of a
-User-Agent (#310); and Sydney's network query took 54 s (5,925 elements, 5.5 MB) against a 30 s
-first fetch (#312: the first fetch now gets the tick's measuring time)
+User-Agent (#310); and Sydney's network query, timed from a workstation, took 54 s (5,925
+elements, 5.5 MB; indicative) against a 30 s first fetch (#312: the first fetch now gets the tick's
+measuring time)
 ([friction.md](../friction.md), entry 12.25; [vision.md §8](../enhancements/vision.md#8-what-went-wrong-and-what-it-taught)
 lesson 16). [R2: from the export's `summary.json`, zero rows included: `vision_site` outcomes by
 code, worker refusals, worker runs that ended without a reply, tick attempts not kept, OpenStreetMap
@@ -712,8 +719,8 @@ topic's triage ran; and the counterfactual numbers of §6]
 **Task success, failure handling, observability and human control (A3).**
 
 - **Task success.** [R2: balanced accuracy and per-class recall against both baselines, from §6]
-- **Failure handling.** Every failure edge of the workflow ends at "No Finding", with a stop code
-  in the evidence (`answered`, `malformed`, `bedrock_error`, `deadline`, `turn_limit`, `no_profile`,
+- **Failure handling.** Every failed gate and every agent failure ends at "No Finding", with a stop
+  code in the evidence (`answered`, `malformed`, `bedrock_error`, `deadline`, `turn_limit`, `no_profile`,
   `no_model`); a site that could not be measured keeps its history and records `last_error`
   ("not measured is never nothing there"). [R2: the failed-closed cases' results, all required to
   end as expected]

@@ -86,6 +86,46 @@ def test_brackets_far_apart_still_count_as_one_placeholder():
     assert sc.placeholders("A stray [ here.\n\nAnd ] there.\n") == [(1, "[ here. And ]")]
 
 
+def test_a_stray_backtick_hides_nothing_past_its_paragraph_and_is_reported():
+    # Inline code never crosses a blank line, so the backtick cannot pair with one paragraphs later.
+    text = "A stray ` here.\n\n[R2: hidden]\n\nAnd `code`.\n"
+    assert sc.placeholders(text) == [(1, "an unmatched '`'"), (3, "[R2: hidden]")]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # adjacent placeholders, with no definition for the second as a reference label
+        ("k of n: [R2: k][R2: n].\n", [(1, "[R2: k]"), (1, "[R2: n]")]),
+        # a parenthesis after a placeholder that is no link target (a space, no quoted title)
+        ("[R2: the count](see CI)\n", [(1, "[R2: the count]")]),
+        # a reference link whose label the page never defines
+        ("See [the run][gone].\n", [(1, "[gone]"), (1, "[the run]")]),
+    ],
+)
+def test_a_bracket_is_a_links_text_only_when_a_link_follows_it(text, expected):
+    assert sc.placeholders(text) == expected
+
+
+def test_a_defined_reference_label_makes_a_link_in_any_case_and_collapsed():
+    text = "A [full][The  Ref], a [collapsed][] and a [plain][the ref].\n\n[the ref]: x.md\n[Collapsed]: y.md"
+    assert sc.placeholders(text) == []
+
+
+def test_an_unclosed_fence_fails_rather_than_hiding_the_rest():
+    text = "Intro.\n\n```bash\npython x.py\n\nThe rate is [R2: E3 rate].\n\n## 7. Limitations\n\n[R2: more]\n"
+    assert sc.placeholders(text) == [(3, "an unclosed code fence: everything after it reads as code")]
+    closed = text.replace("python x.py\n", "python x.py\n```\n")
+    assert sc.placeholders(closed) == [(7, "[R2: E3 rate]"), (11, "[R2: more]")]
+    assert sc.open_fence(text) == 3 and sc.open_fence(closed) is None
+
+
+def test_a_placeholder_inside_code_is_written_in_angle_brackets_and_found_there():
+    text = "Clone it:\n\n```bash\ngit clone <R2: the repository URL> x\n```\n\n`echo <R2: inline>`\n"
+    assert sc.placeholders(text) == [(4, "<R2: the repository URL>"), (7, "<R2: inline>")]
+    assert sc.placeholders("```bash\ngit checkout <sha>\n```\n") == []
+
+
 def test_prose_keeps_every_position_and_line():
     text = "a `b[c]` d\n```\n[x]\n```\ne"
     blanked = sc.prose(text)
@@ -178,10 +218,10 @@ def _commit(root: Path, files: dict[str, str], message: str) -> str:
     return _git(root, "rev-parse", "HEAD")
 
 
-def _run_file(root: Path, run_id: str, sha) -> None:
+def _run_file(root: Path, run_id: str, sha, dirty=False) -> None:
     path = root / sc.RUNS / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    run = {"run_id": run_id, "code": {"git_sha": sha, "dirty": False}}
+    run = {"run_id": run_id, "code": {"git_sha": sha, "dirty": dirty}}
     path.write_text(json.dumps(run), encoding="utf-8")
 
 
@@ -206,6 +246,34 @@ def test_a_run_on_the_same_vision_code_passes_even_when_other_files_changed(repo
     _commit(root, {"README.md": "y\n", "docs/hackathon/x.md": "z\n"}, "docs only")
     result = sc.check_runs(root, "HEAD")
     assert result.ok, result.failures
+
+
+def test_a_run_measured_with_uncommitted_changes_fails_unless_results_lists_it(repo):
+    # The same commit as the tag, but edits nobody committed: not the submitted code.
+    root, measured = repo
+    _run_file(root, "2026-10-19-bench-scenes-x-cool-1t", measured, dirty=True)
+    result = sc.check_runs(root, "HEAD")
+    assert result.failures == [
+        f"2026-10-19-bench-scenes-x-cool-1t: measured with uncommitted changes to {measured[:12]} "
+        "(code.dirty), and docs/hackathon/evidence/RESULTS.md does not list it as 'measured on older code'"
+    ]
+    (root / sc.RESULTS).write_text(
+        "- 2026-10-19-bench-scenes-x-cool-1t: measured on older code, a patched reader; the patch is "
+        "the tag's.\n",
+        encoding="utf-8",
+    )
+    listed = sc.check_runs(root, "HEAD")
+    assert listed.ok and any("uncommitted" in note and "listed in" in note for note in listed.notes)
+
+
+def test_a_run_with_no_checkout_passes_with_a_note(repo):
+    # A COOL container's run: its sha from BLOGGERBEAR_GIT_SHA, and no checkout to call dirty.
+    root, measured = repo
+    _run_file(root, "2026-10-19-bench-scenes-x-cool-1t", measured, dirty=None)
+    result = sc.check_runs(root, "HEAD")
+    assert result.ok
+    note = "2026-10-19-bench-scenes-x-cool-1t: no checkout (code.dirty is null): only its commit is known"
+    assert note in result.notes
 
 
 @pytest.mark.parametrize("changed", ["lambdas/vision/core.py", "lambdas/common/vision_sites.py"])
@@ -264,6 +332,19 @@ def test_older_code_runs_reads_the_run_ids_on_lines_that_say_so(tmp_path):
     assert sc.older_code_runs(tmp_path) == {"2026-10-16-eval-coverage-x-none"}
 
 
+def test_a_run_id_that_ends_a_sentence_is_read_without_its_full_stop(tmp_path):
+    (tmp_path / sc.RESULTS).parent.mkdir(parents=True)
+    (tmp_path / sc.RESULTS).write_text(
+        "Measured on older code, as the adapter alone changed since: 2026-10-16-eval-coverage-x-none.\n"
+        "Also measured on older code: 2026-10-17-bench-kernels-y-opencv-1t.json.\n",
+        encoding="utf-8",
+    )
+    assert sc.older_code_runs(tmp_path) == {
+        "2026-10-16-eval-coverage-x-none",
+        "2026-10-17-bench-kernels-y-opencv-1t",
+    }
+
+
 # --- the video -----------------------------------------------------------------------------------
 
 
@@ -301,5 +382,6 @@ def test_the_real_package_has_its_placeholders_marked_and_its_links_whole():
     """At R1 the package holds R2's placeholders by design; whatever is left must be in R2's form,
     and every link must resolve (the docs test checks the same from its side)."""
     placeholders = sc.check_placeholders(ROOT)
-    assert all(": [R2: " in failure for failure in placeholders.failures), placeholders.failures
+    marked = (": [R2: ", ": <R2: ")
+    assert all(any(m in failure for m in marked) for failure in placeholders.failures), placeholders.failures
     assert sc.check_links(ROOT).ok, sc.check_links(ROOT).failures

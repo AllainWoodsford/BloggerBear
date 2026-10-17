@@ -76,7 +76,9 @@ py -3.11 scripts\submission_check.py --video-seconds <the video's length in seco
 It fails, and says why, when:
 
 - a placeholder, `[R2: ...]` or any other bracketed text that is not a link, is left in the report,
-  the reproduction guide, the dependency audit, the video script or the Devpost text;
+  the reproduction guide, the dependency audit, the video script or the Devpost text, or the same
+  R2 marker in angle brackets inside their code (the clone commands); or one of them has an
+  unclosed code fence or a stray backtick, which would hide what follows from the check;
 - a repository-relative link in those documents does not resolve (external links are listed for
   you to open by hand: it fetches nothing);
 - the rubric tracker has a `missing` row other than those still to come after the check (O7, the
@@ -84,8 +86,9 @@ It fails, and says why, when:
   others you accept with `--accept <ID>`, each of which it lists;
 - a run file under `docs/hackathon/evidence/runs/` was measured on code that differs from the tag's
   in the vision paths (`lambdas/vision`, `lambdas/vision_worker_handler.py`,
-  `lambdas/common/vision_*.py`, `lambdas/common/adapters/rail_access.py`), unless
-  `docs/hackathon/evidence/RESULTS.md` lists that run as "measured on older code" with its reason;
+  `lambdas/common/vision_*.py`, `lambdas/common/adapters/rail_access.py`), or with uncommitted
+  changes (`code.dirty`), unless `docs/hackathon/evidence/RESULTS.md` lists that run as "measured on
+  older code" with its reason (a container's run, with `dirty` null, is listed as a note);
 - the video's duration, entered by hand, is over 300 seconds, or not entered.
 
 `--ref <commit>` checks against a commit other than the tag (before the tag exists, `--ref HEAD`).

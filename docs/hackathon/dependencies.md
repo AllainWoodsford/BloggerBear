@@ -54,21 +54,29 @@ worker's own constraints file is the owner's call after the deadline.
 ### Where `constraints-py311.txt` comes from
 
 `python-ci.yml` prints `pip freeze --all` right after its install step, in every run (the step
-only prints: nothing is written or uploaded). At the submission tag, that output, copied from the
-tag's CI run, replaces the file's list. Until then the file was generated on 16 October from a
-Python 3.11.17 venv built from the same three requirements files, whose 68 distributions are
+only prints: nothing is written or uploaded). Before the submission is tagged, that output, copied
+from a python-ci run of R2's own pull request (which runs python-ci, as it touches
+`docs/hackathon/`), replaces the file's list, and the file's header records that run's URL and
+commit. Nothing runs python-ci on a tag, and a commit cannot hold its own run's output, so the run
+is on an earlier commit of that pull request; no requirements file changes after it, so the tag's
+requirements files are the ones the run installed. Until then the file was generated on 16 October
+from a Python 3.11.17 venv built from the same three requirements files, whose 68 distributions are
 exactly their dependency closure (pip, setuptools and wheel are not listed: that venv had none).
 A fresh venv installed from it with all three files resolved those 68 and nothing else, on the
 same day. `lambdas/tests/test_requirements.py` holds every direct pin equal to its line in the
 file, so a requirements change that forgets it fails CI. The file is outside Trivy's
-`--file-patterns` (`security.yml`) on purpose: it deploys nothing, and every package in it comes
-from a requirements file Trivy does scan, or from one of their dependencies.
+`--file-patterns` (`security.yml`) on purpose: it deploys nothing. That leaves its transitive
+packages unscanned: Trivy's pip analyzer reads the names a requirements file writes and does not
+resolve their dependencies, so of the 68 pinned here only the direct pins are vulnerability-scanned
+in CI, and urllib3, cryptography, starlette, Jinja2, Werkzeug, uvicorn and the rest are scanned by
+nothing. For the deployed Lambdas that is the trade "The gap" describes; for a judge's local
+environment it is a known limit, not a claim.
 
 ## Terraform
 
 | What | Version | Where |
 |---|---|---|
-| The CLI | 1.16.2, downloaded and checked by every workflow that runs Terraform | `.github/workflows/terraform.yml:149`, `pr-checks.yml:33`, `terraform-production-release.yml:127`, `on-demand-scan.yml:47`, `destroy-dev.yml:71` |
+| The CLI | 1.16.2, downloaded from releases.hashicorp.com over HTTPS by every workflow that runs Terraform, which then prints its version; no checksum is verified, unlike Trivy's and gitleaks' downloads | `.github/workflows/terraform.yml:149`, `pr-checks.yml:33`, `terraform-production-release.yml:127`, `on-demand-scan.yml:47`, `destroy-dev.yml:71` |
 | `hashicorp/aws` | 6.64.0 | the lock files: `infra/environments/dev/.terraform.lock.hcl`, `infra/environments/production/.terraform.lock.hcl`, `infra/bootstrap/.terraform.lock.hcl` |
 | `hashicorp/archive` | 2.8.1 | the dev and production lock files |
 | `hashicorp/random` | 3.9.1 | the dev and production lock files |

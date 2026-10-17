@@ -3,12 +3,15 @@
 # Nothing that deploys reads it: neither CI's own install nor any Lambda's packaging uses it
 # (docs/hackathon/dependencies.md says what pins those).
 #
-# Where it comes from: python-ci.yml prints `pip freeze --all` after its install step, and at the
-# submission tag this file becomes that output, copied from the tag's CI run. Until then it was
-# generated on 16 October from a Python 3.11.17 venv built from the same requirements files
-# (lambdas/requirements.txt, lambdas/requirements-dev.txt and scripts/requirements.txt), whose 68
-# distributions are exactly their dependency closure. That venv had no pip, so pip, setuptools and
-# wheel are not listed yet.
+# Where it comes from: python-ci.yml prints `pip freeze --all` after its install step. Before the
+# submission is tagged, this file becomes that output, copied from a python-ci run of R2's own pull
+# request, with that run's URL and commit written here. No workflow runs on a tag, and a commit
+# cannot hold its own run's output, so the run is on an earlier commit of that pull request: no
+# requirements file changes after it, and the tag's requirements are the ones it installed.
+# Until then it was generated on 16 October from a Python 3.11.17 venv built from the same
+# requirements files (lambdas/requirements.txt, lambdas/requirements-dev.txt and
+# scripts/requirements.txt), whose 68 distributions are exactly their dependency closure. That
+# venv had no pip, so pip, setuptools and wheel are not listed yet.
 #
 # lambdas/tests/test_requirements.py holds every direct pin of every requirements*.txt equal to its
 # line here.
