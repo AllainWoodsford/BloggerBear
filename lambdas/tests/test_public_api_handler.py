@@ -1322,10 +1322,35 @@ def test_list_musings_sorted_newest_first_with_full_shape(aws_resources):
         "kind": "article",
         "article_id": "article-1",
         "topic_id": "github-trending",
+        "topic_name": None,  # no such topic row in this test: the page then shows no name
         "text": "I'm quite proud of this one.",
         "mood": "proud",
         "created_at": "2026-09-12T00:00:00+00:00",
     }
+
+
+def test_list_musings_names_the_topic_each_musing_is_for(aws_resources):
+    """The Musings page shows the topic beside "read the article", so each musing carries its
+    topic's name, read from the Topics table; a topic that no longer exists gives None."""
+    _put_topic()
+    _put_musing(
+        "musing-1",
+        kind="article",
+        article_id="article-1",
+        topic_id="github-trending",
+        created_at="2026-09-12T00:00:00+00:00",
+    )
+    _put_musing(
+        "musing-2", kind="rejection", topic_id="no-such-topic", created_at="2026-09-11T00:00:00+00:00"
+    )
+
+    result = public_api_handler.handler(_event("GET /musings"), None)
+    assert result["statusCode"] == 200
+    musings = json.loads(result["body"])["musings"]
+    assert [(m["topic_id"], m["topic_name"]) for m in musings] == [
+        ("github-trending", "GitHub Trending"),
+        ("no-such-topic", None),
+    ]
 
 
 def _musings_page(page=None):
