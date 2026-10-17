@@ -1,0 +1,3 @@
+{
+ "2026-10-16-eval-coverage-intel-xeon-processor-2-80ghz-none": "the vision code changed after 8071a4f, but not what coverage reads: coverage() in scripts/vision_eval.py, lambdas/vision/cog.py, geo.py and masks.py, vision_sites.site_bbox and the manifest's pinned scenes are unchanged; two scenes re-run on 17 October (sydney-2024-01-05 and sydney-2024-08-26) gave the committed values exactly"
+}

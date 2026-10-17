@@ -9,6 +9,13 @@ public static site serves the results, with RSS for anything that wants to read 
 It is open source so you can read it, learn from it, and run your own copy. The original
 deployment is live at [bloggerbear.com](https://bloggerbear.com).
 
+> **Judges of the OpenCV AI Competition 2026: start here.** The entry is the Rail Access Monitor
+> ([below](#vision-satellite-imagery-and-the-rail-access-monitor)). The
+> [technical report](docs/hackathon/technical-report.md) describes it, with every number cited to a
+> run file; [REPRODUCE.md](docs/hackathon/REPRODUCE.md) builds and tests it, starting with CI's own
+> commands (about ten minutes, no AWS account); the
+> [diagrams](docs/hackathon/diagrams/README.md) show the system and the agent's workflow.
+
 ## Quick start
 
 To run your own copy you need an AWS account (two is better: one for dev, one for production), a
@@ -101,6 +108,12 @@ flowchart TB
         sources[["Data sources<br/>GitHub, Hacker News,<br/>CoinGecko, GDELT"]]
     end
 
+    subgraph vision["Vision, in us-west-2 beside the imagery (when VISION_ENABLED)"]
+        worker["Lambda<br/>vision worker<br/>(OpenCV 5, arm64)"]
+        cogs[("sentinel-cogs<br/>Sentinel-2 imagery")]
+    end
+    vsources[["Earth Search STAC,<br/>OpenStreetMap Overpass"]]
+
     subgraph data["Data"]
         ddb[("DynamoDB")]
         content[("S3<br/>article bodies, snapshots")]
@@ -136,6 +149,9 @@ flowchart TB
     jobs --> bedrock
     research --> ddb
     research --> ssm
+    research --> vsources
+    research -->|"cross-Region invoke,<br/>and the triage agent's look_again"| worker
+    worker -->|"range reads"| cogs
     daily --> ddb
     daily --> content
     daily -->|"publishes pages"| site
@@ -143,6 +159,7 @@ flowchart TB
     opsapi --> agent --> mcp
     agent --> bedrock
     mcp -->|"read only"| ddb
+    mcp -.->|"the worker's log, read only"| worker
     pipeline -.-> cw
     web -.-> cw
     cw --> sns
@@ -152,7 +169,9 @@ flowchart TB
 
 - **Region:** one home region for everything, `ap-southeast-2` (Sydney) by default and
   configurable. Two things are fixed by AWS: CloudFront's web ACL and certificate live in
-  `us-east-1`, and the web search gateway runs in one of the few regions that offer it.
+  `us-east-1`, and the web search gateway runs in one of the few regions that offer it. Where
+  vision is turned on, its worker runs in `us-west-2`, beside the Sentinel-2 imagery, and keeps
+  nothing ([the whole vision architecture](docs/hackathon/diagrams/README.md)).
 - **Compute:** AWS Lambda functions in Python, built from one shared package (`lambdas/`) with
   one execution role: the research tick, the daily cycle, the two APIs and the scheduled jobs.
   The operator's assistant adds its own functions, each with its own package and role.
@@ -382,15 +401,19 @@ Two tasks share the worker:
 - **`rail_access`**, the Rail Access Monitor: a city's built-up density from the imagery, the
   walking reach of its stations, and its rail network as a graph from OpenStreetMap, reported
   as the served share, the transit deserts, the hubs, the isolated stations and simulated links,
-  with the flags and simulations also written out as plain sentences (planner notes). Four
-  starting cities, Sydney, Melbourne, Singapore and Boston, are ready-made topics in
-  [`scripts/rail_topics.example.json`](scripts/rail_topics.example.json).
+  with the flags and simulations also written out as plain sentences (planner notes). One
+  ready-made topic, `rail-cities` in
+  [`scripts/rail_topics.example.json`](scripts/rail_topics.example.json), watches four starting
+  cities, Sydney, Melbourne, Singapore and Boston, and writes about one of them a day by a fixed
+  weekly rota.
 
 Deployment is **opt-in and off by default**: nothing of it is created until the `VISION_ENABLED`
 repository variable is `true`
 ([configuration](docs/configuration.md#vision-and-rail-access),
 [runsheet](docs/deployment-runsheet.md#vision-optional)). It was built for the
-[OpenCV AI Competition 2026](https://opencv26.devpost.com). The pipeline step by step, and the
+[OpenCV AI Competition 2026](https://opencv26.devpost.com): the submission's
+[technical report](docs/hackathon/technical-report.md) and
+[reproduction guide](docs/hackathon/REPRODUCE.md). The pipeline step by step, and the
 rail concepts in plain words: [docs/architecture/blogger-vision.md](docs/architecture/blogger-vision.md).
 The design, every setting and what was measured: [docs/enhancements/vision.md](docs/enhancements/vision.md).
 The rail task and one specification per pull request:
@@ -488,6 +511,8 @@ scripts/
                               personal strings
   vision_benchmark.py        times the vision worker's OpenCV work (stock
                               against COOL); fetches a rail scene's network
+  submission_check.py        the competition submission's pre-submit check
+                              (placeholders, links, the tracker, run files)
   rail_topics.example.json   the Rail Access Monitor's topic: four cities, one a day
   README.md                  the full CLI reference
   tests/                     pytest coverage for the scripts
@@ -535,7 +560,9 @@ docs/
   specs/                        the original Phase 0 build spec
   risks/                        known weaknesses, e.g. scaling-findings-01.md
   enhancements/                 designs, built and not yet built
-  hackathon/                    the OpenCV AI Competition 2026 submission draft
+  hackathon/                    the OpenCV AI Competition 2026 submission: the
+                                technical report, diagrams, reproduction guide,
+                                dependency audit, video script, Devpost checklist
 ```
 
 ### Branch & release model

@@ -1,3 +1,6 @@
 *.sh text eol=lf
 # Git hooks run under sh, which chokes on CRLF; keep them LF on Windows checkouts too.
 .githooks/* text eol=lf
+# The COOL fingerprint is the SHA-256 of this text byte for byte, trailing spaces and final blank
+# line included: never convert its line endings, and do not flag its whitespace.
+docs/hackathon/evidence/cool/*buildinfo.txt -text -whitespace
