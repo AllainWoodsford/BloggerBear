@@ -99,7 +99,8 @@ def _refuse_network(monkeypatch) -> None:
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
     _refuse_network(monkeypatch)
-    monkeypatch.delenv("PII_DENYLIST", raising=False)
+    # A list that matches nothing: the export refuses to run with none at all (never the developer's).
+    monkeypatch.setenv("PII_DENYLIST", "zz-no-such-term-zz")
 
 
 # --- the pipeline, run for real on the synthetic city --------------------------------------------------
@@ -1157,6 +1158,27 @@ def test_a_pii_hit_refuses_the_export_names_the_file_and_line_and_moves_it_aside
     assert not list((tmp_path / "networks").glob("*.json"))  # never left in the tracked directory
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "docs/hackathon/evidence/live/*.refused/" in ignored
+
+
+def test_with_no_denylist_the_export_refuses_unless_told_and_reads_the_list_from_its_own_repository(
+    aws, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.delenv("PII_DENYLIST", raising=False)
+    monkeypatch.setattr(ee, "ROOT", tmp_path)  # a checkout with no .pii-denylist
+    out = tmp_path / "live" / "2024-07-29"
+    assert run_export(aws, out) == 2
+    err = capsys.readouterr().err
+    assert "PII_DENYLIST is unset" in err and ".pii-denylist is missing" in err and "--no-denylist" in err
+    assert not out.exists() and (tmp_path / "live" / "2024-07-29.refused").is_dir()
+    assert run_export(aws, tmp_path / "live" / "2024-07-30", "--no-denylist") == 0
+    assert "NOT checked against a denylist" in capsys.readouterr().err
+    # The list is read from the export's own repository, not the directory it runs from.
+    (tmp_path / ".pii-denylist").write_text(SECRET + "\n", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert run_export(aws, tmp_path / "live" / "2024-07-31", "--with-notes") == 2
+    assert re.search(r"findings\.json:\d+ contains denylist entry #1", capsys.readouterr().err)
 
 
 def test_without_gh_the_deploy_is_null_with_its_reason_and_the_export_finishes(aws, tmp_path):

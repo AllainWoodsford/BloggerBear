@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import functools
 import io
 import json
 import math
@@ -213,6 +214,10 @@ FILES = (
     "summary.json",
 )
 REFUSED = 2
+NO_DENYLIST_HELP = (
+    "write even when no personal-data denylist is found (PII_DENYLIST, or .pii-denylist at the "
+    "repository's root); without it the export refuses, since nothing would check the files"
+)
 LIVE_README = """# Live evidence
 
 Each directory here, `<UTC date>/`, is one run of `scripts/evidence_export.py export` against the
@@ -2455,7 +2460,7 @@ def export(
         written.append(readme)
 
     # The PII check over every file written; a hit refuses the export and moves it aside.
-    pii = pii or _pii_check
+    pii = pii or functools.partial(_pii_check, allow_no_denylist=args.no_denylist)
     if pii([str(path) for path in written]) != 0:
         return refuse_export(out_dir, network_files)
     _report(summary, out_dir, written)
@@ -2502,10 +2507,35 @@ def refuse_export(out_dir: Path, network_files: dict[Path, bytes | None]) -> int
     return REFUSED
 
 
-def _pii_check(paths: list[str]) -> int:
+def _pii_check(paths: list[str], allow_no_denylist: bool = False) -> int:
+    """The denylist check over `paths`, against this repository's list (PII_DENYLIST, else
+    ROOT/.pii-denylist), whatever directory the export runs from. The files are committed to a
+    public repository, so with no list at all the check would find nothing and pass: that is
+    refused unless the operator says it is meant (`--no-denylist`), and then said."""
     import pii_denylist_check
 
-    return pii_denylist_check.main(["--files", *paths])
+    entries = pii_denylist_check.load_entries(dict(os.environ), ROOT)
+    if not entries:
+        listed = ROOT / pii_denylist_check.DENYLIST_FILE
+        where = f"{pii_denylist_check.DENYLIST_ENV} is unset and {listed} is missing"
+        if allow_no_denylist:
+            print(f"pii-denylist: {where}; the files were NOT checked against a denylist (--no-denylist).",
+                  file=sys.stderr)  # fmt: skip
+            return 0
+        print(f"refused: {where}, so nothing would check these files for personal data before they are "
+              "committed. Put your list there, or pass --no-denylist to write the export unchecked.",
+              file=sys.stderr)  # fmt: skip
+        return REFUSED
+    # The check reads its list from the environment first: hand it this repository's, then restore.
+    name, saved = pii_denylist_check.DENYLIST_ENV, os.environ.get(pii_denylist_check.DENYLIST_ENV)
+    os.environ[name] = "\n".join(entries)
+    try:
+        return pii_denylist_check.main(["--files", *paths])
+    finally:
+        if saved is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = saved
 
 
 def _report(summary: dict, out_dir: Path, written: list[Path]) -> None:
@@ -2616,7 +2646,7 @@ def recount_agreement(args) -> int:
     summary.setdefault("human_control", {})["agreement"] = agreement(labels, data["decisions"], demos)
     path = directory / "summary.json"
     write_text(path, _json(summary))
-    if _pii_check([str(path)]) != 0:
+    if _pii_check([str(path)], allow_no_denylist=args.no_denylist) != 0:
         return REFUSED
     print(json.dumps(summary["human_control"]["agreement"], indent=1))
     return 0
@@ -2680,6 +2710,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="write over an export already in that directory (its labels.csv is kept)",
     )
+    e.add_argument("--no-denylist", action="store_true", help=NO_DENYLIST_HELP)
     _aws_options(e)
     t = sub.add_parser("trace", help="one decision's chain as Markdown, from an export or live")
     t.add_argument("--topic", required=True)
@@ -2693,6 +2724,7 @@ def main(argv: list[str] | None = None) -> int:
     _aws_options(t)
     a = sub.add_parser("agreement", help="recount summary.json's agreement once labels.csv is filled in")
     a.add_argument("--from", dest="from_dir", required=True, help="the export directory")
+    a.add_argument("--no-denylist", action="store_true", help=NO_DENYLIST_HELP)
     args = parser.parse_args(argv)
     try:
         if args.command == "export":

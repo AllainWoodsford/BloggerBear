@@ -3,10 +3,10 @@ flowchart LR
     sched["EventBridge Scheduler<br/>an hourly research heartbeat and a daily run per topic"]
     tick["Lambda: research tick, 120 s<br/>rail_access adapter: one city per tick, in turn"]
     agent["Triage agent, inside the tick<br/>bounded, fails closed"]
-    sfn["Step Functions, Lambda: daily cycle<br/>the day's city from the topic's rota;<br/>draft, reviews, held for a person"]
+    sfn["Step Functions, Lambda: daily cycle<br/>the week's city from the topic's rota,<br/>the day's angle from its goal rotation;<br/>draft, reviews, held for a person"]
     bedrock["Amazon Bedrock<br/>Converse"]
     s3c[("S3 content bucket<br/>running state and decision rings,<br/>figures, each city's network")]
-    ddb[("DynamoDB<br/>topics (rail-cities: four cities, a weekly rota),<br/>Findings with their subjects, articles, moderation")]
+    ddb[("DynamoDB<br/>topics (rail-cities: four cities, a week each in turn),<br/>Findings with their subjects, articles, moderation")]
     api["Admin API<br/>IAM auth and a WAF allowlist"]
     site[("S3, CloudFront and WAF<br/>the public site")]
     logs["CloudWatch Logs, 90 days<br/>evidence lines: research tick, admin API"]
@@ -44,9 +44,9 @@ flowchart LR
   agent -- "web_context" --> gdelt
   agent -. "web_context, when GDELT fails" .-> gateway
   tick --> s3c
-  tick -- "a Finding and its city" --> ddb
+  tick -- "a Finding and its city: a change, or the week's city's weekly reading" --> ddb
   tick --> logs
-  sfn -- "the day's city's Findings" --> ddb
+  sfn -- "the week's city's Findings" --> ddb
   sfn --> bedrock
   operator -- "admin CLI: approve or reject" --> api
   api --> ddb

@@ -1,5 +1,5 @@
 flowchart TD
-  T["Research tick: the next city in turn<br/>(rail-cities takes its four cities one per tick)"]
+  T["Research tick: the next city in turn<br/>(rail-cities takes its four cities one per tick, whatever the week)"]
   P["Perception: the vision worker measures the city's newest scene with OpenCV 5<br/>coverage, built-up heat, reach and deserts, the rail graph, the figure"]
   E["Not measured: a worker or source error<br/>last_error kept, tried again on a later tick"]
   C{"coverage at least<br/>the floor (0.6)?"}
@@ -12,9 +12,10 @@ flowchart TD
   PS["previous_scene, site_history"]
   WC["web_context: recent news, GDELT or the AgentCore fallback<br/>(data, not instructions)"]
   V{"a strict JSON verdict?"}
+  W["Weekly reading, on the first tick of a city's week of the rota:<br/>its newest clear scene, no change claimed, so no agent"]
   F["Finding: summary, figure, planner notes,<br/>the city as its subject"]
   NF["No Finding<br/>the decision kept with its code<br/>(decision ring, evidence lines)"]
-  DC["Daily cycle on the city's day of the rota:<br/>draft and reviews, then always held<br/>for a person (manual review is forced)"]
+  DC["Daily cycle in the city's week of the rota:<br/>up to one article a day from its new Findings,<br/>each under a goal not yet used on them:<br/>access, network, simulations; draft and reviews,<br/>then always held for a person (manual review is forced)"]
   D{"a person approves?"}
   PUB["Published, with the map and the credits"]
   REJ["Rejected, never published"]
@@ -38,6 +39,8 @@ flowchart TD
   A --> V
   V -- real --> F
   V -- "artefact, or anything else" --> NF
+  T -- "the week's city, once a week" --> W
+  W --> F
   F --> DC
   DC --> D
   D -- yes --> PUB

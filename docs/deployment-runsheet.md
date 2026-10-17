@@ -1635,7 +1635,9 @@ of the code being submitted, in the venv above. It only reads: nothing here writ
 - `gh`, signed in (`gh auth status`), for the commit that deployed each function's code
   (`provenance.json`); without it that commit is null, with the reason, and the export still
   finishes.
-- Your `.pii-denylist` at the repository's root: the export runs the check on every file it writes.
+- Your `.pii-denylist` at the repository's root (or `PII_DENYLIST`): the export runs the check on
+  every file it writes, and refuses to start writing without a list, since nothing would then check
+  the files before they are committed. `--no-denylist` writes unchecked, and says so.
 
 The logs are read through Logs Insights, a few queries at a time, each batch waited for at most
 `--logs-wait` seconds (120); a 90-day scan of the three groups is a few GB at most, cents.
