@@ -797,6 +797,21 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
   `lambdas/common/adapters/rail_access.py`, `scripts/rail_topics.example.json`;
   [design](enhancements/dailysubject_hook.md))
+- [x] The goal rotation: a topic may take 2 to 7 editorial goals in turn
+  (`editorial_goal_rotation`, `topics create|update --goal-rotation-json`), so one set of Findings is
+  written up from different sides. New Findings get the next goal; with nothing new, the daily run
+  revisits the last set under a goal not yet used on it, and stops once every goal has had it. Per
+  subject on a rotating topic (`goal_rotation_state`); the article keeps `editorial_goal` and
+  `revisit`; a revisit's research is not counted twice. Not yet: `findings list --next-article` and
+  the assistant's `topic_findings` do not say a revisit is coming (`lambdas/common/goal_rotation.py`,
+  `lambdas/daily_cycle_handler.py`; [configuration.md](configuration.md))
+- [x] A city a week: a list rota may set `rotation_period` `"week"`, so each subject has a whole
+  calendar week in turn. A rail city then comes back only after a Finding has expired, so the rail
+  adapter writes a weekly reading on the first tick of a city's week (its newest clear scene, no
+  change claimed, with its map and notes; `reported_period` keeps it to once a week), which the
+  goal rotation writes up from three sides on the days after. `rail-cities` switched over by
+  [RailVisionSeeding.md §7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)
+  (`lambdas/common/day_subject.py`, `lambdas/common/adapters/rail_access.py`)
 - [x] The submission package's first wave (R1): the technical report in the rubric's eight sections
   and three appendices, drafted from the code on `dev` with code anchors and R2's numbers marked as
   placeholders; the system and agent-workflow diagrams in Mermaid with their SVGs, embedded in the

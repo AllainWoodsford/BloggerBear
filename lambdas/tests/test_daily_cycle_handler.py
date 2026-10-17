@@ -3503,3 +3503,148 @@ def test_the_crypto_prompts_are_exactly_what_the_goal_lookup_always_built(s3_buc
         "Write a full article draft in markdown (a few paragraphs) for a blog about 'Crypto Markets', "
         f"on this angle: Angle one\n\nCORE EDITORIAL DIRECTION:\n{resolve_editorial_goals(topic, goal)}"
     )
+
+
+# --- a goal rotation: several editorial goals taken in turn (common/goal_rotation.py) -------------
+
+_GOAL_ROTATION = [
+    {"name": "access", "primary_focus": "FOCUS ACCESS: the served share."},
+    {"name": "network", "primary_focus": "FOCUS NETWORK: the flags."},
+]
+
+
+def _goal_state(rotating) -> dict | None:
+    return rotating["topics"].get_item(Key={"topic_id": "rota"})["Item"].get("goal_rotation_state")
+
+
+def test_a_goal_rotation_writes_new_findings_then_revisits_them_once_per_goal(rotating):
+    """North's days over a week and a day: a new Finding is written under the next goal, a quiet day
+    revisits it under the goal not yet used on it, a third quiet day writes nothing, and the next
+    new Finding starts the goals again where they left off."""
+    monday = date(2026, 9, 28)
+    rotating["topics"].put_item(
+        Item=_rotating_topic(
+            findings_window_hours=96,
+            editorial_goals={"exclusion_criteria": "EXCLUSIONS HOLD"},
+            editorial_goal_rotation=_GOAL_ROTATION,
+        )
+    )
+    first = _local(monday, 3)
+    _put_subject_finding(rotating, first, "north 1", ["north"])
+
+    # Monday, North's day: the new Finding, under the first goal.
+    result, drafted, prompts, article = _run_at(rotating, _local(monday, 9, 5))
+    assert result["status"] == "published"
+    assert (result["editorial_goal"], "revisit" in result) == ("access", False)
+    assert drafted == ["north 1"]
+    assert "FOCUS ACCESS" in prompts[0] and "FOCUS ACCESS" in prompts[1]
+    assert "EXCLUSIONS HOLD" in prompts[0] and "EXCLUSIONS HOLD" in prompts[1]
+    assert daily_cycle_handler.REVISIT_NOTE not in prompts[0]
+    assert (article["editorial_goal"], "revisit" in article) == ("access", False)
+    assert _goal_state(rotating) == {
+        "north": {"goal": "access", "used": ["access"], "from": first.isoformat(), "to": first.isoformat()}
+    }
+
+    # Tuesday, South's day: nothing for South and nothing written before, so nothing to revisit.
+    with patch("daily_cycle_handler.invoke_model_tracked") as never:
+        result, *_ = _run_at(rotating, _local(monday + timedelta(days=1), 9, 5))
+    assert result == {"status": "no_findings", "topic_id": "rota", "subject": "south"}
+    never.assert_not_called()
+
+    # Wednesday, North's day, nothing new: Monday's Finding again, under the goal it has not had.
+    with patch(
+        "daily_cycle_handler.build_research_lineage", wraps=daily_cycle_handler.build_research_lineage
+    ) as tally:
+        result, drafted, prompts, article = _run_at(rotating, _local(monday + timedelta(days=2), 9, 5))
+    assert result["status"] == "published"
+    assert (result["editorial_goal"], result["revisit"]) == ("network", True)
+    assert drafted == ["north 1"]
+    assert "FOCUS NETWORK" in prompts[0] and "FOCUS ACCESS" not in prompts[0]
+    assert daily_cycle_handler.REVISIT_NOTE in prompts[0] and daily_cycle_handler.REVISIT_NOTE in prompts[1]
+    assert (article["editorial_goal"], article["revisit"]) == ("network", True)
+    assert tally.call_args.args == ([],)  # its research was counted on Monday's article
+    assert _goal_state(rotating)["north"]["used"] == ["access", "network"]
+    assert _stamps(rotating)["by_subject"]["north"] == _local(monday + timedelta(days=2), 9, 5).isoformat()
+
+    # Friday, North's day, still nothing new: every goal has had it, so nothing is written.
+    with patch("daily_cycle_handler.invoke_model_tracked") as never:
+        result, *_ = _run_at(rotating, _local(monday + timedelta(days=4), 9, 5))
+    assert result == {"status": "no_findings", "topic_id": "rota", "subject": "north"}
+    never.assert_not_called()
+
+    # The next Monday, a new Finding: the goal after the last one used, and only the new Finding.
+    second = _local(monday + timedelta(days=6), 3)
+    _put_subject_finding(rotating, second, "north 2", ["north"])
+    result, drafted, prompts, article = _run_at(rotating, _local(monday + timedelta(days=7), 9, 5))
+    assert (result["editorial_goal"], "revisit" in result) == ("access", False)
+    assert drafted == ["north 2"]
+    assert _goal_state(rotating)["north"] == {
+        "goal": "access", "used": ["access"], "from": second.isoformat(), "to": second.isoformat()
+    }
+
+
+def test_a_revisit_whose_findings_have_expired_writes_nothing(rotating):
+    monday = date(2026, 9, 28)
+    captured = _local(monday, 3)
+    rotating["topics"].put_item(
+        Item=_rotating_topic(
+            findings_window_hours=96,
+            editorial_goal_rotation=_GOAL_ROTATION,
+            goal_rotation_state={
+                "north": {
+                    "goal": "access", "used": ["access"],
+                    "from": captured.isoformat(), "to": captured.isoformat(),
+                }  # fmt: skip
+            },
+            last_article_by_subject={"north": _local(monday, 9, 5).isoformat()},
+        )
+    )
+    rotating["findings"].put_item(
+        Item={"topic_id": "rota", "captured_at": captured.isoformat(), "summary": "north 1",
+              "subjects": ["north"], "expires_at": int(captured.timestamp())}  # fmt: skip
+    )
+
+    with patch("daily_cycle_handler.invoke_model_tracked") as never:
+        result, *_ = _run_at(rotating, _local(monday + timedelta(days=2), 9, 5))
+
+    assert result == {"status": "no_findings", "topic_id": "rota", "subject": "north"}
+    never.assert_not_called()
+
+
+def test_a_topic_that_does_not_rotate_subjects_keeps_its_rotation_state_topic_wide(s3_bucket):
+    topic = {**NON_FINANCIAL_TOPIC, "editorial_goal_rotation": _GOAL_ROTATION}
+    with patch("daily_cycle_handler.set_topic_goal_rotation_state") as mock_state:
+        result, _ = _run_a_full_cycle(topic=topic)
+    assert result["editorial_goal"] == "access"
+    key, state = mock_state.call_args.args[1:]
+    assert key == "*"
+    assert state["used"] == ["access"]
+    assert (state["from"], state["to"]) == (FINDINGS[-1]["captured_at"], FINDINGS[0]["captured_at"])
+
+
+def test_a_rotation_state_that_cannot_be_stored_never_fails_the_article(s3_bucket, capsys):
+    topic = {**NON_FINANCIAL_TOPIC, "editorial_goal_rotation": _GOAL_ROTATION}
+    with patch("daily_cycle_handler.set_topic_goal_rotation_state", side_effect=RuntimeError("boom")):
+        result, _ = _run_a_full_cycle(topic=topic)
+    assert result["status"] == "published"
+    assert "could not record goal_rotation_state" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "extra, said",
+    [
+        ({"editorial_goal_rotation": _GOAL_ROTATION[:1]}, "not valid; ignored"),
+        ({"editorial_goal_rotation": _GOAL_ROTATION, "adapter": "crypto_feed"}, "has a daily editorial goal"),
+    ],
+)
+def test_a_rotation_that_is_not_valid_or_beside_a_daily_goal_is_ignored(extra, said, capsys):
+    topic = {**NON_FINANCIAL_TOPIC, **extra}
+    assert daily_cycle_handler._rotation_goals(topic, datetime.now(UTC)) == []
+    assert said in capsys.readouterr().out
+
+
+def test_a_topic_without_a_rotation_reads_no_rotation_state_and_stores_none(s3_bucket):
+    with patch("daily_cycle_handler.set_topic_goal_rotation_state") as mock_state:
+        result, _ = _run_a_full_cycle()
+    assert "editorial_goal" not in result
+    mock_state.assert_not_called()

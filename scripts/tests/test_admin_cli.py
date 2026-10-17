@@ -739,6 +739,31 @@ def test_topics_editorial_goals_invalid_json_exits_nonzero(capsys):
     m.assert_not_called()
 
 
+def test_topics_create_and_update_pass_a_goal_rotation_through():
+    rotation = [{"name": "access", "primary_focus": "A"}, {"name": "network", "primary_focus": "N"}]
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            [
+                "topics", "create", "--topic-id", "rail", "--name", "Rail",
+                "--goal-rotation-json", json.dumps(rotation),
+            ]
+        )  # fmt: skip
+        assert m.call_args.kwargs["body"]["editorial_goal_rotation"] == rotation
+
+        _run(["topics", "update", "rail", "--goal-rotation-json", "[]"])
+        assert m.call_args.kwargs["body"] == {"editorial_goal_rotation": []}
+
+
+def test_topics_goal_rotation_invalid_json_exits_nonzero(capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["topics", "update", "rail", "--goal-rotation-json", "[not json"])
+
+    assert exc_info.value.code != 0
+    assert "--goal-rotation-json is not valid JSON" in capsys.readouterr().err
+    m.assert_not_called()
+
+
 def test_articles_unpublish_posts_to_the_unpublish_route():
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
         _run(["articles", "unpublish", "article-1"])

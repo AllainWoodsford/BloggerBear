@@ -205,6 +205,20 @@ def _parse_editorial_goals_json(text: str):
         raise CliError(f"--editorial-goals-json is not valid JSON: {exc}") from exc
 
 
+# The goal rotation (lambdas/common/goal_rotation.py), as both topic commands describe it.
+GOAL_ROTATION_HELP = (
+    "2 to 7 editorial goals taken in turn: '[{\"name\": \"access\", \"primary_focus\": \"...\"}, ...]'. "
+    "With nothing new, the last findings are revisited under a goal not yet used on them."
+)
+
+
+def _parse_goal_rotation_json(text: str):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise CliError(f"--goal-rotation-json is not valid JSON: {exc}") from exc
+
+
 def _cmd_topics_create(args: argparse.Namespace) -> None:
     adapter_config = {}
     if args.config_json:
@@ -227,6 +241,8 @@ def _cmd_topics_create(args: argparse.Namespace) -> None:
         body["adapter"] = args.adapter
     if args.editorial_goals_json is not None:
         body["editorial_goals"] = _parse_editorial_goals_json(args.editorial_goals_json)
+    if args.goal_rotation_json is not None:
+        body["editorial_goal_rotation"] = _parse_goal_rotation_json(args.goal_rotation_json)
     if args.research_cadence is not None:
         body["research_cadence"] = args.research_cadence
     if args.research_interval_hours is not None:
@@ -258,6 +274,8 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
             raise CliError(f"--adapter-config-json is not valid JSON: {exc}") from exc
     if args.editorial_goals_json is not None:
         body["editorial_goals"] = _parse_editorial_goals_json(args.editorial_goals_json)
+    if args.goal_rotation_json is not None:
+        body["editorial_goal_rotation"] = _parse_goal_rotation_json(args.goal_rotation_json)
     if args.financial is not None:
         body["is_financial"] = args.financial
     if args.research_cadence is not None:
@@ -1092,6 +1110,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     create_parser.add_argument("--config-json", dest="config_json", default=None)
     create_parser.add_argument(
+        "--goal-rotation-json", dest="goal_rotation_json", default=None, help=GOAL_ROTATION_HELP
+    )
+    create_parser.add_argument(
         "--editorial-goals-json",
         dest="editorial_goals_json",
         default=None,
@@ -1169,6 +1190,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="editorial_goals_json",
         default=None,
         help="Replaces the topic's whole editorial_goals block; '{}' clears it (back to the default)",
+    )
+    update_parser.add_argument(
+        "--goal-rotation-json",
+        dest="goal_rotation_json",
+        default=None,
+        help=GOAL_ROTATION_HELP + " Replaces the whole list; '[]' clears it",
     )
     update_parser.add_argument(
         "--financial", dest="financial", action="store_true", default=None
