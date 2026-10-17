@@ -389,8 +389,9 @@ polygons. On each research tick its adapter finds the newest Sentinel-2 scene ov
 and asks a small **vision worker** (OpenCV 5 on an arm64 Lambda in us-west-2, beside the
 imagery) to measure it; the worker reads only the tiles under the site and keeps nothing. The
 numbers are diffed against the site's own baseline, so no model is called unless something
-moved (rule 2). A bounded **triage agent** then looks at the figure, may re-measure the scene,
-and says "real" or "artefact"; anything unsure is an artefact. A person approves every article
+moved (rule 2), or a rail city's week has begun (its weekly reading, below). A bounded **triage
+agent** then looks at a change's figure, may re-measure the scene, and says "real" or "artefact";
+anything unsure is an artefact. A person approves every article
 (`force_manual_review`; the daily digest leaves these topics out), which carries the data
 credits; the rail task's map reaches the page through the figures path, with a caption that says
 what its symbols are.
@@ -404,8 +405,11 @@ Two tasks share the worker:
   with the flags and simulations also written out as plain sentences (planner notes). One
   ready-made topic, `rail-cities` in
   [`scripts/rail_topics.example.json`](scripts/rail_topics.example.json), watches four starting
-  cities, Sydney, Melbourne, Singapore and Boston, and writes about one of them a day by a fixed
-  weekly rota.
+  cities, Sydney, Melbourne, Singapore and Boston. The live topic writes about one of them a week
+  ([switched over](docs/RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides) from
+  the template's weekdays): on the Monday a weekly reading of the city's newest clear scene, no
+  change claimed, then an article a day from it under three editorial goals in turn (access, the
+  network's flags, the simulated links), each held for a person.
 
 Deployment is **opt-in and off by default**: nothing of it is created until the `VISION_ENABLED`
 repository variable is `true`
@@ -513,7 +517,8 @@ scripts/
                               against COOL); fetches a rail scene's network
   submission_check.py        the competition submission's pre-submit check
                               (placeholders, links, the tracker, run files)
-  rail_topics.example.json   the Rail Access Monitor's topic: four cities, one a day
+  rail_topics.example.json   the Rail Access Monitor's topic template: four
+                              cities by weekday (the live one: a city a week)
   README.md                  the full CLI reference
   tests/                     pytest coverage for the scripts
 

@@ -2,9 +2,10 @@
 
 The submission's video: **at most 5:00, uploaded unlisted**, showing the team, the application
 working, its architecture and its principal results. It is **recorded as clips as things happen,
-and edited once**, never filmed in one take: the live triage is filmed on its day (owner step O3),
-the Graviton terminal during the COOL session (O5), the Alexa+ answer once it has been timed on
-dev; the edit is on Saturday 24 October (O6). Its link goes into the
+and edited once**, never filmed in one take: the rail topic in Sydney's week, 19 to 25 October
+([below](#sydneys-week-what-is-filmed-and-when)), the live triage on its day (owner step O3), the
+Graviton terminal during the COOL session (O5), the Alexa+ answer once it has been timed on dev;
+the edit is on Saturday 24 October (O6). Its link goes into the
 [technical report](technical-report.md)'s front page and the Devpost form
 ([devpost-checklist.md](devpost-checklist.md)).
 
@@ -18,13 +19,34 @@ the evaluation has not produced yet are marked `[R2: ...]`; the edit uses the ru
 | 0:00-0:20 | The team | The owner on camera, name and role; anyone else on the team | S6: the team |
 | 0:20-0:45 | The problem and the users | A Sentinel-2 view of Sydney, then OpenStreetMap's rail lines over it; who reads the articles and who runs the pipeline; SDG 11.2.1 as the yardstick, and how the measure differs from it | S1 |
 | 0:45-1:20 | Architecture | [diagrams/architecture.svg](diagrams/architecture.svg), zoomed to each part as it is named: the two Regions, the worker beside the imagery, the agent, the person, the assistant, COOL benchmarked apart; then [diagrams/agent-workflow.svg](diagrams/agent-workflow.svg), the gates and the agent's loop | S4, A1 |
-| 1:20-2:00 | It working | A forced tick of `rail-cities` (the clip sped up), naming the day's city of the rota; CloudWatch Logs Insights query (c) on that tick, zoomed on its `vision_site` and `vision_decision` rows; a cut to us-west-2 for the worker's `vision_measure` row (build, CPU, timings); the figure | S5, S6 |
+| 1:20-2:00 | It working | Sydney's week: CloudWatch Logs Insights query (c) on the tick that measured Sydney's newest clear scene, zoomed on its `vision_site` and `vision_decision` rows; a cut to us-west-2 for the worker's `vision_measure` row (build, CPU, timings); the figure; then Monday 19 October's weekly reading of that scene (`findings list rail-cities`) and the inbox holding the week's articles, one angle a day: access, the network's flags, the simulated links | S5, S6 |
 | 2:00-2:50 | OpenCV's output changes a decision | The trace (the assistant's step-by-step view of one decision on its page, or the replay's Markdown), zoomed: the coverage and the gate, "moved, from the imagery, so the agent was asked", `look_again` with what OpenCV re-measured beside the same scene at the topic's settings, the verdict, the action; then one line with the counterfactual result | A2 |
 | 2:50-3:00 | A failure, handled | The cloudy scene of 5 January 2024: its scene-classification breakdown and its `low_coverage` flag; no model call, no Finding | S7, A3 |
-| 3:00-3:25 | The person | The review inbox, `approve`, the published page with the map, its caption and the credits | A3, S5 |
+| 3:00-3:25 | The person | The review inbox, `approve` of Sydney's access article (Tuesday 20 October), the published page with the map, its caption and the credits | A3, S5 |
 | 3:25-4:10 | Results | **One slide, three numbers:** E3's false-alarm rate with its interval; the agent's balanced accuracy against the two baselines; COOL's compute speed-up on one core with its interval, and "parity: pass" | S7, C1-C3, A3 |
 | 4:10-4:40 | Ask it | Alexa+: "ask BloggerBear what the vision agent did for rail access this week", and its spoken answer | T1, A3 (observability) |
 | 4:40-5:00 | Limits and responsible use | Proxies, not people; a person approves everything; what is not measured; the links | S1 (§7, §8) |
+
+## Sydney's week: what is filmed, and when
+
+`rail-cities` writes about one city a week, Monday to Sunday on Sydney's calendar, in the order
+Melbourne, Singapore, Boston, Sydney ([RailVisionSeeding.md §7](../RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)).
+Sydney's week is 19 to 25 October, so its weekly reading and the three articles from it all fall
+before the deadline. Times are Sydney's (AEDT, UTC+11), at `rail-cities`' slot on dev (research at
+:25 past each hour, the daily run at 09:50; `topics schedule` shows them).
+
+| When | What runs | What to film or do |
+|---|---|---|
+| Monday 19, first tick (about 00:25; 13:25 UTC on Sunday 18) | Sydney's weekly reading: its newest clear scene, no change claimed, with its map and planner notes; no agent | Query (a) and (c) on the tick that measured that scene (it may be an earlier one), and this tick's `research_tick` row with its Finding's time; `findings list rail-cities --limit 1` |
+| Monday 19, 09:50 | The article from the reading under `access`: the served share, the area beyond reach, the map's heat and outlines; held | The inbox; the log's `day_subject=sydney` and `editorial_goal=access revisit=False` |
+| Tuesday 20, 09:50 | A revisit of the same Finding under `network`: the rule-based flags, the stations they name, and how many flags there were in all; held | The owner approves the access article after the reviewer checklist ([RailVisionSeeding.md §5](../RailVisionSeeding.md#5-reviewer-checklist-before-approve)): it is the endpoint (S5), and the 3:00 shot films the approve and the published page |
+| Wednesday 21, 09:50 | A revisit under `simulations`: the simulated links, always as a what-if; held | The owner approves the network article if it passes the checklist |
+| Thursday 22 to Sunday 25 | Nothing, unless a tick finds a material change in Sydney: the agent triages it, and a real one is a new Finding that the next run writes up and the three goals take again | The owner approves the simulations article if it passes; the edit is on Saturday 24 |
+| From Monday 26 | Melbourne's week (26 October to 1 November), then Singapore's (2 to 8 November) and Boston's (9 to 15 November): the judges' window | Nothing to film; the endpoint stays Sydney's approved article |
+
+If Sydney's newest scene is under the coverage floor when its week starts, the reading waits for
+the first tick with a clear one, and each angle moves to a later day; check `findings list
+rail-cities` on Monday morning, and film from whichever days the articles come.
 
 ## The narration
 
@@ -39,17 +61,21 @@ area, not people; a straight line, not the walking route."
 
 **0:45 Architecture.** "Everything with state lives in Sydney's AWS Region. The vision worker,
 OpenCV 5 on an arm64 Lambda, runs in Oregon, beside the imagery: it range-reads only the tiles under
-a city and sends back a few kilobytes and a map. One topic rotates through four cities, one a day.
+a city and sends back a few kilobytes and a map. One topic writes about four cities, one a week.
 The research tick looks at a city each hour, measures any new scene, compares it with that city's
-own baseline, and calls the triage agent only when a number moved. The agent can re-measure the scene with OpenCV, look at
+own baseline, and calls the triage agent only when a number moved. On the Monday of a city's week
+it takes that city's newest clear scene as the week's reading, claiming no change, and the daily
+run writes it up from a new angle each day. The agent can re-measure the scene with OpenCV, look at
 earlier scenes, and read the news; anything unsure is an artefact. A person approves every article.
 COOL, OpenCV's Graviton build, is benchmarked against stock OpenCV on Graviton4, not deployed."
 
-**1:20 It working.** "Here a tick measures [R2: the city of the filmed tick]. These are its
-evidence lines: the site's turn, then the decision, joined by the worker's request id to the
-worker's own line in Oregon, with the OpenCV build, the CPU, and how long each stage took. And here
-is the map it drew: built-up density in warm colours, areas beyond a kilometre of a station
-outlined, the network by how many paths run through it."
+**1:20 It working.** "This is Sydney's week. Here a tick measures Sydney's newest clear scene,
+captured [R2: the scene's date]. These are its evidence lines: the site's turn, then the decision,
+joined by the worker's request id to the worker's own line in Oregon, with the OpenCV build, the
+CPU, and how long each stage took. And here is the map it drew: built-up density in warm colours,
+areas beyond a kilometre of a station outlined, the network by how many paths run through it. On
+Monday that scene became Sydney's weekly reading, and the daily run wrote it up three ways: on
+Monday its access, on Tuesday the network's flags, on Wednesday the simulated links."
 
 **2:00 A decision.** "This is one decision, step by step. The scene was [R2: the scene's coverage]
 clear. The served share moved past the topic's threshold, from the imagery, so the agent was asked.
@@ -113,12 +139,16 @@ Tick every line before uploading.
 
 **Primary: a working URL.** The approved rail article's page on dev's CloudFront domain, which is
 public (`infra/environments/dev/main.tf:475`), or on bloggerbear.com only if the owner also makes a
-production release (O10, recommended against). It shows the map, its caption and the credits. The
-report and the Devpost text say the article is a city's first observation, measured but not triaged
-(a first observation has no baseline to compare), and point at the trace for the agent. The
-repository at the tag and this video accompany it. After the tag, the endpoint is kept up through
-judging (O11): merges to `dev` frozen or docs-only, the topic running, the demo topic slowed down,
-and the article URL opened weekly, logged out.
+production release (O10, recommended against): Sydney's access article, approved on Tuesday 20
+October. It shows the map, its caption and the credits. The report says the article is written from
+Sydney's weekly reading (and its first observation, if that is still in the window), measured but
+not triaged (neither claims a change, so no agent is asked), and points at the trace for the agent.
+The repository at the tag and this video accompany it. After the tag, the endpoint is kept up
+through judging (O11): merges to `dev` frozen or docs-only, the topic running, the demo topic slowed
+down, and the article URL opened weekly, logged out. The judges' window falls in Melbourne's week
+(26 October to 1 November), then Singapore's (2 to 8 November) and Boston's (9 to 15 November):
+those cities' articles wait in the inbox for the owner as they come, and the endpoint stays
+Sydney's.
 
 **Secondary: a live screen-share,** if the organisers offer one, booked through Devpost. The
 assistant's page sits behind Cognito, so judges cannot use it themselves; the screen-share is the
