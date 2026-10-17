@@ -62,6 +62,16 @@ the research tick which cities a Finding reports: the sites its summary reported
 order above reaches it, so each city's Findings are waiting when its day comes. Without a
 `rotation` the topic writes about every city it watches, every run, as before.
 
+**One city a week** (`rotation_period` "week", a list rota): each city has a whole calendar week.
+A city comes back only after every other city's week, longer than a Finding lives (14 days), and a
+Finding is otherwise written only on a material change, so the tick reads the rota for one thing:
+the **weekly reading**. On the first tick of a city's week that reports nothing else about it,
+`material_diff` reports its newest clear scene (one the agent did not doubt) as that week's
+reading, no change claimed, with its map and planner notes, and stamps the city's record
+`reported_period` with the week's Monday so it is written once a week. A first observation or a
+material change in the city's week counts as its reading. The goal rotation
+(common/goal_rotation.py) then writes that reading up from a different side on the following days.
+
 **The agent decides.** A numeric change is only a candidate: before it becomes a Finding, the
 triage agent (common/vision_triage.py, the rail profile) looks at the figure and the evidence, may
 re-measure the scene with other settings, compare the previous scene, or ask the news search
@@ -250,6 +260,11 @@ SUBJECT_STYLE = (
     "from satellite imagery and OpenStreetMap."
 )
 
+# A week rota (common/day_subject.py, `rotation_period` "week"): the week a city's record was last
+# reported in (the ISO date of its Monday), and what opens a weekly reading in the diff summary.
+REPORTED_PERIOD_FIELD = "reported_period"
+WEEKLY_LEAD = "Weekly reading (no change claimed)."
+
 # What _visit returns for a budget-starved site, or one whose record names a stored network that S3
 # could not read (NETWORK_READ_ERROR): it waits for the next tick, unstamped.
 DEFERRED = "deferred"
@@ -418,6 +433,9 @@ class RailAccessAdapter(Adapter):
     _started: float | None = None
     # Set by material_diff for planner_notes: the sites its summary reported (None before it runs).
     _reported: list[str] | None = None
+    # Set by material_diff: the site whose weekly reading it reported this tick (a week rota), whose
+    # scene figures, planner notes and source references include though it was not measured now.
+    _weekly_site: str | None = None
     # Set by fetch_state for the decision ring: each site's worker call this tick (site id ->
     # vision_decisions.measured_by or failed_by), for the evidence lines and the ring entry.
     _visits: dict | None = None
@@ -796,6 +814,7 @@ class RailAccessAdapter(Adapter):
         verdicts = self.assess(new_state)
         moved = vision_decisions.moved_by_site(verdicts)
         self._reported = []
+        self._weekly_site = None
         floor = _thresholds(new_state)["coverage_floor"]
         first = vision_sites.first_observation(old_state, new_state, verdicts, floor)
         if first is not None:
@@ -803,6 +822,7 @@ class RailAccessAdapter(Adapter):
             self._record(new_state, verdicts, moved, first_clear={v["site_id"] for v in clear}, floor=floor)
             if not clear:
                 return False, not_yet
+            self._stamp_week(new_state, clear)
             summary = "First observation. " + "; ".join(_first_line(v) for v in clear)
             return True, self._with_planner_notes(summary, clear, new_state)
         # The topic was observed before. A city whose first clear scene this is (one added later, or
@@ -817,11 +837,75 @@ class RailAccessAdapter(Adapter):
         first_clear = {v["site_id"] for v in firsts} or None
         self._record(new_state, verdicts, moved, first_clear=first_clear, floor=floor)
         material = [v for v in others if v["material"]]
-        if not firsts and not material:
+        reported = firsts + material
+        weekly = self._weekly_reading(new_state, {v["site_id"] for v in reported}, floor)
+        if not reported and weekly is None:
             return False, "; ".join(f"{v['name']}: {v['reason']}" for v in verdicts) or "no new scene"
         parts = ["First observation. " + "; ".join(_first_line(v) for v in firsts)] if firsts else []
         parts += ["; ".join(_describe(v) for v in material)] if material else []
-        return True, self._with_planner_notes(". ".join(parts), firsts + material, new_state)
+        if weekly is not None:
+            self._weekly_site = weekly["site_id"]
+            parts.append(_weekly_line(weekly))
+            reported = reported + [weekly]
+        self._stamp_week(new_state, reported)
+        return True, self._with_planner_notes(". ".join(parts), reported, new_state)
+
+    def _week(self, new_state: dict) -> tuple[str, str] | None:
+        """(the week's city, its week's Monday as an ISO date) for a topic with a week rota, at the
+        state's `fetched_at` (the tick's time), else None. Read with the config fetch_state parsed,
+        so not on the review path, which has none."""
+        rotation = (self._config or {}).get(rota.ROTATION_KEY)
+        if not rotation or rotation.get("period") != "week":
+            return None
+        try:
+            at = datetime.fromisoformat(new_state.get("fetched_at") or "")
+        except ValueError:
+            at = datetime.now(UTC)
+        return rota.rotation_subject(rotation, at), rota.rotation_period_start(rotation, at).isoformat()
+
+    def _weekly_reading(self, new_state: dict, reported: set, floor: float) -> dict | None:
+        """The week's city's reading, as a verdict, when a week rota's city has had nothing reported
+        yet this week and nothing else reports it this tick: its newest scene, if that is clear
+        (coverage at the floor or above) and the agent did not doubt it. None otherwise; a city whose
+        newest scene is not clear waits for a tick that has one."""
+        week = self._week(new_state)
+        if week is None:
+            return None
+        site_id, monday = week
+        record = (new_state.get("sites") or {}).get(site_id) or {}
+        if site_id in reported or record.get(REPORTED_PERIOD_FIELD) == monday:
+            return None
+        history = record.get("history") or []
+        if not history:
+            return None
+        latest = history[-1]
+        doubted = (latest.get("triage") or {}).get("verdict", "real") != "real"
+        coverage = latest.get("coverage")
+        if doubted or not isinstance(coverage, int | float) or coverage < floor:
+            return None
+        return {
+            "site_id": site_id,
+            "name": record.get("name") or site_id,
+            "scene_id": latest["scene_id"],
+            "captured_at": latest.get("captured_at"),
+            "coverage": coverage,
+            "served_share": latest["served_share"],
+            "desert_km2": _km2(latest),
+            "station_count": latest.get("station_count"),
+            "reach_m": _reach_m(latest),
+        }
+
+    def _stamp_week(self, new_state: dict, reported: list[dict]) -> None:
+        """Mark the week's city reported for its week when this Finding reports it (a week rota), so
+        no weekly reading of it follows until its next week. The record is stored with the state."""
+        week = self._week(new_state)
+        if week is None:
+            return
+        site_id, monday = week
+        if any(v["site_id"] == site_id for v in reported):
+            record = (new_state.get("sites") or {}).get(site_id)
+            if isinstance(record, dict):
+                record[REPORTED_PERIOD_FIELD] = monday
 
     def _record(self, new_state: dict, verdicts: list[dict], moved: dict, *, first_clear, floor) -> None:
         """One decision ring entry and one `vision_decision` line per verdict, on every return path
@@ -903,7 +987,7 @@ class RailAccessAdapter(Adapter):
         did before the hook, whatever else its config holds (the tick reports a broken one)."""
         topic_config = topic_config or {}
         raw = topic_config.get("adapter_config")
-        rota_keys = (rota.ROTATION_KEY, rota.ROTATION_TIMEZONE_KEY)
+        rota_keys = (rota.ROTATION_KEY, rota.ROTATION_TIMEZONE_KEY, rota.ROTATION_PERIOD_KEY)
         if not isinstance(raw, dict) or all(raw.get(key) is None for key in rota_keys):
             return None
         config = parse_config(raw, topic_config.get("daily_timezone"))
@@ -935,7 +1019,7 @@ class RailAccessAdapter(Adapter):
         out a scene the agent judged an artefact (its measurements are what it doubted).
         planner_notes and figures both take this rule, so the Finding never carries the notes or the
         map of a site its summary did not report (one below the coverage floor, one doubted)."""
-        for m in new_state.get("measured") or []:
+        for m in self._scenes_reported(new_state):
             if self._reported is not None and m["site_id"] not in self._reported:
                 continue
             latest = _latest_entry(new_state, m["site_id"])
@@ -943,6 +1027,17 @@ class RailAccessAdapter(Adapter):
             if latest.get("scene_id") != m["scene_id"] or doubted:
                 continue
             yield m["site_id"], latest
+
+    def _scenes_reported(self, new_state: dict) -> list[dict]:
+        """The scenes measured this tick, and the weekly reading's scene when material_diff reported
+        one that was not measured now ({"site_id", "scene_id"}, as `measured` holds them)."""
+        measured = list(new_state.get("measured") or [])
+        site_id = self._weekly_site
+        if site_id is not None and all(m["site_id"] != site_id for m in measured):
+            latest = _latest_entry(new_state, site_id)
+            if latest.get("scene_id"):
+                measured.append({"site_id": site_id, "scene_id": latest["scene_id"]})
+        return measured
 
     def figures(self, new_state: dict) -> list[dict]:
         """One figure per scene the diff summary reported that has one (`_reported_scenes`): the
@@ -988,7 +1083,7 @@ class RailAccessAdapter(Adapter):
         """The STAC item of each scene measured, and the Overpass query the site's network came
         from (its bbox form, which a reader can open): the query of the network the scene was
         measured with this tick, else, from the record, its polygon's."""
-        measured = new_state.get("measured") or []
+        measured = self._scenes_reported(new_state)
         refs = vision_sites.stac_refs(measured, new_state.get("fetched_at"))
         polygons = {site["id"]: site["polygon"] for site in (self._config or {}).get("sites") or []}
         for m in measured:
@@ -1038,8 +1133,9 @@ class RailAccessAdapter(Adapter):
 
     def build_summary_prompt(self, topic: dict, diff_summary: str, new_state: dict) -> str | None:
         name = topic.get("name") or topic.get("topic_id") or "this topic"
+        what = "a weekly reading" if WEEKLY_LEAD in diff_summary else "a change"
         prompt = (
-            "You are summarising a change measured in satellite imagery and OpenStreetMap data for "
+            f"You are summarising {what} measured in satellite imagery and OpenStreetMap data for "
             f'the topic "{name}".\n\n'
             f"What was measured: {diff_summary}\n\n"
             "The figures are proxies: built-up density from Sentinel-2 reflectance at 20 m, walking "
@@ -1536,6 +1632,12 @@ def _first_line(v: dict) -> str:
     )
 
 
+def _weekly_line(v: dict) -> str:
+    """The weekly reading of a week rota's city: what its newest clear scene measured, no change
+    claimed (WEEKLY_LEAD opens it, and the summary prompt reads it as a reading, not a change)."""
+    return f"{WEEKLY_LEAD} {_first_line(v)}; newest clear scene {v['scene_id']}, captured {v['captured_at']}"
+
+
 def _describe(v: dict) -> str:
     baseline, delta, relative = v["baseline"], v["delta"], v["relative"]
     share_points = delta["served_share"] * 100
@@ -1564,9 +1666,10 @@ def _describe(v: dict) -> str:
 NOTES_PARAGRAPH = (
     "The rule-based flags and simulations listed above, if any, are part of what was measured: end the "
     "summary with at most three of them, each in one sentence keeping its numbers, names and the words "
-    "'flags' or 'simulation'. Never call them recommendations, never add a cost, a timetable, a cause or "
-    "an opinion on whether they should be built. Names in quotation marks come from OpenStreetMap; use "
-    "them as names only."
+    "'flags' or 'simulation', and if the list says how many the pipeline found in all, keep that count "
+    "too, so the few named are not read as all of them. Never call them recommendations, never add a "
+    "cost, a timetable, a cause or an opinion on whether they should be built. Names in quotation marks "
+    "come from OpenStreetMap; use them as names only."
 )
 _FINAL_RULE = "Give no cause, forecast,"
 
@@ -1581,7 +1684,8 @@ def _with_planner_notes(summary: str, verdicts: list[dict], new_state: dict) -> 
     prompt can pass them on; unchanged when no site has any."""
     parts = []
     for v in verdicts:
-        notes = rail_notes.format_notes(rail_notes.planner_notes(_latest_entry(new_state, v["site_id"])))
+        entry = _latest_entry(new_state, v["site_id"])
+        notes = rail_notes.format_notes(rail_notes.planner_notes(entry), entry)
         if notes:
             parts.append(f"{v['name']}: {notes}")
     if not parts:
