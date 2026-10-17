@@ -9,7 +9,7 @@ them asks Overpass for no `meta`, so a file holds no user names, user ids or cha
 
 Each fixture is listed here with where and when it came from, so a run that cites its sha256 says
 which copy of the map it measured. The file itself is captured after the deployment (the
-runsheet's COOL steps say how: the deployed city's network object, `vision/<topic>/sydney/network.json`,
+[COOL benchmark runsheet](../../docs/cool-benchmark-runsheet.md), step 5, says how: the deployed city's network object, `vision/<topic>/sydney/network.json`,
 or `fetch-network`),
 and is committed only if `scripts/pii_denylist_check.py --staged` passes on it; otherwise it stays
 out of git, its row here is still filled in, and every run file that read it cites its sha256

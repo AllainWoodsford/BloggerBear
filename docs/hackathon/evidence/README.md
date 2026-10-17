@@ -13,7 +13,7 @@ machine, build and inputs it ran on, and the report quotes it.
 | `index.json`, `RESULTS.md` | One row per run file (its id, kind, date, CPU, backend, build, commit and `summary`), and the same as one table per kind, newest first, each row linking its file | `scripts/vision_eval.py index`; `index --check` fails when a run file was added without re-indexing. Run it before committing run files; CI runs it too, on every pull request that touches `docs/hackathon/`, `scripts/` or `lambdas/` |
 | `older-code.json` (when needed) | `{run_id: reason}` for a run made on code that has changed since in a way that matters to it: RESULTS.md marks it "measured on older code" with the reason | by hand, then `index` |
 | `live/` (from the export) | One directory per export, `live/<UTC date>/`: what the deployed system measured, decided and did, with `provenance.json` and `summary.json` ([below](#the-live-evidence-live)); and the operator's labels, `live/<date>/labels.csv` (`decision, verdict, figure, trace, label, reason`; `agree`/`disagree`; the reason codes) | `scripts/evidence_export.py export` and the owner; `index --check` validates the labels |
-| `cool/` | What the COOL reconnaissance and the Graviton session record by hand. From the reconnaissance of 16 October: [`recon.md`](cool/recon.md) (the Marketplace product, its delivery type, Region, price and layout) and [`cool-buildinfo.txt`](cool/cool-buildinfo.txt) (COOL's `cv2.getBuildInformation()`, byte for byte; its sha256 is the fingerprint, checked by `scripts/tests/test_cool_evidence.py`). From the session: `stock-buildinfo.txt` and `stock4-buildinfo.txt` (each stock venv's build information), `lscpu.txt`, `session.md` (hours and fees), `perf-dso.txt` if made | the owner, following the [runsheet's COOL section](../../deployment-runsheet.md#the-cool-backend-and-the-benchmark) |
+| `cool/` | What the COOL reconnaissance and the Graviton session record by hand. From the reconnaissance of 16 October: [`recon.md`](cool/recon.md) (the Marketplace product, its delivery type, Region, price and layout) and [`cool-buildinfo.txt`](cool/cool-buildinfo.txt) (COOL's `cv2.getBuildInformation()`, byte for byte; its sha256 is the fingerprint, checked by `scripts/tests/test_cool_evidence.py`). From the session: `stock-buildinfo.txt` and `stock4-buildinfo.txt` (each stock venv's build information), `lscpu.txt`, `session.md` (hours and fees), `perf-dso.txt` if made | the owner, following the [COOL benchmark runsheet](../../cool-benchmark-runsheet.md) |
 
 [`RESULTS.md`](RESULTS.md) is the index a reader starts from; `index.json` is the same for code
 (the operator's assistant copies its rows). Both are generated: after adding run files, run
@@ -323,7 +323,7 @@ what OpenCV 5 changed for this workload. It is PyPI's newest 4.x release (its wh
 28 and 29 July 2026; `https://pypi.org/pypi/opencv-python-headless/json`, read on 16 October),
 with `cp37-abi3` aarch64 wheels (`manylinux2014_aarch64.manylinux_2_17_aarch64` and
 `manylinux_2_28_aarch64`); on 16 October it was installed into a fresh Python 3.11 venv beside
-`numpy==2.4.4`, `requests==2.34.2` and `networkx==3.4.2` (the runsheet's stock4 line), `import
+`numpy==2.4.4`, `requests==2.34.2` and `networkx==3.4.2` (the COOL runsheet's stock4 line), `import
 cv2; cv2.__version__` gave `4.14.0`, and `vision_benchmark.py kernels` ran on it (x86, so only
 that the code runs on 4.x is shown, not a timing). The deployed worker's pin
 (`lambdas/requirements-vision.txt`) is unchanged: 5.0.0.93.

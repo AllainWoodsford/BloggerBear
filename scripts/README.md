@@ -677,8 +677,8 @@ CPU's rows are closest to it with the run pinned to one core.
 A `rail_access` scene also needs its OpenStreetMap network, which the worker is sent with the
 request. The scenes file names `vision_benchmark_networks/sydney.json` for both Sydney scenes; the
 directory's `NOTICE.md` carries the Open Database Licence attribution and the row to fill in when
-the file lands (the runsheet's COOL section says how to take it from the deployed city's network
-object, or `fetch-network` asks Overpass for the scene's polygon through `lambdas/common/osm.py`, the
+the file lands ([the COOL benchmark runsheet](../docs/cool-benchmark-runsheet.md), step 5, says how to take it
+from the deployed city's network object, or `fetch-network` asks Overpass for the scene's polygon through `lambdas/common/osm.py`, the
 same client the adapter uses). Until the file exists, the rail scenes' rows read
 `error: network_file missing`. Overpass is not reachable from the build containers, so the file
 is captured on a machine that can reach it, checked with `pii_denylist_check.py --staged`, and

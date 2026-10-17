@@ -61,6 +61,7 @@ In the order you are likely to need them.
 | [Cost saving](docs/cost-saving.md) | The firewall switches: what each one saves, what it gives up, how to set it, and why the admin API's allowlist stays on whatever you switch off. Hardened by default; at your own risk. |
 | [Admin CLI quick start](scripts/QUICKSTART.md) | `scripts/QUICKSTART.md`: point the CLI at your environment, run your first commands, and where to look when one fails. |
 | [Admin CLI reference](scripts/README.md) | Every command: topics, the review inbox, models, pipeline settings, feedback. |
+| [COOL benchmark runsheet](docs/cool-benchmark-runsheet.md) | Optional, for the OpenCV competition: the Graviton4 session that times the vision worker under COOL against stock OpenCV 5. |
 | [Production runsheet](docs/production-runsheet.md) | Your domain, DNS, the first production release, rolling back, what it costs. |
 | [Repository protection](docs/todo/public-repo-runsheet.md) | The GitHub settings for a public repository: rulesets, required reviewers, secret scanning. |
 | [Alexa+ add-on](alexa/README.md) | Optional: putting the operator's assistant on Alexa+. |
@@ -556,6 +557,7 @@ docs/
   configuration.md              every setting and where it goes
   cost-saving.md                the firewall switches, hardened by default
   architecture/                 the project by feature: article research, ...
+  cool-benchmark-runsheet.md    the COOL session on Graviton4, by hand
   production-runsheet.md        production + domain, step by step
   project-plan.md               architecture, rules, data model -- source
                                 of truth for "why"

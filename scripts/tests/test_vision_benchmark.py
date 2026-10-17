@@ -356,9 +356,16 @@ def test_the_cool_image_carries_everything_the_benchmark_imports_and_reads():
 
 # --- the runsheet's COOL session, as the owner runs it ----------------------------------------------------
 
-RUNSHEET_COOL = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8").split(
-    "### The COOL backend and the benchmark", 1
-)[1].split("\n## ", 1)[0]
+RUNSHEET_COOL = (ROOT / "docs" / "cool-benchmark-runsheet.md").read_text(encoding="utf-8")
+
+
+def test_the_deployment_runsheet_points_to_the_cool_runsheet_and_holds_no_copy_of_it():
+    # The session's steps live in one file. The deployment runsheet keeps the section's heading, so
+    # old links still land, with a link and what the session is for, and none of its commands.
+    deployment = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
+    section = deployment.split("### The COOL backend and the benchmark", 1)[1].split("\n### ", 1)[0]
+    assert "](cool-benchmark-runsheet.md)" in section
+    assert "~/cool/bin/python" not in deployment and "SHA=" not in deployment
 
 
 def test_the_runsheets_compare_lines_find_each_run_file_whatever_its_date(tmp_path):

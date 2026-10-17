@@ -25,8 +25,8 @@ otherwise.
 
 The Graviton session's third venv, for the "what OpenCV 5 changed" row, pins
 `opencv-python-headless==4.14.0.94` beside `numpy==2.4.4`, `requests==2.34.2` and `networkx==3.4.2`
-([the evidence README](evidence/README.md#the-4x-pin); the runsheet's
-[COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark), step 7).
+([the evidence README](evidence/README.md#the-4x-pin); the
+[COOL benchmark runsheet](../cool-benchmark-runsheet.md), step 7).
 
 ### The gap: transitive packages are resolved at each Lambda build
 

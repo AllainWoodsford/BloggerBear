@@ -344,7 +344,7 @@ cut, the sentence that no 5.x-specific call is used and the comparison was not m
 | The admin API | API Gateway with IAM authentication and a WAF IP allowlist that fails closed | `infra/modules/rest-api/` |
 | The operator's assistant | API Gateway, Cognito, the MCP server's Lambda and the agent's Lambda (Strands); Alexa+ through the same MCP server with OAuth | `infra/modules/ops-assistant/`; [alexa/README.md](../../alexa/README.md) |
 | Infrastructure and CI | Terraform 1.16.2, with the aws provider 6.64.0 from the lock file; GitHub Actions with OIDC (dev applies on a merge, production on a reviewed release); every action pinned by SHA | `.github/workflows/terraform.yml:149`; `infra/environments/dev/.terraform.lock.hcl`; [dependencies.md](dependencies.md) |
-| The COOL bench | EC2 `c8g.xlarge` (or `c8g.2xlarge`) in us-west-2, from the Marketplace product's AMI (COOL 3.1); by hand, not in Terraform | the runsheet's [COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark); [the reconnaissance](evidence/cool/recon.md) |
+| The COOL bench | EC2 `c8g.xlarge` (or `c8g.2xlarge`) in us-west-2, from the Marketplace product's AMI (COOL 3.1); by hand, not in Terraform | the [COOL benchmark runsheet](../cool-benchmark-runsheet.md); [the reconnaissance](evidence/cool/recon.md) |
 
 **Why two Regions.** The Sentinel-2 COGs are in `sentinel-cogs`, us-west-2. The worker reads beside
 them with HTTP range requests (about 54 MB for the whole Sydney box at 20 m, in PR D's smoke run;
@@ -682,7 +682,7 @@ interleaved so a slow minute does not land on one side:
 - three interpreters on the instance: COOL's own activated Python 3.12 environment (its `cv2`
   is 5.1.0-dev, built against numpy 2.5.1: [the reconnaissance](evidence/cool/recon.md)), and
   venvs with stock `opencv-python-headless` 5.0.0.93 and 4.14.0.94
-  ([the runsheet's COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark),
+  ([the COOL benchmark runsheet](../cool-benchmark-runsheet.md),
   steps 4, 6 and 7);
 - `vision_benchmark.py kernels` (each OpenCV operation on synthetic images) and `scenes` (the
   worker's handler on the pinned real Sydney scenes with the Sydney network fixture, from the

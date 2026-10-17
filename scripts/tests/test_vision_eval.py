@@ -948,7 +948,9 @@ def test_ci_runs_index_check_on_a_pull_request_that_adds_only_run_files():
     pull_request = workflow.split("pull_request:", 1)[1].split("\n  push:", 1)[0]
     assert "'docs/hackathon/**'" in pull_request
     evidence = ROOT / "docs" / "hackathon" / "evidence"
-    for path in (evidence / "README.md", evidence / "RESULTS.md", ROOT / "scripts" / "README.md", RUNSHEET):
+    cool = ROOT / "docs" / "cool-benchmark-runsheet.md"
+    scripts = ROOT / "scripts" / "README.md"
+    for path in (evidence / "README.md", evidence / "RESULTS.md", scripts, RUNSHEET, cool):
         text = " ".join(path.read_text(encoding="utf-8").split())
         assert "until python-ci also lists" not in text, path
 
