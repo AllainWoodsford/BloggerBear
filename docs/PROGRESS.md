@@ -743,9 +743,9 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   (`docs/hackathon/rubric-tracker.md`), one row per rubric line, the owner's ask and each owner
   step, with its status, what it needs, the evidence, the gap, what closes it and what the
   assistant may say, updated by the PR that closes a row; a format test that fails on a
-  malformed row, run by the Python CI on a pull request that also touches `lambdas/` or
-  `scripts/` and by hand on a docs-only one until `python-ci.yml` lists `docs/hackathon/**`
-  (#303, submission PR P0; `scripts/tests/test_hackathon_docs.py`)
+  malformed row, run by the Python CI on a pull request that touches `lambdas/` or `scripts/`,
+  and since R1 on one that touches only `docs/hackathon/` too (#303, submission PR P0;
+  `scripts/tests/test_hackathon_docs.py`)
 - [x] The submission round's benchmark and evaluation inputs (Q1): the benchmark writes run files
   with the code, machine, build, inputs' ETags and every sample, records the rail metrics, their
   digest, the figure's hash, the peak memory and the OpenCV libraries mapped during a run, gains
@@ -797,6 +797,16 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
   `lambdas/common/adapters/rail_access.py`, `scripts/rail_topics.example.json`;
   [design](enhancements/dailysubject_hook.md))
+- [x] The submission package's first wave (R1): the technical report in the rubric's eight sections
+  and three appendices, drafted from the code on `dev` with code anchors and R2's numbers marked as
+  placeholders; the system and agent-workflow diagrams in Mermaid with their SVGs, embedded in the
+  report, the vision pipeline page and the README; the judges' reproduction guide (CI's commands,
+  held equal to `python-ci.yml` by a test, then the real-data runs, the deploy and the Graviton
+  session); the dependency audit, the judges' `constraints-py311.txt` and a pin test; CI prints
+  its `pip freeze --all` and runs the docs test on a `docs/hackathon/` change; the claim fixes;
+  responsible use; the video script with its redaction checklist and the demo plan; the Devpost
+  checklist and `scripts/submission_check.py` (#333, submission PR R1; `docs/hackathon/`,
+  `scripts/submission_check.py`, `lambdas/tests/test_requirements.py`)
 - [x] The submission round's evaluation, first half (Q2a): a driver that runs the real rail adapter
   tick by tick over pinned scenes with every outside service under the run's control (the worker in
   this process with the cache, deployed by ARN or scripted; the agent on Bedrock, recorded or
@@ -804,9 +814,9 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `vision_eval.py replay` (the A2 trace, live, or recorded and re-run without AWS, held to its
   recording; CI replays a committed synthetic recording), `failures` (the failure catalogue, its 42
   tests named by node id and checked to be collected), `access-baseline` (E5) and `index`
-  (`docs/hackathon/evidence/RESULTS.md` and `index.json`, checked in CI). The real-data runs are the
-  operator's (submission PR Q2a; `scripts/vision_eval_driver.py`, `scripts/vision_eval.py`;
-  [results](hackathon/evidence/RESULTS.md))
+  (`docs/hackathon/evidence/RESULTS.md` and `index.json`, checked by `index --check`). The
+  real-data runs are the operator's (#336, submission PR Q2a; `scripts/vision_eval_driver.py`,
+  `scripts/vision_eval.py`; [results](hackathon/evidence/RESULTS.md))
 - [x] The submission round's evaluation, second half (Q2b), on Q2a's driver: thirteen agent cases
   balanced between the classes (four real, all network-driven; five artefact; four failure cases),
   each network derived from the Sydney fixture by code; `vision_eval.py agent` (the real triage on

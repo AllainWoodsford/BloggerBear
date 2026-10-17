@@ -827,7 +827,7 @@ def run_row(case: dict, repeat: int, result: dict, outcome: dict | None, site_id
         "look_again_failed": any(s.get("tool") == "look_again" and not s.get("ok") for s in steps),
         "elapsed_ms": trail.get("elapsed_ms"),
         "deadline_left_s": trail.get("deadline_left_s"),
-        "model_id": trail.get("model_id"),
+        "model_id": driver.recorded_model_id(trail.get("model_id")),  # never an ARN, as the replay's
         "model_calls": trail.get("model_calls"),
         "input_tokens": tokens_in,
         "output_tokens": tokens_out,
@@ -1481,8 +1481,11 @@ def _one_site(cases: list[dict]) -> str:
 
 
 def _agent_block(model: dict, responses: list[dict], region) -> dict:
-    return {"mode": model["agent_mode"], "model_id": model["model_id"], "region": region,
-            "price": PRICE_SOURCE, "responses": responses}  # fmt: skip
+    # The model as the replay records it (driver.recorded_model_id): an inference profile's ARN
+    # carries the account id, so the run file keeps the profile's id, or None; Converse alone is
+    # given what the operator passed.
+    return {"mode": model["agent_mode"], "model_id": driver.recorded_model_id(model["model_id"]),
+            "region": region, "price": PRICE_SOURCE, "responses": responses}  # fmt: skip
 
 
 def _main_agent(args, manifest: dict, seams: dict) -> dict:

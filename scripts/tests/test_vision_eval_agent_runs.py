@@ -187,6 +187,23 @@ def test_with_the_live_model_c8_is_asked_with_an_invalid_id_c9_stays_scripted_an
     assert run["run_id"].endswith("-bedrock-synthetic")
 
 
+@pytest.mark.parametrize("arn, kept", [
+    ("arn:aws:bedrock:ap-southeast-2:123456789012:inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0",
+     "au.anthropic.claude-haiku-4-5-20251001-v1:0"),
+    ("arn:aws:bedrock:ap-southeast-2:123456789012:application-inference-profile/abc123", None),
+])
+def test_a_profile_arn_given_as_model_id_reaches_converse_but_never_the_run_file(tmp_path, arn, kept):
+    """The deployed Lambdas' model is an ARN with the account id in it: Converse is given it as passed,
+    and the run file (which is committed) keeps what the replay keeps, the profile's id or nothing."""
+    asked = []
+    argv = ["agent", "--synthetic", "--agent", "bedrock", "--model-id", arn, "--repeats", "1", "--case", "C1"]
+    code, run = run_main(argv, tmp_path, converse=fake_bedrock(asked))
+    assert code == 0 and asked and set(asked) == {arn}
+    assert run["agent"]["model_id"] == kept and run["results"]["cases"]["C1"]["runs"][0]["model_id"] == kept
+    written = "".join(path.read_text(encoding="utf-8") for path in tmp_path.rglob("*") if path.is_file())
+    assert "123456789012" not in written
+
+
 def test_with_no_bedrock_access_every_run_is_bedrock_error_counted_and_said_never_dropped(tmp_path):
     argv = ["agent", "--synthetic", "--agent", "bedrock", "--model-id", "m", "--repeats", "2", "--case", "C1",
             "--case", "C2"]  # fmt: skip

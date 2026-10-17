@@ -10,7 +10,7 @@ machine, build and inputs it ran on, and the report quotes it.
 |---|---|---|
 | `runs/` | One JSON **run file** per run, `<run_id>.json`, plus the figures a `scenes` run kept beside its file (`<run_id>.<scene>.png`) | `scripts/vision_benchmark.py --out` and `scripts/vision_eval.py --out` |
 | `replay/` | One Markdown trace per replayed sequence, `<sequence>.md`: each tick's decision as the operator's assistant shows it (the six steps of `vision_decisions.trace`), generated from a `replay` run file, never edited by hand | `scripts/vision_eval.py replay --trace` |
-| `index.json`, `RESULTS.md` | One row per run file (its id, kind, date, CPU, backend, build, commit and `summary`), and the same as one table per kind, newest first, each row linking its file | `scripts/vision_eval.py index`; CI's `index --check` fails when a run file was added without re-indexing |
+| `index.json`, `RESULTS.md` | One row per run file (its id, kind, date, CPU, backend, build, commit and `summary`), and the same as one table per kind, newest first, each row linking its file | `scripts/vision_eval.py index`; `index --check` fails when a run file was added without re-indexing. Run it before committing run files; CI runs it too, on every pull request that touches `docs/hackathon/`, `scripts/` or `lambdas/` |
 | `older-code.json` (when needed) | `{run_id: reason}` for a run made on code that has changed since in a way that matters to it: RESULTS.md marks it "measured on older code" with the reason | by hand, then `index` |
 | `live/` (from the export) | The deployed system's evidence and the operator's labels, `live/<date>/labels.csv` (`decision, verdict, figure, trace, label, reason`; `agree`/`disagree`; the reason codes) | `scripts/evidence_export.py` (Q3) and the owner; `index --check` validates the labels |
 | `cool/` | What the Graviton session records by hand: `recon.md` (the Marketplace product, its delivery type, Region and price), `cool-buildinfo.txt`, `stock-buildinfo.txt` and `stock4-buildinfo.txt` (each venv's `cv2.getBuildInformation()`, whose sha256 is the build fingerprint), `lscpu.txt`, `session.md` (hours and fees), `perf-dso.txt` if made | the owner, following the [runsheet's COOL section](../../deployment-runsheet.md#the-cool-backend-and-the-benchmark) |
@@ -56,9 +56,11 @@ Schema `bloggerbear.vision-eval/1` (`scripts/vision_runs.py` writes and reads it
   ran in), each with its sha256 and the package that owns it: with the build fingerprint, that is
   what shows which binaries did the work.
 - `worker` never holds an ARN (it carries the account id): a deployed worker is named by its
-  Region and its `CodeSha256`. Paths (`cv2_path`, a library's `path`, the parameters' files) are
-  recorded relative to the repository, or as `~/...` under the home directory, so no run file
-  names the user who made it.
+  Region and its `CodeSha256`. Nor does a replay's `agent.model_id` (or `params.model_id`): it is
+  the id the decision ring keeps, so a system inference profile's ARN is recorded as its id and
+  an application inference profile's as null. Paths (`cv2_path`, a library's `path`, the
+  parameters' files) are recorded relative to the repository, or as `~/...` under the home
+  directory, so no run file names the user who made it.
 - `inputs.scenes` carries every asset's ETag as read. A run refuses to start when a pinned ETag
   has changed ("input changed"), so two run files that cite the same ETags read the same bytes.
 - `results` is each script's own shape (the benchmark's old report shape is kept there, so its
@@ -96,8 +98,10 @@ HTTPS from `sentinel-cogs` (us-west-2): give them a cache (`--cache ~/cogs`; Pow
 from. They need the Sydney network fixture, `scripts/vision_benchmark_networks/sydney.json`
 (the owner captures it from the deployed `vision/rail-cities/sydney/network.json`; until then
 `--network <file>`), `lambdas/requirements-vision.txt`, `lambdas/requirements.txt` and
-`scripts/requirements.txt`. The exact session, with each command's PowerShell line, is the
-runsheet's [evaluation runs](../../deployment-runsheet.md#the-evaluations-real-data-runs).
+`scripts/requirements.txt`, and for `failures`' collection check pytest and moto
+(`lambdas/requirements-dev.txt`, which holds all three `lambdas/` files). The exact session,
+with each command's PowerShell line, is the runsheet's
+[evaluation runs](../../deployment-runsheet.md#the-evaluations-real-data-runs).
 
 - **`replay --sequence sydney-winter | sydney-demo | sydney-c1`** (2.6.4): the real adapter over
   06-27, 08-21b, 08-26 and 08-31, through `fetch_state` then `material_diff`, one tick per scene,

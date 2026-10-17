@@ -10,6 +10,9 @@ on:
       # The Claude Code skills: scripts/tests/test_claude_skills.py parses the commands each shows
       # against the real CLI, so an edit to a skill alone runs the tests.
       - '.claude/skills/**'
+      # The submission's docs: scripts/tests/test_hackathon_docs.py checks the rubric tracker, the
+      # report, the diagrams and the reproduction guide, so a docs-only change to them runs it.
+      - 'docs/hackathon/**'
   push:
     # Not dev: terraform.yml runs this before apply-dev, in the same workflow run.
     branches: [prod]
@@ -71,6 +74,12 @@ jobs:
           if [ -f scripts/requirements.txt ]; then
             pip install -r scripts/requirements.txt
           fi
+
+      # Prints only: the exact environment the tests ran in. The submission's constraints-py311.txt
+      # is this output, copied from a run on R2's pull request before the tag (nothing runs this
+      # workflow on a tag; docs/hackathon/dependencies.md).
+      - name: Print the installed packages
+        run: pip freeze --all
 
       - name: Ruff lint
         run: |

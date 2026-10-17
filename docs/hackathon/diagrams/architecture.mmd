@@ -1,0 +1,64 @@
+flowchart LR
+  subgraph home["Home Region (ap-southeast-2 by default): everything that holds state"]
+    sched["EventBridge Scheduler<br/>an hourly research heartbeat and a daily run per topic"]
+    tick["Lambda: research tick, 120 s<br/>rail_access adapter: one city per tick, in turn"]
+    agent["Triage agent, inside the tick<br/>bounded, fails closed"]
+    sfn["Step Functions, Lambda: daily cycle<br/>the day's city from the topic's rota;<br/>draft, reviews, held for a person"]
+    bedrock["Amazon Bedrock<br/>Converse"]
+    s3c[("S3 content bucket<br/>running state and decision rings,<br/>figures, each city's network")]
+    ddb[("DynamoDB<br/>topics (rail-cities: four cities, a weekly rota),<br/>Findings with their subjects, articles, moderation")]
+    api["Admin API<br/>IAM auth and a WAF allowlist"]
+    site[("S3, CloudFront and WAF<br/>the public site")]
+    logs["CloudWatch Logs, 90 days<br/>evidence lines: research tick, admin API"]
+    mcp["Ops MCP server, read-only<br/>vision_status, topic_findings, vision_evidence"]
+    opsagent["Ops agent (Strands)<br/>the ask page"]
+  end
+  subgraph west["us-west-2: beside the imagery"]
+    worker["Lambda: vision worker<br/>arm64, python3.12, OpenCV 5 (stock), networkx"]
+    cogs[("sentinel-cogs<br/>Sentinel-2 L2A COGs, public")]
+    wlogs["CloudWatch Logs, 90 days<br/>vision_measure lines"]
+  end
+  subgraph tokyo["ap-northeast-1 by default"]
+    gateway["Bedrock AgentCore<br/>web-search gateway"]
+  end
+  subgraph bench["Benchmarked, not deployed"]
+    c8g["EC2 c8g, Graviton4<br/>COOL, and stock OpenCV 5 and 4.x venvs"]
+  end
+  stac["Earth Search STAC<br/>the newest clear scene"]
+  osm["OpenStreetMap Overpass<br/>rail ways, stations, intermodal points"]
+  gdelt["GDELT<br/>news search"]
+  operator(["Operator"])
+  alexa(["Alexa+"])
+  readers(["Readers"])
+
+  sched -- "async invoke" --> tick
+  sched --> sfn
+  tick --> stac
+  tick -- "a city's network, cached 30 days" --> osm
+  tick -- "cross-Region invoke: the scene's assets and the network" --> worker
+  worker -- "HTTP range reads" --> cogs
+  worker --> wlogs
+  tick -- "only when the numbers moved" --> agent
+  agent --> bedrock
+  agent -- "look_again" --> worker
+  agent -- "web_context" --> gdelt
+  agent -. "web_context, when GDELT fails" .-> gateway
+  tick --> s3c
+  tick -- "a Finding and its city" --> ddb
+  tick --> logs
+  sfn -- "the day's city's Findings" --> ddb
+  sfn --> bedrock
+  operator -- "admin CLI: approve or reject" --> api
+  api --> ddb
+  api --> logs
+  api -- "publish the page and its figures" --> site
+  readers --> site
+  operator -- "ask.html" --> opsagent
+  opsagent --> mcp
+  opsagent --> bedrock
+  alexa -- "MCP, OAuth through Cognito" --> mcp
+  mcp --> s3c
+  mcp --> ddb
+  mcp --> logs
+  mcp -- "log_review" --> wlogs
+  c8g -. "the same handler on pinned real scenes" .-> cogs

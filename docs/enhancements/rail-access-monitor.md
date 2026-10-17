@@ -57,7 +57,11 @@ stack, PRs #240–#254) and [opencv-agentic-vision-enhancement.md](opencv-agenti
 > - **PR F:** the cities rotate one a day as specified (Sydney Monday and Friday, Melbourne Tuesday
 >   and Saturday, Singapore Wednesday and Sunday, Boston Thursday, all at 09:05 Sydney time), and
 >   each topic sets `findings_window_hours` to 192 (PR K): the daily cycle reads 24 hours back by
->   default, which would have dropped most Findings made on a city's off days.
+>   default, which would have dropped most Findings made on a city's off days. Since the
+>   day-subject round (#320, #323) the four cities are one topic, `rail-cities`, with the same rota
+>   as its `rotation` and the same 192-hour window, and each city's network in its own object, not
+>   the running state ([dailysubject_hook.md](dailysubject_hook.md)); §2's "one topic per city" and
+>   §3's sketch are the earlier shape.
 > - **§2 and §5 risk 2:** the city boxes are 1.0 to 3.0 km inside their 100 km squares (enough: a
 >   tile reaches 9.8 km past its square to the east and south), and a city's network at the caps
 >   is 2.6 to 3 MB of JSON, not 1.5 MB.

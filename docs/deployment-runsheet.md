@@ -821,9 +821,11 @@ Finding: its `summary` (the model wrote it from a diff that, for a change the ag
 quoted the agent's reason as `the vision agent's note (not a measurement): "…"`), `figures`,
 `planner_notes`, `subjects` and `raw_snapshot_s3_key`. That snapshot (and the running state) holds
 the whole trail under `triage`, keyed by site id: `verdict`, `reason`, `tool_calls` (each tool's
-`name`, its `input` and whether it was `ok`), `model_id`, the tokens and `model_calls`; the newest
-history entry repeats the verdict and reason. A change the agent judged an artefact writes no
-Finding, so its trail is only in the running state. The review evidence, which the fresh-data
+`name`, its `input` and whether it was `ok`), `steps` (each tool's code-derived result), `stop`,
+`model_id`, the tokens and `model_calls`; the newest history entry repeats the verdict and reason.
+A change the agent judged an artefact writes no Finding, so its trail is in the site's decision
+ring in the running state (the last 12 decisions) and in the logs (the `vision_triage` line, 90
+days: [Evidence](#evidence-what-the-pipeline-measured-and-decided), below). The review evidence, which the fresh-data
 review checks the draft against, carries each city's measured numbers and planner notes, not the
 trail: to see why a change was or was not reported, read `triage`.
 
@@ -898,8 +900,9 @@ Every step the vision pipeline takes leaves one JSON line in the logs, and every
 entry in the site's decision ring in the running state ([the evidence
 trail](enhancements/vision-evidence.md)). The lines are read in the CloudWatch console (Logs →
 Logs Insights, pick the Region, the log group and a window) with the fixed queries below, which
-filter by field equality: a query on `rail-sydney` never matches `rail-sydney-demo`. The
-operator's assistant and Alexa+ read the same lines in the next round.
+filter by field equality: a query on one topic id never matches another that it prefixes (a
+`rail-sydney` beside `rail-sydney-demo`). The operator's assistant and Alexa+ read the same lines
+with `vision_evidence` ([Asking the assistant](enhancements/vision-evidence.md#asking-the-assistant)).
 
 - (a), (b), (c), (c2) and (f) run on `/aws/lambda/<prefix>-<env>-research-tick` in the home
   Region;
@@ -907,9 +910,9 @@ operator's assistant and Alexa+ read the same lines in the next round.
 - (e) on `/aws/lambda/<prefix>-<env>-admin-api` in the home Region.
 
 ```
-(a) A topic's decisions (one topic: equality, so rail-sydney never matches rail-sydney-demo)
+(a) A topic's decisions (one topic, by equality: rail-cities never matches rail-sydney-demo)
 fields @timestamp, site_id, scene_id, code, moved, network_changed, verdict, reported, coverage, tick, run
-| filter evidence = "bloggerbear/1" and event = "vision_decision" and topic_id = "rail-sydney"
+| filter evidence = "bloggerbear/1" and event = "vision_decision" and topic_id = "rail-cities"
 | sort @timestamp desc | limit 50
 
 (b) What the agent did
@@ -960,7 +963,7 @@ the demo topic's site is `demo-sydney`, not `sydney`.
 
 **The first-deploy check**, once, on dev, right after the deploy that carries this:
 
-1. Force a tick (`python scripts/admin_cli.py topics trigger rail-sydney --pipeline
+1. Force a tick (`python scripts/admin_cli.py topics trigger rail-cities --pipeline
    research_tick`) and run (c) with its tick id (the `START RequestId:` line of the invocation,
    or the `tick` field of any evidence line in the window). Every line of the tick must come
    back with Lambda's own `START`, `END` and `REPORT` lines.
@@ -1334,18 +1337,21 @@ minutes a scene through a slow link. Nothing here writes to AWS.
 
    ```sh
    python3.11 -m venv .venv && . .venv/bin/activate
-   pip install -r lambdas/requirements.txt -r lambdas/requirements-vision.txt -r scripts/requirements.txt
+   pip install -r lambdas/requirements-dev.txt -r scripts/requirements.txt
    E=docs/hackathon/evidence/runs
    C="--cache $HOME/cogs"
    ```
 
    ```powershell
    py -3.11 -m venv .venv; .\.venv\Scripts\Activate.ps1
-   pip install -r lambdas\requirements.txt -r lambdas\requirements-vision.txt -r scripts\requirements.txt
+   pip install -r lambdas\requirements-dev.txt -r scripts\requirements.txt
    ```
 
-   The PowerShell lines below spell `--cache $HOME\cogs` and `--out docs\hackathon\evidence\runs`
-   out in full.
+   `lambdas/requirements-dev.txt` is what CI installs: the Lambda and worker requirements, plus
+   pytest and moto, which `failures` needs to check that pytest collects the catalogue's tests
+   (without them it refuses rather than call the tests missing). The PowerShell lines below run
+   `python`, the activated venv's own: `py -3.11` would run the global 3.11, without the venv's
+   packages. They spell `--cache $HOME\cogs` and `--out docs\hackathon\evidence\runs` out in full.
 2. **The failure catalogue (2.5)**: every test it names is checked to be collected, then the real
    rows run through the worker handler in this process (the cloudy and no-data scenes, the smoke
    scene, a site off the tile, a window past the rail cap, a missing key; six scenes read).
@@ -1355,7 +1361,7 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    ```
 
    ```powershell
-   py -3.11 scripts\vision_eval.py failures --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   python scripts\vision_eval.py failures --cache $HOME\cogs --out docs\hackathon\evidence\runs
    ```
 
    It exits 1 when a row did not do what the catalogue says, and the run file says which and how.
@@ -1366,12 +1372,15 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    ```
 
    ```powershell
-   py -3.11 scripts\vision_eval.py access-baseline --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   python scripts\vision_eval.py access-baseline --cache $HOME\cogs --out docs\hackathon\evidence\runs
    ```
 4. **The replay with the deployed worker and the real model (2.6.4).** Credentials that may invoke
    the worker (`lambda:InvokeFunction` on `<prefix>-dev-vision-worker` in us-west-2) and the
    topics' model (`bedrock:InvokeModel` on the inference profile the topics use, in the home
    Region); `M` is that profile's id (`python scripts/admin_cli.py model-config get` shows it).
+   An application inference profile is given by its ARN, which Converse needs; the run file and
+   the trace then name no model, because that ARN carries the account id (a system profile's ARN
+   is recorded as its id).
    Every site id the worker is sent is `eval-sydney`, so these runs never pass for production's in
    its logs; the run file names the worker's Region and code, never its ARN. About 10 worker calls
    and a few cents of model calls a sequence.
@@ -1388,7 +1397,7 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    $W = aws lambda get-function --function-name <prefix>-dev-vision-worker --region us-west-2 --query Configuration.FunctionArn --output text
    $M = "<the topics' inference profile id>"
    foreach ($s in "sydney-demo", "sydney-winter", "sydney-c1") {
-     py -3.11 scripts\vision_eval.py replay --sequence $s --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --out docs\hackathon\evidence\runs --trace
+     python scripts\vision_eval.py replay --sequence $s --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --out docs\hackathon\evidence\runs --trace
    }
    ```
 
@@ -1410,7 +1419,7 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    ```powershell
    foreach ($s in "sydney-demo", "sydney-winter", "sydney-c1") {
      $from = (Get-ChildItem "docs\hackathon\evidence\runs\*-eval-replay-*-$s-bedrock.json" | Select-Object -Last 1).FullName
-     py -3.11 scripts\vision_eval.py replay --sequence $s --agent recorded --from $from --cache $HOME\cogs --out docs\hackathon\evidence\runs
+     python scripts\vision_eval.py replay --sequence $s --agent recorded --from $from --cache $HOME\cogs --out docs\hackathon\evidence\runs
    }
    ```
 
@@ -1475,12 +1484,19 @@ minutes a scene through a slow link. Nothing here writes to AWS.
 
    ```sh
    python scripts/vision_eval.py index && python scripts/vision_eval.py index --check
-   python scripts/pii_denylist_check.py --staged    # after `git add`: the traces name scene and station ids only
+   python scripts/pii_denylist_check.py --staged    # after `git add`
    ```
 
    ```powershell
-   py -3.11 scripts\vision_eval.py index; py -3.11 scripts\vision_eval.py index --check
+   python scripts\vision_eval.py index; python scripts\vision_eval.py index --check
+   python scripts\pii_denylist_check.py --staged    # after `git add`
    ```
+
+   Run `index --check` here before pushing: CI runs it too, on the pull request (python-ci lists
+   `docs/hackathon/**`), but a failure there costs a round trip. Run the PII check (your `.pii-denylist`) on what is staged, and read each trace before
+   committing it: besides scene and station ids, a trace quotes the agent's note under each
+   decision it was asked about (model text, through `redact.scrub`, of up to 300 characters),
+   which can name a suburb or a station.
 
    Commit the run files and figures, `docs/hackathon/evidence/replay/`, `index.json` and
    `RESULTS.md`, and update the tracker's A2, A3 and S7 rows. A run file made before the submission tag
