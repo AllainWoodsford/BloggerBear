@@ -9,7 +9,7 @@ machine, build and inputs it ran on, and the report quotes it.
 | Directory | Holds | Written by |
 |---|---|---|
 | `runs/` | One JSON **run file** per run, `<run_id>.json`, plus the figures a `scenes` run kept beside its file (`<run_id>.<scene>.png`) | `scripts/vision_benchmark.py --out` and `scripts/vision_eval.py --out` |
-| `cool/` | What the Graviton session records by hand: `recon.md` (the Marketplace product, its delivery type, Region and price), `cool-buildinfo.txt`, `stock-buildinfo.txt` and `stock4-buildinfo.txt` (each venv's `cv2.getBuildInformation()`, whose sha256 is the build fingerprint), `lscpu.txt`, `session.md` (hours and fees), `perf-dso.txt` if made | the owner, following the [runsheet's COOL section](../../deployment-runsheet.md#the-cool-backend-and-the-benchmark) |
+| `cool/` | What the COOL reconnaissance and the Graviton session record by hand. From the reconnaissance of 16 October: [`recon.md`](cool/recon.md) (the Marketplace product, its delivery type, Region, price and layout) and [`cool-buildinfo.txt`](cool/cool-buildinfo.txt) (COOL's `cv2.getBuildInformation()`, byte for byte; its sha256 is the fingerprint, checked by `scripts/tests/test_cool_evidence.py`). From the session: `stock-buildinfo.txt` and `stock4-buildinfo.txt` (each stock venv's build information), `lscpu.txt`, `session.md` (hours and fees), `perf-dso.txt` if made | the owner, following the [runsheet's COOL section](../../deployment-runsheet.md#the-cool-backend-and-the-benchmark) |
 
 The evaluation's later subcommands add an `index.json` and a generated `RESULTS.md` here, built
 from the run files; until then the files themselves are the index.

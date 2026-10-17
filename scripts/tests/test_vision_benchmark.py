@@ -403,13 +403,21 @@ def test_the_runsheets_cool_session_installs_what_it_uses_and_keeps_the_commit()
     # python3 -m venv needs the distribution's venv package, which a server image lacks.
     assert first("sudo apt-get install -y python3-venv") < first("python3 -m venv")
     assert "python3.12-venv" not in RUNSHEET_COOL  # not in Ubuntu 22.04's archive, where it would apply
-    # perf: installed for the kernel, PYTHONPATH carried through sudo, the root-owned file read by root.
+    # COOL's cv2 loads only in the vendor's activated environment: the wrapper activates it before
+    # any COOL command runs, and the benchmark's packages go beside it, never opencv or numpy.
+    assert first("source /opt/cool/venvs/python_3.12/bin/activate") < first("~/cool/bin/python -c")
+    assert "--system-site-packages" not in RUNSHEET_COOL
+    install = lines[first("pip install --target ~/cool/extra")]
+    assert "opencv" not in install and "numpy" not in install
+    # perf: installed for the kernel, run through the wrapper (which sets the vendor's paths itself,
+    # so nothing is carried through sudo), the root-owned file read by root.
     assert first('linux-tools-$(uname -r)') < first("perf record")
     record = lines[first("perf record")]
-    assert 'sudo env PYTHONPATH="$PYTHONPATH" perf record' in record
+    assert "sudo perf record" in record and "~/cool/bin/python" in record
     assert "sudo perf report -i perf.data" in lines[first("perf report")]
-    # A copy without git history records no commit: a bundle, never an archive; the image is told its commit.
-    assert "git bundle create" in RUNSHEET_COOL and "or copy a `git archive`" not in RUNSHEET_COOL
+    # A copy without git history records no commit: a clone, never an archive; the image is told its commit.
+    assert "git clone https://github.com/AllainWoodsford/BloggerBear.git" in RUNSHEET_COOL
+    assert "or copy a `git archive`" not in RUNSHEET_COOL
     assert "--build-arg GIT_SHA=$(git rev-parse HEAD)" in RUNSHEET_COOL
     # `pin` on the instance runs from a venv with requests (Ubuntu has no `python` command).
     assert "~/stock/bin/python scripts/vision_eval.py pin" in RUNSHEET_COOL

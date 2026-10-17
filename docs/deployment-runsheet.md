@@ -1025,13 +1025,24 @@ the report ([the evidence README](hackathon/evidence/README.md) has the schema).
 options are in [scripts/README.md](../scripts/README.md#timing-the-vision-worker-vision_benchmarkpy).
 
 **Venvs, not the system pip.** Ubuntu 24.04 refuses a system-wide `pip install` (PEP 668,
-"externally-managed-environment"). Every install below goes into a venv: never `sudo pip`, never
-`--break-system-packages`, and never `opencv-python-headless` or `numpy` into the COOL venv, which
-must see the product's own `cv2` and the numpy it was built against (a stock install there would
-shadow them, and the handler would answer `not_cool`).
+"externally-managed-environment"). Every install below goes into a venv or a folder of its own:
+never `sudo pip`, never `--break-system-packages`. Never put `opencv-python-headless` or `numpy`
+into COOL's environment, which is the vendor's venv plus `~/cool/extra`. It must see the
+product's own `cv2` and the numpy that `cv2` was built against. A stock install there would shadow
+them, and the handler would answer `not_cool`.
 
-0. **Reconnaissance (Friday 16, 20 minutes, right after subscribing).** Record the answers in
-   `docs/hackathon/evidence/cool/recon.md`:
+**Bash, by hand.** SSM Session Manager opens `sh` (dash), where `source` does not exist: type
+`bash` first. Every command below is bash. On 16 October a user-data script given at launch left
+no output, so type the steps; do not script them into the launch.
+
+0. **Reconnaissance: done on 16 October, in
+   [recon.md](hackathon/evidence/cool/recon.md).** It found:
+   - an AMI, version 3.1, in us-west-2;
+   - `cv2` 5.1.0-dev in the vendor's Python 3.12 environment, with numpy 2.5.1;
+   - a Neoverse V2 (Graviton4) CPU.
+
+   That is the first row of the table below: **go**. Steps 4 and 6 follow the vendor's layout. To
+   reconnoitre another version, record the same answers:
    - the Marketplace product id, version and price, and its **delivery type**: an AMI or a
      container image;
    - whether it is offered in **us-west-2**, beside `sentinel-cogs`, and with `c8g` instances;
@@ -1065,44 +1076,79 @@ shadow them, and the handler would answer `not_cool`).
    `--cache /cogs` for `$C` (the two mounts put the run files and the cache on the host, beside the
    stock runs, which use the host's venvs as written), and `--network host` so `--imds` reaches the
    metadata service in one hop.
-1. **Subscribe** on AWS Marketplace to *Cloud Optimized OpenCV for AWS Graviton4* on Friday 16.
-   Note the price; unsubscribe at the end unless the subscription is kept.
+1. **Subscribe** on AWS Marketplace to *Cloud Optimized OpenCV for AWS Graviton4*: done on
+   16 October, the AMI listing (not *[Docker]*, not Graviton5). Unsubscribe at the end unless the
+   subscription is kept.
 2. **Launch** a `c8g.xlarge` (4 vCPU, 8 GiB: enough for the 1.32 GB worst case) in us-west-2,
-   from the COOL AMI (or a plain Ubuntu arm64 AMI with Docker, for a container image). Require
-   IMDSv2. Connect through SSM Session Manager, with no inbound ports. The instance role has
-   `AmazonSSMManagedInstanceCore` only (step 12 adds one statement for its own hour).
+   from the subscription, so that the instance carries the product code:
+   - version 3.1;
+   - `ami-08dacb72c289c8261` in us-west-2;
+   - product code `aajkmdd4qo3r7yhqg61a7aah9`.
+
+   On 16 October the listing's price table showed only `c8g.large` and `c8g.2xlarge`. If the
+   launch page does not offer `c8g.xlarge`, take `c8g.2xlarge` (8 vCPU, 16 GiB). Step 8's
+   4-thread runs pass `--threads 4`, so they mean the same on either size. Require IMDSv2.
+   Connect through SSM Session Manager, with no inbound ports, and type `bash`. The instance role
+   has `AmazonSSMManagedInstanceCore` only (step 12 adds one statement for its own hour).
 3. **The host.** On the instance:
 
    ```sh
    lscpu > lscpu.txt
    grep -m1 'CPU part' /proc/cpuinfo      # expect 0xd4f: Neoverse V2, Graviton4
    python3 -V && uname -r
-   sudo apt-get update && sudo apt-get install -y python3-venv   # steps 6 and 7 make venvs; a no-op when it is there
+   sudo apt-get update && sudo apt-get install -y python3-venv git   # step 7 makes venvs, step 5 clones; a no-op when they are there
    ```
+
+   On the COOL AMI, on 16 October, that printed `0xd4f`, Python 3.12.3 and `6.17.0-1019-aws`.
 
    An Ubuntu server image ships `python3` without its `venv` package (`python3 -m venv` then fails
    with "ensurepip is not available"), hence the install. If `python3 -V` is under 3.11, the stock
    venvs need a 3.11+ interpreter from the distribution's own archive: on Ubuntu 22.04 (Python
    3.10) that is `sudo apt-get install -y python3.11 python3.11-venv` (22.04 has no `python3.12`);
    use `python3.11` in place of `python3` in step 7, and record it in `recon.md`.
-4. **The COOL build.**
+4. **COOL's interpreter and its build.** The product's `cv2` is found only inside the vendor's
+   activated environment: its `activate` script puts `cv2` on `PYTHONPATH` and the vendor's
+   libraries on `LD_LIBRARY_PATH` (recon.md). A plain `python3`, or the venv's `bin/python`
+   without activation, does not find it. So `~/cool/bin/python` is a small wrapper that activates
+   the environment and runs the venv's Python. Every COOL command below runs through it, under
+   `sudo` too, because it sets the paths itself:
 
    ```sh
-   python3 -c 'import cv2, sys; sys.stdout.write(cv2.getBuildInformation())' > cool-buildinfo.txt
-   sha256sum cool-buildinfo.txt
-   python3 -c 'import cv2; print(cv2.__version__, cv2.__file__)'
+   mkdir -p ~/cool/bin
+   cat > ~/cool/bin/python <<'EOF'
+   #!/bin/bash
+   # COOL's interpreter: the vendor's python_3.12 environment (its cv2, its libraries, its numpy),
+   # plus step 6's packages from the extra folder beside this one.
+   source /opt/cool/venvs/python_3.12/bin/activate
+   export PYTHONPATH="$(dirname "$(dirname "$(readlink -f "$0")")")/extra:$PYTHONPATH"
+   exec python "$@"
+   EOF
+   chmod +x ~/cool/bin/python
+   ~/cool/bin/python -c 'import cv2, sys; sys.stdout.write(cv2.getBuildInformation())' > ~/cool-buildinfo.txt
+   sha256sum ~/cool-buildinfo.txt
+   ~/cool/bin/python -c 'import cv2, numpy; print(cv2.__version__, cv2.__file__, numpy.__version__)'
    ```
 
    The sha256 is the COOL fingerprint: it must equal `build_info()["build_sha256"]`, which is the
    hash of exactly that text (`lambdas/vision/build.py`), and it is what `COOL_BUILD_SHA256` is
-   pinned to. Expect `kleidicv` True.
+   pinned to. Expect `kleidicv` True. For COOL 3.1 it is
+   `12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4`, with
+   `5.1.0-dev /opt/cool/python_3.12/site-packages/cv2/python-3.12/cv2.cpython-312-aarch64-linux-gnu.so 2.5.1`.
+   The text is committed as
+   [cool-buildinfo.txt](hackathon/evidence/cool/cool-buildinfo.txt): after step 5,
+   `cmp ~/cool-buildinfo.txt docs/hackathon/evidence/cool/cool-buildinfo.txt` prints nothing.
+
+   A different hash means a different build. In that case:
+   - say so in `recon.md`;
+   - commit the new text over the old;
+   - update the pin in `scripts/tests/test_cool_evidence.py`;
+   - use the new hash as step 8's `SHA`.
 5. **The code and the inputs.** Clone the repository at the commit to be benchmarked and record
    it: `git rev-parse HEAD` (the submission tag does not exist yet; the evidence index says how an
-   earlier commit is still cited). The repository may still be private: `gh auth login` in the
-   session, or copy a `git bundle` (`git bundle create bloggerbear.bundle HEAD` on your machine,
-   `git clone bloggerbear.bundle BloggerBear` on the instance). Not a `git archive`: a copy
-   without git history has no commit to record, and every run file would name none
-   (`code.git_sha` null).
+   earlier commit is still cited). The repository is public:
+   `git clone https://github.com/AllainWoodsford/BloggerBear.git && cd BloggerBear && git checkout <commit>`,
+   and every later command runs from that folder. Not a `git archive`: a copy without git history
+   has no commit to record, and every run file would name none (`code.git_sha` null).
 
    Two inputs must be in that checkout before the runs:
 
@@ -1168,19 +1214,19 @@ shadow them, and the handler would answer `not_cool`).
      ```powershell
      py -3.11 scripts\vision_eval.py coverage --write --out docs\hackathon\evidence\runs
      ```
-6. **The COOL venv**, on the product's own Python, with the system site-packages visible so the
-   product's `cv2` and numpy are the ones imported:
+6. **COOL's packages**, in a folder of their own beside the vendor's environment, never inside
+   it. The vendor's venv belongs to root and stays as shipped. Step 4's wrapper puts
+   `~/cool/extra` on `PYTHONPATH`:
 
    ```sh
-   python3 -m venv --system-site-packages ~/cool
-   ~/cool/bin/pip install requests==2.34.2 networkx==3.4.2 boto3==1.34.162
-   ~/cool/bin/python -c 'import cv2; print(cv2.__file__)'    # must be outside ~/cool
+   /opt/cool/venvs/python_3.12/bin/python -m pip install --target ~/cool/extra requests==2.34.2 networkx==3.4.2 boto3==1.34.162
+   ~/cool/bin/python -c 'import cv2, numpy, requests, networkx, boto3; print(cv2.__file__, numpy.__file__)'   # both under /opt/cool
    ~/cool/bin/python -c 'import cv2, hashlib; print(hashlib.sha256(cv2.getBuildInformation().encode()).hexdigest())'   # must equal step 4
    ```
 
    These are `lambdas/requirements-vision-cool.txt`'s pins without `awslambdaric`, plus boto3
-   for step 12. **Never install opencv or numpy here.** If the AMI puts `cv2` on a custom
-   `PYTHONPATH`, keep that variable in the environment of every COOL command.
+   for step 12. None of them needs numpy. **Never install opencv or numpy here**: the vendor's
+   `cv2` was built against its own numpy 2.5.1.
 7. **The stock venvs**: OpenCV 5 as the deployed worker runs it, and the newest OpenCV 4 that has
    an aarch64 wheel for this Python and numpy 2, so the report can say what OpenCV 5 changed for
    this workload:
@@ -1196,17 +1242,25 @@ shadow them, and the handler would answer `not_cool`).
    uploaded on 28 and 29 July 2026), with `cp37-abi3` aarch64 wheels (manylinux_2_17 and 2_28);
    it was installed beside `numpy==2.4.4` on 16 October and imports as `cv2` 4.14.0, and the
    benchmark's `kernels` ran on it (the evidence README records the check). Use step 3's
-   `python3.11` in place of `python3` here if step 3 said so. Stock aarch64 builds can
-   include KleidiCV too, which is why the proof is the fingerprint and the mapped libraries, not
-   the flag.
+   `python3.11` in place of `python3` here if step 3 said so. On the COOL AMI, `python3` is
+   3.12.3, the deployed worker's minor version, and the same Python as COOL's environment. Stock
+   aarch64 builds can include KleidiCV too, which is why the proof is the fingerprint and the
+   mapped libraries, not the flag.
+
+   The versions are not the same on both sides:
+   - COOL 3.1 is OpenCV 5.1.0-dev on numpy 2.5.1;
+   - stock is OpenCV 5.0.0 on numpy 2.4.4.
+
+   So the report scopes every COOL claim to "COOL 3.1 (OpenCV 5.1.0-dev)", and gives a speed-up
+   as that build against stock 5.0.0, not as the vendor's optimisations alone (recon.md).
 8. **The runs.** Interleave the backends, so a slow minute on the instance does not land on one
    side. Set the names once:
 
    ```sh
    E=docs/hackathon/evidence/runs
    CPU=neoverse-v2-graviton4               # the cpu slug in every run id: check it against the first file written
-   SHA=<step 4's sha256>
-   L="--imds --label cool_product=<product id> --label cool_version=<version> --label cool_delivery=<ami|container>"
+   SHA=12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4   # step 4's sha256: COOL 3.1
+   L="--imds --label cool_product=aajkmdd4qo3r7yhqg61a7aah9 --label cool_version=3.1 --label cool_delivery=ami"
    C="--cache $HOME/cogs"
    ```
 
@@ -1224,14 +1278,14 @@ shadow them, and the handler would answer `not_cool`).
    for r in 1 2; do
      taskset -c 0 ~/stock/bin/python scripts/vision_benchmark.py kernels --threads 1 $L --out $E --tag 1t-r$r
      taskset -c 0 ~/cool/bin/python  scripts/vision_benchmark.py kernels --threads 1 --backend cool --cool-sha $SHA $L --out $E --tag 1t-r$r
-     ~/stock/bin/python scripts/vision_benchmark.py kernels $L --out $E --tag 4t-r$r
-     ~/cool/bin/python  scripts/vision_benchmark.py kernels --backend cool --cool-sha $SHA $L --out $E --tag 4t-r$r
+     ~/stock/bin/python scripts/vision_benchmark.py kernels --threads 4 $L --out $E --tag 4t-r$r
+     ~/cool/bin/python  scripts/vision_benchmark.py kernels --threads 4 --backend cool --cool-sha $SHA $L --out $E --tag 4t-r$r
    done
    ~/stock/bin/python scripts/vision_benchmark.py scenes --repeats 1 $C --out /tmp/warm.json                      # fills the cache: the timed runs read no network
    taskset -c 0 ~/stock/bin/python scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C $L --out $E --tag 1t
    taskset -c 0 ~/cool/bin/python  scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C --backend cool --cool-sha $SHA $L --out $E --tag 1t
-   ~/stock/bin/python scripts/vision_benchmark.py scenes --repeats 5 --isolate $C $L --out $E --tag 4t
-   ~/cool/bin/python  scripts/vision_benchmark.py scenes --repeats 5 --isolate $C --backend cool --cool-sha $SHA $L --out $E --tag 4t
+   ~/stock/bin/python scripts/vision_benchmark.py scenes --threads 4 --repeats 5 --isolate $C $L --out $E --tag 4t
+   ~/cool/bin/python  scripts/vision_benchmark.py scenes --threads 4 --repeats 5 --isolate $C --backend cool --cool-sha $SHA $L --out $E --tag 4t
    taskset -c 0 ~/stock4/bin/python scripts/vision_benchmark.py kernels --threads 1 $L --out $E --tag 4x-1t
    taskset -c 0 ~/stock4/bin/python scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C $L --out $E --tag 4x-1t
    newest() { ls "$E"/*-bench-$1-$CPU-$2.json | tail -n 1; }
@@ -1261,12 +1315,12 @@ shadow them, and the handler would answer `not_cool`).
 
    ```sh
    sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)"    # perf, for this kernel
-   sudo env PYTHONPATH="$PYTHONPATH" perf record -g -o perf.data -- ~/cool/bin/python scripts/vision_benchmark.py scenes --repeats 1 --threads 1 $C --backend cool --cool-sha $SHA --only sydney-rail-2024-08-26
+   sudo perf record -g -o perf.data -- ~/cool/bin/python scripts/vision_benchmark.py scenes --repeats 1 --threads 1 $C --backend cool --cool-sha $SHA --only sydney-rail-2024-08-26
    sudo perf report -i perf.data --sort dso --stdio > perf-dso.txt
    ```
 
-   `sudo` resets the environment, so a `PYTHONPATH` the COOL commands need (step 6) is passed on
-   by hand, and `perf.data` is root's (mode 0600), so the report runs under `sudo` too.
+   `sudo` resets the environment, but step 4's wrapper sets the vendor's paths itself, so nothing
+   is passed on by hand. `perf.data` is root's (mode 0600), so the report runs under `sudo` too.
 
    The share of samples in `libkleidicv*` and `libopencv*`/`cv2*.so` is direct evidence that the
    vendor's code executed. Commit `perf-dso.txt`, not `perf.data`.
@@ -1276,8 +1330,9 @@ shadow them, and the handler would answer `not_cool`).
 11. **Stop and commit.** Terminate the instance (or stop it, if step 12 follows within two days),
     and unsubscribe unless the subscription is kept. Record the instance hours and the software
     fee in `docs/hackathon/evidence/cool/session.md`. Commit the run files and figures from `$E`,
-    and `docs/hackathon/evidence/cool/` (`recon.md`, `cool-buildinfo.txt`, `stock-buildinfo.txt`,
-    `stock4-buildinfo.txt`, `lscpu.txt`, `session.md`, `perf-dso.txt` if made); then the
+    and `docs/hackathon/evidence/cool/`: `stock-buildinfo.txt`, `stock4-buildinfo.txt`,
+    `lscpu.txt`, `session.md`, and `perf-dso.txt` if made. `recon.md` and `cool-buildinfo.txt`
+    have been there since 16 October; step 4 says when to replace them. Then the
     tracker's C1, C2, C3 and S7 rows, and O5. Nothing in `$E` holds an account id, an instance id
     or an IP: `--imds` keeps five fields, and the run files say which.
 

@@ -863,9 +863,10 @@ None of this is automatic.
    measurements the submission needs (its table in `docs/hackathon/opencv-2026-submission.md`).
 6. **COOL:** the Graviton session, exactly as the
    [runsheet's COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark) gives
-   it: the Friday reconnaissance (the product's delivery type, Region, price and Python), a
-   `c8g.xlarge` from the COOL AMI with IMDSv2 and SSM, a COOL venv on the product's own `cv2`
-   (`--system-site-packages`; never opencv or numpy in it), stock 5.0.0.93 and 4.14.0.94 venvs
+   it: the reconnaissance (done on 16 October, `docs/hackathon/evidence/cool/recon.md`: an AMI,
+   COOL 3.1 with `cv2` 5.1.0-dev, us-west-2, Python 3.12), a `c8g.xlarge` from the COOL AMI with
+   IMDSv2 and SSM, COOL's interpreter on the vendor's own activated environment (a wrapper, with
+   the benchmark's packages beside it; never opencv or numpy in it), stock 5.0.0.93 and 4.14.0.94 venvs
    beside it, the interleaved `kernels`, `scenes` (`--isolate`, `--cache`, pinned to one core),
    `compare` and `controls` runs of its step 8 written to `docs/hackathon/evidence/runs/`, and the
    proof checklist it ends with; pin the COOL `build_sha256` as `COOL_BUILD_SHA256`; terminate the
