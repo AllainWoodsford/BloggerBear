@@ -1616,7 +1616,9 @@ def test_polls_throttled_until_the_end_end_as_not_in_time_inside_the_limit(loopb
     assert took < SMALL_LIMIT + TOLERANCE, took
     assert result["spoken"] == vision_evidence.NOT_IN_TIME and result["counts"] is None
     assert result["queries"] == dict.fromkeys(vision_evidence.QUERY_KINDS, "not_checked")
-    assert seen.count("StartQuery") == 3 and seen.count("GetQueryResults") > 3 * 2
+    # Each throttled poll is asked again: two rounds at least. More fit in the wait on an idle
+    # machine, but a loaded one (the full suite beside other work) fits only two in 0.3 s.
+    assert seen.count("StartQuery") == 3 and seen.count("GetQueryResults") >= 3 * 2
     if wait > SMALL_LIMIT:
         assert took >= SMALL_LIMIT - 0.1 and "StopQuery" not in seen
     else:

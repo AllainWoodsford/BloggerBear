@@ -26,8 +26,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "bloggerbear.vision-eval/1"
-# The kinds that exist now; the evaluation's later subcommands add theirs here.
-KINDS = ("bench-kernels", "bench-scenes", "bench-worker", "bench-compare", "bench-controls", "eval-coverage")
+# The kinds that exist now; the evaluation's later subcommands add theirs here (an index refuses a
+# run file of any other kind).
+KINDS = (
+    "bench-kernels", "bench-scenes", "bench-worker", "bench-compare", "bench-controls", "eval-coverage",
+    "eval-replay", "eval-failures", "eval-access-baseline",
+)  # fmt: skip
 RUNS_DIR = ROOT / "docs" / "hackathon" / "evidence" / "runs"
 # The only host a real-data run reads from (AWS Open Data's Sentinel-2 COGs, us-west-2).
 BUCKET_HOST = "sentinel-cogs.s3.us-west-2.amazonaws.com"
