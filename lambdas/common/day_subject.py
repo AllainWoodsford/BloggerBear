@@ -23,7 +23,9 @@ exactly as they were: the same window, the same prompts, the same Findings and a
 **A rota** (`parse_rotation`, `rotation_subject`) is offered to any adapter that wants a fixed one,
 read from two keys of its adapter_config: `rotation`, either the seven weekdays each naming a
 subject ({"MON": "sydney", ...}) or a list of subjects cycled one a day
-((date - 1970-01-01).days mod its length), every subject at least once; and `rotation_timezone`,
+((date - 1970-01-01).days mod its length), every subject at least once; `rotation_period`, for a
+list only, "day" (the default) or "week": a week rota gives each subject in turn a whole calendar
+week, Monday to Sunday (the weeks since Monday 1970-01-05 mod its length); and `rotation_timezone`,
 the zone whose calendar day decides (an IANA name; default the adapter's choice, then UTC), so
 "Tuesday" is Tuesday where the subjects are. The adapter parses it with its config and names the
 subject from it in `day_subject`. An adapter module may import this one at its top, for the rota,
@@ -38,7 +40,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Iterable, Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from itertools import islice
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -78,8 +80,13 @@ DAY_SUBJECT_RAW_TEXT_MULTIPLE = 4
 # day a list rota counts from, and how long a list rota may be (two months of days, one each).
 ROTATION_KEY = "rotation"
 ROTATION_TIMEZONE_KEY = "rotation_timezone"
+# How long a list rota's slot lasts: a day (the default) or a calendar week, Monday to Sunday.
+ROTATION_PERIOD_KEY = "rotation_period"
+ROTATION_PERIODS = ("day", "week")
 WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 ROTATION_EPOCH = date(1970, 1, 1)
+# The Monday a week rota counts its weeks from (1970-01-01 was a Thursday).
+ROTATION_WEEK_EPOCH = date(1970, 1, 5)
 MAX_ROTATION_SLOTS = 62
 DEFAULT_ROTATION_TIMEZONE = "UTC"
 
@@ -217,26 +224,39 @@ def parse_rotation(
     """The topic's rota from its adapter_config, checked against the subjects it has
     (`subject_keys`), or None when the config sets no `rotation`.
 
-    Returns {"kind": "weekly" | "cycle", "slots": (key, ...), "timezone": name}: a weekly rota's
-    slots are Monday to Sunday. Raises ValueError, with the message an operator needs, for a rota
-    that is not the seven weekdays or a list of 1 to MAX_ROTATION_SLOTS keys, a slot that is not one
-    of the subjects, a subject that has no day (nobody would ever write about it), a
-    `rotation_timezone` without a rota, or a zone that is not one. The zone is `rotation_timezone`,
-    else `default_timezone` (an adapter may pass the topic's `daily_timezone`), else UTC.
+    Returns {"kind": "weekly" | "cycle", "slots": (key, ...), "timezone": name, "period": "day" |
+    "week"}: a weekly rota's slots are Monday to Sunday, a cycle's each last a day or a week
+    (`rotation_period`). Raises ValueError, with the message an operator needs, for a rota that is
+    not the seven weekdays or a list of 1 to MAX_ROTATION_SLOTS keys, a slot that is not one of the
+    subjects, a subject that has no day (nobody would ever write about it), a `rotation_timezone` or
+    `rotation_period` without a rota, a period that is not one, a week period on a weekday rota, or a
+    zone that is not one. The zone is `rotation_timezone`, else `default_timezone` (an adapter may
+    pass the topic's `daily_timezone`), else UTC.
     """
     config = adapter_config if isinstance(adapter_config, dict) else {}
     raw = config.get(ROTATION_KEY)
     zone_name = config.get(ROTATION_TIMEZONE_KEY)
+    period = config.get(ROTATION_PERIOD_KEY)
     if raw is None:
-        if zone_name is not None:
-            raise ValueError(f"'{ROTATION_TIMEZONE_KEY}' is set but there is no '{ROTATION_KEY}'")
+        for key, value in ((ROTATION_TIMEZONE_KEY, zone_name), (ROTATION_PERIOD_KEY, period)):
+            if value is not None:
+                raise ValueError(f"'{key}' is set but there is no '{ROTATION_KEY}'")
         return None
+    if period is None:
+        period = "day"
+    if period not in ROTATION_PERIODS:
+        raise ValueError(f"'{ROTATION_PERIOD_KEY}' must be one of {', '.join(ROTATION_PERIODS)}")
     keys = list(subject_keys)
     if isinstance(raw, dict):
         days = {str(day).strip().upper(): slot for day, slot in raw.items()}
         if len(days) != len(raw) or set(days) != set(WEEKDAYS):
             raise ValueError(
                 f"'{ROTATION_KEY}' as an object must name each of {', '.join(WEEKDAYS)} once"
+            )
+        if period != "day":
+            raise ValueError(
+                f"'{ROTATION_PERIOD_KEY}' \"{period}\" needs '{ROTATION_KEY}' as a list: a weekday rota "
+                "already names each day"
             )
         kind, slots = "weekly", tuple(days[day] for day in WEEKDAYS)
     elif isinstance(raw, list | tuple):
@@ -256,7 +276,7 @@ def parse_rotation(
     if zone_name is None:
         zone_name = default_timezone or DEFAULT_ROTATION_TIMEZONE
     _zone(zone_name)
-    return {"kind": kind, "slots": slots, "timezone": zone_name}
+    return {"kind": kind, "slots": slots, "timezone": zone_name, "period": period}
 
 
 def rotation_day(rotation: dict, at: datetime) -> date:
@@ -265,12 +285,24 @@ def rotation_day(rotation: dict, at: datetime) -> date:
     return moment.astimezone(_zone(rotation["timezone"])).date()
 
 
+def rotation_period_start(rotation: dict, at: datetime) -> date:
+    """The first day of the rota slot `at` falls in: its own calendar day, or for a week rota the
+    Monday of its week, in the rota's zone. Two moments in one slot give the same day, so it names
+    the slot (the rail adapter's weekly reading keys on it)."""
+    day = rotation_day(rotation, at)
+    if rotation.get("period") == "week":
+        return day - timedelta(days=day.weekday())
+    return day
+
+
 def rotation_subject(rotation: dict, at: datetime) -> str:
     """The subject key whose day `at` is, by a rota from `parse_rotation`: the weekday's slot, or
-    the list's slot for the number of days since 1970-01-01. Pure: the same moment always gives
-    the same key, whoever asks."""
+    the list's slot for the number of days since 1970-01-01, or of weeks since Monday 1970-01-05
+    for a week rota. Pure: the same moment always gives the same key, whoever asks."""
     day = rotation_day(rotation, at)
     slots = rotation["slots"]
     if rotation["kind"] == "weekly":
         return slots[day.weekday()]
+    if rotation.get("period") == "week":
+        return slots[(day - ROTATION_WEEK_EPOCH).days // 7 % len(slots)]
     return slots[(day - ROTATION_EPOCH).days % len(slots)]

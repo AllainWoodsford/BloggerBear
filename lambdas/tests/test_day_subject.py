@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 import tracemalloc
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -337,7 +337,7 @@ def test_a_weekly_rota_reads_the_weekday_names_and_defaults_its_zone():
     rota = day_subject.parse_rotation({"rotation": {k.lower(): v for k, v in WEEK.items()}}, CITIES)
 
     slots = tuple(WEEK[day] for day in day_subject.WEEKDAYS)
-    assert rota == {"kind": "weekly", "slots": slots, "timezone": "UTC"}
+    assert rota == {"kind": "weekly", "slots": slots, "timezone": "UTC", "period": "day"}
     assert day_subject.parse_rotation({"rotation": WEEK}, CITIES, "Australia/Sydney")["timezone"] == (
         "Australia/Sydney"
     )
@@ -376,9 +376,43 @@ def test_a_list_rota_cycles_one_a_day_from_1970():
     assert day_subject.rotation_subject(rota, naive) == day_subject.rotation_subject(rota, AT)
 
 
+def test_a_week_rota_gives_each_subject_a_whole_calendar_week_monday_to_sunday():
+    rota = day_subject.parse_rotation(
+        {"rotation": ["sydney", "melbourne"], "rotation_period": "week",
+         "rotation_timezone": "Australia/Sydney"},  # fmt: skip
+        CITIES[:2],
+    )
+    assert (rota["kind"], rota["period"]) == ("cycle", "week")
+    # Monday 1970-01-05 starts week 0: Sydney; the week after is Melbourne's.
+    assert day_subject.rotation_subject(rota, datetime(1970, 1, 5, 12, tzinfo=UTC)) == "sydney"
+    assert day_subject.rotation_subject(rota, datetime(1970, 1, 12, 12, tzinfo=UTC)) == "melbourne"
+    # One week of Sydney's calendar, Monday 00:05 to Sunday 23:55, is one subject and one slot, and
+    # Monday 00:05 in Sydney is still Sunday in UTC.
+    monday = datetime(2026, 10, 19, 0, 5, tzinfo=ZoneInfo("Australia/Sydney"))
+    week = [monday + timedelta(days=n, hours=h) for n in range(7) for h in (0, 23)]
+    week = [moment for moment in week if moment.date() < date(2026, 10, 26)]
+    subjects = {day_subject.rotation_subject(rota, moment.astimezone(UTC)) for moment in week}
+    starts = {day_subject.rotation_period_start(rota, moment.astimezone(UTC)) for moment in week}
+    assert len(subjects) == 1 and starts == {date(2026, 10, 19)}
+    next_monday = datetime(2026, 10, 26, 0, 5, tzinfo=ZoneInfo("Australia/Sydney")).astimezone(UTC)
+    assert day_subject.rotation_subject(rota, next_monday) != subjects.pop()
+    assert day_subject.rotation_period_start(rota, next_monday) == date(2026, 10, 26)
+
+
+def test_a_day_rota_s_slot_starts_on_its_own_day():
+    rota = day_subject.parse_rotation({"rotation": WEEK, "rotation_timezone": "Australia/Sydney"}, CITIES)
+    assert day_subject.rotation_period_start(rota, _sydney(21, 9)) == date(2026, 10, 21)
+    # A rota parsed before periods existed (no "period") reads as a day rota.
+    old = {k: v for k, v in rota.items() if k != "period"}
+    assert day_subject.rotation_period_start(old, _sydney(21, 9)) == date(2026, 10, 21)
+
+
 @pytest.mark.parametrize(
     "config, words",
     [
+        ({"rotation_period": "week"}, "'rotation_period' is set but there is no 'rotation'"),
+        ({"rotation": list(CITIES), "rotation_period": "month"}, "must be one of day, week"),
+        ({"rotation": WEEK, "rotation_period": "week"}, "needs 'rotation' as a list"),
         ({"rotation": {**WEEK, "MON": "perth"}}, "'perth', which is not one of the topic's subjects"),
         ({"rotation": {**WEEK, "THU": "sydney"}}, "gives no day to boston"),
         ({"rotation": {k: v for k, v in WEEK.items() if k != "SUN"}}, "must name each of MON"),
