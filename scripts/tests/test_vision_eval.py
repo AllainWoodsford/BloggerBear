@@ -645,6 +645,8 @@ def test_the_failure_rows_decide_on_what_the_worker_answers(tmp_path, monkeypatc
         return measure
 
     monkeypatch.setattr(driver, "in_process_measure", picked)
+    # With no Sydney fixture the rows run on an empty network (the committed one is the next test's).
+    monkeypatch.setattr(vision_eval, "NETWORKS_DIR", tmp_path / "no-networks")
     out = tmp_path / "runs"
     code = vision_eval.main(
         ["failures", "--no-collect", "--cache", str(tmp_path / "cogs"), "--out", str(out)]
@@ -702,6 +704,18 @@ def test_the_failure_rows_decide_on_what_the_worker_answers(tmp_path, monkeypatc
         ["failures", "--no-collect", "--only", "cloud", "--cache", str(tmp_path / "cogs")]
     )
     assert code == vision_eval.REFUSED and "input changed" in capsys.readouterr().err
+
+
+def test_the_failure_rows_name_the_committed_sydney_network_by_its_sha256(tmp_path, monkeypatch):
+    monkeypatch.setattr(vision_eval, "collected_tests", lambda files: set())
+    out = tmp_path / "runs"
+    vision_eval.main(["failures", "--no-collect", "--only", "url_off_allowlist", "--out", str(out)])
+    run = vision_runs.load(next(out.glob("*.json")))
+    sydney = vision_eval.NETWORKS_DIR / "sydney.json"
+    assert run["inputs"]["networks"][0] == {
+        "file": vision_runs.shown_path(sydney), "sha256": vision_runs.sha256_file(sydney)
+    }
+    assert run["results"]["url_off_allowlist"]["got"] == {"code": "bad_request", "reads": 0}
 
 
 def test_without_the_cache_only_the_rows_that_read_nothing_run_and_the_collection_is_checked(
