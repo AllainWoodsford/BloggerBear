@@ -1142,6 +1142,9 @@ def _watched_state(
         if not rows:
             return {"state": "gone"}, "a topic that no longer exists"
         row = rows[0]
+        if row.get("paused"):
+            # Paused by the operator: nothing to watch until it is resumed, and no sites are read.
+            return {"state": "paused"}, f"{row['name']} is paused, so it isn't researched or written"
         research = "research is late" if row["research"]["state"] == "late" else "research is on time"
         article = {
             "published": "published",

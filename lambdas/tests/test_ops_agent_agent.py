@@ -938,3 +938,14 @@ def test_a_dismiss_after_untrusted_text_is_refused_on_that_turn():
     assert [call["name"] for call in result["tool_calls"]] == ["table_sample"]
     assert policy.LIST_LOCKED in json.dumps(model.requests[-1])
 
+
+def test_the_model_is_told_a_paused_topic_is_not_a_problem():
+    """The owner's ask: paused topics were read as broken. One sentence of the prompt, held here."""
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "A topic the tools mark `paused` was paused by the operator",
+        "never call it late, failed or missing an article",
+        "never offer a deep dive into it",
+        "cli_command builds topics resume",
+    ):
+        assert rule in prompt, rule

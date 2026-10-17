@@ -189,13 +189,34 @@ def _article_state(topic_id: str, failures: list[dict], now: datetime, detail: b
     return state
 
 
+def is_paused(topic: dict | None) -> bool:
+    """Whether the operator paused the topic (`topics pause`): the same `is True` the research tick
+    and the daily cycle stop on, so a paused topic is never read as one that failed to run."""
+    return isinstance(topic, dict) and topic.get("paused") is True
+
+
 def _topic_check(
     item: dict, config: dict | None, failures: list[dict], now: datetime, *, detail: bool = False
 ) -> tuple[dict, list[dict]]:
     """One topic's row and the findings about it. pipeline_health runs it for every topic;
-    memory.py runs it again for one topic, to see whether what it suggested still holds."""
+    memory.py runs it again for one topic, to see whether what it suggested still holds.
+
+    A paused topic is neither researched nor written until it is resumed, by the operator's choice:
+    its row says `paused` (research and article states "paused") and it has no findings, so it is
+    never "late" or "has no article", and a suggestion made about it before it was paused clears."""
     topic_id = item.get("topic_id") or ""
     label = _topic_label(item, topic_id)
+    if is_paused(item):
+        last = _parse(item.get("last_research_at"))
+        row = {
+            "topic_id": topic_id,
+            "name": label,
+            "paused": True,
+            "paused_at": item.get("paused_at"),
+            "research": {"state": "paused", "last_research_at": last.isoformat() if last else None},
+            "article": {"state": "paused"},
+        }
+        return row, []
     research = _research_state(item, config, now)
     article = _article_state(topic_id, failures, now, detail=detail)
     row = {"topic_id": topic_id, "name": label, "research": research, "article": article}
@@ -252,8 +273,9 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None, si
         # Imported here, as topic_match imports this module: vision_status imports these helpers.
         from ops_mcp import vision_status
 
+        # A paused topic's sites are not measured until it is resumed: not asked about.
         health = vision_status.site_health(
-            topics,
+            [item for item in topics if not is_paused(item)],
             now,
             budget_seconds=vision_status.HEALTH_READ_SECONDS,
             max_bytes=vision_status.LARGE_STATE_BYTES,
@@ -277,10 +299,12 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None, si
 def _health_spoken(rows: list[dict]) -> str:
     if not rows:
         return "There are no topics."
+    paused = [row["name"] for row in rows if row.get("paused")]
+    running = [row for row in rows if not row.get("paused")]
     by_state: dict[str, list[str]] = {}
-    for row in rows:
+    for row in running:
         by_state.setdefault(row["article"]["state"], []).append(row["name"])
-    late = [row["name"] for row in rows if row["research"]["state"] == "late"]
+    late = [row["name"] for row in running if row["research"]["state"] == "late"]
 
     sentences = []
     for state, words in (
@@ -295,8 +319,11 @@ def _health_spoken(rows: list[dict]) -> str:
             sentences.append(f"{_join(names)} {words}.")
     if late:
         sentences.append(f"Research is late for {_join(late)}.")
-    elif len(rows) > 1:
-        sentences.append("Research is on time for every topic.")
+    elif len(running) > 1:
+        sentences.append(f"Research is on time for every {'running ' if paused else ''}topic.")
+    if paused:
+        verb = "is" if len(paused) == 1 else "are"
+        sentences.append(f"{_join(paused)} {verb} paused, so not researched or written until resumed.")
     return " ".join(sentences)
 
 

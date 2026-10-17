@@ -1561,7 +1561,7 @@ def cli_guides(topic: str | None = None, options: Mapping | None = None) -> dict
 OVERVIEW_COLUMNS = [
     "Name", "Topic id", "Adapter", "Research heartbeat", "Research interval", "Daily cadence",
     "Timezone", "Findings window", "Model", "Financial", "Review mode", "Last researched",
-    "Last article",
+    "Last article", "State",
 ]  # fmt: skip
 
 
@@ -1629,7 +1629,17 @@ def _overview_row(topic: dict, config: dict | None) -> list[str]:
         _review(topic, config),
         _when(topic.get("last_research_at")),
         _when(topic.get("last_article_at")),
+        _state(topic),
     ]
+
+
+def _state(topic: dict) -> str:
+    """Running, or paused (`topics pause`) and since when: a paused topic is neither researched nor
+    written until it is resumed."""
+    if topic.get("paused") is not True:
+        return "running"
+    since = _when(topic.get("paused_at"))
+    return f"paused since {since}" if since else "paused"
 
 
 def _as_json(value) -> str:
@@ -1668,8 +1678,11 @@ def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = Non
         if by_subject:
             rows.append(["Last article by subject", by_subject])
         name = rows[0][1]
+        paused = " It is paused, so it isn't researched or written until it is resumed." if one.get(
+            "paused"
+        ) is True else ""
         return {
-            "spoken": f"{topic_match.took(matched)}{name}'s settings are on screen.",
+            "spoken": f"{topic_match.took(matched)}{name}'s settings are on screen.{paused}",
             "matched_topic": matched,
             "findings": [],
             "table": {"title": f"{name}: settings", "columns": ["Setting", "Value"], "rows": rows},
@@ -1686,6 +1699,11 @@ def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = Non
     more = len(topics) - len(shown)
     count = len(topics)
     spoken = f"You have {count} topic{'s' if count != 1 else ''}."
+    paused = sum(1 for item in topics if item.get("paused") is True)
+    if paused and count == 1:
+        spoken += " It is paused."
+    elif paused:
+        spoken += f" {'All' if paused == count else paused} of them {'is' if paused == 1 else 'are'} paused."
     if more:
         spoken += (
             f" The first {len(shown)} are on screen, and there {'are' if more != 1 else 'is'} {more} more."

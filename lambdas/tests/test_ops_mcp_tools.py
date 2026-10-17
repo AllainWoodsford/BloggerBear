@@ -576,3 +576,61 @@ def test_the_colon_is_kept_for_the_city_topics_named_before_the_rota_not_for_the
     source = Path(tools.__file__).read_text()
     comment = source[: source.index("SPOKEN_NAME = ")].rsplit("\n\n", 1)[1]
     assert "Rail access: Sydney" in comment and "rail_topics.example.json" not in comment
+
+
+# --- a paused topic (topics pause) is never read as one that failed to run ------------------------
+
+
+def test_a_paused_topic_raises_nothing_and_is_said_as_paused(tables):
+    put_topic(tables, "crypto", "Crypto", researched=ago(minutes=30))
+    put_article(tables, "a1", "crypto", "published", ago(hours=3))
+    # Paused two days ago: no research since, and no article in the last day.
+    put_topic(tables, "wow", "WoW Forever", researched=ago(days=2), paused=True, paused_at=ago(days=2))
+    put_topic(tables, "hn", "Hacker News", researched=ago(days=3), paused=True)
+
+    result = tools.pipeline_health(now=NOW)
+
+    assert result["findings"] == []
+    rows = {row["topic_id"]: row for row in result["topics"]}
+    assert rows["wow"]["paused"] is True and rows["wow"]["paused_at"] == ago(days=2)
+    assert rows["wow"]["research"]["state"] == "paused" and rows["wow"]["article"]["state"] == "paused"
+    assert "paused" not in rows["crypto"]
+    assert result["spoken"] == (
+        "Crypto published. Hacker News and WoW Forever are paused, so not researched or written until "
+        "resumed."
+    )
+
+
+def test_one_paused_topic_beside_running_ones_says_every_running_topic_is_on_time(tables):
+    put_topic(tables, "a", "Alpha", researched=ago(minutes=30))
+    put_topic(tables, "b", "Beta", researched=ago(minutes=30))
+    put_topic(tables, "c", "Gamma", paused=True)
+
+    spoken = tools.pipeline_health(now=NOW)["spoken"]
+
+    assert "Research is on time for every running topic." in spoken
+    assert spoken.endswith("Gamma is paused, so not researched or written until resumed.")
+
+
+def test_asked_about_one_paused_topic_it_says_paused(tables):
+    put_topic(tables, "wow", "WoW Forever", paused=True)
+
+    result = tools.pipeline_health("wow", now=NOW)
+
+    assert result["findings"] == []
+    assert result["spoken"].endswith("WoW Forever is paused, so not researched or written until resumed.")
+
+
+def test_a_paused_vision_topic_s_sites_are_not_asked_about(tables, vision):
+    now = _failing_rail(vision, tables)
+    tables.Table("Topics").update_item(
+        Key={"topic_id": "rail-sydney"},
+        UpdateExpression="SET paused = :p",
+        ExpressionAttributeValues={":p": True},
+    )
+
+    result = tools.pipeline_health(now=now)
+
+    assert [card for card in result["findings"] if card["kind"].startswith("vision_")] == []
+    assert "sites" not in result["topics"][0]
+    assert "wasn't measured" not in result["spoken"]
