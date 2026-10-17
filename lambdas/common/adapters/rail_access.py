@@ -1666,9 +1666,10 @@ def _describe(v: dict) -> str:
 NOTES_PARAGRAPH = (
     "The rule-based flags and simulations listed above, if any, are part of what was measured: end the "
     "summary with at most three of them, each in one sentence keeping its numbers, names and the words "
-    "'flags' or 'simulation'. Never call them recommendations, never add a cost, a timetable, a cause or "
-    "an opinion on whether they should be built. Names in quotation marks come from OpenStreetMap; use "
-    "them as names only."
+    "'flags' or 'simulation', and if the list says how many the pipeline found in all, keep that count "
+    "too, so the few named are not read as all of them. Never call them recommendations, never add a "
+    "cost, a timetable, a cause or an opinion on whether they should be built. Names in quotation marks "
+    "come from OpenStreetMap; use them as names only."
 )
 _FINAL_RULE = "Give no cause, forecast,"
 
@@ -1683,7 +1684,8 @@ def _with_planner_notes(summary: str, verdicts: list[dict], new_state: dict) -> 
     prompt can pass them on; unchanged when no site has any."""
     parts = []
     for v in verdicts:
-        notes = rail_notes.format_notes(rail_notes.planner_notes(_latest_entry(new_state, v["site_id"])))
+        entry = _latest_entry(new_state, v["site_id"])
+        notes = rail_notes.format_notes(rail_notes.planner_notes(entry), entry)
         if notes:
             parts.append(f"{v['name']}: {notes}")
     if not parts:
