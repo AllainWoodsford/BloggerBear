@@ -415,6 +415,10 @@ def test_the_runsheets_cool_session_installs_what_it_uses_and_keeps_the_commit()
     record = lines[first("perf record")]
     assert "sudo perf record" in record and "~/cool/bin/python" in record
     assert "sudo perf report -i perf.data" in lines[first("perf report")]
+    # Session Manager starts the shell where ssm-user cannot write: bash and `cd ~` come first, and
+    # the run files are pushed before the instance is terminated.
+    assert "type `bash`, then `cd ~`" in RUNSHEET_COOL
+    assert first("git push -u origin HEAD") < first("then terminate the instance")
     # A copy without git history records no commit: a clone, never an archive; the image is told its commit.
     assert "git clone https://github.com/AllainWoodsford/BloggerBear.git" in RUNSHEET_COOL
     assert "or copy a `git archive`" not in RUNSHEET_COOL

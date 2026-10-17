@@ -1,9 +1,12 @@
 # COOL reconnaissance, 16 October 2026
 
 The answers to step 0 of the [runsheet's COOL section](../../../deployment-runsheet.md#the-cool-backend-and-the-benchmark),
-taken on one `c8g.large` in us-west-2. The instance was launched from the Marketplace subscription,
-reached through SSM Session Manager, and terminated afterwards. Nothing was benchmarked. The decision
-is **go, on the AMI**, with the vendor's own Python environment (below).
+taken on a `c8g.large` in us-west-2, launched from the Marketplace subscription and reached through
+SSM Session Manager. Nothing was benchmarked. By the runsheet's table this is **go, on the AMI**:
+an AMI, and `cv2` 5.x on Python 3.12 once the vendor's environment is activated (below).
+
+Everything below comes from the instance's own output, pasted from the session, except the rows
+marked *(listing)*, which were read off the Marketplace pages.
 
 ## The product
 
@@ -12,9 +15,9 @@ is **go, on the AMI**, with the vendor's own Python environment (below).
 | Listing | *Cloud Optimized OpenCV For AWS Graviton4*, AWS Marketplace |
 | Version | 3.1, 15 July 2026, marked "latest, stable". The vendor's release notes say "built on OpenCV 5.0"; the build calls itself `5.1.0-dev` (below) |
 | Product code | `aajkmdd4qo3r7yhqg61a7aah9`, as the instance's own metadata reports it (`product-codes`) |
-| Delivery | An **AMI**. The same vendor also lists a Docker variant (Python 3.10, 3.11 and 3.12) and a Graviton5 listing. Neither was used |
+| Delivery | An **AMI**. The same vendor also lists a Docker variant (Python 3.10, 3.11 and 3.12) and a Graviton5 listing *(listing)*. Neither was used |
 | Region | Offered in us-west-2, beside `sentinel-cogs`, as `ami-08dacb72c289c8261`. The listing names one AMI per Region, 26 Regions in all |
-| Instances | The vendor names the c8g, m8g and r8g families, and recommends `m8g.4xlarge` or larger. On 16 October the price table listed `c8g.large` at USD 0.01 an hour and `c8g.2xlarge` at USD 0.02 an hour. That is the software fee only; EC2 is billed on top. The listing offered a free trial |
+| Instances | The vendor names the c8g, m8g and r8g families, and recommends `m8g.4xlarge` or larger. On 16 October the price table listed `c8g.large` at USD 0.01 an hour and `c8g.2xlarge` at USD 0.02 an hour. That is the software fee only; EC2 is billed on top. The listing offered a free trial *(listing)* |
 
 ## The instance
 
@@ -33,8 +36,9 @@ The vendor's venvs are `/opt/cool/venvs/python_3.10`, `python_3.11` and `python_
 3.10.19, 3.11.14 and 3.12.3). The `python_3.12` venv holds numpy 2.5.1 and pip 24.0, with
 `include-system-site-packages = false`.
 
-The `cv2` module is not inside any venv. Each venv's `activate` script ends with two exports, and
-only these let Python find the module and its libraries:
+The `cv2` module is not inside any venv. The `python_3.12` venv's `activate` script ends with two
+exports (the other two venvs' scripts were not read), and these are what let the venv's Python
+import the module and load its libraries:
 
 ```sh
 export PYTHONPATH="/opt/cool/python_3.12/site-packages/cv2/python-3.12:$PYTHONPATH"
@@ -95,10 +99,12 @@ parity check shows whether the two produce the same rail metrics.
 
 ## Notes for the Graviton session
 
-- **Session Manager opens `sh`, not bash.** `source` does not exist there (`sh: 8: source: not
-  found`). Run `bash` first.
-- **A user-data script given at launch left no output.** Every step of the session is typed by
-  hand.
+- **Session Manager opens `sh`, not bash, in a folder you cannot write to.** `source` does not
+  exist in `sh` (`sh: 8: source: not found`), and the shell starts as `ssm-user` in the agent's
+  own folder (`/var/snap/amazon-ssm-agent/<revision>`): a script saved there needed `sudo`. Type
+  `bash`, then `cd ~`.
+- **The user-data script's output file (`/var/log/cool-recon.txt`) was never written.** Every step
+  of the session is typed by hand.
 - **COOL's interpreter:**
   - The vendor's activated `python_3.12` environment, wrapped as `~/cool/bin/python` so the
     runsheet's commands stay as written.

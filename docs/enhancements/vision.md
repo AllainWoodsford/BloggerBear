@@ -867,7 +867,7 @@ None of this is automatic.
 6. **COOL:** the Graviton session, exactly as the
    [runsheet's COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark) gives
    it: the reconnaissance (done on 16 October, `docs/hackathon/evidence/cool/recon.md`: an AMI,
-   COOL 3.1 with `cv2` 5.1.0-dev, us-west-2, Python 3.12), a `c8g.xlarge` from the COOL AMI with
+   COOL 3.1 with `cv2` 5.1.0-dev, us-west-2, Python 3.12), a `c8g.xlarge` (or `c8g.2xlarge`) from the COOL AMI with
    IMDSv2 and SSM, COOL's interpreter on the vendor's own activated environment (a wrapper, with
    the benchmark's packages beside it; never opencv or numpy in it), stock 5.0.0.93 and 4.14.0.94 venvs
    beside it, the interleaved `kernels`, `scenes` (`--isolate`, `--cache`, pinned to one core),
@@ -886,10 +886,11 @@ None of this is automatic.
 
 1. Does the COOL image run on Lambda's `arm64` CPUs, or does the COOL backend need ECS on a
    Graviton4 instance? That decides its Terraform.
-2. Are COOL and Graviton4 (`c8g`) offered in us-west-2 and ap-southeast-2? The runsheet's
-   reconnaissance step records the answer in `docs/hackathon/evidence/cool/recon.md`.
-3. COOL's price after the trial: recorded by the same step, and by `--label price=` in the run
-   files.
+2. Are COOL and Graviton4 (`c8g`) offered in us-west-2 and ap-southeast-2? **Answered on
+   16 October** (`docs/hackathon/evidence/cool/recon.md`): the listing names a COOL 3.1 AMI in both
+   (26 Regions in all), and a `c8g.large` ran it in us-west-2.
+3. COOL's price: the listing's table on 16 October gave USD 0.01 an hour on `c8g.large` and 0.02 on
+   `c8g.2xlarge`, the software fee only (recon.md); the session's hours and fees go in `session.md`.
 4. Inter-region transfer cost of the worker's replies against reading `sentinel-cogs` from Sydney:
    measure both on dev.
 5. Lambda `arm64`'s CPU generation: answered from the first invoke once deployed, by the worker's
