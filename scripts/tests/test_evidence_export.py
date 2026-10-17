@@ -1218,3 +1218,37 @@ def test_importing_the_export_needs_no_cv2_numpy_or_networkx():
     done = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "[]"
+
+
+def test_networks_come_from_each_sites_object_or_a_legacy_inline_copy(monkeypatch):
+    import os
+
+    monkeypatch.delenv("CONTENT_BUCKET", raising=False)
+    stored = {  # a network object as the tick stores it
+        "ways": [{"id": "w1", "points": [[151.0, -33.8], [151.1, -33.8]]}], "stations": [], "pois": [],
+        "fetched_at": "2026-10-16T00:00:00+00:00", "source": "overpass", "site_key": "abc",
+        "truncated": False,
+    }  # fmt: skip
+    state = {
+        "sites": {
+            "sydney": {"network_key": f"vision/{CITIES}/sydney/network.json"},
+            # A state written before each network moved to its own object keeps it inline.
+            "boston": {"network": {**stored, "fetched_at": "2026-09-01T00:00:00+00:00"}},
+            "melbourne": {"network_key": f"vision/{CITIES}/melbourne/network.json"},  # not stored yet
+        }
+    }
+    asked = []
+
+    def load(topic_id, site_id):
+        asked.append((topic_id, site_id, os.environ.get("CONTENT_BUCKET")))  # load_network reads it
+        return stored if site_id == "sydney" else None
+
+    found = ee.site_networks(CITIES, state, BUCKET, load=load)
+    assert [(site, where) for site, _network, where in found] == [
+        ("boston", "legacy_inline"),
+        ("sydney", f"vision/{CITIES}/sydney/network.json"),
+    ]
+    assert asked == [(CITIES, "melbourne", BUCKET), (CITIES, "sydney", BUCKET)]
+    assert "CONTENT_BUCKET" not in os.environ  # put back as it was
+    fields = ("ways", "stations", "pois", "fetched_at", "source")
+    assert ee.fixture_of(stored) == {key: stored[key] for key in fields}
