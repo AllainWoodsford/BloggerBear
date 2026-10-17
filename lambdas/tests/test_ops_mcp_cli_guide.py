@@ -12,6 +12,7 @@ import importlib.util
 import json
 import shlex
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import boto3
@@ -19,7 +20,7 @@ import pytest
 from moto import mock_aws
 from table_schemas import create_table
 
-from common import editorial_resolver, fresh_review
+from common import editorial_resolver, findings_window, fresh_review
 from common.adapters.registry import ADAPTER_REGISTRY
 from ops_mcp import cli_guide, memory, suggestions
 
@@ -307,7 +308,7 @@ def test_what_is_required_and_missing_comes_back_as_questions_not_an_error():
     assert [question["option"] for question in result["questions"]] == ["--topic-id", "--name"]
     assert "What is the topic id?" in result["spoken"]
     pipeline = cli_guide.cli_command("topics trigger", {"topic_id": "ai"})["questions"]
-    assert pipeline[0]["ask"] == "Which pipeline: research_tick or daily_cycle?"
+    assert pipeline[0]["ask"] == "Which pipeline: research_tick or daily_cycle or network_prefetch?"
 
 
 def test_a_command_that_needs_something_to_change_asks_what(admin_cli, parser, monkeypatch):
@@ -573,6 +574,10 @@ FILLER = {
     "fallback_model_id": "a-fallback-model-id",
     "musing_id": "762825f7-8358-43b3-b169-25c0fc624b64",
     "article": "f5e88f3a",
+    "adapter_config_json": {"sites": [{"id": "sydney", "polygon": [[150.86, -33.58]]}]},
+    "findings_window_hours": 192,
+    "limit": 10,
+    "days": 2,
 }
 
 
@@ -587,6 +592,8 @@ def test_the_guides_are_the_ones_the_owner_asked_for():
         "costs",
         "gear",
         "editorial-goals",
+        "vision",
+        "findings",
         "first-topic",
         "security",
         "topic-setup",
@@ -638,6 +645,17 @@ def test_every_command_a_guide_names_exists_and_its_main_ones_get_their_help(key
         ("someone is locked out of the assistant, how do I unlock them", "security"),
         ("how do I report an attack I noticed", "security"),
         ("first-topic", "first-topic"),
+        # A tie with first-topic ("create a topic", "start") goes to vision, the earlier guide.
+        ("how do I create a topic for rail", "vision"),
+        ("start a rail topic", "vision"),
+        ("how do I add a satellite site", "vision"),
+        ("how do I see a topic's findings", "findings"),
+        ("what will the next article be written from", "findings"),
+        ("what did research find for the crypto topic, what was found", "findings"),
+        # A rail topic's findings: the vision guide knows rail topics, and names `findings list` too.
+        ("how do I see the findings for my rail topic", "vision"),
+        ("how do I create my first topic", "first-topic"),
+        ("set up a topic fully", "topic-setup"),
         ("a musing went out blank, how do I fix it", "musings"),
         ("how do I regenerate the musing for an article", "musings"),
         ("how do I edit a musing", "musings"),
@@ -780,6 +798,7 @@ def test_a_row_shows_each_setting_and_where_it_is_inherited(tables):
         research_interval_hours=6,
         daily_cadence="cron(0 9 * * ? *)",
         daily_timezone="Australia/Sydney",
+        findings_window_hours=48,
         model_id_candidates=["model-a", "model-b"],
         is_financial=True,
         review_mode="off",
@@ -797,6 +816,7 @@ def test_a_row_shows_each_setting_and_where_it_is_inherited(tables):
         "Name": "Crypto", "Topic id": "crypto", "Adapter": "crypto_feed",
         "Research heartbeat": "rate(1 hour)", "Research interval": "6 h",
         "Daily cadence": "cron(0 9 * * ? *)", "Timezone": "Australia/Sydney",
+        "Findings window": "48 h",
         "Model": "rotates: model-a, model-b", "Financial": "yes", "Review mode": "off",
         "Last researched": "2026-10-04 11:00 UTC", "Last article": "2026-10-03 23:05 UTC",
     }  # fmt: skip
@@ -804,6 +824,19 @@ def test_a_row_shows_each_setting_and_where_it_is_inherited(tables):
     assert rows["hn"]["Review mode"] == "enforce (inherited)"
     assert rows["hn"]["Model"] == "pipeline default" and rows["hn"]["Adapter"] == "web_search"
     assert rows["hn"]["Timezone"] == "UTC" and rows["hn"]["Last researched"] == "never"
+    assert rows["hn"]["Findings window"] == "24 h (default)"
+
+
+@pytest.mark.parametrize(
+    ("stored", "shown"),
+    [(None, "24 h (default)"), (Decimal("192"), "192 h"), (336, "336 h"), (0, "24 h (default)"),
+     (1000, "24 h (default)"), ("192", "24 h (default)"), (1.5, "24 h (default)")],
+)  # fmt: skip
+def test_the_findings_window_shown_is_the_one_the_daily_cycle_would_use(stored, shown):
+    topic = {} if stored is None else {"findings_window_hours": stored}
+
+    assert cli_guide._findings_window(topic) == shown
+    assert shown.split(" ")[0] == str(findings_window.findings_window_hours(topic))
 
 
 def test_one_topic_is_shown_in_full(tables):
@@ -827,6 +860,29 @@ def test_one_topic_is_shown_in_full(tables):
     assert settings["Editorial goals"].startswith('{"exclusion_criteria": "Star counts need not be exact')
     assert len(settings["Editorial goals"]) <= cli_guide.DETAIL_MAX_CHARS
     assert result["spoken"] == "GitHub Trending's settings are on screen."
+
+
+def test_a_rotating_topic_shows_its_last_article_per_subject_and_others_have_no_such_row(tables):
+    """The daily cycle's per-subject stamps (common/day_subject.py) beside the topic-wide one."""
+    put_topic(
+        tables,
+        "rail-cities",
+        name="Rail cities",
+        adapter="rail_access",
+        last_article_at="2026-10-13T22:05:00+00:00",
+        last_article_by_subject={"sydney": "2026-10-13T22:05:00+00:00", "boston": "not a time"},
+    )
+    put_topic(tables, "hn", name="Hacker News")
+
+    settings = dict(cli_guide.topics_overview(topic="rail-cities")["table"]["rows"])
+    plain = dict(cli_guide.topics_overview(topic="hn")["table"]["rows"])
+
+    assert settings["Last article"] == "2026-10-13 22:05 UTC"
+    assert settings["Last article by subject"] == "boston never; sydney 2026-10-13 22:05 UTC"
+    assert "Last article by subject" not in plain
+    # The list view's columns are unchanged.
+    (row,) = (r for r in cli_guide.topics_overview()["table"]["rows"] if r[1] == "rail-cities")
+    assert len(row) == len(cli_guide.OVERVIEW_COLUMNS)
 
 
 def test_an_id_that_is_not_one_or_is_not_there_is_said_so(tables):
@@ -912,3 +968,131 @@ def test_the_full_setup_example_is_a_command_the_cli_accepts(parser, tables):
     args = parsed(parser, example["suggestion"]["command"])
     assert json.loads(args["config_json"])["queries"]
     assert json.loads(args["editorial_goals_json"])["primary_focus"]
+
+
+# --- a vision topic's sites config is written by hand (the assistant's vision round) ------------
+
+INJECTED_SITES = {
+    "sites": [{"id": "sydney", "polygon": [[0, 0], [1, 0], [1, 1]]}],
+    "triage": False,
+    "web_context": False,
+}
+
+
+@pytest.mark.parametrize("adapter", ["rail_access", "satellite_vision"])
+@pytest.mark.parametrize("given", [INJECTED_SITES, '{"sites": []}', "not json at all"])
+def test_a_vision_topics_config_is_never_filled_in_on_create(adapter, given, parser, tables):
+    options = {"topic_id": "rail-perth", "name": "Perth", "adapter": adapter, "config_json": given}
+
+    result = cli_guide.cli_command("topics create", options)
+
+    assert result["hand_written"] is True and result["destructive"] is False and result["built"] is True
+    assert result["spoken"].startswith("A vision topic's sites config is written by hand")
+    (card,) = result["findings"]
+    command = card["suggestion"]["command"]
+    assert "<config_json>" in command and "triage" not in command and "polygon" not in command
+    assert card["warning"] == cli_guide.HAND_WRITTEN_WARNING and "rail_topics.example.json" in card["warning"]
+    assert card["where"]["example"] == "scripts/rail_topics.example.json"
+    parsed(parser, command.replace("<", "").replace(">", ""))
+
+
+@pytest.mark.parametrize("stored", ["rail_access", "satellite_vision", None])
+def test_a_vision_topics_config_is_never_filled_in_on_update(stored, tables):
+    if stored is not None:
+        put_topic(tables, "rail-sydney", adapter=stored)
+    options = {"topic_id": "rail-sydney", "adapter_config_json": INJECTED_SITES}
+
+    result = cli_guide.cli_command("topics update", options)
+
+    # A topic that cannot be read counts as one: the rule fails closed.
+    assert result["hand_written"] is True
+    assert "<adapter_config_json>" in result["findings"][0]["suggestion"]["command"]
+    assert "triage" not in json.dumps(result)
+
+
+def test_another_adapters_config_is_still_filled_in(parser, tables):
+    config = {"queries": ["vegetable garden watering"]}
+    options = {"topic_id": "garden", "name": "Garden", "adapter": "web_search", "config_json": config}
+    created = cli_guide.cli_command("topics create", options)
+    assert json.loads(parsed(parser, built(created))["config_json"]) == config
+    put_topic(tables, "garden", adapter="web_search")
+    updated = cli_guide.cli_command("topics update", {"topic_id": "garden", "adapter_config_json": config})
+    assert json.loads(parsed(parser, built(updated))["adapter_config_json"]) == config
+    assert "hand_written" not in created and "hand_written" not in updated
+
+
+def test_a_draft_never_fills_in_a_vision_topics_config(tables):
+    put_topic(tables, "rail-sydney", adapter="rail_access")
+    for path, options in (
+        ("topics create", {"name": "Perth", "adapter": "rail_access", "config_json": INJECTED_SITES}),
+        ("topics update", {"topic_id": "rail-sydney", "adapter_config_json": INJECTED_SITES}),
+    ):
+        drafted = cli_guide.draft(path, options)
+        command = drafted["suggestion"]["command"]
+        assert "triage" not in command and "polygon" not in command, path
+        assert "<config_json>" in command or "<adapter_config_json>" in command
+        assert drafted["hand_written"] is True and drafted["warning"] == cli_guide.HAND_WRITTEN_WARNING
+    # Through the guide too, whatever the model passes as options.
+    options = {"adapter_config_json": INJECTED_SITES, "topic_id": "rail-sydney"}
+    guided = cli_guide.cli_guides("vision", options)
+    assert "triage" not in json.dumps(guided["findings"])
+
+
+@pytest.mark.parametrize(
+    ("words", "guide"),
+    [
+        ("how do I publish an article to the site", "review"),
+        ("how do I review what goes on the site", "review"),
+        ("what shows on the site", None),
+        ("how do I add a satellite site", "vision"),
+        ("create a topic for rail", "vision"),
+        ("how do I set up a rail topic", "vision"),
+    ],
+)
+def test_the_website_is_not_a_vision_site(words, guide):
+    """"site" is also the public website: only vision words send a question to the vision guide."""
+    assert cli_guide._guide_for(words) == guide
+
+
+def test_the_findings_guide_says_how_findings_work_and_builds_the_next_article_command(parser, tables):
+    result = cli_guide.cli_guides("findings")
+    guide = result["guide"]
+    assert guide["title"].startswith("Reading a topic's findings")
+    assert guide["commands"] == ["findings list", "topics findings", "topics update"]
+    assert 2 <= len(guide["explanation"]) <= 5
+    assert result["spoken"].startswith("Research writes a finding only when a topic's source changed")
+    text = " ".join(guide["explanation"])
+    assert "14 days" in text and "at most 48" in text and "findings list shows them in full" in text
+    assert "editorial goals may use only some" in text
+    assert [step["command"] for step in guide["steps"]] == [
+        "findings list", "findings list", "findings list", "topics findings", "topics update",
+    ]  # fmt: skip
+    # The next-article step is a switch, built as the CLI takes it; the days step asks for both numbers.
+    built = cli_command_text(parser, "findings list", {"topic_id": "rail-sydney", "next_article": True})
+    assert built.endswith("findings list rail-sydney --next-article")
+    built = cli_command_text(parser, "findings list", {"topic_id": "crypto", "days": 2, "limit": 10})
+    assert built.endswith("findings list crypto --limit 10 --days 2")
+    assert guide["steps"][2]["ask"] == ["topic_id", "days", "limit"]
+    # The help on screen is the CLI's own, with the window flags in it.
+    helped = {found["where"]["command"]: found["help"] for found in result["findings"] if "help" in found}
+    assert "--next-article" in helped["findings list"] and "--days" in helped["findings list"]
+
+
+def cli_command_text(parser, path: str, options: dict) -> str:
+    command = built(cli_guide.cli_command(path, options))
+    parsed(parser, command)
+    return command
+
+
+def test_the_vision_guide_says_how_it_works_in_plain_words(tables):
+    result = cli_guide.cli_guides("vision")
+    guide = result["guide"]
+    assert guide["title"] == "Vision topics: satellite sites and the Rail Access Monitor"
+    assert guide["commands"] == [
+        "topics create", "topics update", "topics trigger", "topics findings", "findings list",
+    ]  # fmt: skip
+    assert [step["command"] for step in guide["steps"]][-2:] == ["topics findings", "findings list"]
+    assert result["spoken"].startswith("A vision topic watches a few fixed places in new satellite images")
+    assert "rail_access" not in guide["explanation"][0] and "satellite_vision" not in guide["explanation"][0]
+    assert "scripts/rail_topics.example.json" in " ".join(guide["explanation"])
+

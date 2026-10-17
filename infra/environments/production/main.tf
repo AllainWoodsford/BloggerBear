@@ -85,6 +85,8 @@ provider "aws" {
 # shared across environments.
 # -----------------------------------------------------------------------
 resource "aws_wafv2_web_acl" "this" {
+  # Cost saving (docs/cost-saving.md): one of the switches, production only.
+  count    = var.waf_site_enabled ? 1 : 0
   provider = aws.us_east_1
 
   name = "${var.unique_name_prefix}-shared"
@@ -166,7 +168,7 @@ module "static_site" {
   domain_name          = var.domain_name
   hosted_zone_id       = var.hosted_zone_id
   redirect_www         = true
-  web_acl_id           = aws_wafv2_web_acl.this.arn
+  web_acl_id           = var.waf_site_enabled ? aws_wafv2_web_acl.this[0].arn : ""
   unique_name_prefix   = var.unique_name_prefix
 
   # The frontend calls the public API through its CDN (module.public_api_cdn). The operator's
@@ -479,6 +481,20 @@ data "aws_iam_policy_document" "lambda_exec" {
     resources = ["${aws_s3_bucket.content.arn}/*"]
   }
 
+  # research_tick_handler._load_running_state reads an adapter's running state with GetObject and
+  # takes a missing object as "first tick". S3 answers a GetObject for a missing key with 404
+  # NoSuchKey only when the caller may ListBucket; without it the answer is 403 AccessDenied, which
+  # the handler rightly does not swallow, so a vision topic (rail_access, satellite_vision) failed
+  # on its first tick and every one after. On the bucket ARN itself, not its objects: ListBucket is
+  # a bucket action. No s3:prefix condition on purpose: whether S3 evaluates one for that implicit
+  # check is not documented, and the bucket holds only this deployment's own snapshots and figures.
+  statement {
+    sid       = "ContentBucketMissingKeys"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.content.arn]
+  }
+
   # Static article publishing (docs/project-plan.md §11): lets
   # common/static_pages.py write a rendered article page into the site
   # bucket -- scoped to the articles/ prefix only, not the whole bucket,
@@ -712,6 +728,47 @@ resource "aws_iam_role_policy" "lambda_web_search" {
   policy = data.aws_iam_policy_document.lambda_web_search.json
 }
 
+# -----------------------------------------------------------------------
+# Vision worker (docs/enhancements/opencv-agentic-vision-enhancement.md): OpenCV 5 on arm64 in
+# var.vision_region, beside the Sentinel-2 imagery. Only when var.vision_enabled (off; dev goes
+# first); until then the research tick's VISION_WORKER_ARN is empty and the satellite_vision
+# adapter records every site as not measured (common/vision_client.py), never as empty.
+# -----------------------------------------------------------------------
+module "vision_worker" {
+  source = "../../modules/vision-worker"
+  count  = var.vision_enabled ? 1 : 0
+
+  unique_name_prefix = var.unique_name_prefix
+  environment_name   = "production"
+  region             = var.vision_region
+}
+
+locals {
+  vision_env_variables = {
+    VISION_WORKER_ARN = var.vision_enabled ? module.vision_worker[0].function_arn : ""
+  }
+}
+
+# The shared exec role may invoke the worker and nothing else in that Region. A separate policy,
+# like lambda_web_search, so the grant stays visibly scoped to one function.
+data "aws_iam_policy_document" "lambda_vision_worker" {
+  count = var.vision_enabled ? 1 : 0
+
+  statement {
+    sid       = "InvokeVisionWorker"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [module.vision_worker[0].function_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_vision_worker" {
+  count  = var.vision_enabled ? 1 : 0
+  name   = "${var.unique_name_prefix}-production-lambda-vision-worker"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.lambda_vision_worker[0].json
+}
+
 # Used only to construct RESEARCH_TICK_FUNCTION_ARN / STATE_MACHINE_ARN
 # above without a direct resource reference (see the comment there for
 # why a direct reference would create a dependency cycle).
@@ -743,7 +800,12 @@ resource "aws_lambda_function" "research_tick" {
   source_code_hash = data.archive_file.lambdas.output_base64sha256
 
   environment {
-    variables = merge(local.lambda_env_variables, local.coingecko_env_variables, local.github_env_variables)
+    variables = merge(
+      local.lambda_env_variables,
+      local.coingecko_env_variables,
+      local.github_env_variables,
+      local.vision_env_variables,
+    )
   }
 }
 
@@ -912,8 +974,13 @@ module "admin_api" {
   lambda_invoke_arn    = aws_lambda_function.admin_api.invoke_arn
   lambda_function_name = aws_lambda_function.admin_api.function_name
   authorization        = "AWS_IAM"
-  web_acl_id           = aws_wafv2_web_acl.admin.arn
-  associate_web_acl    = true
+  # Cost saving (docs/cost-saving.md): the admin web ACL is one of the switches. The address
+  # allowlist itself is always on, as the API's own resource policy (local.admin_api_resource_policy
+  # below), so no switch leaves this API reachable from another address.
+  web_acl_id              = local.waf_admin_enabled ? aws_wafv2_web_acl.admin[0].arn : ""
+  associate_web_acl       = local.waf_admin_enabled
+  resource_policy_enabled = true
+  resource_policy         = local.admin_api_resource_policy
 
   # Scaling PR C: one operator's CLI and review inbox never come close to this; it only caps
   # what a leaked credential or a runaway script could make the admin Lambda do.
@@ -927,12 +994,21 @@ module "admin_api" {
     "PUT /topics/{topic_id}",
     "DELETE /topics/{topic_id}",
     "POST /topics/{topic_id}/trigger",
+    # Pausing a topic (nothing of it runs until resumed) and the stagger (docs/project-plan.md
+    # §11, Staggered schedules): the schedule listing, and the rewrite of every topic's schedules.
+    "POST /topics/{topic_id}/pause",
+    "POST /topics/{topic_id}/resume",
+    "GET /topics/schedule",
+    "POST /topics/reschedule",
     "GET /topics/{topic_id}/candidates",
     # research_tick's trigger is fire-and-forget (async Lambda invoke) --
     # this is what scripts/admin_cli.py's `topics trigger` polls to find
     # out when it's actually finished, since there's no dedicated job-
     # status system. See admin_api_handler.py's _get_latest_finding_route.
     "GET /topics/{topic_id}/findings/latest",
+    # A topic's Findings, newest first (`findings list`): the admin_api_handler.py route the
+    # assistant's topic_findings and the topic-findings Claude Code skill mirror.
+    "GET /topics/{topic_id}/findings",
     # Force-publish override -- publishes an article regardless of its
     # current status, unlike the moderation approve/reject routes below
     # which only act on a pending ModerationQueue item. See
@@ -1040,7 +1116,47 @@ module "admin_api" {
 # can call this API. That is the deliberately safe default -- fail closed
 # -- not a bug.
 # -----------------------------------------------------------------------
+# Cost saving (docs/cost-saving.md): which firewall pieces exist. Each switch is a variable CI
+# passes from a GitHub variable, true by default (variables.tf). The public API's web ACL goes
+# with waf_regional_enabled; the admin API's needs waf_admin_allowlist as well.
+locals {
+  waf_public_api_enabled = var.waf_regional_enabled
+  waf_admin_enabled      = var.waf_regional_enabled && var.waf_admin_allowlist
+}
+
+# The admin API's address allowlist as the API's own resource policy: always on, whatever the
+# switches say, and free. A Deny of every call whose address is not in var.admin_allowed_cidrs,
+# the same list the IP set below is built from; with the list empty (the default until the
+# secret is set), a Deny of every call, so it fails closed exactly as the admin web ACL's
+# default block does. Deny-only, so AWS_IAM authorization is unchanged: a caller in this
+# account from an allowed address is admitted by its own IAM policy. The statement is built
+# with the two for-expressions rather than a conditional because its two shapes (with and
+# without a Condition) are not one type. Sensitive, like the list it carries, so the plan
+# prints it as (sensitive value); no output carries it, and a refused caller's 403 never
+# shows it. API Gateway enforces a resource policy from the next deployment, which the module
+# triggers on the policy's text.
+locals {
+  admin_api_deny_statement = {
+    Sid       = "DenyOutsideAdminAllowlist"
+    Effect    = "Deny"
+    Principal = "*"
+    Action    = "execute-api:Invoke"
+    Resource  = "execute-api:/*"
+  }
+  admin_api_resource_policy = sensitive(jsonencode({
+    Version = "2012-10-17"
+    Statement = concat(
+      [for _ in(length(var.admin_allowed_cidrs) > 0 ? [1] : []) : merge(local.admin_api_deny_statement, {
+        Condition = { NotIpAddress = { "aws:SourceIp" = var.admin_allowed_cidrs } }
+      })],
+      [for _ in(length(var.admin_allowed_cidrs) > 0 ? [] : [1]) : local.admin_api_deny_statement],
+    )
+  }))
+}
+
 resource "aws_wafv2_ip_set" "admin_allowlist" {
+  count = local.waf_admin_enabled ? 1 : 0
+
   name               = "${var.unique_name_prefix}-production-admin-allowlist"
   scope              = "REGIONAL"
   ip_address_version = "IPV4"
@@ -1048,6 +1164,8 @@ resource "aws_wafv2_ip_set" "admin_allowlist" {
 }
 
 resource "aws_wafv2_web_acl" "admin" {
+  count = local.waf_admin_enabled ? 1 : 0
+
   name = "${var.unique_name_prefix}-production-admin-api"
   # See the identical regex-safety comment on production's shared
   # aws_wafv2_web_acl.this above -- no semicolons/apostrophes/parens.
@@ -1068,7 +1186,7 @@ resource "aws_wafv2_web_acl" "admin" {
 
     statement {
       ip_set_reference_statement {
-        arn = aws_wafv2_ip_set.admin_allowlist.arn
+        arn = aws_wafv2_ip_set.admin_allowlist[0].arn
       }
     }
 
@@ -1457,8 +1575,10 @@ module "public_api" {
   lambda_function_name = aws_lambda_function.public_api.function_name
   authorization        = "NONE"
   enable_cors          = true
-  web_acl_id           = aws_wafv2_web_acl.public_api.arn
-  associate_web_acl    = true
+  # Cost saving (docs/cost-saving.md): one of the switches; off, the API keeps only the stage
+  # throttling below.
+  web_acl_id        = local.waf_public_api_enabled ? aws_wafv2_web_acl.public_api[0].arn : ""
+  associate_web_acl = local.waf_public_api_enabled
 
   # Scaling PR C: a ceiling for the whole API, well above what the site needs (most reads are
   # now answered by module.public_api_cdn's cache) and well below what would run up a bill.
@@ -1525,8 +1645,8 @@ module "public_api_cdn" {
   stage_name           = module.public_api.stage_name
   origin_verify_secret = random_password.api_origin_verify.result
   # The shared CLOUDFRONT-scope ACL above: per-visitor rate limiting and the managed rules at the
-  # edge, in front of the cache.
-  web_acl_id = aws_wafv2_web_acl.this.arn
+  # edge, in front of the cache. None when the site switch is off (docs/cost-saving.md).
+  web_acl_id = var.waf_site_enabled ? aws_wafv2_web_acl.this[0].arn : ""
 }
 
 # -----------------------------------------------------------------------
@@ -1542,6 +1662,8 @@ module "public_api_cdn" {
 # counter.
 # -----------------------------------------------------------------------
 resource "aws_wafv2_web_acl" "public_api" {
+  count = local.waf_public_api_enabled ? 1 : 0
+
   name = "${var.unique_name_prefix}-production-public-api"
   # See the identical regex-safety comment above -- no semicolons.
   description = "Regional WAF Web ACL for the BloggerBear production public API -- allows all traffic by default, rate-limits any single source IP past 500 requests per 5-minute window."
@@ -1876,17 +1998,66 @@ locals {
   waf_visitor_log_retention_days = 14
 }
 
+# Cost saving (docs/cost-saving.md): every regional firewall resource gained `count` from the
+# switches, so each one the deployment already has moves to index [0] in state, and the default
+# plan (every switch on) shows nothing to destroy or create.
+moved {
+  from = aws_wafv2_ip_set.admin_allowlist
+  to   = aws_wafv2_ip_set.admin_allowlist[0]
+}
+
+moved {
+  from = aws_wafv2_web_acl.admin
+  to   = aws_wafv2_web_acl.admin[0]
+}
+
+moved {
+  from = aws_wafv2_web_acl.public_api
+  to   = aws_wafv2_web_acl.public_api[0]
+}
+
+moved {
+  from = aws_cloudwatch_log_group.waf_admin
+  to   = aws_cloudwatch_log_group.waf_admin[0]
+}
+
+moved {
+  from = aws_cloudwatch_log_group.waf_public_api
+  to   = aws_cloudwatch_log_group.waf_public_api[0]
+}
+
+moved {
+  from = aws_cloudwatch_log_resource_policy.waf_logs
+  to   = aws_cloudwatch_log_resource_policy.waf_logs[0]
+}
+
+moved {
+  from = aws_wafv2_web_acl_logging_configuration.admin
+  to   = aws_wafv2_web_acl_logging_configuration.admin[0]
+}
+
+moved {
+  from = aws_wafv2_web_acl_logging_configuration.public_api
+  to   = aws_wafv2_web_acl_logging_configuration.public_api[0]
+}
+
 resource "aws_cloudwatch_log_group" "waf_admin" {
+  count = local.waf_admin_enabled ? 1 : 0
+
   name              = "aws-waf-logs-${var.unique_name_prefix}-production-admin"
   retention_in_days = 30
 }
 
 resource "aws_cloudwatch_log_group" "waf_public_api" {
+  count = local.waf_public_api_enabled ? 1 : 0
+
   name              = "aws-waf-logs-${var.unique_name_prefix}-production-public-api"
   retention_in_days = local.waf_visitor_log_retention_days
 }
 
 data "aws_iam_policy_document" "waf_logs" {
+  count = var.waf_regional_enabled ? 1 : 0
+
   statement {
     sid    = "AllowWAFLogging"
     effect = "Allow"
@@ -1900,20 +2071,57 @@ data "aws_iam_policy_document" "waf_logs" {
 }
 
 resource "aws_cloudwatch_log_resource_policy" "waf_logs" {
+  count = var.waf_regional_enabled ? 1 : 0
+
   policy_name     = "${var.unique_name_prefix}-production-waf-logs"
-  policy_document = data.aws_iam_policy_document.waf_logs.json
+  policy_document = data.aws_iam_policy_document.waf_logs[0].json
 }
 
 resource "aws_wafv2_web_acl_logging_configuration" "admin" {
-  resource_arn            = aws_wafv2_web_acl.admin.arn
-  log_destination_configs = [aws_cloudwatch_log_group.waf_admin.arn]
+  count = local.waf_admin_enabled ? 1 : 0
+
+  # [count.index], not [0]: Checkov's CKV2_AWS_31 (every web ACL has a logging configuration)
+  # follows a reference into a counted ACL only in this form (docs/friction.md, 13.10).
+  resource_arn            = aws_wafv2_web_acl.admin[count.index].arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf_admin[count.index].arn]
+
+  # Cost saving (docs/cost-saving.md): with waf_log_all_requests off, this log keeps only what a
+  # rule blocked or counted, as the visitor ACLs' logs do. On (the default), every request from
+  # the operator's allowlisted addresses is logged: that record is the audit trail.
+  dynamic "logging_filter" {
+    for_each = var.waf_log_all_requests ? [] : [1]
+    content {
+      default_behavior = "DROP"
+
+      filter {
+        behavior    = "KEEP"
+        requirement = "MEETS_ANY"
+
+        condition {
+          action_condition {
+            action = "BLOCK"
+          }
+        }
+
+        condition {
+          action_condition {
+            action = "COUNT"
+          }
+        }
+      }
+    }
+  }
 
   depends_on = [aws_cloudwatch_log_resource_policy.waf_logs]
 }
 
 resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
-  resource_arn            = aws_wafv2_web_acl.public_api.arn
-  log_destination_configs = [aws_cloudwatch_log_group.waf_public_api.arn]
+  count = local.waf_public_api_enabled ? 1 : 0
+
+  # [count.index], not [0]: Checkov's CKV2_AWS_31 (every web ACL has a logging configuration)
+  # follows a reference into a counted ACL only in this form (docs/friction.md, 13.10).
+  resource_arn            = aws_wafv2_web_acl.public_api[count.index].arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf_public_api[count.index].arn]
 
   dynamic "redacted_fields" {
     for_each = local.waf_log_redacted_headers
@@ -1950,7 +2158,28 @@ resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
 
 # The shared CloudFront-scope ACL's log group/policy/logging-config trio
 # -- all in us-east-1, same as aws_wafv2_web_acl.this itself.
+moved {
+  from = aws_wafv2_web_acl.this
+  to   = aws_wafv2_web_acl.this[0]
+}
+
+moved {
+  from = aws_cloudwatch_log_group.waf_shared
+  to   = aws_cloudwatch_log_group.waf_shared[0]
+}
+
+moved {
+  from = aws_cloudwatch_log_resource_policy.waf_logs_shared
+  to   = aws_cloudwatch_log_resource_policy.waf_logs_shared[0]
+}
+
+moved {
+  from = aws_wafv2_web_acl_logging_configuration.shared
+  to   = aws_wafv2_web_acl_logging_configuration.shared[0]
+}
+
 resource "aws_cloudwatch_log_group" "waf_shared" {
+  count    = var.waf_site_enabled ? 1 : 0
   provider = aws.us_east_1
 
   name              = "aws-waf-logs-${var.unique_name_prefix}-shared"
@@ -2007,6 +2236,8 @@ resource "aws_cloudwatch_log_group" "lambda" {
 }
 
 data "aws_iam_policy_document" "waf_logs_shared" {
+  count = var.waf_site_enabled ? 1 : 0
+
   statement {
     sid    = "AllowWAFLogging"
     effect = "Allow"
@@ -2022,17 +2253,21 @@ data "aws_iam_policy_document" "waf_logs_shared" {
 }
 
 resource "aws_cloudwatch_log_resource_policy" "waf_logs_shared" {
+  count    = var.waf_site_enabled ? 1 : 0
   provider = aws.us_east_1
 
   policy_name     = "${var.unique_name_prefix}-shared-waf-logs"
-  policy_document = data.aws_iam_policy_document.waf_logs_shared.json
+  policy_document = data.aws_iam_policy_document.waf_logs_shared[0].json
 }
 
 resource "aws_wafv2_web_acl_logging_configuration" "shared" {
+  count    = var.waf_site_enabled ? 1 : 0
   provider = aws.us_east_1
 
-  resource_arn            = aws_wafv2_web_acl.this.arn
-  log_destination_configs = [aws_cloudwatch_log_group.waf_shared.arn]
+  # [count.index], not [0]: Checkov's CKV2_AWS_31 (every web ACL has a logging configuration)
+  # follows a reference into a counted ACL only in this form (docs/friction.md, 13.10).
+  resource_arn            = aws_wafv2_web_acl.this[count.index].arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf_shared[count.index].arn]
 
   dynamic "redacted_fields" {
     for_each = local.waf_log_redacted_headers
@@ -2394,23 +2629,26 @@ module "observability" {
     api_name                   = module.public_api.api_name
     stage                      = module.public_api.stage_name
   }
-  waf_regional_acls = [
-    {
+  # Only the ACLs that exist (the cost-saving switches): the `for _ in (cond ? [1] : [])` idiom
+  # the observability module uses, so a switched-off ACL is never read.
+  waf_regional_acls = concat(
+    [for _ in(local.waf_public_api_enabled ? [1] : []) : {
       label       = "Public API"
-      metric_name = aws_wafv2_web_acl.public_api.visibility_config[0].metric_name
-      log_group   = aws_cloudwatch_log_group.waf_public_api.name
-    },
-    {
+      metric_name = aws_wafv2_web_acl.public_api[0].visibility_config[0].metric_name
+      log_group   = aws_cloudwatch_log_group.waf_public_api[0].name
+    }],
+    [for _ in(local.waf_admin_enabled ? [1] : []) : {
       label       = "Admin API"
-      metric_name = aws_wafv2_web_acl.admin.visibility_config[0].metric_name
-      log_group   = aws_cloudwatch_log_group.waf_admin.name
-    },
-  ]
-  waf_cloudfront_acl = {
+      metric_name = aws_wafv2_web_acl.admin[0].visibility_config[0].metric_name
+      log_group   = aws_cloudwatch_log_group.waf_admin[0].name
+    }],
+  )
+  # Left off the dashboard when the site switch is off (docs/cost-saving.md).
+  waf_cloudfront_acl = var.waf_site_enabled ? {
     label       = "Site (CloudFront)"
-    metric_name = aws_wafv2_web_acl.this.visibility_config[0].metric_name
-    log_group   = aws_cloudwatch_log_group.waf_shared.name
-  }
+    metric_name = aws_wafv2_web_acl.this[0].visibility_config[0].metric_name
+    log_group   = aws_cloudwatch_log_group.waf_shared[0].name
+  } : null
 }
 
 # =========================================================================
@@ -2549,10 +2787,12 @@ resource "aws_lambda_function" "security_events" {
 }
 
 locals {
-  security_event_waf_log_groups = {
-    public_api = aws_cloudwatch_log_group.waf_public_api
-    admin      = aws_cloudwatch_log_group.waf_admin
-  }
+  # Only the WAF logs that exist (the cost-saving switches, docs/cost-saving.md). The keys are
+  # decided by the switches alone, as a for_each's must be; the same idiom as waf_regional_acls.
+  security_event_waf_log_groups = merge({}, concat(
+    [for _ in(local.waf_public_api_enabled ? [1] : []) : { public_api = aws_cloudwatch_log_group.waf_public_api[0] }],
+    [for _ in(local.waf_admin_enabled ? [1] : []) : { admin = aws_cloudwatch_log_group.waf_admin[0] }],
+  )...)
 }
 
 resource "aws_lambda_permission" "security_events_from_waf_logs" {
@@ -2669,9 +2909,13 @@ module "ops_assistant" {
     Project   = local.default_tags.Project
   }
 
-  # The nine app tables its tools read (read-only), as in dev.
+  # The eleven app tables its tools read (read-only), as in dev. Findings is among them for
+  # topic_findings, which only ever Queries one topic's rows (a test holds it to Query); the one
+  # map also grants Scan, accepted to keep the one-map design, since a Scan of Findings reaches
+  # nothing a per-topic Query does not.
   tables = {
     TOPICS_TABLE            = { name = module.app_data.topics_table_name, arn = module.app_data.topics_table_arn }
+    FINDINGS_TABLE          = { name = module.app_data.findings_table_name, arn = module.app_data.findings_table_arn }
     ARTICLES_TABLE          = { name = module.app_data.articles_table_name, arn = module.app_data.articles_table_arn }
     MODERATION_QUEUE_TABLE  = { name = module.app_data.moderation_queue_table_name, arn = module.app_data.moderation_queue_table_arn }
     FAILED_EXECUTIONS_TABLE = { name = module.app_data.failed_executions_table_name, arn = module.app_data.failed_executions_table_arn }
@@ -2706,12 +2950,14 @@ module "ops_assistant" {
 
   # The AWS bill (spend) and the firewall (firewall_review): the account's, so production's only.
   account_wide_data = true
-  waf_log_groups = [
-    { region = var.aws_region, name = aws_cloudwatch_log_group.waf_admin.name },
-    { region = var.aws_region, name = aws_cloudwatch_log_group.waf_public_api.name },
+  # Only the firewall logs that exist (the cost-saving switches, docs/cost-saving.md); with none,
+  # the assistant has no firewall_review tool at all.
+  waf_log_groups = concat(
+    [for _ in(local.waf_admin_enabled ? [1] : []) : { region = var.aws_region, name = aws_cloudwatch_log_group.waf_admin[0].name }],
+    [for _ in(local.waf_public_api_enabled ? [1] : []) : { region = var.aws_region, name = aws_cloudwatch_log_group.waf_public_api[0].name }],
     # The CloudFront firewall's, which logs to us-east-1 whatever the home region is.
-    { region = "us-east-1", name = aws_cloudwatch_log_group.waf_shared.name },
-  ]
+    [for _ in(var.waf_site_enabled ? [1] : []) : { region = "us-east-1", name = aws_cloudwatch_log_group.waf_shared[0].name }],
+  )
 
   # Alexa+ account linking (alexa/README.md): production's own add-on, signing in to production's
   # pool only. Empty until the one-time bootstrap prints Alexa's redirect URLs. Once linked, one
@@ -2731,6 +2977,12 @@ module "ops_assistant" {
   agent_allowed_origin = local.site_url
 
   agent_forward_key = random_password.ops_agent_forward_key.result
+
+  # The assistant's vision round (vision.tf in the module): where the worker runs, it may read the
+  # worker's log there and each topic's running state, and is told the Region. Known at plan time;
+  # nothing here waits on module.vision_worker.
+  vision_enabled = var.vision_enabled
+  vision_region  = var.vision_region
 }
 
 # Made once and kept in state, as in dev: the key the agent sends the MCP server so that

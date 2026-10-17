@@ -27,18 +27,30 @@ throttle) surfaced as a raw unhandled Lambda function-error instead of a
 clean, structured log entry. Matches every other handler in this
 codebase now: never raises unhandled, always returns a `{"status":
 "error", ...}` dict on failure.
+
+The evidence trail (common/evidence.py, docs/enhancements/vision-evidence.md): every invocation
+binds its ids (Lambda's request id as `tick`, a fresh `run` per attempt, the topic) so each line
+an adapter prints carries them, and prints one `research_tick` line in a `finally`: the outcome,
+whether the running state or the snapshot was stored in this attempt, how many decisions and
+triages the adapter logged, and the Finding's captured_at if one was written. A timed-out tick
+never reaches the finally: readers treat the missing line as "not kept". The handler stays
+topic-agnostic: the adapter key is stored as typed and never branched on.
 """
 from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 import boto3
 
+from common import evidence
 from common.adapters.base import SEEN_KEY
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
+from common.day_subject import clean_subjects
 from common.dynamo import (
     get_latest_finding,
     get_pipeline_config,
@@ -47,6 +59,7 @@ from common.dynamo import (
     set_topic_last_research_at,
 )
 from common.editorial_resolver import resolve_editorial_goals
+from common.figures import MAX_FIGURES_PER_FINDING, clean_figures
 from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.relevance import research_relevance_rule, topic_label
@@ -63,6 +76,9 @@ SEEN_MAX_KEYS = 2000
 # for that, and one automatic retry with more if a reply still runs out.
 RESEARCH_MAX_TOKENS = 2048
 RESEARCH_RETRY_MAX_TOKENS = 4096
+# How many of an adapter's planner notes (Adapter.planner_notes) a Finding keeps: the rail
+# adapter's four flags and three simulations, a few KB of a Findings item's 400 KB.
+MAX_PLANNER_NOTES_PER_FINDING = 7
 
 _s3_client = None
 
@@ -76,6 +92,29 @@ def _get_s3_client():
 
 def _snapshot_key(topic_id: str, captured_at: str) -> str:
     return f"snapshots/{topic_id}/{captured_at}.json"
+
+
+def _running_state_key(topic_id: str) -> str:
+    """Where an adapter with `keeps_running_state` has its newest state, material or not. One
+    object per topic, overwritten each tick; under snapshots/ so it expires with them if the topic
+    stops running (the bucket's lifecycle rule), after which the last Finding's snapshot is used."""
+    return f"snapshots/{topic_id}/running-state.json"
+
+
+def _load_running_state(bucket: str, topic_id: str) -> dict | None:
+    try:
+        return _load_prior_state(bucket, _running_state_key(topic_id))
+    except _get_s3_client().exceptions.NoSuchKey:
+        return None
+
+
+def _store_state(bucket: str, key: str, snapshot: dict) -> None:
+    _get_s3_client().put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=json.dumps(snapshot).encode("utf-8"),
+        ContentType="application/json",
+    )
 
 
 def _load_prior_state(bucket: str, s3_key: str) -> dict:
@@ -104,6 +143,34 @@ def _merge_seen(adapter, old_state: dict | None, new_state: dict, today: date) -
         newest = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)[:SEEN_MAX_KEYS]
         seen = dict(newest)
     return seen
+
+
+def _planner_notes(adapter, new_state: dict) -> list[dict]:
+    """The adapter's planner notes as a Finding keeps them: its dicts only, the first
+    MAX_PLANNER_NOTES_PER_FINDING, through JSON so every number is a Decimal as DynamoDB wants.
+    A hook that fails, or notes that would not survive JSON (a NaN, an object), cost the notes and
+    never the Finding: by now its summary has been paid for."""
+    try:
+        notes = [note for note in adapter.planner_notes(new_state) or [] if isinstance(note, dict)]
+        text = json.dumps(notes[:MAX_PLANNER_NOTES_PER_FINDING], allow_nan=False)
+        return json.loads(text, parse_float=Decimal)
+    except Exception as exc:  # noqa: BLE001 - an extra on the Finding, never a reason to lose it
+        print(f"research_tick_handler: planner notes dropped: {type(exc).__name__}: {exc!r}")
+        return []
+
+
+def _subjects(adapter, new_state: dict) -> list[str]:
+    """The subjects the observation reports (Adapter.subjects), as a Finding keeps them
+    (common/day_subject.clean_subjects: plain keys, each once, at most MAX_SUBJECTS_PER_FINDING).
+    A hook that fails costs the subjects and never the Finding: by now its summary has been paid
+    for. It is said in the log, since a rotating topic never drafts a Finding without subjects, and
+    so is a hook that returns something other than an iterable of keys (a string, say), which
+    clean_subjects refuses with TypeError rather than reading it as none."""
+    try:
+        return clean_subjects(adapter.subjects(new_state))
+    except Exception as exc:  # noqa: BLE001 - an extra on the Finding, never a reason to lose it
+        print(f"research_tick_handler: subjects dropped: {type(exc).__name__}: {exc!r}")
+        return []
 
 
 def _build_prompt(topic: dict, diff_summary: str, new_state: dict, adapter) -> str:
@@ -145,12 +212,58 @@ def handler(event, context) -> dict:
     # elapsed.
     force = (event or {}).get("force") is True
 
+    if (event or {}).get("prefetch_network") is True:
+        # Only the Admin API's network_prefetch trigger sets this: fetch the topic's rail networks
+        # with the time a slow Overpass needs, and nothing else (no Finding, no research time).
+        print(f"research_tick_handler: prefetching networks for topic_id={topic_id}")
+        try:
+            return _run_network_prefetch(topic_id)
+        except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
+            print(f"research_tick_handler: unhandled exception prefetching for topic_id={topic_id}: {exc!r}")
+            return {"status": "error", "topic_id": topic_id, "reason": str(exc)}
+
     print(f"research_tick_handler: starting run for topic_id={topic_id} force={force}")
-    try:
-        return _run_research_tick(topic_id, force=force)
-    except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
-        print(f"research_tick_handler: unhandled exception for topic_id={topic_id}: {exc!r}")
-        return {"status": "error", "topic_id": topic_id, "reason": str(exc)}
+    tick = getattr(context, "aws_request_id", None)
+    with evidence.bind(tick=tick, run=evidence.new_run(), topic_id=topic_id):
+        started = time.monotonic()
+        outcome, error_type = "error", None
+        try:
+            result = _run_research_tick(topic_id, force=force)
+            outcome = _outcome(result)
+            return result
+        except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
+            error_type = type(exc).__name__
+            print(f"research_tick_handler: unhandled exception for topic_id={topic_id}: {exc!r}")
+            return {"status": "error", "topic_id": topic_id, "reason": str(exc)}
+        finally:
+            evidence.emit(
+                "research_tick",
+                adapter=evidence.bound("adapter"),
+                outcome=outcome,
+                stored=bool(evidence.bound("stored")),
+                decisions=evidence.emitted("vision_decision"),
+                triages=evidence.emitted("vision_triage"),
+                finding=evidence.bound("finding"),
+                force=force,
+                ms=int((time.monotonic() - started) * 1000),
+                error_type=error_type,
+            )
+
+
+# The tick's result statuses as the evidence line's outcome codes; an error result is told apart
+# by its reason's fixed start.
+_ERROR_OUTCOMES = (("unknown topic_id", "unknown_topic"), ("unknown adapter", "unknown_adapter"))
+
+
+def _outcome(result: dict) -> str:
+    """The `research_tick` line's outcome for a result of _run_research_tick: its status
+    (`not_due`, `paused`, `no_change`, `material_change`), or for an error `unknown_topic`,
+    `unknown_adapter` or `error`."""
+    status = result.get("status") if isinstance(result, dict) else None
+    if status != "error":
+        return status if isinstance(status, str) else "error"
+    reason = str(result.get("reason") or "")
+    return next((code for start, code in _ERROR_OUTCOMES if reason.startswith(start)), "error")
 
 
 def _not_due(topic: dict, now: datetime) -> dict | None:
@@ -190,10 +303,37 @@ def _record_research_check(topic_id: str, now: datetime) -> None:
         print(f"research_tick_handler: could not record last_research_at for {topic_id}: {exc!r}")
 
 
+def _run_network_prefetch(topic_id: str) -> dict:
+    """The `prefetch_network` event: the adapter's prefetch_networks (rail_access), one log line
+    per site. A paused topic fetches nothing, as for a tick."""
+    topic = get_topic(topic_id)
+    if topic is None:
+        return {"status": "error", "reason": f"unknown topic_id: {topic_id}"}
+    if topic.get("paused") is True:
+        print(f"research_tick_handler: {topic_id} is paused; nothing fetched")
+        return {"status": "paused", "topic_id": topic_id}
+    adapter_key = topic.get("adapter")
+    adapter_cls = ADAPTER_REGISTRY.get(adapter_key)
+    if adapter_cls is None or not hasattr(adapter_cls, "prefetch_networks"):
+        return {"status": "error", "reason": f"adapter {adapter_key} has no network to prefetch"}
+    sites = adapter_cls().prefetch_networks(topic)
+    for site in sites:
+        detail = {key: value for key, value in site.items() if key not in ("site_id", "status")}
+        where = f"{topic_id}/{site['site_id']}"
+        print(f"research_tick_handler: network_prefetch {where}: {site['status']} {detail}")
+    return {"status": "network_prefetched", "topic_id": topic_id, "sites": sites}
+
+
 def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "reason": f"unknown topic_id: {topic_id}"}
+    if topic.get("paused") is True:
+        # Paused by the operator (the Admin API's pause route, `topics pause`): nothing is
+        # fetched and nothing recorded, whatever the heartbeat or a manual trigger asks, until
+        # it is resumed. The Topics row decides; the disabled schedule only saves invocations.
+        print(f"research_tick_handler: {topic_id} is paused; nothing fetched")
+        return {"status": "paused", "topic_id": topic_id}
 
     run_started = datetime.now(UTC)
     if not force:
@@ -206,6 +346,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     adapter_cls = ADAPTER_REGISTRY.get(adapter_key)
     if adapter_cls is None:
         return {"status": "error", "reason": f"unknown adapter: {adapter_key}"}
+    evidence.note(adapter=adapter_key)  # the registry key as typed: stored, never branched on
 
     adapter = adapter_cls()
     bucket = os.environ["CONTENT_BUCKET"]
@@ -214,10 +355,11 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     # the diff needs it) so an adapter that opts in via `uses_previous_state`
     # can reuse what it already fetched earlier in the day instead of
     # re-requesting slow-changing data on every hourly tick.
-    prior_finding = get_latest_finding(topic_id)
-    old_state = None
-    if prior_finding is not None:
-        old_state = _load_prior_state(bucket, prior_finding["raw_snapshot_s3_key"])
+    old_state = _load_running_state(bucket, topic_id) if adapter.keeps_running_state else None
+    if old_state is None:
+        prior_finding = get_latest_finding(topic_id)
+        if prior_finding is not None:
+            old_state = _load_prior_state(bucket, prior_finding["raw_snapshot_s3_key"])
 
     if adapter.uses_previous_state:
         new_state = adapter.fetch_state(topic, previous_state=old_state)
@@ -231,6 +373,13 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
 
     changed, diff_summary = adapter.material_diff(old_state, new_state)
     if not changed:
+        if adapter.keeps_running_state:
+            running = dict(new_state)
+            seen = _merge_seen(adapter, old_state, new_state, datetime.now(UTC).date())
+            if seen:
+                running[SEEN_KEY] = seen
+            _store_state(bucket, _running_state_key(topic_id), running)
+            evidence.note(stored=True)
         return {"status": "no_change"}
 
     # The same precedence as the daily cycle (rotation candidates -> the topic's
@@ -272,16 +421,21 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     if seen:
         snapshot[SEEN_KEY] = seen
 
-    s3 = _get_s3_client()
-    s3.put_object(
-        Bucket=bucket,
-        Key=snapshot_key,
-        Body=json.dumps(snapshot).encode("utf-8"),
-        ContentType="application/json",
-    )
+    _store_state(bucket, snapshot_key, snapshot)
+    if adapter.keeps_running_state:
+        _store_state(bucket, _running_state_key(topic_id), snapshot)
+    evidence.note(stored=True)
 
     expires_at = int((datetime.now(UTC) + timedelta(days=FINDING_TTL_DAYS)).timestamp())
     refs = adapter.source_refs(new_state)
+    # What the adapter drew for this observation, checked here so only well-formed entries
+    # (a PNG key in the content bucket, a caption, alt text) ever reach a Finding; stored
+    # only when there are any (common/figures.py).
+    figures = clean_figures(adapter.figures(new_state))[:MAX_FIGURES_PER_FINDING]
+    planner_notes = _planner_notes(adapter, new_state)
+    # Which subjects it reports (Adapter.subjects), for a topic that rotates through several
+    # (common/day_subject.py); stored only when there are any.
+    subjects = _subjects(adapter, new_state)
 
     put_finding(
         topic_id=topic_id,
@@ -291,6 +445,10 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
         raw_snapshot_s3_key=snapshot_key,
         source_refs=refs,
         research_call=research_call,
+        figures=figures,
+        planner_notes=planner_notes,
+        subjects=subjects,
     )
+    evidence.note(finding=captured_at)
 
     return {"status": "material_change", "summary": summary}

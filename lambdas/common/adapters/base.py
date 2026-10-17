@@ -8,7 +8,10 @@ outside of the small registry lookup.
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
 
 # Reserved snapshot key. The research tick records, in every snapshot it
 # stores, which items it has already reported (item key -> the UTC date it was
@@ -19,6 +22,28 @@ SEEN_KEY = "_seen"
 
 # The most fresh evidence, as text, handed to the fresh-data reviewer.
 REVIEW_EVIDENCE_MAX_CHARS = 6000
+
+# A day subject's key (DaySubject.key, a Finding's `subjects`, the keys of a topic's
+# `last_article_by_subject`): the shape of a vision site's id (common/vision_sites.SITE_ID, a test
+# holds the two equal), so a site id is always a subject key. It is a DynamoDB map key and goes into
+# log lines, so plain characters only.
+SUBJECT_KEY = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+@dataclass(frozen=True)
+class DaySubject:
+    """The subject a rotating topic writes about on a given day (Adapter.day_subject): to a topic
+    that watches several subjects (cities, say) what the crypto feed's day goal is to it
+    (common/editorial_goals.py). Written by the adapter's code, never by a model: the daily cycle
+    folds `mandate` and `style` into its ideation and drafting prompts and prints `key` in its log;
+    `label` is the adapter's to fold into the mandate. Each text is checked and cleaned to one plain
+    line within its bound before any prompt sees it (common/day_subject.day_subject_error and
+    clean_day_subject)."""
+
+    key: str  # a stable id, SUBJECT_KEY-shaped: a site id such as "sydney"
+    label: str  # how the subject is named: "Sydney"
+    mandate: str  # the day's editorial mandate, with the label folded in
+    style: str  # the article style line, like editorial_goals.ARTICLE_STYLES
 
 
 def render_review_evidence(payload: dict, max_chars: int = REVIEW_EVIDENCE_MAX_CHARS) -> str:
@@ -42,6 +67,24 @@ class Adapter(ABC):
     # so the adapter can carry forward what it already fetched. Adapters
     # that leave this False keep the plain `fetch_state(topic_config)`.
     uses_previous_state: bool = False
+
+    # Opt-in: an adapter whose state is a running record of every observation (a baseline built
+    # from all of them, not only those that were reported) sets this True, usually with
+    # `uses_previous_state`. The research tick then also stores the state after a tick that
+    # found nothing material, at one fixed key per topic, and hands back the newest state as
+    # `previous_state` and as `old_state` to `material_diff`. Without it, a no-change tick's
+    # state is dropped and the next tick sees the last *reported* snapshot.
+    keeps_running_state: bool = False
+
+    # Opt-in: an adapter that measures through the vision worker (infra/modules/vision-worker) says
+    # so, so the operator's assistant can say a topic cannot be measured while the worker is off
+    # without knowing any adapter by name (rule 5).
+    uses_vision_worker: bool = False
+
+    # Opt-in: the topic's adapter_config is written by hand (polygons, thresholds, the triage and
+    # web_context switches). The assistant never fills it in from what a model passes: it shows a
+    # template with a <placeholder> (ops_mcp/cli_guide.py), so text the model read cannot move a site.
+    config_by_hand: bool = False
 
     # Required: where this adapter's data comes from, as the credit shown to readers (see
     # common/attribution.py). One {"text", "label", "url"} dict per source: `text` is the whole
@@ -132,6 +175,107 @@ class Adapter(ABC):
         referenced by `new_state`, for citation in the resulting Finding.
         """
         raise NotImplementedError
+
+    def figures(self, new_state: dict) -> list[dict]:
+        """The pictures this observation drew, for the article written from it (common/figures.py):
+        one {"key", "caption", "alt"} dict per figure, `key` a PNG this adapter already stored in
+        the content bucket, `caption` the sentence shown under it, `alt` what a screen reader
+        says instead of it. The research tick keeps them on the Finding; the daily cycle puts the
+        newest few on the article, and the page copies the PNGs into the site bucket. Plain data,
+        never HTML: every page escapes it. The default, for a source that draws nothing, is none.
+        """
+        return []
+
+    def planner_notes(self, new_state: dict) -> list[dict]:
+        """Rule-based notes this observation's measurements support, kept on the Finding as data
+        beside the prose summary: one JSON-able dict per note (the rail_access adapter's are
+        {"site_id", "kind": "flag" | "simulation", "type", "stations", "text"}, written by
+        common/rail_notes.py). The research tick stores the first few, only when there are any;
+        nothing renders them. The default, for a source with no such rules, is none.
+        """
+        return []
+
+    @classmethod
+    def status_vocabulary(cls) -> frozenset[str]:
+        """Every phrase `status` may return as a code's words, a verdict's words or a label. The
+        assistant speaks a phrase only if it is in some adapter's vocabulary. Empty by default."""
+        return frozenset()
+
+    @classmethod
+    def decision_vocabulary(cls) -> dict:
+        """The adapter's fixed words for its evidence (common/vision_decisions.py), so no reader
+        re-implements a rule of its own. An adapter that keeps a decision ring in its running
+        state returns:
+
+            {"measures": {code: {"label": str, "unit": str, "scale": 100 | 1}},  # a ring entry's
+             "moved":    {code: str},                   # the words for a measure that moved
+             "sources":  {code: "imagery" | "network" | "imagery_and_network"},  # which input
+             "settings": {code: {"label": str, "unit": str}}}   # look_again's settings
+
+        Every word is plain (vision_decisions.WORD); the union over the registry is the vocabulary
+        readers check codes against. Empty, the default: the adapter writes no decision ring, and
+        the assistant's evidence tools leave its topics out."""
+        return {}
+
+    def status(self, topic_config: dict, state: dict | None, *, now: datetime) -> dict | None:
+        """What the operator's assistant may show about this topic's sites (lambdas/ops_mcp/
+        vision_status.py), from its config and its running state (None before the first tick).
+        None, the default: the adapter watches no sites. Pure: no AWS, no network, no cv2/numpy;
+        `now` is passed in. The research tick never calls it. Every value is code-derived and
+        JSON-plain, except the fields marked "on screen only", which are operator or third-party
+        text the caller scrubs and never speaks. The caller re-checks every field and drops
+        anything outside this contract:
+
+            {"config_error": str | None,        # the config's error, cut to 300: on screen only
+             "backend": "opencv" | "cool" | None,
+             "fetched_at": iso | None,          # when the last tick stored the state
+             "first_observed_at": iso | None,
+             "sites": [{                        # one per CONFIGURED site, in config order
+                "site_id": str, "name": str,    # name: the operator's, on screen only
+                "order": int,                   # 1-based place in the next tick's turn
+                "scenes": int,                  # how many scenes the history keeps
+                "last_scene": None | {"scene_id", "captured_at", "coverage",
+                                      "triage": "real" | "artefact" | None,
+                                      "quality_flags": [str], "backend", "build",
+                                      "figure_stored": bool},
+                "last_verdict": None | {"code": str, "words": str},
+                "measure": None | {"label": str, "value": int | float},
+                "last_attempt_at": iso | None,
+                "error": None | {"code", "kind", "words", "at",
+                                 "detail"},     # kind: worker | source | site | deferred | other;
+                                                # detail: on screen only
+                "refused": None | {"scene_id", "code", "words", "at", "retry_at"},
+                "inputs": [{"label", "fetched_at", "stale": bool | None,
+                            "error": None | {"code", "kind": "source", "words", "at", "detail"}}],
+             }]}
+
+        Never a triage agent's reason (it wrote it after reading news results), never a network's
+        lists or anything else bulky: the assistant reads this for every site topic at once."""
+        return None
+
+    def day_subject(self, topic_config: dict, at: datetime) -> DaySubject | None:
+        """The subject a topic that rotates through several writes about at `at`, or None (the
+        default): the topic writes about everything it watches, as every topic always has.
+
+        `topic_config` is the full Topic item; `at` is when the daily run started (aware, UTC).
+        Pure: the same topic and moment always give the same subject, so anything that asks agrees
+        with the daily cycle without stored state, as the crypto feed's goal_for_date does. Which
+        local calendar day `at` falls on, and so whose day it is, is the adapter's to say: its own
+        rota in its own zone (common/day_subject.py has a weekly or cyclic rota any adapter can
+        use). The daily cycle then drafts only the Findings whose `subjects` hold the key and
+        remembers the article per subject. Raising stops the daily run before any model call: a
+        topic whose rota is broken writes nothing, never an article about every subject at once.
+        """
+        return None
+
+    def subjects(self, new_state: dict) -> list[str]:
+        """The subject keys this observation reports (SUBJECT_KEY-shaped; for a topic that watches
+        sites, the ids of the sites its summary covers). The research tick keeps them on the Finding
+        (`subjects`, common/day_subject.clean_subjects), only when there are any; a rotating topic's
+        daily cycle drafts a Finding on the day of each subject it lists, and never one that lists
+        none. The default, for a source with no subjects, is none.
+        """
+        return []
 
     def build_summary_prompt(
         self, topic: dict, diff_summary: str, new_state: dict

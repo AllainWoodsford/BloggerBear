@@ -237,6 +237,51 @@ Then, in order:
    bootstrap: [alexa/README.md](../alexa/README.md). Putting Alexa's redirect URLs in
    `ops_alexa_redirect_uris` also keeps the MCP function warm (about 8,600 invocations a month).
 
+## Vision (optional)
+
+The vision worker and its topics
+([deployment-runsheet.md, Vision (optional)](deployment-runsheet.md#vision-optional)) are off in
+production by default. **Leave it off unless the dev run was satisfactory:** a vision topic that
+ran on dev for a few ticks, with a held article whose figure and numbers you read and approved,
+and no `last_error` repeating in its running state. Off by default holds only while the repository
+variable is off: the dev runsheet turns the worker on with the `VISION_ENABLED` repository
+variable, and the release job runs in the `production` environment, whose `vars.VISION_ENABLED`
+falls back to the repository's value, so the next release would turn it on here too (with two
+accounts, until step 1 below is done in the production account, that release's apply is refused
+instead). To keep production off until the dev trial is done, set `VISION_ENABLED` to `false` on
+the `production` environment before you set the repository variable. Then, when the dev run was
+satisfactory, in order:
+
+1. Re-apply the bootstrap by hand with `vision_region` (in the production account, if you have
+   two), checking the plan touches only the deploy roles' policies. First check the worker's
+   bucket name fits: `<prefix>-production-vision-artifacts-<account id>-<vision_region>` must be
+   at most 63 characters, so the prefix and `vision_region` together at most 21 (a prefix of 12
+   or fewer beside `us-west-2`; a home-Region `ap-southeast-2` fits only a prefix of 7 or fewer).
+   Otherwise the release's apply fails on that bucket
+   ([configuration.md](configuration.md#environment-terraform-variables)).
+2. Set the `VISION_ENABLED` variable to `true` on the `production` environment and publish a
+   release. The worker lands in `vision_region`; in the home region the research tick gets the
+   worker's ARN (`VISION_WORKER_ARN`) and the pipeline's shared execution role one policy to
+   invoke it; nothing else in production changes.
+3. Create the topic in production with the same `adapter_config` that worked on dev (for the
+   rail cities, the same body from `scripts/rail_topics.example.json`, as in the runsheet's
+   [`rail_access` topics](deployment-runsheet.md#rail_access-topics), one topic over the four
+   cities), and trigger its first tick by hand (for the rail topic, one tick per city). A large rail city's first tick only fetches its OpenStreetMap network and measures
+   nothing (Sydney's takes most of a minute: the runsheet's "A large city's first network can take
+   a minute"), so trigger a second tick, or wait for the next hourly one, to measure it. The CLI
+   waits 30 s for the Finding and a vision tick that measures a scene can run longer, so "No new
+   Finding after 30s" is expected: wait about two minutes after the tick that measures, or until
+   `topics findings <id>` shows the Finding, before you trigger its daily cycle.
+
+`force_manual_review` is forced on every vision topic: **every vision article waits for a
+person** in the review inbox, whatever the compliance review said, and that holds on every publish
+path: the daily cycle holds the article, the daily trending digest (which publishes with no
+person) leaves out every topic with `force_manual_review` (#298), and approving or force-publishing
+is a person's act. A vision topic created without `editorial_goals` is drafted under its adapter's
+default goal (#298), not the global one. Take it down again by setting
+the `production` environment's `VISION_ENABLED` to `false` and releasing (removing it falls back to
+the repository's value); topics keep their state.
+
 ## Rolling back
 
 - **Point the domain back**: at the registrar, restore its default name servers (GoDaddy, for
@@ -262,6 +307,11 @@ Then, in order:
 - ACM certificates are free and renew themselves.
 
 Check the AWS pricing pages before relying on these numbers.
+
+The firewall can be trimmed, at your own risk, with the switches in
+[docs/cost-saving.md](cost-saving.md): about US$16 a month per environment for the regional web
+ACLs, US$7 for the site's. Every switch is on by default; the admin API's address allowlist stays
+on whatever you switch off.
 
 ## Not done, on purpose
 

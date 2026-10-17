@@ -186,17 +186,16 @@ def _add_model_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _parse_interval_hours(text: str):
-    """`--research-interval-hours` value: a whole number of hours, or '' meaning
-    "clear it and inherit the pipeline-wide default" (sent as null)."""
+def _parse_hours(text: str, flag: str = "--research-interval-hours"):
+    """An hours flag's value (`--research-interval-hours`, `--findings-window-hours`): a whole
+    number of hours, or '' meaning "clear it and fall back to the default" (sent as null). The
+    Admin API checks the range."""
     if text == "":
         return None
     try:
         return int(text)
     except ValueError as exc:
-        raise CliError(
-            f"--research-interval-hours must be a whole number of hours (or ''): {text!r}"
-        ) from exc
+        raise CliError(f"{flag} must be a whole number of hours (or ''): {text!r}") from exc
 
 
 def _parse_editorial_goals_json(text: str):
@@ -204,6 +203,20 @@ def _parse_editorial_goals_json(text: str):
         return json.loads(text)
     except json.JSONDecodeError as exc:
         raise CliError(f"--editorial-goals-json is not valid JSON: {exc}") from exc
+
+
+# The goal rotation (lambdas/common/goal_rotation.py), as both topic commands describe it.
+GOAL_ROTATION_HELP = (
+    "2 to 7 editorial goals taken in turn: '[{\"name\": \"access\", \"primary_focus\": \"...\"}, ...]'. "
+    "With nothing new, the last findings are revisited under a goal not yet used on them."
+)
+
+
+def _parse_goal_rotation_json(text: str):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise CliError(f"--goal-rotation-json is not valid JSON: {exc}") from exc
 
 
 def _cmd_topics_create(args: argparse.Namespace) -> None:
@@ -228,16 +241,24 @@ def _cmd_topics_create(args: argparse.Namespace) -> None:
         body["adapter"] = args.adapter
     if args.editorial_goals_json is not None:
         body["editorial_goals"] = _parse_editorial_goals_json(args.editorial_goals_json)
+    if args.goal_rotation_json is not None:
+        body["editorial_goal_rotation"] = _parse_goal_rotation_json(args.goal_rotation_json)
     if args.research_cadence is not None:
         body["research_cadence"] = args.research_cadence
     if args.research_interval_hours is not None:
-        body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
+        body["research_interval_hours"] = _parse_hours(args.research_interval_hours)
+    if args.findings_window_hours is not None:
+        body["findings_window_hours"] = _parse_hours(
+            args.findings_window_hours, "--findings-window-hours"
+        )
     if args.review_mode is not None:
         body["review_mode"] = args.review_mode or None  # '' clears it (inherit the pipeline mode)
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
     if args.daily_timezone is not None:
         body["daily_timezone"] = args.daily_timezone
+    if args.stagger_slot is not None:
+        body["stagger_slot"] = _parse_slot(args.stagger_slot)
     _apply_model_flags(body, args)
     _do_request(args, "POST", "/topics", body=body)
 
@@ -253,18 +274,26 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
             raise CliError(f"--adapter-config-json is not valid JSON: {exc}") from exc
     if args.editorial_goals_json is not None:
         body["editorial_goals"] = _parse_editorial_goals_json(args.editorial_goals_json)
+    if args.goal_rotation_json is not None:
+        body["editorial_goal_rotation"] = _parse_goal_rotation_json(args.goal_rotation_json)
     if args.financial is not None:
         body["is_financial"] = args.financial
     if args.research_cadence is not None:
         body["research_cadence"] = args.research_cadence
     if args.research_interval_hours is not None:
-        body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
+        body["research_interval_hours"] = _parse_hours(args.research_interval_hours)
+    if args.findings_window_hours is not None:
+        body["findings_window_hours"] = _parse_hours(
+            args.findings_window_hours, "--findings-window-hours"
+        )
     if args.review_mode is not None:
         body["review_mode"] = args.review_mode or None  # '' clears it (inherit the pipeline mode)
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
     if args.daily_timezone is not None:
         body["daily_timezone"] = args.daily_timezone
+    if args.stagger_slot is not None:
+        body["stagger_slot"] = _parse_slot(args.stagger_slot)
     _apply_model_flags(body, args)
 
     if not body:
@@ -331,6 +360,19 @@ def _cmd_topics_trigger(args: argparse.Namespace) -> None:
     # look instantly "done" without this pipeline run having done anything.
     baseline_captured_at = None
     baseline_candidate_count = None
+    if pipeline == "network_prefetch":
+        # Nothing to poll for: a prefetch writes no Finding or candidate, only the network the
+        # next research tick adopts. Its result is one log line per site.
+        _do_request(args, "POST", f"/topics/{topic_id}/trigger", body=body)
+        print(
+            "network_prefetch started; it can take up to two minutes. Each site's result is a "
+            "'network_prefetch' line in the research-tick log:\n"
+            "  aws logs tail /aws/lambda/<research-tick function name> --since 5m "
+            "--filter-pattern network_prefetch\n"
+            "The next hourly research tick uses a stored network.",
+            file=sys.stderr,
+        )
+        return
     if args.wait:
         if pipeline == "research_tick":
             baseline_captured_at = _latest_finding_captured_at(args, topic_id)
@@ -379,7 +421,8 @@ def _cmd_topics_trigger(args: argparse.Namespace) -> None:
                 f"No new candidates after {_DAILY_CYCLE_TIMEOUT_SECONDS}s. This can mean there "
                 "were no Findings newer than the topic's last article (run research_tick first "
                 "and confirm it produced a Finding, or pass --force to rewrite from the "
-                "whole last-24h window), or a real failure -- check the logs:\n"
+                "topic's whole findings window: 24 h, or its findings_window_hours), or a real "
+                "failure -- check the logs:\n"
                 "  aws logs tail /aws/lambda/<daily-cycle function name> --since 5m",
                 file=sys.stderr,
             )
@@ -391,6 +434,139 @@ def _cmd_topics_candidates(args: argparse.Namespace) -> None:
 
 def _cmd_topics_findings(args: argparse.Namespace) -> None:
     _do_request(args, "GET", f"/topics/{args.topic_id}/findings/latest")
+
+
+# --- topics: schedules, staggering, pausing ------------------------------
+
+
+def _fetch_json(args: argparse.Namespace, method: str, path: str, body: dict | None = None):
+    """A signed request whose body the caller prints itself (a table, not JSON). A non-2xx
+    answer is printed and exits, as _do_request does."""
+    response = signed_request(method, _resolve_api_url(args), path, _resolve_region(args), body=body)
+    if not (200 <= response.status_code < 300):
+        _print_response_and_exit_on_error(response)
+    return response.json()
+
+
+def _parse_slot(text: str):
+    """`--stagger-slot` value: a whole number (1, 2, 3, ...), or '' meaning "the next free slot"
+    (sent as null). The Admin API checks the range and that no other topic holds it."""
+    if text == "":
+        return None
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise CliError(f"--stagger-slot must be a whole number (or ''): {text!r}") from exc
+
+
+def _parse_stagger_minutes(text: str):
+    """`--stagger-minutes` value: whole minutes (0 turns staggering off), or '' meaning "back to
+    the default" (sent as null). The Admin API checks the range."""
+    if text == "":
+        return None
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise CliError(f"--stagger-minutes must be a whole number of minutes (or ''): {text!r}") from exc
+
+
+def _print_schedule_table(data: dict) -> None:
+    """The answer of GET /topics/schedule or POST /topics/reschedule, for a person: the stagger
+    setting and what it does to the daily cycles, then one block per topic with its slot, its
+    state, each schedule in plain words and the exact expression written to EventBridge
+    Scheduler. Everything shown is also on the topic's row in DynamoDB (`stagger_slot`,
+    `paused`, `research_schedule`, `daily_schedule`)."""
+    stagger = data.get("stagger_minutes")
+    count = data.get("topic_count", 0)
+    delay = data.get("daily_delay_minutes", 0)
+    if data.get("dry_run"):
+        print("Dry run: nothing was changed. This is what `topics reschedule` would write.")
+    if stagger:
+        print(
+            f"Stagger: {stagger} minutes between topics (slot 1 at :{stagger % 60:02d} past, "
+            f"slot 2 at :{(2 * stagger) % 60:02d}, ...); {count} topic{'s' if count != 1 else ''}, "
+            f"so the daily cycles start {delay} minutes after their hour (one slot past the last "
+            "heartbeat), then one slot apart."
+        )
+    else:
+        print(
+            f"Stagger: off (0 minutes); {count} topic{'s' if count != 1 else ''} run at their "
+            "cadences' own minutes."
+        )
+    print(
+        "Change the gap with `pipeline-config set --stagger-minutes N`, a topic's slot with "
+        "`topics update <id> --stagger-slot N`, then `topics reschedule` to rewrite every schedule."
+    )
+    for topic in data.get("topics") or []:
+        slot = topic.get("stagger_slot")
+        state = "PAUSED" if topic.get("paused") else "running"
+        print()
+        print(f"{topic.get('topic_id')}  (slot {slot if slot is not None else 'none'}, {state})")
+        print(f"  research: {topic.get('research_schedule_text') or ''}")
+        print(f"            {topic.get('research_schedule') or ''}  UTC")
+        print(f"  daily:    {topic.get('daily_schedule_text') or ''}  {topic.get('daily_timezone') or ''}")
+        print(f"            {topic.get('daily_schedule') or ''}")
+        extras = []
+        if topic.get("research_interval_hours") is not None:
+            extras.append(f"real research every {topic['research_interval_hours']} h")
+        if topic.get("last_research_at"):
+            extras.append(f"last researched {topic['last_research_at']}")
+        if topic.get("last_article_at"):
+            extras.append(f"last article {topic['last_article_at']}")
+        if extras:
+            print("  " + " · ".join(extras))
+        if topic.get("error"):
+            print(f"  ERROR: {topic['error']}")
+
+
+def _cmd_topics_schedule(args: argparse.Namespace) -> None:
+    data = _fetch_json(args, "GET", "/topics/schedule")
+    if args.as_json:
+        print(json.dumps(data, indent=2))
+        return
+    _print_schedule_table(data)
+
+
+def _cmd_topics_reschedule(args: argparse.Namespace) -> None:
+    body = {"dry_run": True} if args.dry_run else {}
+    data = _fetch_json(args, "POST", "/topics/reschedule", body=body)
+    if args.as_json:
+        print(json.dumps(data, indent=2))
+        return
+    _print_schedule_table(data)
+
+
+def _cmd_topics_pause(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", f"/topics/{args.topic_id}/pause")
+
+
+def _cmd_topics_resume(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", f"/topics/{args.topic_id}/resume")
+
+
+# --- findings subcommands -------------------------------------------------
+
+
+def _cmd_findings_list(args: argparse.Namespace) -> None:
+    """A topic's research Findings, newest first (GET /topics/{topic_id}/findings). The id goes
+    into the path percent-encoded: the Admin API creates a topic with any non-empty id, so one
+    with a slash or a space in it still has Findings to list. `topics findings` (the newest one,
+    which `topics trigger` polls) is unchanged."""
+    query: dict[str, object] = {}
+    if args.limit is not None:
+        query["limit"] = args.limit
+    if args.days is not None:
+        query["days"] = args.days
+    if args.since is not None:
+        query["since"] = args.since
+    if args.next_article:
+        query["next_article"] = "true"
+    if args.subject is not None:
+        query["subject"] = args.subject
+    path = f"/topics/{urllib.parse.quote(args.topic_id, safe='')}/findings"
+    if query:
+        path += "?" + urllib.parse.urlencode(query)
+    _do_request(args, "GET", path)
 
 
 # --- articles subcommands ------------------------------------------------
@@ -572,19 +748,27 @@ def _cmd_pipeline_config_get(args: argparse.Namespace) -> None:
 def _cmd_pipeline_config_set(args: argparse.Namespace) -> None:
     body: dict = {}
     if args.research_interval_hours is not None:
-        body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
+        body["research_interval_hours"] = _parse_hours(args.research_interval_hours)
     if args.review_mode is not None:
         body["review_mode"] = args.review_mode or None  # '' clears it (back to the default)
     if args.review_on_unavailable is not None:
         body["review_on_unavailable"] = args.review_on_unavailable or None
     if args.assistant_access is not None:
         body["assistant_access"] = args.assistant_access or None  # '' clears it (back to open)
+    if args.stagger_minutes is not None:
+        body["stagger_minutes"] = _parse_stagger_minutes(args.stagger_minutes)
     if not body:
         raise CliError(
             "pipeline-config set needs --research-interval-hours, --review-mode, "
-            "--review-on-unavailable and/or --assistant-access"
+            "--review-on-unavailable, --assistant-access and/or --stagger-minutes"
         )
     _do_request(args, "PUT", "/pipeline-config", body=body)
+    if "stagger_minutes" in body:
+        print(
+            "The stagger applies to each topic the next time it is written; run "
+            "`topics reschedule` to apply it to every topic now.",
+            file=sys.stderr,
+        )
 
 
 # --- review subcommands -------------------------------------------------
@@ -906,7 +1090,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="resource", required=True)
 
     topics_parser = subparsers.add_parser("topics", help="Manage Topics")
-    topics_sub = topics_parser.add_subparsers(dest="action", required=True)
+    # A metavar, because twelve subcommands written out in the usage line no longer fit the 100
+    # columns the assistant's CLI reference is held to; each is still listed with its help below.
+    topics_sub = topics_parser.add_subparsers(dest="action", required=True, metavar="<action>")
 
     topics_sub.add_parser("list", help="List all topics").set_defaults(func=_cmd_topics_list)
 
@@ -923,6 +1109,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Adapter key (default: web_search -- independent web research on the topic's name)",
     )
     create_parser.add_argument("--config-json", dest="config_json", default=None)
+    create_parser.add_argument(
+        "--goal-rotation-json", dest="goal_rotation_json", default=None, help=GOAL_ROTATION_HELP
+    )
     create_parser.add_argument(
         "--editorial-goals-json",
         dest="editorial_goals_json",
@@ -950,6 +1139,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     create_parser.add_argument(
+        "--findings-window-hours",
+        dest="findings_window_hours",
+        default=None,
+        help=(
+            "How many hours back the daily article reads findings, never past the topic's last "
+            "article: whole hours, 1 to 336 (default 24). Widen it for a topic that does not "
+            "write every day (one day of a rotation, a weekly topic)"
+        ),
+    )
+    create_parser.add_argument(
         "--review-mode",
         dest="review_mode",
         default=None,
@@ -968,6 +1167,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="IANA zone the daily cron is read in (default: Australia/Sydney)",
     )
+    create_parser.add_argument(
+        "--stagger-slot",
+        dest="stagger_slot",
+        default=None,
+        help=(
+            "This topic's turn in the stagger: slot 1's research heartbeat runs at :05 past "
+            "the hour, slot 2's at :10, ... (with the pipeline's stagger of 5 minutes), and its "
+            "daily cycle the same way after every topic's heartbeat. Omit for the next free slot. "
+            "`topics schedule` shows the result"
+        ),
+    )
     _add_model_flags(create_parser)
     create_parser.set_defaults(func=_cmd_topics_create)
 
@@ -980,6 +1190,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="editorial_goals_json",
         default=None,
         help="Replaces the topic's whole editorial_goals block; '{}' clears it (back to the default)",
+    )
+    update_parser.add_argument(
+        "--goal-rotation-json",
+        dest="goal_rotation_json",
+        default=None,
+        help=GOAL_ROTATION_HELP + " Replaces the whole list; '[]' clears it",
     )
     update_parser.add_argument(
         "--financial", dest="financial", action="store_true", default=None
@@ -1000,6 +1216,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Whole hours between real research runs for this topic; '' clears it "
             "(inherit the pipeline-wide default)"
+        ),
+    )
+    update_parser.add_argument(
+        "--findings-window-hours",
+        dest="findings_window_hours",
+        default=None,
+        help=(
+            "How many hours back the daily article reads findings, never past the topic's last "
+            "article: whole hours, 1 to 336, for a topic that does not write every day; '' "
+            "clears it (back to 24)"
         ),
     )
     update_parser.add_argument(
@@ -1027,6 +1253,15 @@ def build_parser() -> argparse.ArgumentParser:
             "created before this option existed is on UTC until you set it"
         ),
     )
+    update_parser.add_argument(
+        "--stagger-slot",
+        dest="stagger_slot",
+        default=None,
+        help=(
+            "Move this topic to another turn in the stagger (a whole number no other topic "
+            "holds); '' gives it the next free slot. Its two schedules are rewritten at once"
+        ),
+    )
     _add_model_flags(update_parser)
     update_parser.set_defaults(func=_cmd_topics_update)
 
@@ -1037,7 +1272,14 @@ def build_parser() -> argparse.ArgumentParser:
     trigger_parser = topics_sub.add_parser("trigger", help="Manually trigger a pipeline run")
     trigger_parser.add_argument("topic_id")
     trigger_parser.add_argument(
-        "--pipeline", required=True, choices=["research_tick", "daily_cycle"]
+        "--pipeline",
+        required=True,
+        choices=["research_tick", "daily_cycle", "network_prefetch"],
+        help=(
+            "network_prefetch (rail_access topics): fetch the topic's rail networks from "
+            "Overpass with up to 90 s per reply, for a city too slow for the hourly tick; "
+            "the next tick uses them. Never waits"
+        ),
     )
     trigger_parser.add_argument(
         "--no-wait",
@@ -1055,9 +1297,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "daily_cycle only: write an article from the whole last-24h window even if "
-            "the topic already has one since (the default is to write only from findings "
-            "newer than its last article, so a repeat run with nothing new is a no-op)"
+            "daily_cycle only: write an article from the topic's whole findings window (the "
+            "last 24 h, or its --findings-window-hours) even if the topic already has one since "
+            "(the default is to write only from findings newer than its last article, so a "
+            "repeat run with nothing new is a no-op)"
         ),
     )
     trigger_parser.set_defaults(func=_cmd_topics_trigger)
@@ -1073,6 +1316,102 @@ def build_parser() -> argparse.ArgumentParser:
     )
     findings_parser.add_argument("topic_id")
     findings_parser.set_defaults(func=_cmd_topics_findings)
+
+    schedule_parser = topics_sub.add_parser(
+        "schedule",
+        help=(
+            "Show every topic's slot, state and the two schedules written for it, in plain "
+            "words and as written (the stagger: docs/project-plan.md, Staggered schedules)"
+        ),
+    )
+    schedule_parser.add_argument(
+        "--json", dest="as_json", action="store_true", default=False, help="Print the raw answer as JSON"
+    )
+    schedule_parser.set_defaults(func=_cmd_topics_schedule)
+
+    reschedule_parser = topics_sub.add_parser(
+        "reschedule",
+        help=(
+            "Rewrite every topic's two schedules with the stagger as it is now: after changing "
+            "--stagger-minutes, after adding or deleting a topic (the daily delay is the number "
+            "of topics), or to give older topics their slots"
+        ),
+    )
+    reschedule_parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help="Show what would be written without changing anything",
+    )
+    reschedule_parser.add_argument(
+        "--json", dest="as_json", action="store_true", default=False, help="Print the raw answer as JSON"
+    )
+    reschedule_parser.set_defaults(func=_cmd_topics_reschedule)
+
+    pause_parser = topics_sub.add_parser(
+        "pause",
+        help=(
+            "Pause a topic: no research tick, no candidate ideas, no daily article until it is "
+            "resumed. Its schedules are disabled, the topic page says Paused, and the bear "
+            "muses about it"
+        ),
+    )
+    pause_parser.add_argument("topic_id")
+    pause_parser.set_defaults(func=_cmd_topics_pause)
+
+    resume_parser = topics_sub.add_parser(
+        "resume", help="Resume a paused topic: its schedules are enabled again from the next heartbeat"
+    )
+    resume_parser.add_argument("topic_id")
+    resume_parser.set_defaults(func=_cmd_topics_resume)
+
+    # A topic's Findings in full, for the operator at a terminal and the topic-findings Claude Code
+    # skill (.claude/skills/topic-findings/SKILL.md); the ops assistant's topic_findings tool shows
+    # the same window on screen. Its own group, so `topics findings` (what `topics trigger` polls)
+    # stays exactly as it is.
+    findings_group = subparsers.add_parser("findings", help="Research Findings")
+    findings_sub = findings_group.add_subparsers(dest="action", required=True)
+    findings_list_parser = findings_sub.add_parser(
+        "list",
+        help=(
+            "List a topic's research Findings, newest first (expired ones left out, except with "
+            "--next-article, which lists what the next article reads)"
+        ),
+    )
+    findings_list_parser.add_argument("topic_id")
+    findings_list_parser.add_argument(
+        "--limit", type=int, default=None, help="how many to list, 1 to 20 (default 5)"
+    )
+    findings_window = findings_list_parser.add_mutually_exclusive_group()
+    findings_window.add_argument(
+        "--days", type=int, default=None, help="only the last D days, 1 to 14 (unexpired ones)"
+    )
+    findings_window.add_argument(
+        "--since", default=None, help="only those captured at or after this ISO-8601 timestamp"
+    )
+    findings_window.add_argument(
+        "--next-article",
+        action="store_true",
+        default=False,
+        help=(
+            "what the topic's next article will be written from: every Finding since its last "
+            "article within its findings window (--findings-window-hours), at most 48, expired "
+            "or not; `count` says how many and `more` whether some were not listed. A topic that "
+            "rotates through subjects: today's subject's Findings since that subject's last "
+            "article (`subject` names it)"
+        ),
+    )
+    findings_list_parser.add_argument(
+        "--subject",
+        default=None,
+        help=(
+            "with --next-article, for a topic that rotates through subjects: what its next article "
+            "on this subject reads (from that subject's last article, its Findings only); without "
+            "it, today's subject"
+        ),
+    )
+    findings_list_parser.set_defaults(func=_cmd_findings_list)
 
     articles_parser = subparsers.add_parser("articles", help="Manage articles")
     articles_sub = articles_parser.add_subparsers(dest="action", required=True)
@@ -1320,7 +1659,7 @@ def build_parser() -> argparse.ArgumentParser:
         "pipeline-config",
         help=(
             "Pipeline-wide settings (the default research interval, the draft review mode, "
-            "who may reach the assistant)"
+            "who may reach the assistant, the stagger between topics)"
         ),
     )
     pipeline_config_sub = pipeline_config_parser.add_subparsers(dest="action", required=True)
@@ -1367,6 +1706,17 @@ def build_parser() -> argparse.ArgumentParser:
             "Who may reach the operator's assistant: 'open' any signed-in caller from anywhere "
             "(the default), 'allowlist' only from the operator's addresses, 'off' nobody; '' "
             "clears it (back to open). Applies from the next request, no deploy"
+        ),
+    )
+    pipeline_config_set.add_argument(
+        "--stagger-minutes",
+        dest="stagger_minutes",
+        default=None,
+        help=(
+            "Minutes between one topic's schedules and the next (0-30): slot 1's research "
+            "heartbeat at :05 past, slot 2's at :10, and every daily cycle one slot past the "
+            "hour's last heartbeat, then one slot apart; 0 turns it off; '' clears it (back to "
+            "5). Then run `topics reschedule`"
         ),
     )
     pipeline_config_set.set_defaults(func=_cmd_pipeline_config_set)

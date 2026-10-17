@@ -103,6 +103,27 @@ python scripts/admin_cli.py topics update github-trending --research-interval-ho
 python scripts/admin_cli.py pipeline-config get
 python scripts/admin_cli.py pipeline-config set --research-interval-hours 2   # save cost
 python scripts/admin_cli.py pipeline-config set --research-interval-hours ""
+# How far back the daily article reads findings: everything since the topic's last article,
+# but never more than its findings window, 24 hours by default. A topic that does not write
+# every day (one day of a weekly rotation, a weekly topic) widens it so a finding made on a day
+# it does not write is still there on the day it does. Whole hours, 1-336 (findings expire after
+# 14 days); '' clears it. Also on `topics create`. Editing `findings_window_hours` in DynamoDB works too.
+python scripts/admin_cli.py topics update rail-sydney --findings-window-hours 192
+python scripts/admin_cli.py topics update rail-sydney --findings-window-hours ""
+# A topic that rotates through its subjects, one a day (docs/enhancements/dailysubject_hook.md;
+# read by an adapter that names a day subject: rail_access, whose sites are the subjects). Two
+# keys of its adapter_config (--config-json on create, --adapter-config-json on update, each the
+# whole config: read it with `topics get`, edit it, send all of it back):
+#   "rotation": the seven weekdays each naming a subject, every subject at least once,
+#       {"MON": "sydney", "TUE": "melbourne", "WED": "singapore", "THU": "boston",
+#        "FRI": "sydney", "SAT": "melbourne", "SUN": "singapore"},
+#     or a list of subjects cycled one a day: ["sydney", "melbourne", "singapore", "boston"]
+#   "rotation_timezone": the IANA zone whose calendar day decides, e.g. "Australia/Sydney"
+#     (unset: the topic's daily_timezone when its adapter passes it, else UTC)
+# Set --findings-window-hours to the longest gap between one subject's days, plus a day (24 h a
+# day). Give a rota to a new topic, not to one that has published: each subject's first window
+# starts from the findings window, not from the topic's last article, so it would draft again
+# Findings the last article used (docs/configuration.md).
 # Fresh-data review of each draft before it is checked and published. `shadow` (the
 # default) runs it and records the result on the article and, if it goes to moderation,
 # on its queue item (`review_notes`, shown by `moderation list`) without changing any
@@ -138,10 +159,22 @@ python scripts/admin_cli.py topics delete github-trending
 python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick   # a manual run always runs now, whatever the interval
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --no-wait
 # daily_cycle only writes from findings newer than the topic's last article, so a
-# repeat run with nothing new is a no-op. --force rewrites from the whole last-24h window:
+# repeat run with nothing new is a no-op. --force rewrites from the topic's whole findings
+# window (the last 24 hours unless it sets --findings-window-hours):
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --force
 python scripts/admin_cli.py topics candidates github-trending
 python scripts/admin_cli.py topics findings github-trending
+# A topic's research Findings, newest first (the raw items, with how many the window holds).
+# Expired ones are left out, except with --next-article, which lists exactly what the next
+# daily article will be written from: since the topic's last article, within its findings
+# window, at most 48. --limit is 1 to 20 (default 5); --days 1 to 14; --since an ISO timestamp.
+# With --next-article, --subject KEY is for a topic that rotates through subjects: what its next
+# article on that subject reads (from that subject's last article, its Findings only).
+# The ops assistant's topic_findings tool and the topic-findings Claude Code skill
+# (.claude/skills/) show the same window.
+python scripts/admin_cli.py findings list rail-sydney
+python scripts/admin_cli.py findings list rail-sydney --next-article
+python scripts/admin_cli.py findings list crypto --days 2 --limit 10
 
 python scripts/admin_cli.py moderation list
 python scripts/admin_cli.py moderation approve <queue_id>
@@ -194,6 +227,15 @@ python scripts/admin_cli.py topics update github-trending     --model-candidates
 python scripts/admin_cli.py topics update github-trending --model-candidates ""
 ```
 
+**The Rail Access Monitor's topic.** One `rail_access` topic, `rail-cities`, over the four
+starting cities (Sydney, Melbourne, Singapore and Boston, each with its box; the reach, an editorial
+goal that names no city, and a `rotation` that writes about one city a day, with a 192-hour
+`findings_window_hours`, so each city's article drafts every Finding about it since its last one)
+is a complete admin API topic body in [`rail_topics.example.json`](rail_topics.example.json).
+`topics create` takes a topic as flags, not a file:
+[docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics)
+has the lines that read each field out of the file, and how to add a city and check its box.
+
 Setting the registry up on a new deployment, with a sample `model-config` item, is in
 [docs/deployment-runsheet.md](../docs/deployment-runsheet.md#the-model-registry-seeding-and-rotation).
 
@@ -233,12 +275,13 @@ attribution) and wrong for a mass refresh. There is no command that only re-rend
 follow-up is an `articles rerender <article_id>` route that calls the same renderer with the
 article's stored `published_at` and `published_by` and does nothing else.
 
-`articles unpublish` is the inverse: it deletes the article's static page,
-marks the article and its moderation-queue item `rejected` (so it leaves every
-public listing), removes the musings written about it, and asks CloudFront to
-drop its cached page. The markdown body is kept, so `articles publish` can
-bring it back. An article still waiting in moderation is refused (use
-`moderation reject`). If it fails part-way, run it again -- every step is
+`articles unpublish` is the inverse: it deletes the article's static page (and
+its figures, if it has any), marks the article and its moderation-queue item
+`rejected` (so it leaves every public listing), removes the musings written
+about it, and asks CloudFront to drop its cached page (and, only for an article
+with figures, `/articles/figures/<id>/*`). The markdown body is kept, so
+`articles publish` can bring it back. An article still waiting in moderation is
+refused (use `moderation reject`). If it fails part-way, run it again -- every step is
 safe to repeat. `cache_invalidated: false` in the response means CloudFront
 wasn't asked (or the request failed); a cached copy can then linger until the
 CDN's TTL expires.
@@ -273,6 +316,52 @@ that exhausted its retries and landed on the pipeline dead-letter queue
 and the raw message, for manual follow-up. There's no automatic replay; to
 retry a topic after fixing whatever caused the failure, use
 `topics trigger <topic_id> --pipeline daily_cycle` again.
+
+## Schedules, the stagger and pausing: `topics schedule`, `reschedule`, `pause`, `resume`
+
+Topics take turns so that no two call their sources or Bedrock at the same minute
+(docs/project-plan.md §11, "Staggered schedules by slot"). Every topic has a **slot** (1, 2,
+3, ...; the next free one when it is created) and the pipeline has one **stagger**, 5 minutes by
+default: slot 1's research heartbeat runs at :05 past the hour it would run anyway, slot 2's at
+:10, and every daily cycle starts after the hour's heartbeats, one slot apart (four topics: the
+last heartbeat is at :20, so 09:25, 09:30, 09:35 and 09:40 for a 9 AM cadence). The slot sets the minute; the cadence
+still sets the hour pattern, the day and the time zone. What was written is on the topic's row
+in DynamoDB (`stagger_slot`, `research_schedule`, `daily_schedule`, `paused`) and printed here:
+
+```bash
+python scripts/admin_cli.py topics schedule                 # every topic: slot, state, both schedules in words and as written
+python scripts/admin_cli.py topics schedule --json
+python scripts/admin_cli.py pipeline-config set --stagger-minutes 5    # the gap (0 turns staggering off; '' back to 5)
+python scripts/admin_cli.py topics reschedule --dry-run      # what would be written: slots for older topics, every schedule
+python scripts/admin_cli.py topics reschedule                # write it: after a stagger change, a topic added or deleted
+python scripts/admin_cli.py topics update wow-forever --stagger-slot 3    # move a topic to another turn ('' = next free)
+python scripts/admin_cli.py topics create --topic-id ... --name ... --stagger-slot 2
+```
+
+`topics schedule` prints, for each topic:
+
+```
+github-trending  (slot 2, running)
+  research: every 4 hours at :10 past
+            cron(10 */4 * * ? *)  UTC
+  daily:    daily at 09:30  Australia/Sydney
+            cron(30 9 * * ? *)
+  real research every 4 h · last researched 2026-10-15T04:10:12+00:00 · last article 2026-10-14T23:30:03+00:00
+```
+
+Twelve five-minute slots fill an hour; past that, shorten the stagger or read
+docs/enhancements/dispatcher-sqs-enhancement.md.
+
+**Pausing** a topic stops everything of it until it is resumed: no research tick, no candidate
+ideas, no daily article. The Topics row's `paused` is what the handlers obey, whatever invokes
+them; the two schedules are disabled as well so the heartbeats cost nothing, `topics trigger`
+refuses the topic, the topic page's "Articles in the Pipeline" says Paused, and the bear muses
+about it (a reflective one on a pause, an excited one on a resume). Pausing twice is a no-op.
+
+```bash
+python scripts/admin_cli.py topics pause wow-forever
+python scripts/admin_cli.py topics resume wow-forever
+```
 
 ## What is waiting for you: `inbox` and `approve`
 
@@ -508,6 +597,140 @@ python scripts/alexa_addon_values.py dev --write-manifest ~/bloggerbear-addon-de
 It never prints the Alexa client secret unless you pass `--show-secret`, and it will not replace an
 existing manifest without `--force`. It needs Terraform and read access to that environment's state.
 
+## Timing the vision worker: `vision_benchmark.py`
+
+The vision worker (`lambdas/vision_worker_handler.py`; [docs/enhancements/vision.md](../docs/enhancements/vision.md))
+is benchmarked with one script, run the same way on every machine so the rows compare like with
+like: stock OpenCV 5 against OpenCV's COOL build, x86 against Graviton, OpenCV 5 against 4. It
+needs `lambdas/requirements-vision.txt` installed (`worker` mode also needs boto3 and AWS
+credentials) and reads only public data.
+
+```bash
+python scripts/vision_benchmark.py kernels --out docs/hackathon/evidence/runs     # the OpenCV operations alone, on synthetic images
+python scripts/vision_benchmark.py scenes --cache ~/cogs --out docs/hackathon/evidence/runs   # the pinned scenes through the real handler
+python scripts/vision_benchmark.py worker --arn <function ARN>                     # a deployed worker, end to end
+python scripts/vision_benchmark.py compare A.json B.json --out docs/hackathon/evidence/runs   # two runs: speed-up and parity
+python scripts/vision_benchmark.py controls --cool-sha <hex> --out docs/hackathon/evidence/runs   # the COOL guard's negative controls
+python scripts/vision_benchmark.py fetch-network --scene sydney-rail-2024-08-26    # a rail scene's OpenStreetMap network
+```
+
+`kernels` times every operation the worker spends its CPU on, for both of its tasks: the ship pass
+(resize, blur, adaptive threshold, morphology, components, contours, the warp, `analyse_site`) and
+the rail access pass (the distance transform, hit-or-miss thinning, polylines, the colour map, the
+desert components, `analyse_rail_access`, with that analysis's own stage timings so the split
+between masks, access, graph and metrics is measured), on fixed synthetic images, so network and
+data never enter it. `scenes` runs the worker handler in-process on the scenes pinned in
+`vision_benchmark_scenes.json` (add scenes; never change one, or old reports stop being
+comparable) and records, per scene, the handler's stage timings with every sample, the rail
+metrics it measured (served share, areas, counts, hubs, flags, the top suggestions) and their
+digest, the figure's sha256 and shape (the PNG is written beside the run file), and the peak
+memory. `worker` invokes a deployed worker, every site id prefixed `bench-` so its lines never
+pass for production's, and adds the round trip; its run file names the worker by Region and by
+the function's `CodeSha256` (null when the caller may not `lambda:GetFunctionConfiguration`),
+never by its ARN, which holds the account id. `compare` takes two run files of one kind from
+one machine and the same inputs (it refuses anything else: "not the same machine", "not the same
+inputs") and reports the speed-up of B over A as the ratio of medians with a seeded bootstrap 95 %
+interval, per case or stage, the headline on the compute stages (`analyse` and `annotate`; `graph`
+is inside `analyse`, the read is reported apart), each stage's share of the total, and for scenes
+the parity of the rail metrics (an equal digest, or each scalar within its tolerance and the hubs,
+flags and suggestions identical; a scene measured in one run and not the other, or no scene
+measured in both, fails it too; exit 1 when it fails) and the share of figure pixels that differ.
+`controls` runs the COOL guard's three negative controls in the current interpreter on one real
+scene: `cool` with the pin (`ok` only on the pinned build, else `not_cool`), `cool` with no pin
+(`not_cool`), an `opencv` request to the `cool` backend (`backend_mismatch`).
+
+Every run records the OpenCV build fingerprint and the CPU, and with `--out` writes a
+`bloggerbear.vision-eval/1` run file ([docs/hackathon/evidence/README.md](../docs/hackathon/evidence/README.md)
+has the schema): the code's git commit, the environment (cores, affinity, threads, library
+versions, where it ran, and on Linux the OpenCV shared objects mapped into the process with their
+sha256 and package, plus the build lines that tell a vendor build apart), the inputs' ETags, the
+parameters, the results and a flat summary. `--out` takes a `.json` path or a directory (then
+`<run_id>.json`, the run id being `<UTC date>-<kind>-<cpu slug>-<backend>`, with `--tag` as a
+suffix for several runs of one kind a day). A Markdown table is always printed.
+
+The options, as `--help` gives them: `kernels`, `scenes`, `worker` and `controls` take
+`--repeats` (timed runs per case; 20, 3 and 5 when left out), `--out`, `--tag`, `--imds` (the EC2
+instance identity through IMDSv2 with 1 s timeouts: five fields are kept, the account id and the
+rest are dropped; `host` is null off EC2) and `--label k=v` (repeatable; `cool_product`,
+`cool_version`, `cool_delivery` as `ami` or `container`, `image_digest`, `price`; any other key is
+an error); `kernels`, `scenes` and `controls` take `--threads N` (`cv2.setNumThreads`, recorded)
+and `--pin-cpu K` (one core, through `sched_setaffinity`; Linux only, refused with a message
+elsewhere: use the OS's own tool, the affinity is recorded either way, as `taskset`'s is);
+`kernels` takes `--size` (the synthetic images' side, 2048 px); `scenes`, `worker` and `controls`
+take `--scenes-file`, `--only NAME` (repeatable) and `--backend opencv|cool`, where `cool` needs
+`--cool-sha <hex>`, the pinned COOL build's fingerprint (the in-process modes set the handler's
+`VISION_BACKEND` and `COOL_BUILD_SHA256` from these before calling it, so a `cool` run on any other
+build is answered `not_cool` by the handler itself, and `kernels --backend cool` refuses to run on
+any other build); `scenes`, `controls` and `worker` take `--manifest` (the evaluation's manifest,
+whose ETags pin the scenes they share: a changed ETag refuses the run before any read or
+invocation, "input changed", and the run file records the ETags HEAD found); `scenes` and
+`controls` take `--cache [DIR]` (every range read answered from `DIR` after the first, keyed by
+URL, ETag and range, so repeats and both backends read identical bytes; the default is
+`~/.cache/bloggerbear-cogs`, `%LOCALAPPDATA%\bloggerbear-cogs` on Windows, never inside the
+repository); `scenes` takes `--isolate` (each scene in a fresh interpreter, so its peak memory is
+its own, and the run's cache counts and mapped libraries are those of the processes the scenes ran
+in); `worker` needs
+`--arn`; `compare` takes two run files, `--bootstrap` (2000) and `--seed` (0); `fetch-network`
+takes `--scene NAME` (required), `--scenes-file` and `--out`. The worker runs on one vCPU, so a
+CPU's rows are closest to it with the run pinned to one core.
+
+A `rail_access` scene also needs its OpenStreetMap network, which the worker is sent with the
+request. The scenes file names `vision_benchmark_networks/sydney.json` for both Sydney scenes; the
+directory's `NOTICE.md` carries the Open Database Licence attribution and the row to fill in when
+the file lands (the runsheet's COOL section says how to take it from the deployed city's network
+object, or `fetch-network` asks Overpass for the scene's polygon through `lambdas/common/osm.py`, the
+same client the adapter uses). Until the file exists, the rail scenes' rows read
+`error: network_file missing`. Overpass is not reachable from the build containers, so the file
+is captured on a machine that can reach it, checked with `pii_denylist_check.py --staged`, and
+committed, so later reports say (`fetched_at`, and the file's sha256 in `inputs.networks`) which
+network they measured.
+
+## The evaluation's inputs: `vision_eval.py`
+
+The evaluation reads pinned scenes, so every run file names the bytes it read.
+`vision_eval_manifest.json` (`bloggerbear.vision-manifest/1`) holds the Sydney site and 46
+Sentinel-2 L2A scenes on AWS Open Data by id, each with its four assets' URL, ETag and size, the
+STAC item's capture time, cloud cover, no-data share and footprint, its role (`clear`, `season`,
+`cloud`, `nodata`, `smoke`, `baseline`, `year`), and what `coverage` measured. Add a scene; never
+change one.
+
+```bash
+python scripts/vision_eval.py pin                                # HEAD every asset, read every STAC item; print what differs
+python scripts/vision_eval.py pin --write                        # ... and write it into the manifest
+python scripts/vision_eval.py pin --list-year 56HLH 2024 --write # add a tile's year by the production rule (the year set)
+python scripts/vision_eval.py coverage --out docs/hackathon/evidence/runs --write   # E1 and E2; the run file; the manifest's coverage
+```
+
+`pin` HEADs each asset for its ETag and Content-Length and reads the scene's STAC item from the
+same bucket folder (`<scene>/<scene>.json`: no Earth Search call), prints the differences from
+the manifest, writes them with `--write`, and exits 1 when a pinned ETag changed (earlier runs read
+other bytes). `--list-year TILE YEAR` lists the bucket month by month (`list-type=2` with a
+delimiter) and, with `--write`, keeps the whole listing under `listings` and adds every item that
+passes the production rule as a `year` scene: STAC cloud cover at most the rail adapter's
+`max_cloud_cover` (40) and a footprint that holds the site box (the same rule as the deployed
+search), one per date, the others kept as `duplicate_of` the one chosen (a Sentinel-2C tandem item,
+more tile no-data, or a later processing sequence) so they are measured but outside the set. It
+reads `sentinel-cogs.s3.us-west-2.amazonaws.com` only, with 10 s timeouts; a URL at any other host
+is refused before any request.
+
+`coverage` reads each scene's SCL inside the site polygon with the repository's own COG reader
+(`lambdas/vision/cog.py`, `geo.py`) and reports the share of every scene-classification class,
+the coverage as the worker defines it (the share outside `vision/masks.SCL_UNUSABLE`), whether
+it is under the adapter's floor (0.6, imported, never retyped) and the dominant cause when it is,
+and the mean aerosol optical thickness over the site from the scene's `AOT` band at its coarsest
+overview (smoke that SCL does not flag); about 60 range requests and 0.7 MB a scene. From the
+manifest's listing it counts the selection: the items, those passing the cloud filter, those of
+them passing the footprint rule, and those of them still under the floor (worker calls the search
+would make for nothing); the year set is the scenes that pass the rule with site coverage 0.95 or
+more. It writes an `eval-coverage` run file (`--out`, `--tag`), fills `site_coverage` and
+`aot_mean` into the manifest with `--write`, and records each year set there by name, in time
+order (`sets`, `year-2024`: a `year` role marks a candidate of the listing, and a candidate under
+0.95 or another's duplicate is outside the set, so a run of the set reads `sets`, never the
+roles), takes `--only NAME` and `--cache [DIR]`, HEADs each asset first and refuses a changed
+ETag ("input changed"), and exits 1 when a scene's `expected` (`low_coverage` for the cloud and
+no-data cases) was not met. Both subcommands run on Windows as well as Linux and macOS (`py -3.11 scripts\vision_eval.py ...`); they need
+`lambdas/requirements-vision.txt` and `scripts/requirements.txt`.
+
 ## After changing the CLI: `generate_cli_reference.py`
 
 The operator's assistant answers "how do I ...?" by showing a command's own `--help` and, when you
@@ -576,5 +799,16 @@ new output -- a new Finding for `research_tick`, a new candidate idea for
 `daily_cycle` -- or times out (30s / 90s respectively) and says so. Pass
 `--no-wait` to skip this and get the old immediate-return behavior back.
 This also means running `daily_cycle` right after `research_tick` for the
-same topic is safe without a manual delay in between; running it beforehand
-still isn't -- `daily_cycle` needs a Finding to already exist.
+same topic is safe without a manual delay in between, for a tick that ends
+within those 30s; running it beforehand still isn't -- `daily_cycle` needs a
+Finding to already exist. A vision topic's tick (`satellite_vision`,
+`rail_access`) that measures a new scene, the one that can write a Finding,
+can run well past 30s: the scene search, a network fetch, up to 58s of the
+vision worker, the triage agent and the summary, inside the function's 120s.
+For those, "No new Finding after 30s" is expected and does not mean the
+tick failed: wait about two minutes, or until `topics findings <id>` shows
+the new Finding, before `daily_cycle`. A daily cycle started while the tick
+still runs drafts without that Finding, and if it writes an article from
+other Findings, no later window holds it
+([docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics),
+"One Finding can still be missed").

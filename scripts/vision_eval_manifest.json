@@ -1,0 +1,3892 @@
+{
+ "about": "The evaluation's pinned Sentinel-2 L2A scenes on AWS Open Data (sentinel-cogs, us-west-2), one site inside each. Add a scene; never change one: a run compares every asset's ETag with a HEAD before it reads and refuses the run on a difference, so the run files in docs/hackathon/evidence/runs/ name the bytes they read. scripts/vision_eval.py pin fills each scene's ETags, sizes, capture time and STAC cloud and no-data figures from the bucket itself (the STAC item kept beside the assets; no Earth Search call), and coverage fills site_coverage (the share of the site the worker can measure, from the SCL classes it treats as unusable) and aot_mean (the L2A aerosol optical thickness over the site). Roles: clear, season (the same city in another season), cloud and nodata (each expected to flag low_coverage), smoke (the 2019-20 bushfire season, which SCL does not flag), baseline (November 2019, the smoke scene's season), and year (a candidate for the 2024 year set: every item of tile 56HLH that passes the production rule, cloud cover at most the adapter's max_cloud_cover of 40 and a footprint that holds the site box, one per date). listings holds the full bucket listing the year set came from, so the selection counts can be re-made. On a date with several items the one kept is the Sentinel-2A or 2B item (Sentinel-2C flew in tandem beside 2A in December 2024: its 14 December item is kept as the duplicate of 2A's, and the 10 December pair fails the footprint rule), then the one with the least tile no-data, then the lowest processing sequence (the two items of 21 August 2024 are two swaths: the second, _1, holds the site, and the first fails the footprint rule); the others are kept as duplicate_of that scene, measured by coverage but outside the year set. The 2024 year set is the year scenes and the named 2024 scenes together that pass the rule and were measured at site coverage 0.95 or more (vision_eval.year_set); coverage --write records it, in time order, under sets as year-2024, and a run of the year set selects by that, never by the year role (a candidate measured under 0.95, or another's duplicate, is outside the set). expected is null except where a scene is in the manifest to show a failure.",
+ "schema": "bloggerbear.vision-manifest/1",
+ "sites": {
+  "sydney": {
+   "task": "rail_access",
+   "polygon": [
+    [
+     150.86,
+     -33.58
+    ],
+    [
+     151.56,
+     -33.58
+    ],
+    [
+     151.56,
+     -34.16
+    ],
+    [
+     150.86,
+     -34.16
+    ]
+   ],
+   "params": {
+    "reach_m": 1000
+   }
+  }
+ },
+ "scenes": [
+  {
+   "name": "sydney-2024-06-27",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240627_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-06-27T00:06:11.055000Z",
+   "role": "clear",
+   "note": "winter",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/6/S2A_56HLH_20240627_0_L2A/B04.tif",
+     "etag": "0ad20c01f901f02f457600d0df2f78e3-18",
+     "bytes": 143956260
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/6/S2A_56HLH_20240627_0_L2A/B08.tif",
+     "etag": "b0df2684fe73df9fd3d17f8f5c5a767a-15",
+     "bytes": 124592373
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/6/S2A_56HLH_20240627_0_L2A/B11.tif",
+     "etag": "6e7c027528b7834ac503c0659722d9ef-4",
+     "bytes": 29053226
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/6/S2A_56HLH_20240627_0_L2A/SCL.tif",
+     "etag": "7d5537a43bf477b8f65c2b1969a4491f",
+     "bytes": 1322514
+    }
+   },
+   "item": {
+    "cloud_cover": 0.006562,
+    "nodata_pct": 15.51757,
+    "bbox": [
+     150.82398985331233,
+     -34.42137251524415,
+     151.97045400113632,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9999,
+   "aot_mean": 0.0657,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-08-21b",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240821_1_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-08-21T00:06:09.244000Z",
+   "role": "clear",
+   "note": "the second item of 21 August 2024: the swath that holds the site",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240821_1_L2A/B04.tif",
+     "etag": "3bf11b3bb423746edf5de5c244959533-18",
+     "bytes": 148522952
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240821_1_L2A/B08.tif",
+     "etag": "fa402a35086cede0f963d3bcd815580a-19",
+     "bytes": 152021227
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240821_1_L2A/B11.tif",
+     "etag": "d3f191912359449c026b2172ff890487-5",
+     "bytes": 36045260
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240821_1_L2A/SCL.tif",
+     "etag": "c992f966fea1bd6155aadf77193ae855",
+     "bytes": 1242715
+    }
+   },
+   "item": {
+    "cloud_cover": 0.804596,
+    "nodata_pct": 21.730565,
+    "bbox": [
+     150.8239665058341,
+     -34.42250534279251,
+     151.9270244716153,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9943,
+   "aot_mean": 0.1131,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-08-26",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240826_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-08-26T00:06:06.130000Z",
+   "role": "clear",
+   "note": "the benchmark's clear scene (scripts/vision_benchmark_scenes.json)",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240826_0_L2A/B04.tif",
+     "etag": "869d2f7d1e646fd069142dd51d1d1ec4-18",
+     "bytes": 144140225
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240826_0_L2A/B08.tif",
+     "etag": "d641bc64ec21fc2d1434071beeb5b63f-18",
+     "bytes": 148033637
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240826_0_L2A/B11.tif",
+     "etag": "c18829ea963633eda50d881d5989754d-5",
+     "bytes": 35361978
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240826_0_L2A/SCL.tif",
+     "etag": "1104e55f9c91a600b0596227acd4901d",
+     "bytes": 1236559
+    }
+   },
+   "item": {
+    "cloud_cover": 0.003826,
+    "nodata_pct": 14.148347,
+    "bbox": [
+     150.82398985331116,
+     -34.42155794181568,
+     151.9865885422122,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9999,
+   "aot_mean": 0.0778,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-08-31",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240831_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-08-31T00:06:10.837000Z",
+   "role": "clear",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240831_0_L2A/B04.tif",
+     "etag": "30711dfc024265cff34d0f9995215481-19",
+     "bytes": 159114711
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240831_0_L2A/B08.tif",
+     "etag": "e270558ef1c1666231f5f9f0ad0bf4e8-20",
+     "bytes": 162582402
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240831_0_L2A/B11.tif",
+     "etag": "fc700e786544e23e87080b7d6b77d4d3-5",
+     "bytes": 37154823
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240831_0_L2A/SCL.tif",
+     "etag": "5b5942b856553fac50165a259b73d403",
+     "bytes": 1225441
+    }
+   },
+   "item": {
+    "cloud_cover": 0.016374,
+    "nodata_pct": 16.254866,
+    "bbox": [
+     150.82398985343437,
+     -34.42092494552782,
+     151.96206421600732,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9998,
+   "aot_mean": 0.0898,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-12-24",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20241224_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-12-24T00:06:08.779000Z",
+   "role": "season",
+   "note": "summer, against the winter scene",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2A_56HLH_20241224_0_L2A/B04.tif",
+     "etag": "54ef13a6529ae5d5a61ba788361a8600-23",
+     "bytes": 186822560
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2A_56HLH_20241224_0_L2A/B08.tif",
+     "etag": "bf5d99afb660202f3053190859602f14-23",
+     "bytes": 188325053
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2A_56HLH_20241224_0_L2A/B11.tif",
+     "etag": "15fe6a8bcb90b0cb06a55c99bb6f7844-6",
+     "bytes": 43741562
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2A_56HLH_20241224_0_L2A/SCL.tif",
+     "etag": "aeb0e99dcc2f33eb9906dea3342819fd",
+     "bytes": 1324289
+    }
+   },
+   "item": {
+    "cloud_cover": 0.112539,
+    "nodata_pct": 15.847638,
+    "bbox": [
+     150.8239898533125,
+     -34.421337986878434,
+     151.9665819181739,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9968,
+   "aot_mean": 0.1374,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-01-05",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240105_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-01-05T23:56:08.741000Z",
+   "role": "cloud",
+   "note": "the benchmark's first scene: mostly cloud, shadow and cirrus over the city and no-data from the swath's edge; STAC cloud cover 66.5, so the deployed search never picks it",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240105_0_L2A/B04.tif",
+     "etag": "f168c9842f53be5ff5265dc3c8fd691f-21",
+     "bytes": 169548658
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240105_0_L2A/B08.tif",
+     "etag": "91114410bfd7832034d5a86f5cd36f23-21",
+     "bytes": 169243629
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240105_0_L2A/B11.tif",
+     "etag": "61207d2fc25a41e056f775e59c0857cb-6",
+     "bytes": 46139434
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240105_0_L2A/SCL.tif",
+     "etag": "a6a98e904a508f1f863561a7868dd00f",
+     "bytes": 2250068
+    }
+   },
+   "item": {
+    "cloud_cover": 66.461003,
+    "nodata_pct": 18.037498,
+    "bbox": [
+     150.898158201238,
+     -34.42537305547565,
+     152.02964010785442,
+     -33.42603405040068
+    ]
+   },
+   "site_coverage": 0.1467,
+   "aot_mean": 0.1461,
+   "expected": {
+    "quality_flags": [
+     "low_coverage"
+    ]
+   }
+  },
+  {
+   "name": "sydney-2024-08-21a",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240821_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-08-21T00:06:02.520000Z",
+   "role": "nodata",
+   "note": "the first item of 21 August 2024: about nine tenths no-data over the site; STAC cloud 19.1 passes the filter but its footprint stops short of the site's south edge, so the footprint rule skips it",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240821_0_L2A/B04.tif",
+     "etag": "58f2b24c7c47826c030018b653c69cd5-5",
+     "bytes": 40669503
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240821_0_L2A/B08.tif",
+     "etag": "c3a3f7a31e861f636e1dd814afd0ec67-6",
+     "bytes": 42312319
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240821_0_L2A/B11.tif",
+     "etag": "21adef5980d7346cb267dcbb68a080ab-2",
+     "bytes": 10154277
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240821_0_L2A/SCL.tif",
+     "etag": "d87d511fcd101bc64d9975e13e202f30",
+     "bytes": 345914
+    }
+   },
+   "item": {
+    "cloud_cover": 19.085729,
+    "nodata_pct": 77.782142,
+    "bbox": [
+     150.84585157306185,
+     -33.780898100132596,
+     151.97561663142497,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.086,
+   "aot_mean": 0.124,
+   "expected": {
+    "quality_flags": [
+     "low_coverage"
+    ]
+   }
+  },
+  {
+   "name": "sydney-2019-12-26-smoke",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20191226_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2019-12-26T00:06:03.232000Z",
+   "role": "smoke",
+   "note": "the 2019-20 bushfire season: SCL flags nothing, the aerosol optical thickness says smoke; against sydney-2019-12-21",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/12/S2B_56HLH_20191226_0_L2A/B04.tif",
+     "etag": "523d17956d0826c1cb528c5bf9bc69be-24",
+     "bytes": 196126045
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/12/S2B_56HLH_20191226_0_L2A/B08.tif",
+     "etag": "6c9d1e0f9361426fb34fa080055632af-24",
+     "bytes": 197459951
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/12/S2B_56HLH_20191226_0_L2A/B11.tif",
+     "etag": "20be6796d530733ad9337eb6c1249893-6",
+     "bytes": 47184456
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/12/S2B_56HLH_20191226_0_L2A/SCL.tif",
+     "etag": "6927ad1bd70fbddcb6533a71094e7ae1",
+     "bytes": 1407378
+    }
+   },
+   "item": {
+    "cloud_cover": 0.146673,
+    "nodata_pct": 14.839904,
+    "bbox": [
+     150.8239665058341,
+     -34.42254088358464,
+     151.97905889580983,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9949,
+   "aot_mean": 0.4358,
+   "expected": null
+  },
+  {
+   "name": "sydney-2019-12-21",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20191221_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2019-12-21T00:06:02.177000Z",
+   "role": "clear",
+   "note": "the smoke scene's clear reference, five days before it",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/12/S2A_56HLH_20191221_0_L2A/B04.tif",
+     "etag": "25bff800e07b4885e3f8f0271621e4bd-21",
+     "bytes": 170995796
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/12/S2A_56HLH_20191221_0_L2A/B08.tif",
+     "etag": "51e456f8891c6d41001b85f7270ef632-22",
+     "bytes": 184350392
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/12/S2A_56HLH_20191221_0_L2A/B11.tif",
+     "etag": "f80f5f21fdd853478358039607b3b139-6",
+     "bytes": 44829623
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/12/S2A_56HLH_20191221_0_L2A/SCL.tif",
+     "etag": "8235713a1753f2531f30c69018c6480f",
+     "bytes": 1209323
+    }
+   },
+   "item": {
+    "cloud_cover": 0.942139,
+    "nodata_pct": 14.4839,
+    "bbox": [
+     150.8239665058341,
+     -34.42258774932495,
+     151.98293123538926,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9924,
+   "aot_mean": 0.203,
+   "expected": null
+  },
+  {
+   "name": "sydney-2019-11-01",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20191101_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2019-11-01T00:06:11.313000Z",
+   "role": "baseline",
+   "note": "November 2019: the same season and network as the smoke scene",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191101_0_L2A/B04.tif",
+     "etag": "9808a5de80f66bb0ee6868982258097e-23",
+     "bytes": 190238053
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191101_0_L2A/B08.tif",
+     "etag": "9cdb7b0f36344b35e6645b351c2b2847-24",
+     "bytes": 193404504
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191101_0_L2A/B11.tif",
+     "etag": "fd76ace577096e9fb49a855b96a60f3a-6",
+     "bytes": 46413928
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191101_0_L2A/SCL.tif",
+     "etag": "cffc56b5de30c2ed8abfe5768a0bdaa7",
+     "bytes": 1423621
+    }
+   },
+   "item": {
+    "cloud_cover": 0.175262,
+    "nodata_pct": 15.991092,
+    "bbox": [
+     150.8239665058341,
+     -34.42239468498735,
+     151.9655061109389,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9958,
+   "aot_mean": 0.4052,
+   "expected": null
+  },
+  {
+   "name": "sydney-2019-11-06",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20191106_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2019-11-06T00:06:08.165000Z",
+   "role": "baseline",
+   "note": "November 2019",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2B_56HLH_20191106_0_L2A/B04.tif",
+     "etag": "ae53f9708296c05ee640d8f6392b4c44-23",
+     "bytes": 184691581
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2B_56HLH_20191106_0_L2A/B08.tif",
+     "etag": "48b9b537d875b762ea53741f0e5bf395-23",
+     "bytes": 186572511
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2B_56HLH_20191106_0_L2A/B11.tif",
+     "etag": "bdcced0916a85d0094a404b2b7139552-6",
+     "bytes": 44435433
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2B_56HLH_20191106_0_L2A/SCL.tif",
+     "etag": "bf50b0f1bad50131f9fbd0b53e7a750b",
+     "bytes": 1439667
+    }
+   },
+   "item": {
+    "cloud_cover": 0.271308,
+    "nodata_pct": 14.978875,
+    "bbox": [
+     150.8239665058341,
+     -34.42252713778087,
+     151.97701537112272,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9937,
+   "aot_mean": 0.0955,
+   "expected": null
+  },
+  {
+   "name": "sydney-2019-11-07",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20191107_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2019-11-07T23:56:15.170000Z",
+   "role": "baseline",
+   "note": "November 2019",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191107_0_L2A/B04.tif",
+     "etag": "e5825f12fc16538461959dc58026dccb-18",
+     "bytes": 145071081
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191107_0_L2A/B08.tif",
+     "etag": "36ed068f7565fbd7241c740650fdc724-18",
+     "bytes": 143686707
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191107_0_L2A/B11.tif",
+     "etag": "13ca02cf1280934b82f48053a20dee53-4",
+     "bytes": 31975926
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191107_0_L2A/SCL.tif",
+     "etag": "b056a9966ebe05ded2239457d6289297",
+     "bytes": 804580
+    }
+   },
+   "item": {
+    "cloud_cover": 0.191878,
+    "nodata_pct": 17.53898,
+    "bbox": [
+     150.89206882581382,
+     -34.42537305547565,
+     152.02964010785442,
+     -33.42594981454852
+    ]
+   },
+   "site_coverage": 0.7106,
+   "aot_mean": 0.2501,
+   "expected": null
+  },
+  {
+   "name": "sydney-2019-11-27",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20191127_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2019-11-27T23:56:12.134000Z",
+   "role": "baseline",
+   "note": "November 2019",
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191127_0_L2A/B04.tif",
+     "etag": "5b5becae3afdb7dd19d32ddcb38da1a6-20",
+     "bytes": 160351532
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191127_0_L2A/B08.tif",
+     "etag": "99797ab683299902de3891c3749b944e-19",
+     "bytes": 155792677
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191127_0_L2A/B11.tif",
+     "etag": "6cdbaa06aa94bd7e6c069924d6f01ab6-5",
+     "bytes": 34749487
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2019/11/S2A_56HLH_20191127_0_L2A/SCL.tif",
+     "etag": "6cc6d057098a48ac2367901ff382713d",
+     "bytes": 744948
+    }
+   },
+   "item": {
+    "cloud_cover": 0.136208,
+    "nodata_pct": 18.301429,
+    "bbox": [
+     150.90142045389263,
+     -34.42537305547565,
+     152.02964010785442,
+     -33.42608384081397
+    ]
+   },
+   "site_coverage": 0.6986,
+   "aot_mean": 0.399,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-01-09",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240109_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-01-09T00:06:03.657000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240109_0_L2A/B04.tif",
+     "etag": "1265f5e82ad2753f79b406c4ec8e7bf6-23",
+     "bytes": 192593561
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240109_0_L2A/B08.tif",
+     "etag": "b6ecd5dc7a6b3527c33efd90bbf6bd11-23",
+     "bytes": 191806739
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240109_0_L2A/B11.tif",
+     "etag": "343e91138c501812798118a945639096-6",
+     "bytes": 48803875
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240109_0_L2A/SCL.tif",
+     "etag": "9e291c4dbe2906a9b6c234345a3343d6",
+     "bytes": 2594557
+    }
+   },
+   "item": {
+    "cloud_cover": 23.056045,
+    "nodata_pct": 15.32418,
+    "bbox": [
+     150.8239898533121,
+     -34.421407033094795,
+     151.97303560845762,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.8406,
+   "aot_mean": 0.1909,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-01-19",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240119_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-01-19T00:05:59.110000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240119_0_L2A/B04.tif",
+     "etag": "454ce8dd584e044e56bf4f869b605657-23",
+     "bytes": 190024448
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240119_0_L2A/B08.tif",
+     "etag": "64a04a6ecfaeae554b74385153e81dea-24",
+     "bytes": 193332367
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240119_0_L2A/B11.tif",
+     "etag": "c322d76aefa92e6708f5ca82aa77ee24-6",
+     "bytes": 45582777
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240119_0_L2A/SCL.tif",
+     "etag": "0654af579cc6a016667906d47615c8cc",
+     "bytes": 1334044
+    }
+   },
+   "item": {
+    "cloud_cover": 22.855636,
+    "nodata_pct": 14.338905,
+    "bbox": [
+     150.82398985331133,
+     -34.42153008174535,
+     151.98465228469087,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.7412,
+   "aot_mean": 0.0958,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-01-24",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240124_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-01-24T00:06:07.238000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2B_56HLH_20240124_0_L2A/B04.tif",
+     "etag": "a56e489110fe8396211d59acd555eee6-23",
+     "bytes": 191807007
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2B_56HLH_20240124_0_L2A/B08.tif",
+     "etag": "12396e47822c21baf6364a79a542e4a7-24",
+     "bytes": 193721156
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2B_56HLH_20240124_0_L2A/B11.tif",
+     "etag": "ea4e21a0f46ae24358dacdfb74170c7a-6",
+     "bytes": 46148628
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2B_56HLH_20240124_0_L2A/SCL.tif",
+     "etag": "34924aafebfd051659784de5d4b28b8d",
+     "bytes": 1301453
+    }
+   },
+   "item": {
+    "cloud_cover": 1.10726,
+    "nodata_pct": 15.849437,
+    "bbox": [
+     150.8239898534334,
+     -34.42098008016225,
+     151.96658191817392,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9857,
+   "aot_mean": 0.1431,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-01-29",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240129_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-01-29T00:06:03.159000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240129_0_L2A/B04.tif",
+     "etag": "2bbd0c35fcf88164b26112d9940ae909-23",
+     "bytes": 192502332
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240129_0_L2A/B08.tif",
+     "etag": "0e1e5045005c046f620da30e26b69dce-24",
+     "bytes": 193698984
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240129_0_L2A/B11.tif",
+     "etag": "007cfbb15b351a397b7a3c416938bdcb-6",
+     "bytes": 46501638
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240129_0_L2A/SCL.tif",
+     "etag": "914a1e69230d3b827ea9a9a476d63496",
+     "bytes": 1673985
+    }
+   },
+   "item": {
+    "cloud_cover": 2.666573,
+    "nodata_pct": 15.135315,
+    "bbox": [
+     150.82398985343218,
+     -34.4210669058857,
+     151.9749716914943,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9737,
+   "aot_mean": 0.1495,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-02-13",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240213_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-02-13T00:06:09.121000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2B_56HLH_20240213_0_L2A/B04.tif",
+     "etag": "91a5c0ce6013d9325241ac784b9162dd-23",
+     "bytes": 190581965
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2B_56HLH_20240213_0_L2A/B08.tif",
+     "etag": "4128c56962d59ab5301f2c5e59b43ea1-23",
+     "bytes": 192922856
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2B_56HLH_20240213_0_L2A/B11.tif",
+     "etag": "8477ba4c337c000970a3f231cf7cb217-6",
+     "bytes": 47263731
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2B_56HLH_20240213_0_L2A/SCL.tif",
+     "etag": "84042f530b3ea9f0add7dd4aaaaebd4b",
+     "bytes": 1476922
+    }
+   },
+   "item": {
+    "cloud_cover": 4.879451,
+    "nodata_pct": 15.996662,
+    "bbox": [
+     150.82398985343426,
+     -34.42096242497906,
+     151.9646459002415,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9405,
+   "aot_mean": 0.1255,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-02-18",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240218_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-02-18T00:06:06.086000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2A_56HLH_20240218_0_L2A/B04.tif",
+     "etag": "c2877a7dd1ed40abb69aae3e85a4fe44-21",
+     "bytes": 170279573
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2A_56HLH_20240218_0_L2A/B08.tif",
+     "etag": "043e7cd11027262e615731f81cb36d59-21",
+     "bytes": 169849687
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2A_56HLH_20240218_0_L2A/B11.tif",
+     "etag": "51bbcd98b85f84d700ee60586da1149d-6",
+     "bytes": 43779429
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2A_56HLH_20240218_0_L2A/SCL.tif",
+     "etag": "5e3b67d7b9cd96f2a6a44a0317b3f7bf",
+     "bytes": 1933959
+    }
+   },
+   "item": {
+    "cloud_cover": 8.545854,
+    "nodata_pct": 15.34629,
+    "bbox": [
+     150.8239898534326,
+     -34.42104435858004,
+     151.97239030316163,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.891,
+   "aot_mean": 0.2269,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-02-28",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240228_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-02-28T00:06:07.620000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2A_56HLH_20240228_0_L2A/B04.tif",
+     "etag": "4fad713f245d6e2ab0bde82e32c349c0-23",
+     "bytes": 185033429
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2A_56HLH_20240228_0_L2A/B08.tif",
+     "etag": "219358901135eed7d922b2881d5c1c1e-22",
+     "bytes": 181697789
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2A_56HLH_20240228_0_L2A/B11.tif",
+     "etag": "511194a0e37a3e2d2c08c3059d12c24d-6",
+     "bytes": 46686102
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/2/S2A_56HLH_20240228_0_L2A/SCL.tif",
+     "etag": "3384195253252459c533f6835bce73d5",
+     "bytes": 1499719
+    }
+   },
+   "item": {
+    "cloud_cover": 38.840371,
+    "nodata_pct": 15.737064,
+    "bbox": [
+     150.82398985331247,
+     -34.42134487777731,
+     151.96787252570502,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.4891,
+   "aot_mean": 0.2125,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-03-09",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240309_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-03-09T00:06:08.635000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2A_56HLH_20240309_0_L2A/B04.tif",
+     "etag": "74094b513358ecead46525f5cc070a04-20",
+     "bytes": 160283544
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2A_56HLH_20240309_0_L2A/B08.tif",
+     "etag": "1aa9c73901496d74e7c610588eac5c3a-20",
+     "bytes": 161089895
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2A_56HLH_20240309_0_L2A/B11.tif",
+     "etag": "a6ef6186e491513773989d12cbbbb3f7-5",
+     "bytes": 40190247
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2A_56HLH_20240309_0_L2A/SCL.tif",
+     "etag": "51c24b6bcbe46d2647fde86388019190",
+     "bytes": 2141199
+    }
+   },
+   "item": {
+    "cloud_cover": 14.155649,
+    "nodata_pct": 16.165812,
+    "bbox": [
+     150.82398985343465,
+     -34.42093724952736,
+     151.96335495029362,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.8364,
+   "aot_mean": 0.1375,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-03-14",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240314_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-03-14T00:06:05.663000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2B_56HLH_20240314_0_L2A/B04.tif",
+     "etag": "c530a4bdf4b39595c62a7f65607ca7cc-21",
+     "bytes": 173099392
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2B_56HLH_20240314_0_L2A/B08.tif",
+     "etag": "a38b7bf767e2f1b2a535f5f1d818c516-21",
+     "bytes": 174683433
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2B_56HLH_20240314_0_L2A/B11.tif",
+     "etag": "659a148fbab87dcea796f1df42b144ba-6",
+     "bytes": 42036549
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2B_56HLH_20240314_0_L2A/SCL.tif",
+     "etag": "9579befd7d6f4dfcf3cbbb0c0b6a7a98",
+     "bytes": 1485909
+    }
+   },
+   "item": {
+    "cloud_cover": 5.873344,
+    "nodata_pct": 15.225616,
+    "bbox": [
+     150.823989853312,
+     -34.421412940302446,
+     151.97432619785087,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9893,
+   "aot_mean": 0.1796,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-03-24",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240324_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-03-24T00:06:08.639000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2B_56HLH_20240324_0_L2A/B04.tif",
+     "etag": "67c97878f021111e9fbc4013c115dcc9-18",
+     "bytes": 149845534
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2B_56HLH_20240324_0_L2A/B08.tif",
+     "etag": "826c3207007280a424f65d5d69d8907c-17",
+     "bytes": 139822277
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2B_56HLH_20240324_0_L2A/B11.tif",
+     "etag": "fbeaf9698e377407535457bb9b5f4ac6-5",
+     "bytes": 39131131
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/3/S2B_56HLH_20240324_0_L2A/SCL.tif",
+     "etag": "4ec1b8057a3bf8f87040e56dc099f604",
+     "bytes": 2314189
+    }
+   },
+   "item": {
+    "cloud_cover": 20.352305,
+    "nodata_pct": 16.145062,
+    "bbox": [
+     150.82398985343426,
+     -34.420938459525466,
+     151.9638926485975,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.7572,
+   "aot_mean": 0.1731,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-04-03",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240403_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-04-03T00:06:06.549000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240403_0_L2A/B04.tif",
+     "etag": "9852bdda3004f1919729f93f7fe87c72-22",
+     "bytes": 180019075
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240403_0_L2A/B08.tif",
+     "etag": "d511081ad507db93cab89d6fee6a077b-22",
+     "bytes": 180638805
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240403_0_L2A/B11.tif",
+     "etag": "a899db242e944c0c7984055bc4a6dede-6",
+     "bytes": 47103436
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240403_0_L2A/SCL.tif",
+     "etag": "7e4703cf27c59762ef5f39f47e5b15d0",
+     "bytes": 2578374
+    }
+   },
+   "item": {
+    "cloud_cover": 31.83741,
+    "nodata_pct": 15.300398,
+    "bbox": [
+     150.82398985343204,
+     -34.42104920419429,
+     151.97368084926592,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.544,
+   "aot_mean": 0.1492,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-04-13",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240413_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-04-13T00:06:08.705000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240413_0_L2A/B04.tif",
+     "etag": "2be64a65455bcec4f42693a4df406561-19",
+     "bytes": 152990111
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240413_0_L2A/B08.tif",
+     "etag": "506f8ba5860a4874dbd977e0c002c3b7-19",
+     "bytes": 154213955
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240413_0_L2A/B11.tif",
+     "etag": "36853d50a901e6725911af2456fcffb0-5",
+     "bytes": 38700375
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240413_0_L2A/SCL.tif",
+     "etag": "da1a91ad27f6bc7ecd8dad1d8ded1107",
+     "bytes": 1693389
+    }
+   },
+   "item": {
+    "cloud_cover": 5.564214,
+    "nodata_pct": 16.098393,
+    "bbox": [
+     150.8239898533126,
+     -34.42131036690572,
+     151.9640004468098,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9451,
+   "aot_mean": 0.1191,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-04-23",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240423_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-04-23T00:06:07.904000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240423_0_L2A/B04.tif",
+     "etag": "3cea22366474069a9aac2dd0ec932cbf-14",
+     "bytes": 114293283
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240423_0_L2A/B08.tif",
+     "etag": "623309363a2dc33304c2182fe5b447c6-14",
+     "bytes": 116234681
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240423_0_L2A/B11.tif",
+     "etag": "502716df9ad1cf2497fc2c77e6ed484b-4",
+     "bytes": 33346921
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2B_56HLH_20240423_0_L2A/SCL.tif",
+     "etag": "fc78856e546bc8d36de4d3085b90342d",
+     "bytes": 1200526
+    }
+   },
+   "item": {
+    "cloud_cover": 0.003045,
+    "nodata_pct": 16.10426,
+    "bbox": [
+     150.82398985343454,
+     -34.42094934810956,
+     151.96400041947874,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 1.0,
+   "aot_mean": 0.0717,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-04-28",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240428_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-04-28T00:06:10.679000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2A_56HLH_20240428_0_L2A/B04.tif",
+     "etag": "74f95a3a5dcd0db4426d14d957e2ec02-18",
+     "bytes": 145046789
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2A_56HLH_20240428_0_L2A/B08.tif",
+     "etag": "be5259d832aef6a33c42973bec85c907-17",
+     "bytes": 141966204
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2A_56HLH_20240428_0_L2A/B11.tif",
+     "etag": "2fb8c6d537843255d81ec837937dcfa5-5",
+     "bytes": 38490207
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/4/S2A_56HLH_20240428_0_L2A/SCL.tif",
+     "etag": "a1362c471a06a6a8605fc976a822c5f0",
+     "bytes": 1560245
+    }
+   },
+   "item": {
+    "cloud_cover": 10.687663,
+    "nodata_pct": 16.479766,
+    "bbox": [
+     150.8239898534355,
+     -34.420900644682334,
+     151.95883761407794,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9979,
+   "aot_mean": 0.0837,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-05-23",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240523_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-05-23T00:06:07.813000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/5/S2B_56HLH_20240523_0_L2A/B04.tif",
+     "etag": "53bf6ad44fe89bcd128fdb7719d6c961-19",
+     "bytes": 156034914
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/5/S2B_56HLH_20240523_0_L2A/B08.tif",
+     "etag": "aea6f0c479b2a062f2c6f0631ac68b4c-19",
+     "bytes": 158873673
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/5/S2B_56HLH_20240523_0_L2A/B11.tif",
+     "etag": "0c36c11f75427ca6e45942b9b0780b6c-5",
+     "bytes": 38421075
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/5/S2B_56HLH_20240523_0_L2A/SCL.tif",
+     "etag": "f58386d5a3be246dda5faad55999a323",
+     "bytes": 1482552
+    }
+   },
+   "item": {
+    "cloud_cover": 4.022929,
+    "nodata_pct": 15.66965,
+    "bbox": [
+     150.82398985343357,
+     -34.42099708919024,
+     151.96851798049258,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9995,
+   "aot_mean": 0.0716,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-05-28",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240528_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-05-28T00:06:09.568000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/5/S2A_56HLH_20240528_0_L2A/B04.tif",
+     "etag": "d9657e681d724038850969db1c964b31-18",
+     "bytes": 147127826
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/5/S2A_56HLH_20240528_0_L2A/B08.tif",
+     "etag": "9e4d020dd10cca97e1c8ca16911d718a-18",
+     "bytes": 144381522
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/5/S2A_56HLH_20240528_0_L2A/B11.tif",
+     "etag": "ca1a7fef0428f190c330c7e334f26dc2-4",
+     "bytes": 33022713
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/5/S2A_56HLH_20240528_0_L2A/SCL.tif",
+     "etag": "0f0619fb2de9389544b23163254a1a65",
+     "bytes": 1292308
+    }
+   },
+   "item": {
+    "cloud_cover": 0.002918,
+    "nodata_pct": 15.391286,
+    "bbox": [
+     150.8239898532829,
+     -34.42148306142746,
+     151.97109962844584,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9999,
+   "aot_mean": 0.078,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-06-12",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240612_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-06-12T00:06:11.377000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/6/S2B_56HLH_20240612_0_L2A/B04.tif",
+     "etag": "b71726cf9b0a7139b6d202ad09f9b780-19",
+     "bytes": 157646573
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/6/S2B_56HLH_20240612_0_L2A/B08.tif",
+     "etag": "5b304554e4a6c7a29611d0fadb92b18a-20",
+     "bytes": 161721640
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/6/S2B_56HLH_20240612_0_L2A/B11.tif",
+     "etag": "45401550c082dc0844da5d7685a4565e-5",
+     "bytes": 38508645
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/6/S2B_56HLH_20240612_0_L2A/SCL.tif",
+     "etag": "1760d0634fd349c4b1beb00507215c6c",
+     "bytes": 1773978
+    }
+   },
+   "item": {
+    "cloud_cover": 4.8372,
+    "nodata_pct": 16.444053,
+    "bbox": [
+     150.82398985343536,
+     -34.42090761686369,
+     151.96012821765277,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9058,
+   "aot_mean": 0.0717,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-07-07",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240707_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-07-07T00:06:11.644000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2A_56HLH_20240707_0_L2A/B04.tif",
+     "etag": "b4f92145e54ffb39ffbed44a34795453-19",
+     "bytes": 154243389
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2A_56HLH_20240707_0_L2A/B08.tif",
+     "etag": "68f09929bf3b31a168308da70b2c0e34-18",
+     "bytes": 147442562
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2A_56HLH_20240707_0_L2A/B11.tif",
+     "etag": "64be6937f42b77b45efabb7fbdd8d635-5",
+     "bytes": 40860384
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2A_56HLH_20240707_0_L2A/SCL.tif",
+     "etag": "7c415facb48d2a582deaf5bcb121041f",
+     "bytes": 2513624
+    }
+   },
+   "item": {
+    "cloud_cover": 31.731063,
+    "nodata_pct": 15.716387,
+    "bbox": [
+     150.82398985331238,
+     -34.421358713258094,
+     151.9678727837176,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.5973,
+   "aot_mean": 0.1135,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-07-17",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240717_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-07-17T00:06:09.276000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2A_56HLH_20240717_0_L2A/B04.tif",
+     "etag": "f352d23363dc5dfad786089d875338c4-20",
+     "bytes": 166955301
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2A_56HLH_20240717_0_L2A/B08.tif",
+     "etag": "3d9f4f7773006ee92d185fcc64396bb8-21",
+     "bytes": 171315567
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2A_56HLH_20240717_0_L2A/B11.tif",
+     "etag": "722584566e4e50110d312f714464ecfb-5",
+     "bytes": 40741709
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2A_56HLH_20240717_0_L2A/SCL.tif",
+     "etag": "1b59dbfc5860c850b3c2cffc201cf238",
+     "bytes": 1531848
+    }
+   },
+   "item": {
+    "cloud_cover": 3.398937,
+    "nodata_pct": 14.818799,
+    "bbox": [
+     150.8239898534315,
+     -34.421100516092714,
+     151.9788437720207,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9967,
+   "aot_mean": 0.0774,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-07-22",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240722_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-07-22T00:06:11.570000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2B_56HLH_20240722_0_L2A/B04.tif",
+     "etag": "13fd839c1525a417d3ab7c6127fcb23c-18",
+     "bytes": 148758105
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2B_56HLH_20240722_0_L2A/B08.tif",
+     "etag": "18366335380d282e9164953a567b796e-18",
+     "bytes": 147649183
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2B_56HLH_20240722_0_L2A/B11.tif",
+     "etag": "d91f40a87d856039b56b2ff664cd3710-5",
+     "bytes": 37129529
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/7/S2B_56HLH_20240722_0_L2A/SCL.tif",
+     "etag": "777ea9924b239ec3871c509b00d47007",
+     "bytes": 1458850
+    }
+   },
+   "item": {
+    "cloud_cover": 39.097324,
+    "nodata_pct": 16.032694,
+    "bbox": [
+     150.8239898533127,
+     -34.42130901905607,
+     151.96464566372353,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.5943,
+   "aot_mean": 0.0897,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-08-06",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240806_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-08-06T00:06:09.895000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240806_0_L2A/B04.tif",
+     "etag": "d5ffad7e543b1a2bc3d3e453b9d1720c-20",
+     "bytes": 166228424
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240806_0_L2A/B08.tif",
+     "etag": "0f7a335ecf63fb0902457d0993abaf2b-21",
+     "bytes": 170582875
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240806_0_L2A/B11.tif",
+     "etag": "10cc42b2904edafc5c6941dce0713541-5",
+     "bytes": 41199426
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240806_0_L2A/SCL.tif",
+     "etag": "9b5a1e5c97af08f87ddd93b3382f9c2c",
+     "bytes": 1748641
+    }
+   },
+   "item": {
+    "cloud_cover": 6.575511,
+    "nodata_pct": 15.15979,
+    "bbox": [
+     150.8239665058341,
+     -34.422506490973,
+     151.97497171886832,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9454,
+   "aot_mean": 0.0958,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-08-11",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240811_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-08-11T00:06:12.415000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240811_0_L2A/B04.tif",
+     "etag": "ac0b7471808a651326bae7c87c9de4e9-19",
+     "bytes": 158018707
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240811_0_L2A/B08.tif",
+     "etag": "f73ed448cef7861072422df5f449b2fc-18",
+     "bytes": 147918246
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240811_0_L2A/B11.tif",
+     "etag": "41c8088637cbce44048cbced3de5cb24-5",
+     "bytes": 41844607
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2B_56HLH_20240811_0_L2A/SCL.tif",
+     "etag": "872270e5473a2460cbe29d292acb430a",
+     "bytes": 2481791
+    }
+   },
+   "item": {
+    "cloud_cover": 28.335825,
+    "nodata_pct": 16.262613,
+    "bbox": [
+     150.82398985343454,
+     -34.42092454530951,
+     151.96206421600732,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.6674,
+   "aot_mean": 0.1548,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-08-16",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20240816_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-08-16T00:06:09.059000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240816_0_L2A/B04.tif",
+     "etag": "9f199d81f24559d7a1970171ce0cc667-21",
+     "bytes": 175493419
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240816_0_L2A/B08.tif",
+     "etag": "c3ce1cc1fba6ab8e23fab80a05cfb395-21",
+     "bytes": 172524675
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240816_0_L2A/B11.tif",
+     "etag": "c094ab6a94e40e51e5718541c7d94f2d-6",
+     "bytes": 46351418
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240816_0_L2A/SCL.tif",
+     "etag": "db5bc1efc1d526e9206359092f86b05d",
+     "bytes": 2726056
+    }
+   },
+   "item": {
+    "cloud_cover": 38.256031,
+    "nodata_pct": 15.002914,
+    "bbox": [
+     150.82398985331184,
+     -34.42144722225254,
+     151.97626256747472,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.5451,
+   "aot_mean": 0.137,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-09-20",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20240920_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-09-20T00:06:03.333000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/9/S2B_56HLH_20240920_0_L2A/B04.tif",
+     "etag": "a15d0e3ed386dc45963b40f93b393493-20",
+     "bytes": 163379576
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/9/S2B_56HLH_20240920_0_L2A/B08.tif",
+     "etag": "15cce8cd1cc2765564fde3ff2e0dd889-20",
+     "bytes": 166527222
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/9/S2B_56HLH_20240920_0_L2A/B11.tif",
+     "etag": "512e7c9bbcd1a7a797a0e7b5555c8cbb-5",
+     "bytes": 38472036
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/9/S2B_56HLH_20240920_0_L2A/SCL.tif",
+     "etag": "73b7dc2f8253bf912e03250a02b27d47",
+     "bytes": 1283364
+    }
+   },
+   "item": {
+    "cloud_cover": 0.00758,
+    "nodata_pct": 14.912306,
+    "bbox": [
+     150.8239898534315,
+     -34.42110049958865,
+     151.9775532877556,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9998,
+   "aot_mean": 0.1136,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-10-05",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20241005_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-10-05T00:06:08.810000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2A_56HLH_20241005_0_L2A/B04.tif",
+     "etag": "0268a55b96028190e439db8514b6ec88-21",
+     "bytes": 175147932
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2A_56HLH_20241005_0_L2A/B08.tif",
+     "etag": "6869d3b1753c19f628f8a3f83fd20a4d-22",
+     "bytes": 176963666
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2A_56HLH_20241005_0_L2A/B11.tif",
+     "etag": "925abeaa066ec62e8e6fe4d5eeb326d1-6",
+     "bytes": 44096275
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2A_56HLH_20241005_0_L2A/SCL.tif",
+     "etag": "6fe0d4971342a9db7c4061e7586efa90",
+     "bytes": 1861705
+    }
+   },
+   "item": {
+    "cloud_cover": 25.710458,
+    "nodata_pct": 15.998304,
+    "bbox": [
+     150.8239898533126,
+     -34.42132406749181,
+     151.96464594327978,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.8426,
+   "aot_mean": 0.155,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-10-10",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20241010_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-10-10T00:06:06.128000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2B_56HLH_20241010_0_L2A/B04.tif",
+     "etag": "aff81f62003154c786af397ad891607e-21",
+     "bytes": 171044584
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2B_56HLH_20241010_0_L2A/B08.tif",
+     "etag": "ad9b639edec47ed543841f8f6416936c-21",
+     "bytes": 172457938
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2B_56HLH_20241010_0_L2A/B11.tif",
+     "etag": "b98d2c0d989cf2559891cd2610a5d30c-5",
+     "bytes": 40834108
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2B_56HLH_20241010_0_L2A/SCL.tif",
+     "etag": "212c6e9d942eb7b7d124de232370fe8b",
+     "bytes": 1588057
+    }
+   },
+   "item": {
+    "cloud_cover": 2.524016,
+    "nodata_pct": 15.556936,
+    "bbox": [
+     150.82398985331224,
+     -34.42137156336621,
+     151.97045397958436,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9791,
+   "aot_mean": 0.1493,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-10-25",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20241025_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-10-25T00:06:08.263000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2A_56HLH_20241025_0_L2A/B04.tif",
+     "etag": "43ec0efa4f361d1a62e65b160603365a-23",
+     "bytes": 187542225
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2A_56HLH_20241025_0_L2A/B08.tif",
+     "etag": "fd9af1c879a3ab71f2e95b216a202320-23",
+     "bytes": 189357854
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2A_56HLH_20241025_0_L2A/B11.tif",
+     "etag": "ba145954e22e76b6288e881a160de6bc-6",
+     "bytes": 46852373
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2A_56HLH_20241025_0_L2A/SCL.tif",
+     "etag": "d8d3940ff0d41de3472140121a6736c5",
+     "bytes": 2043882
+    }
+   },
+   "item": {
+    "cloud_cover": 29.140654,
+    "nodata_pct": 15.941583,
+    "bbox": [
+     150.82398985343409,
+     -34.42096502466641,
+     151.96593642092822,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.7686,
+   "aot_mean": 0.1733,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-10-30",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20241030_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-10-30T00:06:08.461000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2B_56HLH_20241030_0_L2A/B04.tif",
+     "etag": "fd336fe75cca61e01e9b5c44dccbb787-22",
+     "bytes": 178609831
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2B_56HLH_20241030_0_L2A/B08.tif",
+     "etag": "ebe03c4dbc30be1502fd0fa5630c7274-22",
+     "bytes": 180252094
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2B_56HLH_20241030_0_L2A/B11.tif",
+     "etag": "4400d449d7b5df0d67a503c1ecff4139-6",
+     "bytes": 43112544
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/10/S2B_56HLH_20241030_0_L2A/SCL.tif",
+     "etag": "d5b3da3b36571780e6cc681fea265dcc",
+     "bytes": 1386195
+    }
+   },
+   "item": {
+    "cloud_cover": 1.747482,
+    "nodata_pct": 16.564849,
+    "bbox": [
+     150.82398985331307,
+     -34.42124768112717,
+     151.95819214644004,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9877,
+   "aot_mean": 0.2092,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-11-24",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20241124_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-11-24T00:06:07.110000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/11/S2A_56HLH_20241124_0_L2A/B04.tif",
+     "etag": "294dc37b4f795e719db1df7fc7a06726-23",
+     "bytes": 189310481
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/11/S2A_56HLH_20241124_0_L2A/B08.tif",
+     "etag": "9ecdc8716e1c6d369ff9befd0b362c99-23",
+     "bytes": 191210101
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/11/S2A_56HLH_20241124_0_L2A/B11.tif",
+     "etag": "82e3c0bc86638d6c0ffd2cb81d5eee6d-6",
+     "bytes": 45171744
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/11/S2A_56HLH_20241124_0_L2A/SCL.tif",
+     "etag": "4047cab10804fbcf54fbff01ccda3307",
+     "bytes": 1296060
+    }
+   },
+   "item": {
+    "cloud_cover": 35.76676,
+    "nodata_pct": 15.681344,
+    "bbox": [
+     150.8239898534334,
+     -34.420999665250555,
+     151.96916326307877,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.6143,
+   "aot_mean": 0.199,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-12-14",
+   "site": "sydney",
+   "scene_id": "S2A_56HLH_20241214_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-12-14T00:06:08.552000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2A_56HLH_20241214_0_L2A/B04.tif",
+     "etag": "40122971d79270883a687c68c48ac9b2-24",
+     "bytes": 193398094
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2A_56HLH_20241214_0_L2A/B08.tif",
+     "etag": "ab334b71174934028547c3eb1afea3d8-24",
+     "bytes": 193938062
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2A_56HLH_20241214_0_L2A/B11.tif",
+     "etag": "513f3240d93e8c782bd21f339b11d9d0-6",
+     "bytes": 48594785
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2A_56HLH_20241214_0_L2A/SCL.tif",
+     "etag": "fa57ae9b91c880c9a4c41eefa9c04064",
+     "bytes": 2249253
+    }
+   },
+   "item": {
+    "cloud_cover": 15.666197,
+    "nodata_pct": 15.819374,
+    "bbox": [
+     150.8239898533125,
+     -34.421344297933295,
+     151.9665820379534,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9344,
+   "aot_mean": 0.209,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-12-14b",
+   "site": "sydney",
+   "scene_id": "S2C_56HLH_20241214_1_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-12-14T00:06:35.884000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2C_56HLH_20241214_1_L2A/B04.tif",
+     "etag": "6bb9cee1b9ae6be58727f1dcc9a2716c-23",
+     "bytes": 191623710
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2C_56HLH_20241214_1_L2A/B08.tif",
+     "etag": "a5c0f5477a119f46359ad953933e6e1a-23",
+     "bytes": 192281265
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2C_56HLH_20241214_1_L2A/B11.tif",
+     "etag": "c2236403c4a6641a677d3536dc7e875c-6",
+     "bytes": 49078304
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2C_56HLH_20241214_1_L2A/SCL.tif",
+     "etag": "b088b994dc2f04c3406468af4b2a8d08",
+     "bytes": 2159000
+    }
+   },
+   "item": {
+    "cloud_cover": 15.207691,
+    "nodata_pct": 16.348115,
+    "bbox": [
+     150.82399,
+     -34.421365,
+     151.960774,
+     -33.420387
+    ]
+   },
+   "site_coverage": 0.9362,
+   "aot_mean": 0.2031,
+   "expected": null,
+   "duplicate_of": "S2A_56HLH_20241214_0_L2A"
+  },
+  {
+   "name": "sydney-2024-12-19",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20241219_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-12-19T00:06:08.788000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2B_56HLH_20241219_0_L2A/B04.tif",
+     "etag": "4dc4babbc22482967f705f2284ad7d05-23",
+     "bytes": 191778113
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2B_56HLH_20241219_0_L2A/B08.tif",
+     "etag": "3eb43777592a932b01202c8f5034f228-23",
+     "bytes": 191542042
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2B_56HLH_20241219_0_L2A/B11.tif",
+     "etag": "b6c4e8062b81fb526fa8ecae422eb316-6",
+     "bytes": 47558679
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2B_56HLH_20241219_0_L2A/SCL.tif",
+     "etag": "3e3b74d354a38574539cb1cf9e7c8c50",
+     "bytes": 1870093
+    }
+   },
+   "item": {
+    "cloud_cover": 22.712021,
+    "nodata_pct": 16.048905,
+    "bbox": [
+     150.82398985343437,
+     -34.4209544035716,
+     151.96464574974178,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.6776,
+   "aot_mean": 0.1849,
+   "expected": null
+  },
+  {
+   "name": "sydney-2024-12-29",
+   "site": "sydney",
+   "scene_id": "S2B_56HLH_20241229_0_L2A",
+   "tile": "56HLH",
+   "captured_at": "2024-12-29T00:06:09.684000Z",
+   "role": "year",
+   "note": null,
+   "assets": {
+    "red": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2B_56HLH_20241229_0_L2A/B04.tif",
+     "etag": "6b5d56caad6e61e2256947323f236f8e-23",
+     "bytes": 192495364
+    },
+    "nir": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2B_56HLH_20241229_0_L2A/B08.tif",
+     "etag": "8019a270d2ec6a1bfc42610d004ef4ae-24",
+     "bytes": 194372190
+    },
+    "swir16": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2B_56HLH_20241229_0_L2A/B11.tif",
+     "etag": "333e995533f71099cf03c8936afd1018-6",
+     "bytes": 46482156
+    },
+    "scl": {
+     "url": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/12/S2B_56HLH_20241229_0_L2A/SCL.tif",
+     "etag": "a408e97a4e2b0479d0c0a7c7bf1add6e",
+     "bytes": 1326704
+    }
+   },
+   "item": {
+    "cloud_cover": 0.13824,
+    "nodata_pct": 16.192243,
+    "bbox": [
+     150.8239665058341,
+     -34.422372680076116,
+     151.96270966920346,
+     -33.42038715452384
+    ]
+   },
+   "site_coverage": 0.9992,
+   "aot_mean": 0.1374,
+   "expected": null
+  }
+ ],
+ "listings": {
+  "56HLH-2024": {
+   "site": "sydney",
+   "tile": "56HLH",
+   "year": 2024,
+   "listed_at": "2026-10-16T03:55:13Z",
+   "max_cloud_cover": 40.0,
+   "items": [
+    {
+     "scene_id": "S2B_56HLH_20240104_0_L2A",
+     "captured_at": "2024-01-04T00:06:08.431000Z",
+     "cloud_cover": 87.575275,
+     "nodata_pct": 16.322063,
+     "bbox": [
+      150.82398985343508,
+      -34.4209194192896,
+      151.96077367153308,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240105_0_L2A",
+     "captured_at": "2024-01-05T23:56:08.741000Z",
+     "cloud_cover": 66.461003,
+     "nodata_pct": 18.037498,
+     "bbox": [
+      150.898158201238,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42603405040068
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240109_0_L2A",
+     "captured_at": "2024-01-09T00:06:03.657000Z",
+     "cloud_cover": 23.056045,
+     "nodata_pct": 15.32418,
+     "bbox": [
+      150.8239898533121,
+      -34.421407033094795,
+      151.97303560845762,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240110_0_L2A",
+     "captured_at": "2024-01-10T23:56:10.409000Z",
+     "cloud_cover": 72.448009,
+     "nodata_pct": 18.498065,
+     "bbox": [
+      150.90359531016273,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42611801660268
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240114_0_L2A",
+     "captured_at": "2024-01-14T00:06:06.562000Z",
+     "cloud_cover": 77.516174,
+     "nodata_pct": 16.050437,
+     "bbox": [
+      150.8239665058341,
+      -34.42239352910252,
+      151.96464577140662,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240115_0_L2A",
+     "captured_at": "2024-01-15T23:56:05.011000Z",
+     "cloud_cover": 99.558866,
+     "nodata_pct": 19.31548,
+     "bbox": [
+      150.91338204330535,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426260443144116
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240119_0_L2A",
+     "captured_at": "2024-01-19T00:05:59.110000Z",
+     "cloud_cover": 22.855636,
+     "nodata_pct": 14.338905,
+     "bbox": [
+      150.82398985331133,
+      -34.42153008174535,
+      151.98465228469087,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240120_0_L2A",
+     "captured_at": "2024-01-20T23:56:11.781000Z",
+     "cloud_cover": 2.613549,
+     "nodata_pct": 17.991188,
+     "bbox": [
+      150.89761452559773,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42602782029149
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240124_0_L2A",
+     "captured_at": "2024-01-24T00:06:07.238000Z",
+     "cloud_cover": 1.10726,
+     "nodata_pct": 15.849437,
+     "bbox": [
+      150.8239898534334,
+      -34.42098008016225,
+      151.96658191817392,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240125_0_L2A",
+     "captured_at": "2024-01-25T23:56:06.684000Z",
+     "cloud_cover": 99.96289,
+     "nodata_pct": 18.60669,
+     "bbox": [
+      150.9042478502535,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42613353713299
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240129_0_L2A",
+     "captured_at": "2024-01-29T00:06:03.159000Z",
+     "cloud_cover": 2.666573,
+     "nodata_pct": 15.135315,
+     "bbox": [
+      150.82398985343218,
+      -34.4210669058857,
+      151.9749716914943,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240130_0_L2A",
+     "captured_at": "2024-01-30T23:56:09.807000Z",
+     "cloud_cover": 74.784601,
+     "nodata_pct": 19.0769,
+     "bbox": [
+      150.91011990313677,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42622027351656
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240203_0_L2A",
+     "captured_at": "2024-02-03T00:06:05.578000Z",
+     "cloud_cover": 99.188966,
+     "nodata_pct": 14.895883,
+     "bbox": [
+      150.8239898533117,
+      -34.421455445928196,
+      151.97819844379228,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240204_0_L2A",
+     "captured_at": "2024-02-04T23:56:08.372000Z",
+     "cloud_cover": 80.110949,
+     "nodata_pct": 18.522345,
+     "bbox": [
+      150.90403022378143,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42612112056495
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240208_0_L2A",
+     "captured_at": "2024-02-08T00:06:03.941000Z",
+     "cloud_cover": 76.039356,
+     "nodata_pct": 14.955555,
+     "bbox": [
+      150.8239665058341,
+      -34.42252713673809,
+      151.97755307263648,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240209_0_L2A",
+     "captured_at": "2024-02-09T23:56:12.821000Z",
+     "cloud_cover": 26.803699,
+     "nodata_pct": 18.185052,
+     "bbox": [
+      150.89957199150845,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42606518241411
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240213_0_L2A",
+     "captured_at": "2024-02-13T00:06:09.121000Z",
+     "cloud_cover": 4.879451,
+     "nodata_pct": 15.996662,
+     "bbox": [
+      150.82398985343426,
+      -34.42096242497906,
+      151.9646459002415,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240214_0_L2A",
+     "captured_at": "2024-02-14T23:56:10.165000Z",
+     "cloud_cover": 99.979645,
+     "nodata_pct": 18.305497,
+     "bbox": [
+      150.90142040549708,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426080731111476
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240218_0_L2A",
+     "captured_at": "2024-02-18T00:06:06.086000Z",
+     "cloud_cover": 8.545854,
+     "nodata_pct": 15.34629,
+     "bbox": [
+      150.8239898534326,
+      -34.42104435858004,
+      151.97239030316163,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240219_0_L2A",
+     "captured_at": "2024-02-19T23:56:13.320000Z",
+     "cloud_cover": 96.850693,
+     "nodata_pct": 18.08928,
+     "bbox": [
+      150.8983758507723,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42604806564274
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240223_0_L2A",
+     "captured_at": "2024-02-23T00:06:08.402000Z",
+     "cloud_cover": 85.255849,
+     "nodata_pct": 15.774314,
+     "bbox": [
+      150.8239898534337,
+      -34.4209899284107,
+      151.96787260717014,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240224_0_L2A",
+     "captured_at": "2024-02-24T23:56:11.109000Z",
+     "cloud_cover": 21.175116,
+     "nodata_pct": 18.136679,
+     "bbox": [
+      150.8992456016567,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42604961995032
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240228_0_L2A",
+     "captured_at": "2024-02-28T00:06:07.620000Z",
+     "cloud_cover": 38.840371,
+     "nodata_pct": 15.737064,
+     "bbox": [
+      150.82398985331247,
+      -34.42134487777731,
+      151.96787252570502,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240229_0_L2A",
+     "captured_at": "2024-02-29T23:56:10.275000Z",
+     "cloud_cover": 95.472395,
+     "nodata_pct": 19.040726,
+     "bbox": [
+      150.91022849874275,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426212539226974
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240304_0_L2A",
+     "captured_at": "2024-03-04T00:06:04.442000Z",
+     "cloud_cover": 73.90362,
+     "nodata_pct": 14.510158,
+     "bbox": [
+      150.82398985343002,
+      -34.42115220873273,
+      151.98207093229556,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240305_0_L2A",
+     "captured_at": "2024-03-05T23:56:13.018000Z",
+     "cloud_cover": 40.598318,
+     "nodata_pct": 17.500921,
+     "bbox": [
+      150.89098162593137,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42594669202247
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240309_0_L2A",
+     "captured_at": "2024-03-09T00:06:08.635000Z",
+     "cloud_cover": 14.155649,
+     "nodata_pct": 16.165812,
+     "bbox": [
+      150.82398985343465,
+      -34.42093724952736,
+      151.96335495029362,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240310_0_L2A",
+     "captured_at": "2024-03-10T23:56:08.510000Z",
+     "cloud_cover": 65.747583,
+     "nodata_pct": 19.158556,
+     "bbox": [
+      150.9114246030209,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426226455220096
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240314_0_L2A",
+     "captured_at": "2024-03-14T00:06:05.663000Z",
+     "cloud_cover": 5.873344,
+     "nodata_pct": 15.225616,
+     "bbox": [
+      150.823989853312,
+      -34.421412940302446,
+      151.97432619785087,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240315_0_L2A",
+     "captured_at": "2024-03-15T23:56:12.503000Z",
+     "cloud_cover": 65.801466,
+     "nodata_pct": 17.209943,
+     "bbox": [
+      150.88837164260656,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425893505386085
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240319_0_L2A",
+     "captured_at": "2024-03-19T00:06:08.880000Z",
+     "cloud_cover": 43.011278,
+     "nodata_pct": 16.48806,
+     "bbox": [
+      150.82398985343536,
+      -34.42090243552865,
+      151.95883764131688,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240320_0_L2A",
+     "captured_at": "2024-03-20T23:56:12.498000Z",
+     "cloud_cover": 55.325258,
+     "nodata_pct": 18.036453,
+     "bbox": [
+      150.89750597951084,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42603872511048
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240324_0_L2A",
+     "captured_at": "2024-03-24T00:06:08.639000Z",
+     "cloud_cover": 20.352305,
+     "nodata_pct": 16.145062,
+     "bbox": [
+      150.82398985343426,
+      -34.420938459525466,
+      151.9638926485975,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240325_0_L2A",
+     "captured_at": "2024-03-25T23:56:13.351000Z",
+     "cloud_cover": 3.030837,
+     "nodata_pct": 17.301996,
+     "bbox": [
+      150.88967636740546,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42590289660543
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240329_0_L2A",
+     "captured_at": "2024-03-29T00:06:08.151000Z",
+     "cloud_cover": 41.849139,
+     "nodata_pct": 15.855412,
+     "bbox": [
+      150.8239898534338,
+      -34.42097887469876,
+      151.9659366789406,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240330_0_L2A",
+     "captured_at": "2024-03-30T23:56:11.914000Z",
+     "cloud_cover": 10.327707,
+     "nodata_pct": 18.352918,
+     "bbox": [
+      150.90185556052882,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426099382469786
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240403_0_L2A",
+     "captured_at": "2024-04-03T00:06:06.549000Z",
+     "cloud_cover": 31.83741,
+     "nodata_pct": 15.300398,
+     "bbox": [
+      150.82398985343204,
+      -34.42104920419429,
+      151.97368084926592,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240404_0_L2A",
+     "captured_at": "2024-04-04T23:56:09.704000Z",
+     "cloud_cover": 100.0,
+     "nodata_pct": 18.891746,
+     "bbox": [
+      150.90772750453002,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42618003839932
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240408_0_L2A",
+     "captured_at": "2024-04-08T00:06:07.208000Z",
+     "cloud_cover": 80.397397,
+     "nodata_pct": 15.311496,
+     "bbox": [
+      150.82398985331213,
+      -34.42140018558428,
+      151.9730354792992,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240409_0_L2A",
+     "captured_at": "2024-04-09T23:56:12.249000Z",
+     "cloud_cover": 53.887135,
+     "nodata_pct": 18.177886,
+     "bbox": [
+      150.89978949602465,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42606984898735
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240413_0_L2A",
+     "captured_at": "2024-04-13T00:06:08.705000Z",
+     "cloud_cover": 5.564214,
+     "nodata_pct": 16.098393,
+     "bbox": [
+      150.8239898533126,
+      -34.42131036690572,
+      151.9640004468098,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240414_0_L2A",
+     "captured_at": "2024-04-14T23:56:14.891000Z",
+     "cloud_cover": 0.954076,
+     "nodata_pct": 17.273095,
+     "bbox": [
+      150.88837395154977,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425893500052965
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240418_0_L2A",
+     "captured_at": "2024-04-18T00:06:11.348000Z",
+     "cloud_cover": 52.844334,
+     "nodata_pct": 16.594282,
+     "bbox": [
+      150.82398985331315,
+      -34.42123706301422,
+      151.95754671612355,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240419_0_L2A",
+     "captured_at": "2024-04-19T23:56:13.296000Z",
+     "cloud_cover": 77.375931,
+     "nodata_pct": 17.683567,
+     "bbox": [
+      150.8938086579802,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42597480181842
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240423_0_L2A",
+     "captured_at": "2024-04-23T00:06:07.904000Z",
+     "cloud_cover": 0.003045,
+     "nodata_pct": 16.10426,
+     "bbox": [
+      150.82398985343454,
+      -34.42094934810956,
+      151.96400041947874,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240424_0_L2A",
+     "captured_at": "2024-04-24T23:56:14.777000Z",
+     "cloud_cover": 11.40296,
+     "nodata_pct": 17.274047,
+     "bbox": [
+      150.88902585423284,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425890366303655
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240428_0_L2A",
+     "captured_at": "2024-04-28T00:06:10.679000Z",
+     "cloud_cover": 10.687663,
+     "nodata_pct": 16.479766,
+     "bbox": [
+      150.8239898534355,
+      -34.420900644682334,
+      151.95883761407794,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240429_0_L2A",
+     "captured_at": "2024-04-29T23:56:12.238000Z",
+     "cloud_cover": 95.121312,
+     "nodata_pct": 17.74147,
+     "bbox": [
+      150.89402625831653,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425985727848435
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240503_0_L2A",
+     "captured_at": "2024-05-03T00:06:08.520000Z",
+     "cloud_cover": 97.219485,
+     "nodata_pct": 16.442627,
+     "bbox": [
+      150.8239898534355,
+      -34.42090065425213,
+      151.96012808835988,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240504_0_L2A",
+     "captured_at": "2024-05-04T23:56:15.266000Z",
+     "cloud_cover": 99.311626,
+     "nodata_pct": 17.100985,
+     "bbox": [
+      150.8877191115691,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42587784143174
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240508_0_L2A",
+     "captured_at": "2024-05-08T00:06:10.586000Z",
+     "cloud_cover": 45.104417,
+     "nodata_pct": 16.30194,
+     "bbox": [
+      150.82398985343494,
+      -34.42092334106735,
+      151.96206421600732,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240509_0_L2A",
+     "captured_at": "2024-05-09T23:56:13.216000Z",
+     "cloud_cover": 99.624664,
+     "nodata_pct": 17.68717,
+     "bbox": [
+      150.8939189639072,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42596698997023
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240513_0_L2A",
+     "captured_at": "2024-05-13T00:06:07.950000Z",
+     "cloud_cover": 52.037638,
+     "nodata_pct": 15.892313,
+     "bbox": [
+      150.82398985343397,
+      -34.42097521456658,
+      151.96593661457487,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240514_0_L2A",
+     "captured_at": "2024-05-14T23:56:15.347000Z",
+     "cloud_cover": 23.129365,
+     "nodata_pct": 17.472637,
+     "bbox": [
+      150.89076613247093,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425927925343075
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240518_0_L2A",
+     "captured_at": "2024-05-18T00:06:10.140000Z",
+     "cloud_cover": 67.109603,
+     "nodata_pct": 15.868007,
+     "bbox": [
+      150.82398985331253,
+      -34.42133793624576,
+      151.96593667894055,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240519_0_L2A",
+     "captured_at": "2024-05-19T23:56:11.487000Z",
+     "cloud_cover": 60.11548,
+     "nodata_pct": 18.508993,
+     "bbox": [
+      150.90305175331628,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426119570855
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240523_0_L2A",
+     "captured_at": "2024-05-23T00:06:07.813000Z",
+     "cloud_cover": 4.022929,
+     "nodata_pct": 15.66965,
+     "bbox": [
+      150.82398985343357,
+      -34.42099708919024,
+      151.96851798049258,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240524_0_L2A",
+     "captured_at": "2024-05-24T23:56:12.094000Z",
+     "cloud_cover": 99.665111,
+     "nodata_pct": 18.692841,
+     "bbox": [
+      150.9049004880652,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426155250994604
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240528_0_L2A",
+     "captured_at": "2024-05-28T00:06:09.568000Z",
+     "cloud_cover": 0.002918,
+     "nodata_pct": 15.391286,
+     "bbox": [
+      150.8239898532829,
+      -34.42148306142746,
+      151.97109962844584,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240529_0_L2A",
+     "captured_at": "2024-05-29T23:56:12.365000Z",
+     "cloud_cover": 0.003624,
+     "nodata_pct": 18.524119,
+     "bbox": [
+      150.90294308573667,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42612267622066
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240602_0_L2A",
+     "captured_at": "2024-06-02T00:06:09.355000Z",
+     "cloud_cover": 74.117458,
+     "nodata_pct": 15.930969,
+     "bbox": [
+      150.82398985343409,
+      -34.420966962660096,
+      151.96529122062304,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240603_0_L2A",
+     "captured_at": "2024-06-03T23:56:17.142000Z",
+     "cloud_cover": 38.91381,
+     "nodata_pct": 17.032379,
+     "bbox": [
+      150.8855469201179,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425852758809505
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240607_0_L2A",
+     "captured_at": "2024-06-07T00:06:13.686000Z",
+     "cloud_cover": 81.465048,
+     "nodata_pct": 16.876577,
+     "bbox": [
+      150.82398985331332,
+      -34.421212661026445,
+      151.9543200827879,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240608_0_L2A",
+     "captured_at": "2024-06-08T23:56:15.564000Z",
+     "cloud_cover": 48.392487,
+     "nodata_pct": 17.502984,
+     "bbox": [
+      150.89195984474838,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42593261878176
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240612_0_L2A",
+     "captured_at": "2024-06-12T00:06:11.377000Z",
+     "cloud_cover": 4.8372,
+     "nodata_pct": 16.444053,
+     "bbox": [
+      150.82398985343536,
+      -34.42090761686369,
+      151.96012821765277,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240613_0_L2A",
+     "captured_at": "2024-06-13T23:56:18.546000Z",
+     "cloud_cover": 97.715575,
+     "nodata_pct": 16.747436,
+     "bbox": [
+      150.88315217797506,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42581823961503
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240617_0_L2A",
+     "captured_at": "2024-06-17T00:06:13.890000Z",
+     "cloud_cover": 53.845704,
+     "nodata_pct": 16.7302,
+     "bbox": [
+      150.82398985343622,
+      -34.420860580652715,
+      151.95625592025075,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240618_0_L2A",
+     "captured_at": "2024-06-18T23:56:14.866000Z",
+     "cloud_cover": 0.126705,
+     "nodata_pct": 17.924137,
+     "bbox": [
+      150.8957662390123,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42602003399108
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240622_0_L2A",
+     "captured_at": "2024-06-22T00:06:10.590000Z",
+     "cloud_cover": 93.217266,
+     "nodata_pct": 16.103862,
+     "bbox": [
+      150.82398985343437,
+      -34.42095416088154,
+      151.96335526802926,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240623_0_L2A",
+     "captured_at": "2024-06-23T23:56:16.565000Z",
+     "cloud_cover": 34.490821,
+     "nodata_pct": 17.516036,
+     "bbox": [
+      150.8925035902349,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42594356145447
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240627_0_L2A",
+     "captured_at": "2024-06-27T00:06:11.055000Z",
+     "cloud_cover": 0.006562,
+     "nodata_pct": 15.51757,
+     "bbox": [
+      150.82398985331233,
+      -34.42137251524415,
+      151.97045400113632,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240628_0_L2A",
+     "captured_at": "2024-06-28T23:56:16.338000Z",
+     "cloud_cover": 89.845067,
+     "nodata_pct": 17.668097,
+     "bbox": [
+      150.89261278986248,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42597480533519
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240702_0_L2A",
+     "captured_at": "2024-07-02T00:06:11.997000Z",
+     "cloud_cover": 51.780951,
+     "nodata_pct": 16.43445,
+     "bbox": [
+      150.82398985328328,
+      -34.421358254527675,
+      151.96012824502662,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240703_0_L2A",
+     "captured_at": "2024-07-03T23:56:16.045000Z",
+     "cloud_cover": 43.518451,
+     "nodata_pct": 17.742224,
+     "bbox": [
+      150.89424381033973,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42599352918008
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240707_0_L2A",
+     "captured_at": "2024-07-07T00:06:11.644000Z",
+     "cloud_cover": 31.731063,
+     "nodata_pct": 15.716387,
+     "bbox": [
+      150.82398985331238,
+      -34.421358713258094,
+      151.9678727837176,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240708_0_L2A",
+     "captured_at": "2024-07-08T23:56:15.123000Z",
+     "cloud_cover": 99.350029,
+     "nodata_pct": 18.212292,
+     "bbox": [
+      150.90065910285563,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.4260620672977
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240712_0_L2A",
+     "captured_at": "2024-07-12T00:06:10.019000Z",
+     "cloud_cover": 64.960945,
+     "nodata_pct": 15.440904,
+     "bbox": [
+      150.823989853433,
+      -34.421025529816724,
+      151.97109947220554,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240713_0_L2A",
+     "captured_at": "2024-07-13T23:56:14.719000Z",
+     "cloud_cover": 1.732379,
+     "nodata_pct": 18.423353,
+     "bbox": [
+      150.90272715798824,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42609626780015
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240717_0_L2A",
+     "captured_at": "2024-07-17T00:06:09.276000Z",
+     "cloud_cover": 3.398937,
+     "nodata_pct": 14.818799,
+     "bbox": [
+      150.8239898534315,
+      -34.421100516092714,
+      151.9788437720207,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240718_0_L2A",
+     "captured_at": "2024-07-18T23:56:15.935000Z",
+     "cloud_cover": 67.393345,
+     "nodata_pct": 17.912382,
+     "bbox": [
+      150.89663742975353,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426004436756294
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240722_0_L2A",
+     "captured_at": "2024-07-22T00:06:11.570000Z",
+     "cloud_cover": 39.097324,
+     "nodata_pct": 16.032694,
+     "bbox": [
+      150.8239898533127,
+      -34.42130901905607,
+      151.96464566372353,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240723_0_L2A",
+     "captured_at": "2024-07-23T23:56:14.623000Z",
+     "cloud_cover": 90.965277,
+     "nodata_pct": 18.485719,
+     "bbox": [
+      150.90359678450244,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42609937332747
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240727_0_L2A",
+     "captured_at": "2024-07-27T00:06:10.693000Z",
+     "cloud_cover": 99.999893,
+     "nodata_pct": 15.197013,
+     "bbox": [
+      150.82398985343232,
+      -34.421054904399,
+      151.97368097849485,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240728_0_L2A",
+     "captured_at": "2024-07-28T23:56:14.264000Z",
+     "cloud_cover": 83.190674,
+     "nodata_pct": 18.664803,
+     "bbox": [
+      150.90598740988762,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42613973842477
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240801_0_L2A",
+     "captured_at": "2024-08-01T00:06:08.705000Z",
+     "cloud_cover": 57.26974,
+     "nodata_pct": 15.012793,
+     "bbox": [
+      150.8239898533118,
+      -34.42144509860717,
+      151.97561728253703,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240802_0_L2A",
+     "captured_at": "2024-08-02T23:56:15.080000Z",
+     "cloud_cover": 3.210161,
+     "nodata_pct": 18.127385,
+     "bbox": [
+      150.89946313025607,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426055845798494
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240806_0_L2A",
+     "captured_at": "2024-08-06T00:06:09.895000Z",
+     "cloud_cover": 6.575511,
+     "nodata_pct": 15.15979,
+     "bbox": [
+      150.8239665058341,
+      -34.422506490973,
+      151.97497171886832,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240807_0_L2A",
+     "captured_at": "2024-08-07T23:56:15.978000Z",
+     "cloud_cover": 4.842889,
+     "nodata_pct": 18.03201,
+     "bbox": [
+      150.897614695187,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42603872479144
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240811_0_L2A",
+     "captured_at": "2024-08-11T00:06:12.415000Z",
+     "cloud_cover": 28.335825,
+     "nodata_pct": 16.262613,
+     "bbox": [
+      150.82398985343454,
+      -34.42092454530951,
+      151.96206421600732,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240812_0_L2A",
+     "captured_at": "2024-08-12T23:56:14.064000Z",
+     "cloud_cover": 99.762952,
+     "nodata_pct": 18.516929,
+     "bbox": [
+      150.9038144521081,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426108693685094
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240816_0_L2A",
+     "captured_at": "2024-08-16T00:06:09.059000Z",
+     "cloud_cover": 38.256031,
+     "nodata_pct": 15.002914,
+     "bbox": [
+      150.82398985331184,
+      -34.42144722225254,
+      151.97626256747472,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240817_0_L2A",
+     "captured_at": "2024-08-17T23:56:14.908000Z",
+     "cloud_cover": 59.991384,
+     "nodata_pct": 18.164846,
+     "bbox": [
+      150.8996806831561,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42606362617274
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240821_0_L2A",
+     "captured_at": "2024-08-21T00:06:02.520000Z",
+     "cloud_cover": 19.085729,
+     "nodata_pct": 77.782142,
+     "bbox": [
+      150.84585157306185,
+      -33.780898100132596,
+      151.97561663142497,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240821_1_L2A",
+     "captured_at": "2024-08-21T00:06:09.244000Z",
+     "cloud_cover": 0.804596,
+     "nodata_pct": 21.730565,
+     "bbox": [
+      150.8239665058341,
+      -34.42250534279251,
+      151.9270244716153,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240822_0_L2A",
+     "captured_at": "2024-08-22T23:56:09.738000Z",
+     "cloud_cover": 31.125829,
+     "nodata_pct": 19.839351,
+     "bbox": [
+      150.91925404433772,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426340595434745
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240826_0_L2A",
+     "captured_at": "2024-08-26T00:06:06.130000Z",
+     "cloud_cover": 0.003826,
+     "nodata_pct": 14.148347,
+     "bbox": [
+      150.82398985331116,
+      -34.42155794181568,
+      151.9865885422122,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240827_0_L2A",
+     "captured_at": "2024-08-27T23:56:14.320000Z",
+     "cloud_cover": 64.937598,
+     "nodata_pct": 18.165095,
+     "bbox": [
+      150.8996807073916,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42606518209563
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240831_0_L2A",
+     "captured_at": "2024-08-31T00:06:10.837000Z",
+     "cloud_cover": 0.016374,
+     "nodata_pct": 16.254866,
+     "bbox": [
+      150.82398985343437,
+      -34.42092494552782,
+      151.96206421600732,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240901_0_L2A",
+     "captured_at": "2024-09-01T23:56:12.163000Z",
+     "cloud_cover": 0.005936,
+     "nodata_pct": 18.505928,
+     "bbox": [
+      150.90381264597974,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.4261118043876
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240905_0_L2A",
+     "captured_at": "2024-09-05T00:06:08.244000Z",
+     "cloud_cover": 67.437732,
+     "nodata_pct": 15.337783,
+     "bbox": [
+      150.8239898533121,
+      -34.421407033094795,
+      151.9730356084576,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240906_0_L2A",
+     "captured_at": "2024-09-06T23:56:15.010000Z",
+     "cloud_cover": 77.949518,
+     "nodata_pct": 17.689474,
+     "bbox": [
+      150.8933737965887,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42597480309556
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240910_0_L2A",
+     "captured_at": "2024-09-10T00:06:10.132000Z",
+     "cloud_cover": 44.398677,
+     "nodata_pct": 16.265205,
+     "bbox": [
+      150.82398985343494,
+      -34.42092660758872,
+      151.9614190427803,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240911_0_L2A",
+     "captured_at": "2024-09-11T23:56:10.459000Z",
+     "cloud_cover": 84.869373,
+     "nodata_pct": 18.669291,
+     "bbox": [
+      150.90598760340345,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426152146681716
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240915_0_L2A",
+     "captured_at": "2024-09-15T00:06:07.124000Z",
+     "cloud_cover": 50.713575,
+     "nodata_pct": 15.836185,
+     "bbox": [
+      150.82398985331253,
+      -34.421337904169626,
+      151.96722715727478,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240916_0_L2A",
+     "captured_at": "2024-09-16T23:56:10.061000Z",
+     "cloud_cover": 9.662689,
+     "nodata_pct": 18.845028,
+     "bbox": [
+      150.9075099259152,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426170743456716
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240920_0_L2A",
+     "captured_at": "2024-09-20T00:06:03.333000Z",
+     "cloud_cover": 0.00758,
+     "nodata_pct": 14.912306,
+     "bbox": [
+      150.8239898534315,
+      -34.42110049958865,
+      151.9775532877556,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240921_0_L2A",
+     "captured_at": "2024-09-21T23:56:13.901000Z",
+     "cloud_cover": 87.577772,
+     "nodata_pct": 17.195815,
+     "bbox": [
+      150.8875019725332,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42589664000725
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20240925_0_L2A",
+     "captured_at": "2024-09-25T00:06:09.888000Z",
+     "cloud_cover": 99.999875,
+     "nodata_pct": 16.504258,
+     "bbox": [
+      150.82398985343565,
+      -34.4208885089873,
+      151.95883738330534,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240926_0_L2A",
+     "captured_at": "2024-09-26T23:56:12.250000Z",
+     "cloud_cover": 90.330142,
+     "nodata_pct": 17.51246,
+     "bbox": [
+      150.8919600379936,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425945126142764
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20240930_0_L2A",
+     "captured_at": "2024-09-30T00:06:08.990000Z",
+     "cloud_cover": 85.729921,
+     "nodata_pct": 16.810589,
+     "bbox": [
+      150.82398985328345,
+      -34.42130910680754,
+      151.95561067951772,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241001_0_L2A",
+     "captured_at": "2024-10-01T23:56:14.325000Z",
+     "cloud_cover": 78.736335,
+     "nodata_pct": 17.144309,
+     "bbox": [
+      150.88728596996077,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42587470437045
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241005_0_L2A",
+     "captured_at": "2024-10-05T00:06:08.810000Z",
+     "cloud_cover": 25.710458,
+     "nodata_pct": 15.998304,
+     "bbox": [
+      150.8239898533126,
+      -34.42132406749181,
+      151.96464594327978,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241006_0_L2A",
+     "captured_at": "2024-10-06T23:56:12.610000Z",
+     "cloud_cover": 45.168623,
+     "nodata_pct": 17.721932,
+     "bbox": [
+      150.89402625831653,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425985727848435
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241010_0_L2A",
+     "captured_at": "2024-10-10T00:06:06.128000Z",
+     "cloud_cover": 2.524016,
+     "nodata_pct": 15.556936,
+     "bbox": [
+      150.82398985331224,
+      -34.42137156336621,
+      151.97045397958436,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241011_0_L2A",
+     "captured_at": "2024-10-11T23:56:10.617000Z",
+     "cloud_cover": 99.388152,
+     "nodata_pct": 18.466847,
+     "bbox": [
+      150.90359521333795,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42611180502162
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241015_0_L2A",
+     "captured_at": "2024-10-15T00:06:07.356000Z",
+     "cloud_cover": 95.386165,
+     "nodata_pct": 15.55329,
+     "bbox": [
+      150.82398985343312,
+      -34.42101350541013,
+      151.97109924095932,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241016_0_L2A",
+     "captured_at": "2024-10-16T23:56:12.749000Z",
+     "cloud_cover": 0.843274,
+     "nodata_pct": 17.632616,
+     "bbox": [
+      150.8930474568893,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42596231084435
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241020_0_L2A",
+     "captured_at": "2024-10-20T00:06:08.991000Z",
+     "cloud_cover": 60.535723,
+     "nodata_pct": 16.541132,
+     "bbox": [
+      150.82398985343508,
+      -34.42089011105633,
+      151.95819214644004,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241021_0_L2A",
+     "captured_at": "2024-10-21T23:56:12.352000Z",
+     "cloud_cover": 61.814356,
+     "nodata_pct": 17.831405,
+     "bbox": [
+      150.8955486381033,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.4260091223018
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241025_0_L2A",
+     "captured_at": "2024-10-25T00:06:08.263000Z",
+     "cloud_cover": 29.140654,
+     "nodata_pct": 15.941583,
+     "bbox": [
+      150.82398985343409,
+      -34.42096502466641,
+      151.96593642092822,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241026_0_L2A",
+     "captured_at": "2024-10-26T23:56:13.368000Z",
+     "cloud_cover": 45.990667,
+     "nodata_pct": 17.322765,
+     "bbox": [
+      150.889567724824,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42590759319276
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241030_0_L2A",
+     "captured_at": "2024-10-30T00:06:08.461000Z",
+     "cloud_cover": 1.747482,
+     "nodata_pct": 16.564849,
+     "bbox": [
+      150.82398985331307,
+      -34.42124768112717,
+      151.95819214644004,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241031_0_L2A",
+     "captured_at": "2024-10-31T23:56:12.452000Z",
+     "cloud_cover": 44.654351,
+     "nodata_pct": 17.574085,
+     "bbox": [
+      150.8925038320431,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42595918820722
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241104_0_L2A",
+     "captured_at": "2024-11-04T00:06:06.277000Z",
+     "cloud_cover": 100.0,
+     "nodata_pct": 15.394156,
+     "bbox": [
+      150.8239665058341,
+      -34.42247200836422,
+      151.97239010950278,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241105_0_L2A",
+     "captured_at": "2024-11-05T23:56:07.317000Z",
+     "cloud_cover": 39.08042,
+     "nodata_pct": 19.436415,
+     "bbox": [
+      150.91457824768347,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42628050561467
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241109_0_L2A",
+     "captured_at": "2024-11-09T00:06:01.823000Z",
+     "cloud_cover": 57.148844,
+     "nodata_pct": 14.284608,
+     "bbox": [
+      150.82398985331128,
+      -34.42152961985285,
+      151.98529751612125,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241110_0_L2A",
+     "captured_at": "2024-11-10T23:56:10.707000Z",
+     "cloud_cover": 98.980165,
+     "nodata_pct": 17.790087,
+     "bbox": [
+      150.8951134853961,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42599040611827
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241114_0_L2A",
+     "captured_at": "2024-11-14T00:06:07.273000Z",
+     "cloud_cover": 99.604952,
+     "nodata_pct": 16.014528,
+     "bbox": [
+      150.82398985343426,
+      -34.42095807777033,
+      151.96464581442552,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241115_0_L2A",
+     "captured_at": "2024-11-15T23:56:09.399000Z",
+     "cloud_cover": 57.793546,
+     "nodata_pct": 17.964028,
+     "bbox": [
+      150.8970709471077,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42602782188437
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241119_0_L2A",
+     "captured_at": "2024-11-19T00:06:06.935000Z",
+     "cloud_cover": 95.883614,
+     "nodata_pct": 16.51243,
+     "bbox": [
+      150.823989853313,
+      -34.42125347076658,
+      151.9588374909355,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241120_0_L2A",
+     "captured_at": "2024-11-20T23:56:11.885000Z",
+     "cloud_cover": 67.820054,
+     "nodata_pct": 17.762777,
+     "bbox": [
+      150.89424381033973,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42599352918008
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241124_0_L2A",
+     "captured_at": "2024-11-24T00:06:07.110000Z",
+     "cloud_cover": 35.76676,
+     "nodata_pct": 15.681344,
+     "bbox": [
+      150.8239898534334,
+      -34.420999665250555,
+      151.96916326307877,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241125_0_L2A",
+     "captured_at": "2024-11-25T23:56:13.957000Z",
+     "cloud_cover": 0.600826,
+     "nodata_pct": 16.81017,
+     "bbox": [
+      150.88326103763455,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.4258276611745
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241129_0_L2A",
+     "captured_at": "2024-11-29T00:06:09.819000Z",
+     "cloud_cover": 99.992472,
+     "nodata_pct": 17.136356,
+     "bbox": [
+      150.8239898534372,
+      -34.42081676913066,
+      151.9517384683563,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241130_0_L2A",
+     "captured_at": "2024-11-30T23:56:12.072000Z",
+     "cloud_cover": 95.757097,
+     "nodata_pct": 17.897761,
+     "bbox": [
+      150.89576621471826,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.426018475366256
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241204_0_L2A",
+     "captured_at": "2024-12-04T00:06:08.798000Z",
+     "cloud_cover": 49.642822,
+     "nodata_pct": 16.005501,
+     "bbox": [
+      150.82398985343426,
+      -34.420958086104285,
+      151.96529105301212,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241205_0_L2A",
+     "captured_at": "2024-12-05T23:56:12.467000Z",
+     "cloud_cover": 57.743353,
+     "nodata_pct": 17.796259,
+     "bbox": [
+      150.8950049152202,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42599976684328
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241209_0_L2A",
+     "captured_at": "2024-12-09T00:06:08.990000Z",
+     "cloud_cover": 99.76474,
+     "nodata_pct": 16.466001,
+     "bbox": [
+      150.823989853313,
+      -34.421261205900336,
+      151.95948287410124,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241210_0_L2A",
+     "captured_at": "2024-12-10T23:56:13.480000Z",
+     "cloud_cover": 22.366475,
+     "nodata_pct": 17.517075,
+     "bbox": [
+      150.89185134697377,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425946689463515
+     ]
+    },
+    {
+     "scene_id": "S2C_56HLH_20241210_1_L2A",
+     "captured_at": "2024-12-10T23:56:40.822000Z",
+     "cloud_cover": 22.964078,
+     "nodata_pct": 17.389497,
+     "bbox": [
+      150.89022,
+      -34.425373,
+      152.02964,
+      -33.425922
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241214_0_L2A",
+     "captured_at": "2024-12-14T00:06:08.552000Z",
+     "cloud_cover": 15.666197,
+     "nodata_pct": 15.819374,
+     "bbox": [
+      150.8239898533125,
+      -34.421344297933295,
+      151.9665820379534,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2C_56HLH_20241214_1_L2A",
+     "captured_at": "2024-12-14T00:06:35.884000Z",
+     "cloud_cover": 15.207691,
+     "nodata_pct": 16.348115,
+     "bbox": [
+      150.82399,
+      -34.421365,
+      151.960774,
+      -33.420387
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241215_0_L2A",
+     "captured_at": "2024-12-15T23:56:13.663000Z",
+     "cloud_cover": 4.916513,
+     "nodata_pct": 17.689809,
+     "bbox": [
+      150.8936999183945,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42597324081249
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241219_0_L2A",
+     "captured_at": "2024-12-19T00:06:08.788000Z",
+     "cloud_cover": 22.712021,
+     "nodata_pct": 16.048905,
+     "bbox": [
+      150.82398985343437,
+      -34.4209544035716,
+      151.96464574974178,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241220_0_L2A",
+     "captured_at": "2024-12-20T23:56:12.226000Z",
+     "cloud_cover": 0.64733,
+     "nodata_pct": 18.073244,
+     "bbox": [
+      150.89815839502086,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.42604650933268
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241224_0_L2A",
+     "captured_at": "2024-12-24T00:06:08.779000Z",
+     "cloud_cover": 0.112539,
+     "nodata_pct": 15.847638,
+     "bbox": [
+      150.8239898533125,
+      -34.421337986878434,
+      151.9665819181739,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241225_0_L2A",
+     "captured_at": "2024-12-25T23:56:14.221000Z",
+     "cloud_cover": 0.093571,
+     "nodata_pct": 17.695336,
+     "bbox": [
+      150.89380863377838,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425973240493484
+     ]
+    },
+    {
+     "scene_id": "S2B_56HLH_20241229_0_L2A",
+     "captured_at": "2024-12-29T00:06:09.684000Z",
+     "cloud_cover": 0.13824,
+     "nodata_pct": 16.192243,
+     "bbox": [
+      150.8239665058341,
+      -34.422372680076116,
+      151.96270966920346,
+      -33.42038715452384
+     ]
+    },
+    {
+     "scene_id": "S2A_56HLH_20241230_0_L2A",
+     "captured_at": "2024-12-30T23:56:13.170000Z",
+     "cloud_cover": 90.56291,
+     "nodata_pct": 17.745933,
+     "bbox": [
+      150.89446114413397,
+      -34.42537305547565,
+      152.02964010785442,
+      -33.425987287151315
+     ]
+    }
+   ]
+  }
+ },
+ "sets": {
+  "year-2024": {
+   "site": "sydney",
+   "tile": "56HLH",
+   "year": 2024,
+   "max_cloud_cover": 40.0,
+   "min_coverage": 0.95,
+   "scenes": [
+    "sydney-2024-01-24",
+    "sydney-2024-01-29",
+    "sydney-2024-03-14",
+    "sydney-2024-04-23",
+    "sydney-2024-04-28",
+    "sydney-2024-05-23",
+    "sydney-2024-05-28",
+    "sydney-2024-06-27",
+    "sydney-2024-07-17",
+    "sydney-2024-08-21b",
+    "sydney-2024-08-26",
+    "sydney-2024-08-31",
+    "sydney-2024-09-20",
+    "sydney-2024-10-10",
+    "sydney-2024-10-30",
+    "sydney-2024-12-24",
+    "sydney-2024-12-29"
+   ]
+  }
+ }
+}

@@ -12,6 +12,7 @@ import json
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -58,10 +59,20 @@ def test_every_api_that_names_a_web_acl_also_says_to_associate_it(env):
 
     assert len(blocks) == 2, "expected the admin and public APIs"
     for block in blocks:
-        assert re.search(r"^\s*web_acl_id\s*=", block, re.M), block[:80]
-        assert re.search(
-            r"^\s*associate_web_acl\s*=\s*true\s*$", block, re.M
-        ), f"{env}: a rest-api module names a web_acl_id but does not set associate_web_acl = true"
+        acl = re.search(r"^\s*web_acl_id\s*=\s*(.+?)\s*$", block, re.M)
+        assert acl, block[:80]
+        flag = re.search(r"^\s*associate_web_acl\s*=\s*(.+?)\s*$", block, re.M)
+        assert flag, f"{env}: a rest-api module names a web_acl_id but does not set associate_web_acl"
+        # Always on (`true`), or on exactly when the ACL exists: the cost-saving switch
+        # (docs/cost-saving.md) that decides the ACL's count also decides the flag, as
+        # `web_acl_id = <switch> ? aws_wafv2_web_acl.<acl>[0].arn : ""`.
+        switch = re.fullmatch(
+            r"((?:local|var)\.\w+)\s*\?\s*aws_wafv2_web_acl\.\w+\[0\]\.arn\s*:\s*\"\"", acl.group(1)
+        )
+        assert flag.group(1) == "true" or (switch and flag.group(1) == switch.group(1)), (
+            f"{env}: associate_web_acl must be true, or the switch web_acl_id is decided by: "
+            f"{acl.group(1)!r} vs {flag.group(1)!r}"
+        )
 
 
 def test_the_association_is_decided_by_the_flag_never_by_the_arn():
@@ -709,9 +720,16 @@ def test_both_dashboards_cover_both_apis_and_every_web_acl(env):
         assert f"api_name         = module.{api}.api_name" in block
         assert f"access_log_group = module.{api}.access_log_group_name" in block
     assert "distribution_id            = module.public_api_cdn.distribution_id" in block
-    assert "aws_wafv2_web_acl.public_api.visibility_config[0].metric_name" in block
-    assert "aws_wafv2_web_acl.admin.visibility_config[0].metric_name" in block
-    assert "waf_cloudfront_acl = {" in block
+    # Each regional ACL is on the dashboard exactly when its cost-saving switch has it exist
+    # (docs/cost-saving.md): the `for _ in (switch ? [1] : [])` idiom around its entry.
+    assert "aws_wafv2_web_acl.public_api[0].visibility_config[0].metric_name" in block
+    assert "aws_wafv2_web_acl.admin[0].visibility_config[0].metric_name" in block
+    assert "for _ in(local.waf_public_api_enabled ? [1] : [])" in block
+    assert "for _ in(local.waf_admin_enabled ? [1] : [])" in block
+    if env == "production":
+        assert "waf_cloudfront_acl = var.waf_site_enabled ? {" in block
+    else:
+        assert "waf_cloudfront_acl = {" in block
 
 
 def test_every_cloudfront_widget_reads_us_east_1_with_the_global_region_dimension():
@@ -1223,11 +1241,21 @@ def test_each_deploy_role_is_refused_the_other_environment_and_never_its_own():
     switched = "for_each = var.separate_environment_permissions ? local.deploy_role_other_environment : {}"
     assert switched in document
 
-    # Deny only. Not one Allow: what a role may do stays in the shared policy, untouched.
-    assert document.count('effect    = "Deny"') + document.count('effect      = "Deny"') == 3
+    # Deny only. Not one Allow: what a role may do stays in the shared policy, untouched. Counted
+    # by a pattern, not by the spaces fmt puts before "=": those follow the longest attribute in
+    # each statement, and #301 lengthened one statement's and shortened another's.
+    assert len(re.findall(r'^\s*effect\s*=\s*"Deny"\s*$', document, re.M)) == 3
     assert "Allow" not in document
-    # By name: the other environment's, never a pattern that could match the role's own.
-    assert 'resources = ["arn:aws:*:*:*:*${var.unique_name_prefix}-${each.value}-*"]' in document
+    # By name: the other environment's, never a pattern that could match the role's own, in the
+    # shapes IAM accepts (#301): one ARN per service whose names are ours, plus IAM's roles and
+    # policies and S3's buckets, each ending in "<prefix>-<other environment>-*".
+    assert '"arn:aws:${service}:*:*:*${var.unique_name_prefix}-${each.value}-*"' in document
+    for arn in (
+        "arn:aws:iam::*:role/${var.unique_name_prefix}-${each.value}-*",
+        "arn:aws:iam::*:policy/${var.unique_name_prefix}-${each.value}-*",
+        "arn:aws:s3:::${var.unique_name_prefix}-${each.value}-*",
+    ):
+        assert f'"{arn}"' in document, arn
     assert "${each.key}" not in document
     # By tag, for what has no name of ours in its ARN, leaving WAF out for the shared web ACL.
     assert 'variable = "aws:ResourceTag/Environment"' in document and "values   = [each.value]" in document
@@ -1317,6 +1345,26 @@ def test_the_separate_accounts_guide_is_linked_and_matches_the_bootstrap():
     # Written for a fork: the original repository and its account are named nowhere on the page.
     assert "AllainWoodsford" not in page and "bloggerbear.com" not in page
     assert set(re.findall(r"\b\d{12}\b", page)) == {"111111111111", "123456789012", "000000000000"}
+
+
+def test_the_vision_worker_is_deployed_only_when_the_repository_variable_says_so():
+    """vision_enabled defaults to false in both roots, and CI passes it from the VISION_ENABLED variable
+    with false as the fallback, so merging the vision work deploys nothing until someone sets it."""
+    for name in ("terraform.yml", "terraform-production-release.yml"):
+        text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        # Read as a switch: `true` in any letter case is on (GitHub expressions compare strings
+        # ignoring case); any other value, or none, reaches the bool variable as `false`, so a stray
+        # value cannot fail the apply.
+        switch = "TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}"
+        assert switch in text, name
+    for env in ("dev", "production"):
+        variables = (ROOT / "infra" / "environments" / env / "variables.tf").read_text(encoding="utf-8")
+        off = r'variable "vision_enabled" \{\s*\n\s*type\s*=\s*bool\s*\n\s*default\s*=\s*false'
+        assert re.search(off, variables), env
+    table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    assert re.search(r"^\| `VISION_ENABLED` \| variable \| repo \|", table, re.M)
+    guide = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
+    assert "`VISION_ENABLED` repository variable" in guide
 
 
 def test_the_fork_guide_names_every_setting_the_workflows_read():
@@ -1447,6 +1495,30 @@ def test_pull_requests_are_checked_for_personal_data_without_publishing_it():
     assert "scripts/pii_denylist_check.py --staged" in hook and "--config .gitleaks.toml" in hook
     assert b"\r" not in (ROOT / ".githooks" / "pre-commit").read_bytes()  # sh can't run CRLF
     assert re.search(r"^\.pii-denylist$", (ROOT / ".gitignore").read_text(encoding="utf-8"), re.M)
+
+
+def test_no_python_source_trips_the_gitleaks_email_rule():
+    """The gitleaks job fails a PR on any added line that its email-address rule matches outside
+    that rule's allowlist, and a URL that only looks like an address counts: #298's docstring wrote
+    an allowlist prefix, "@" and "evil.example/" as one string. The same rule over the Python
+    sources here shows it before CI; a line already in the history goes in .gitleaksignore."""
+    config = tomllib.loads((ROOT / ".gitleaks.toml").read_text(encoding="utf-8"))
+    rule = next(r for r in config["rules"] if r["id"] == "email-address")
+    pattern = re.compile(rule["regex"])
+    allowed = [re.compile(regex) for allowlist in rule["allowlists"] for regex in allowlist["regexes"]]
+    local = {".venv", "venv", "site-packages", "node_modules", "lambda-build", "__pycache__"}  # untracked
+    found = []
+    for path in sorted([*(ROOT / "lambdas").rglob("*.py"), *(ROOT / "scripts").rglob("*.py")]):
+        name = path.relative_to(ROOT)
+        if local & set(name.parts):
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            found += [
+                f"{name}:{number}: {match.group(0)}"
+                for match in pattern.finditer(line)
+                if not any(allow.search(match.group(0)) for allow in allowed)
+            ]
+    assert found == []
 
 
 # --- the CoinGecko key: SSM Parameter Store, never Terraform state or a Lambda's environment ------
@@ -1596,8 +1668,11 @@ def test_both_regional_waf_log_groups_feed_the_security_events_lambda_blocks_onl
     text = _read("environments", env, "main.tf")
 
     assert 'handler       = "security_events_handler.handler"' in text
-    assert "public_api = aws_cloudwatch_log_group.waf_public_api" in text
-    assert "admin      = aws_cloudwatch_log_group.waf_admin" in text
+    # Each log is subscribed exactly when its cost-saving switch has it exist (docs/cost-saving.md).
+    assert "{ public_api = aws_cloudwatch_log_group.waf_public_api[0] }" in text
+    assert "{ admin = aws_cloudwatch_log_group.waf_admin[0] }" in text
+    assert "for _ in(local.waf_public_api_enabled ? [1] : [])" in text
+    assert "for _ in(local.waf_admin_enabled ? [1] : [])" in text
     assert 'filter_pattern  = "{ $.action = \\"BLOCK\\" }"' in text
     assert 'principal     = "logs.amazonaws.com"' in text
     assert 'source_arn    = "${each.value.arn}:*"' in text
@@ -1636,6 +1711,30 @@ def test_security_events_expire_and_have_an_open_incidents_index():
     names = [name for name, *_ in _table_indexes("security_events")]
     assert names == [dynamo.SECURITY_EVENTS_BY_STATUS_INDEX]
     assert security_events.RETENTION_DAYS == 120
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_lambda_role_may_list_the_content_bucket_so_a_missing_key_reads_as_no_such_key(env):
+    """research_tick_handler._load_running_state catches only NoSuchKey: an adapter that keeps
+    running state (rail_access, satellite_vision) has none before its first tick. S3 answers a
+    GetObject for a missing key with 404 NoSuchKey only when the caller may s3:ListBucket on the
+    bucket; without that it is 403 AccessDenied, which the handler rightly lets through, and the
+    topic failed every tick (dev, 2026-10-16). The grant is on the bucket ARN itself, where
+    ListBucket is evaluated, not on its objects."""
+    handler = (ROOT / "lambdas" / "research_tick_handler.py").read_text(encoding="utf-8")
+    assert "except _get_s3_client().exceptions.NoSuchKey:" in handler
+
+    text = _read("environments", env, "main.tf")
+    policy = _uncommented(
+        re.search(r'^data "aws_iam_policy_document" "lambda_exec" \{\n(.*?)^\}', text, re.S | re.M).group(1)
+    )
+    statements = [s for s in policy.split("statement {") if 'sid       = "ContentBucketMissingKeys"' in s]
+    assert len(statements) == 1
+    statement = statements[0]
+    assert re.search(r'effect\s*=\s*"Allow"', statement)
+    assert re.search(r'actions\s*=\s*\["s3:ListBucket"\]', statement)
+    assert re.search(r"resources\s*=\s*\[aws_s3_bucket\.content\.arn\]", statement)
+    assert "condition" not in statement
 
 
 # --- The operator's assistant (infra/modules/ops-assistant) -------------------------------------
@@ -1831,6 +1930,7 @@ def test_the_assistant_is_told_about_exactly_the_tables_it_may_read():
 
     assert set(passed) == {
         "TOPICS_TABLE",
+        "FINDINGS_TABLE",
         "ARTICLES_TABLE",
         "MODERATION_QUEUE_TABLE",
         "FAILED_EXECUTIONS_TABLE",
@@ -1944,6 +2044,9 @@ def test_the_assistants_only_write_is_on_its_own_suggestions_table():
                     ("firewall.tf", "ops_mcp_firewall"),
                     # Reading this environment's logs (the test below holds what it may do).
                     ("logs.tf", "ops_mcp_logs"),
+                    # The vision worker's log and the running states, only where vision is on
+                    # (the test below holds what it may do).
+                    ("vision.tf", "ops_mcp_vision"),
                 }
         if path.name not in ("memory.tf", "briefings.tf"):
             for write in ("PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"):
@@ -2026,6 +2129,82 @@ def test_the_logs_policy_queries_readable_environments_logs_by_tag_and_nothing_e
     assert re.search(on_star, text), "only the query-id actions are on *"
     assert text.count('["*"]') == 1
     assert not re.search(r"^\s*count\s*=", text, re.M), "every environment's assistant reads its own logs"
+
+
+def test_the_vision_policy_reads_one_workers_log_and_the_running_states_only_where_vision_is_on():
+    """The assistant's vision round (vision.tf; docs/enhancements/ops-assistant-vision.md). Only
+    where the root deploys the worker: StartQuery and ListTagsForResource on the worker's one log
+    group in vision_region, under the project's tags and exactly this environment (the worker is
+    never shared), and GetObject on the running states; nothing on "*", no other action, and vision
+    on without a Region refused at plan. The module's tests/vision.tftest.hcl checks the planned
+    values."""
+    raw = _read("modules", "ops-assistant", "vision.tf")
+    text = _uncommented(raw)
+
+    assert set(re.findall(r'"([a-z0-9-]+:[A-Za-z*]+)"', text)) == {
+        "logs:StartQuery",
+        "logs:ListTagsForResource",
+        "s3:GetObject",
+    }
+    assert len(re.findall(r"^  count = var\.vision_enabled \? 1 : 0$", text, re.M)) == 2
+    assert _resource_block(text, "aws_iam_role_policy", "ops_mcp_vision")
+    assert '"*"' not in text  # no statement is on every resource
+    assert "not_actions" not in text and "not_resources" not in text and "Deny" not in text
+    assert len(re.findall(r'effect\s*=\s*"Allow"', text)) == text.count("statement {") == 2
+
+    # The worker's log group, by ARN in vision_region, in both forms.
+    arn = r"local\.vision_worker_log_group_arn"
+    assert re.search(rf'resources = \[{arn}, "\$\{{{arn}\}}:\*"\]', text)
+    assert (
+        'vision_worker_log_group_arn = "arn:aws:logs:${coalesce(var.vision_region, "unset")}:'
+        '${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${local.vision_worker_name}"'
+        in text
+    )
+    conditions = re.findall(
+        r'condition \{\n\s*test\s*=\s*"([^"]+)"\n\s*variable\s*=\s*"([^"]+)"\n\s*values\s*=\s*([^\n]+)', text
+    )
+    assert sorted(conditions) == [
+        ("StringEquals", "aws:ResourceTag/Environment", "[var.environment_name]"),
+        ("StringEquals", "aws:ResourceTag/ManagedBy", '[var.default_tags["ManagedBy"]]'),
+        ("StringEquals", "aws:ResourceTag/Project", '[var.default_tags["Project"]]'),
+    ]
+    # The running states, and nothing else under snapshots/ (never the per-capture snapshots).
+    assert re.findall(r"resources = \[\"\$\{var\.content_bucket_arn\}/([^\"]+)\"\]", text) == [
+        "snapshots/*/running-state.json"
+    ]
+    assert re.search(
+        r"precondition \{\n\s*condition\s*=\s*var\.vision_region != null\n", text
+    ), "vision on without a Region is refused at plan"
+
+    # The worker's name is the vision-worker module's own.
+    ours = re.search(r'vision_worker_name\s*=\s*"([^"]+)"', text).group(1)
+    worker = _read("modules", "vision-worker", "main.tf")
+    theirs = re.search(r'^  name\s*=\s*"([^"]+)"', worker, re.M).group(1)
+    # (_read writes the default prefix in; both sides are read the same way.)
+    assert ours == theirs == "bloggerbear-${var.environment_name}-vision-worker"
+
+    # Both roots pass the switch and the Region they deploy the worker with.
+    for environment in ("dev", "production"):
+        call = _uncommented(
+            _module_blocks(_read("environments", environment, "main.tf"), "modules/ops-assistant")[0]
+        )
+        assert re.search(r"^\s*vision_enabled = var\.vision_enabled$", call, re.M), environment
+        assert re.search(r"^\s*vision_region  = var\.vision_region$", call, re.M), environment
+
+    # The function waits for the policy, and is told the Region only where vision is on, and
+    # which app client is the page's.
+    function = _resource_block(_ops_module(), "aws_lambda_function", "ops_mcp")
+    assert "aws_iam_role_policy.ops_mcp_vision" in re.search(r"depends_on\s*=\s*\[(.*?)\]", function).group(1)
+    assert (
+        'OPS_VISION_REGION = var.vision_enabled && var.vision_region != null ? var.vision_region : ""'
+        in function
+    )
+    assert "OPS_SCREEN_CLIENT_IDS = aws_cognito_user_pool_client.page.id" in function
+    vision_status = (ROOT / "lambdas" / "ops_mcp" / "vision_status.py").read_text(encoding="utf-8")
+    architecture = (ROOT / "lambdas" / "ops_mcp" / "architecture.py").read_text(encoding="utf-8")
+    memory = (ROOT / "lambdas" / "ops_mcp" / "memory.py").read_text(encoding="utf-8")
+    assert 'region_env="OPS_VISION_REGION"' in architecture and "component_region" in vision_status
+    assert 'SCREEN_CLIENT_IDS_ENV = "OPS_SCREEN_CLIENT_IDS"' in memory
 
 
 # One environment each (infra/modules/ops-assistant/isolation.tf; the design's section 6). Dev and
@@ -3258,7 +3437,7 @@ def test_every_module_that_names_resources_is_passed_the_prefix_by_both_environm
             block = variables.split('variable "unique_name_prefix" {')[1].split("\n}\n")[0]
             assert "default" not in re.sub(r"description\s*=.*", "", block), module
             naming.append(module)
-    assert naming == ["api-cdn", "app-data", "observability", "ops-assistant", "static-site"]
+    assert naming == ["api-cdn", "app-data", "observability", "ops-assistant", "static-site", "vision-worker"]
     for env in ("dev", "production"):
         main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
         for module in naming:

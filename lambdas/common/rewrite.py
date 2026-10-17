@@ -51,6 +51,7 @@ from common import compliance, fresh_review
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, pricing_for
+from common.day_subject import ARTICLE_SUBJECT_FIELD, subject_findings
 from common.dynamo import (
     REWRITE_FAILED_STATUS,
     delete_musings_for_article,
@@ -59,12 +60,14 @@ from common.dynamo import (
     get_moderation_item,
     get_pipeline_config,
     get_topic,
+    list_findings,
     list_moderation_by_status,
     list_recent_findings,
     put_moderation_item,
     update_article_after_rewrite,
     update_article_status,
 )
+from common.findings_window import SUBJECT_READ_LIMIT, findings_window_hours, read_stopped_at
 from common.model_pricing import model_label
 from common.model_routing import resolve_model
 from common.relevance import topic_label
@@ -82,7 +85,6 @@ REWRITE_MAX_TOKENS = 8192
 REWRITE_BODY_LENGTH_BOUNDS = (0.4, 1.5)
 # Past this a `rewriting` item is assumed dead (the Lambda's own timeout is 300s).
 STALE_REWRITE_MINUTES = 15
-FINDINGS_LOOKBACK_HOURS = 24
 MAX_FINDINGS = 48
 FINDINGS_MAX_CHARS = 12_000
 # Compliance's fixed reason for a financial topic (common/compliance.py): routine, nothing to fix.
@@ -215,14 +217,16 @@ def _failed_status(article: dict | None, item: dict | None = None) -> str:
     return REWRITE_FAILED_STATUS if live else "pending"
 
 
-def _take_down(article_id: str) -> str | None:
+def _take_down(article: dict) -> str | None:
     """Take a published article off the site now that its rewrite is ready: status first (the
     public API stops serving it, and a failure here leaves it published and whole), then its
-    page. Returns a note for the reviewer if the page could not be removed, else None. Safe to
+    page and the copies of its figures (as many as the article stores; common/figures.py).
+    Returns a note for the reviewer if the page could not be removed, else None. Safe to
     repeat."""
+    article_id = article["article_id"]
     update_article_status(article_id, "pending_moderation")
     try:
-        remove_article_page(article_id)
+        remove_article_page(article_id, figure_count=len(article.get("figures") or []))
     except Exception as exc:  # noqa: BLE001 - the rewrite still goes to the inbox, with this said
         print(f"rewrite: could not remove the page of {article_id}: {exc!r}")
         return (
@@ -232,16 +236,18 @@ def _take_down(article_id: str) -> str | None:
     return None
 
 
-def _clear_traces(article_id: str) -> dict:
-    """What is left of a taken-down article: the musings written about it, and its page in the
-    CDN's cache (as admin_api_handler.py's unpublish does). Best effort: the article is already
-    down and in the inbox."""
+def _clear_traces(article: dict) -> dict:
+    """What is left of a taken-down article: the musings written about it, and its page (and its
+    figures, if it has any) in the CDN's cache (as admin_api_handler.py's unpublish does). Best
+    effort: the article is already down and in the inbox."""
+    article_id = article["article_id"]
     try:
         musings_removed = delete_musings_for_article(article_id)
     except Exception as exc:  # noqa: BLE001
         print(f"rewrite: could not remove the musings about {article_id}: {exc!r}")
         musings_removed = 0
-    return {"musings_removed": musings_removed, "cache_invalidated": invalidate_article_page(article_id)}
+    invalidated = invalidate_article_page(article_id, figure_count=len(article.get("figures") or []))
+    return {"musings_removed": musings_removed, "cache_invalidated": invalidated}
 
 
 def _strip_disclaimer(body: str) -> tuple[str, bool]:
@@ -250,13 +256,49 @@ def _strip_disclaimer(body: str) -> tuple[str, bool]:
     return compliance.strip_financial_disclaimer(body)
 
 
-def _findings_for(article: dict) -> list[dict]:
-    """The findings the article was most likely written from: those captured in the day before
-    it was created (newest first). Empty once they have aged out of the Findings table."""
+def _findings_for(article: dict, topic: dict) -> list[dict]:
+    """The findings the article was most likely written from: those captured in the topic's
+    findings window before it was created (newest first). That is the reach the daily cycle read
+    it from (common/findings_window.py): a day, or more for a topic that writes on some days only,
+    whose article drew on the findings of its off days too. The previous article is not known
+    here, so a wide window can also hold findings an earlier article used: more context, never
+    less. Empty once they have aged out of the Findings table.
+
+    An article written on a rotating topic's day subject (its `subject`, common/day_subject.py)
+    was drafted from that subject's Findings only, so only those are kept, at most MAX_FINDINGS of
+    them, as the daily cycle caps them: the window is read further first (SUBJECT_READ_LIMIT, as
+    the daily cycle reads it), so other subjects' newer Findings never push the subject's out. The
+    read is bounded at both ends, the window's start and the article's `created_at`, so a rewrite
+    run long after the article spends none of it on Findings captured since; when the window holds
+    more than that read reaches, the log says where it stopped, as the daily cycle's does. The
+    fresh-data review and the compliance review then see its own subject's research, not its
+    neighbours'. If none of the window's Findings report it (the subject has since left the topic's
+    rota, say), the newest MAX_FINDINGS of the whole window are used and the log says so: never an
+    empty prompt."""
     created_at = article.get("created_at") or datetime.now(UTC).isoformat()
-    since = (datetime.fromisoformat(created_at) - timedelta(hours=FINDINGS_LOOKBACK_HOURS)).isoformat()
-    findings = list_recent_findings(article["topic_id"], limit=MAX_FINDINGS, since=since)
-    return [f for f in findings if (f.get("captured_at") or "") <= created_at]
+    since = (datetime.fromisoformat(created_at) - timedelta(hours=findings_window_hours(topic))).isoformat()
+    subject = article.get(ARTICLE_SUBJECT_FIELD)
+    if not isinstance(subject, str) or not subject:
+        findings = list_recent_findings(article["topic_id"], limit=MAX_FINDINGS, since=since)
+        return [f for f in findings if (f.get("captured_at") or "") <= created_at]
+    findings, _, more = list_findings(
+        article["topic_id"], since=since, until=created_at, limit=SUBJECT_READ_LIMIT, unexpired_at=None
+    )
+    if more:
+        print(
+            f"rewrite: subject {subject!r:.70} topic_id={article['topic_id']} read {len(findings)} findings "
+            f"of its window and stopped at {read_stopped_at(len(findings))}; any of its older ones were "
+            "not read"
+        )
+    own = subject_findings(findings, subject)
+    if own or not findings:
+        return own[:MAX_FINDINGS]
+    newest = findings[:MAX_FINDINGS]
+    print(
+        f"rewrite: no findings on the article's subject {subject!r:.70} in its window; "
+        f"rewriting from the window's {len(newest)} newest findings instead"
+    )
+    return newest
 
 
 def _load_snapshot(findings: list[dict]) -> dict | None:
@@ -353,7 +395,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
         stored_body = read_article_body(article["body_s3_key"])
         body, had_disclaimer = _strip_disclaimer(stored_body)
 
-        findings = _findings_for(article)
+        findings = _findings_for(article, topic)
         findings_text = "\n".join(f"- {f.get('summary', '')}" for f in findings)
         snapshot = _load_snapshot(findings)
         evidence = _evidence(topic, snapshot)
@@ -449,7 +491,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
     try:
         page_note = None
         if was_live:
-            page_note = _take_down(article["article_id"])
+            page_note = _take_down(article)
             taken_down = True
         _save(
             item=item,
@@ -472,7 +514,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
             # It failed before anything was written, so the article is still published and whole.
             # Try once more; if it still cannot come down, it must not go to the inbox.
             try:
-                _take_down(article["article_id"])
+                _take_down(article)
                 taken_down = True
             except Exception as down_exc:  # noqa: BLE001
                 print(f"rewrite: could not take {article['article_id']} down: {down_exc!r}")
@@ -507,7 +549,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
         "article_id": article["article_id"],
     }
     if was_live:
-        result.update({"unpublished": True, **_clear_traces(article["article_id"])})
+        result.update({"unpublished": True, **_clear_traces(article)})
     return result
 
 

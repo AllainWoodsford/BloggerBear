@@ -211,6 +211,30 @@ in .34"):
 | "...to watch candidate ideas" | `watch` (table) |
 | "...what it is watching" | `watch_list`: still happening, or calmed down |
 | "...what's happening with the firewall" (production only) | `firewall_review` |
+| "...how the vision pipeline is doing", "...whether the satellite worker is on" | `vision_status` |
+| "...why Sydney wasn't measured" | `vision_status` with `topic` (a topic or a site) |
+| "...about errors in the vision worker" | `log_review` (function), read in the vision Region where vision is on |
+| "...what research found for rail Sydney" | `topic_findings` with `topic` |
+| "...what the next crypto article will be written from" | `topic_findings` with `next_article` |
+| "...what the vision agent did for rail Sydney this week" | `vision_evidence` with `topic` |
+| "...to walk me through the latest Sydney scene" | `vision_evidence` with `topic` and `scene` "latest" |
+
+For the vision pipeline and a topic's Findings Alexa+ hears counts, ages and reasons only, from
+fixed words: never a site's name, an error's text or what a Finding's summary says. Those are on
+the ask page, in the table's "(unverified)" columns, which only the page's own sign-in client is
+sent ([ops-assistant-vision.md](../docs/enhancements/ops-assistant-vision.md)).
+`vision_evidence` reads the pipeline's evidence lines, which hold only codes, ids and numbers, so
+Alexa+ hears what the page shows: the decisions counted, what the agent did, the findings written
+and what became of their articles ([vision-evidence.md](../docs/enhancements/vision-evidence.md#asking-the-assistant)).
+It waits at most 8 seconds for its logs, then makes one short Articles read per topic with a finding
+written. Every request it makes to AWS (the topic list, the log access check, starting, polling and
+stopping the log queries, the Articles reads) is held to 12 seconds after the question: a request
+that would start later is not made, and one that runs out of time is stopped, so what it could not
+read in time is said to be unread, never counted as none. A request that stalls ends by 12 + 1 + 0.1 +
+0.2 = 13.3 seconds after the question at worst (the limit, a one-second connect, the shortest read
+timeout and building the request's client); the name lookup each request makes before it connects
+is outside these timeouts, and each request makes its own. One whose answer keeps trickling in
+slowly is cut only by the function's 30-second timeout.
 
 A log read waits for Logs Insights (up to 15 seconds), which can be close to Alexa's own time limit.
 If Alexa gives up, ask for a briefing instead ("ask BloggerBear to start a briefing"): the agent

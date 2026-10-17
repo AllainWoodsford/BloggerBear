@@ -7,6 +7,9 @@ on:
       - 'scripts/**'
       - 'pyproject.toml'
       - '.github/workflows/python-ci.yml'
+      # The Claude Code skills: scripts/tests/test_claude_skills.py parses the commands each shows
+      # against the real CLI, so an edit to a skill alone runs the tests.
+      - '.claude/skills/**'
   push:
     # Not dev: terraform.yml runs this before apply-dev, in the same workflow run.
     branches: [prod]
@@ -15,6 +18,7 @@ on:
       - 'scripts/**'
       - 'pyproject.toml'
       - '.github/workflows/python-ci.yml'
+      - '.claude/skills/**'
   # Also called before every apply: by terraform.yml (dev) and by terraform-production-release.yml
   # against the release tag.
   workflow_call:

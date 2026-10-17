@@ -560,7 +560,8 @@ Called out separately because it cuts across every phase, not just one:
 ## Enhancements since Phase 8
 
 All shipped and deployed; the design and decisions for each are in
-`docs/project-plan.md` §11.
+`docs/project-plan.md` §11. The vision entries merged into `dev` on 15 October (#285); the
+submission-round entries after them are docs and tests, with nothing to deploy.
 
 - [x] Static article publishing — every publish path renders a static page
 - [x] Custom domain (bloggerbear.com) via Route 53 + ACM
@@ -598,7 +599,17 @@ All shipped and deployed; the design and decisions for each are in
 - [x] Crypto research looks up 2 to 5 altcoins a tick, not 5 to 10 (#267)
 - [x] Each deploy role is refused the other environment's resources, by a Deny-only
   policy beside the shared one (bootstrap; needs a hand apply)
+- [x] Cost saving: four firewall switches, every one on by default (`WAF_REGIONAL_ENABLED`,
+  `WAF_ADMIN_ALLOWLIST`, `WAF_SITE_ENABLED`, `WAF_LOG_ALL_REQUESTS`, each `_DEV`/`_PROD` first),
+  with the admin API's address allowlist always on as its resource policy and `moved` blocks so
+  the default plan changes nothing (docs/cost-saving.md; project-plan §11)
 - [x] Staggered research and authoring schedules (production and dev)
+- [x] Staggered schedules by slot: `stagger_minutes` on the pipeline row, `stagger_slot` on each
+  topic, the effective schedules written at the slot's minute and recorded on the row, `topics
+  schedule` / `topics reschedule`; `topics pause` / `resume` (schedules disabled, the handlers
+  refuse, "Paused" on the topic page, a musing each way); the digest kept general with no
+  figures and no longer held for a person on a financial contributor alone (project-plan §11;
+  the dispatcher design revised for it, docs/enhancements/dispatcher-sqs-enhancement.md)
 - [x] Render-blocking CSS kept on purpose; async preload reverted (#127)
 - [x] GitHub Trending no longer scrapes `github.com/trending`: it calls the
   official REST Search API (most-starred repos created in the last week),
@@ -633,6 +644,174 @@ All shipped and deployed; the design and decisions for each are in
 - [x] Architecture by feature: `architecture` with `feature` walks through article research step by
   step across the layers (adapters, keys in SSM, research tick, findings, candidate ideas,
   drafting, reviews, the article in S3, where the agents are) (#262; docs/architecture/)
+- [x] Agentic vision, for the OpenCV AI Competition 2026 (#240–#254, merged into the integration
+  branch, #285, its pull request to `dev`, with the review's fixes): the vision core in
+  `lambdas/vision/`, the GeoTIFF reader and UTM without GDAL, the stateless OpenCV 5 worker on
+  arm64 in us-west-2 with its contract and cross-region client, the `satellite_vision` adapter
+  with running state, the bounded triage agent with a deadline, `force_manual_review`, the COOL
+  benchmark and image recipe; nothing deployed until switched on (docs/enhancements/vision.md,
+  docs/enhancements/rail-access-monitor.md §1)
+- [x] The vision worker is opt-in through the `VISION_ENABLED` repository variable, fed to both
+  apply workflows as `vision_enabled`; the setup script lists it as deliberately not asked (#286)
+- [x] The OpenStreetMap Overpass client for rail networks: two allow-listed endpoints, one
+  fallback hop, decimation to the 20 m grid, caps, a streamed body under a size cap, coded
+  errors, cache rules (#287)
+- [x] Figures from Findings to articles: `Adapter.figures`, the list on the Finding and the
+  article, one server-side copy per PNG to `articles/figures/<article>/<n>.png`, the `<figure>`
+  on the static page and in the SPA, removed on take-down (#288)
+- [x] The rail access vision core: built-up heat, station reach and deserts, the rail network
+  graph from OpenStreetMap ways, flags and simulated links, the figure; COG overviews and the
+  UTM inverse (#289; `lambdas/vision/urban.py`, `access.py`, `network.py`, `rail_analyse.py`,
+  `rail_annotate.py`)
+- [x] Worker tasks: `rail_access` beside `ships` in the contract, the handler, the scene reader's
+  overview reads, the network caps, bounded betweenness and graph size, and the benchmark's rail
+  kernels and `fetch-network` (#291; `lambdas/vision_worker_handler.py`,
+  `lambdas/common/vision_contract.py`, `scripts/vision_benchmark.py`)
+- [x] The `rail_access` adapter, the shared `vision_sites` module and task-aware triage with
+  `web_context`; the first observation reported once; refused scenes and failed network refreshes
+  not retried every tick; only the newest history entry keeps the lists (#292;
+  `lambdas/common/adapters/rail_access.py`, `lambdas/common/vision_sites.py`,
+  `lambdas/common/vision_triage.py`)
+- [x] The rail figure: flags in red rings, isolation weight as ring thickness, ghost lines and
+  dashed simulated links, the caption and a legend in a strip under the map, PNG level 9 within a
+  2 MiB budget (#293; `lambdas/vision/rail_annotate.py`)
+- [x] Planner notes: the rail network's flags and simulated links as generated sentences in the
+  diff summary, the review evidence and the Finding (`planner_notes`), never recommendations
+  (#294; `lambdas/common/rail_notes.py`; docs/enhancements/vision.md §6.8)
+- [x] The rail analysis's time bounds: linear station adjacency, ghost-line walk and run lengths,
+  thinning only in the box round what the last pass removed, the rail window cap
+  `RAIL_MAX_WINDOW_PX` = 3,584 px from one-core measurements, and speed guards that count the work
+  (#295; `lambdas/vision/network.py`, `rail_analyse.py`, `scene.py`,
+  `lambdas/vision_worker_handler.py`)
+- [x] A topic's findings window: `findings_window_hours` (1 to 336 hours, 24 by default, never past
+  the last article) through the admin API and CLI, read by the daily cycle and by Re-Write, so a
+  topic that writes on some days only, like a city of the rail rotation, drafts every Finding since
+  its last article (#297; `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
+  `lambdas/common/rewrite.py`, `scripts/admin_cli.py`)
+- [x] Fixes from the review of the whole integration branch: the daily trending digest leaves out
+  every topic whose articles always wait for a person, so vision text never reaches an
+  auto-published page; a rail Finding carries only the maps of the sites its summary reports; the
+  SPA removes a figure whose image fails to load; one measuring rule for both vision adapters
+  (`time_budget_seconds` 45 to 80); the worker follows no redirect and reads only its byte range;
+  one parser for `VISION_ALLOWED_URL_PREFIXES`; editorial defaults for both vision adapters; the
+  compliance review's verdicts restored for every topic; the ops assistant's log review leaves the
+  worker out of its default sweep; a test runs the gitleaks email rule over the Python sources
+  (#298, rail PR L; `lambdas/trending_digest_handler.py`, `lambdas/common/vision_sites.py`,
+  `lambdas/vision_worker_handler.py`, `lambdas/common/vision_contract.py`,
+  `lambdas/common/editorial_resolver.py`, `lambdas/common/compliance.py`, `frontend/app.js`)
+- [x] Documentation: the vision pipeline page (docs/architecture/blogger-vision.md), the README
+  section and data-source rows, the configuration and deployment sections, the submission draft
+  (#290, rail PR F1)
+- [x] Documentation: vision.md for two tasks, the four city topics rotating one a day with a
+  192-hour findings window (`scripts/rail_topics.example.json`) and the runsheet's
+  `rail_access topics` section, the friction entries, and the earlier docs brought in line with
+  the merged code, PR L's fixes included: the documentation cut-off for the vision pipeline
+  (#296, rail PR F2)
+- [x] The assistant's vision round: the operator's assistant and Alexa+ see the vision pipeline,
+  read-only and only where vision is on. `vision_status` (is the worker on and where, which sites
+  were measured and why the others were not, a card per problem), vision topics in
+  `pipeline_health` and the topic watch, the worker's log read in `vision_region`, the
+  `vision-pipeline` feature, the `vision` guide and runsheet; site names and error text only in
+  "(unverified)" columns for the page, never to a voice caller; no list change and no echo after
+  text written outside the project, held in code; `redact.scrub` withholds instructions however
+  they are spaced or spelt; a sites config is never filled in (#300, on the integration branch
+  for the assistant's work after #285; `lambdas/ops_mcp/vision_status.py`,
+  `lambdas/common/adapters/base.py`, `lambdas/ops_agent/policy.py`,
+  `infra/modules/ops-assistant/vision.tf`; [design](enhancements/ops-assistant-vision.md))
+- [x] The submission round's evidence trail: one JSON line of codes and numbers per step (a tick
+  ran, a site's turn, OpenCV measured, the numbers were compared, the agent decided, a person
+  decided, a topic changed), a decision ring of the last 12 decisions per site in the running
+  state with the agent's trail and each tool's result, the worker's request id on every result,
+  the worker's own line with its CPU, the research tick's and the admin API's lines, `log_review`
+  leaving the lines out and its topic filter matching a whole id, and the runsheet's Logs Insights
+  queries (on the integration branch after the assistant's vision round;
+  `lambdas/common/evidence.py`, `lambdas/common/vision_decisions.py`,
+  `lambdas/common/vision_triage.py`, `lambdas/vision_worker_handler.py`;
+  [design](enhancements/vision-evidence.md))
+- [x] Interrogating a topic's Findings, three ways: the assistant's `topic_findings` (a topic's
+  research Findings newest first as a table, with `next_article` for exactly what the next daily
+  run reads; counts and ages spoken, the summary scrubbed and on the page only, nothing to a voice
+  caller), `GET /topics/{topic_id}/findings` and `admin_cli findings list` (the raw items, with
+  `--days`, `--since` and `--next-article`), and the repository's first Claude Code skill,
+  `topic-findings`, with its rules for Finding text in a developer's session; the findings
+  window's start moved to `common/findings_window.window_start`, shared by the daily cycle, the
+  tool and the route; Findings joins the assistant's readable tables (the Findings round, #307,
+  after #300 on the integration branch; `lambdas/ops_mcp/topic_findings.py`,
+  `.claude/skills/topic-findings/SKILL.md`, `scripts/tests/test_claude_skills.py`;
+  [design](enhancements/ops-assistant-vision.md#topic-findings))
+- [x] The submission round, for the OpenCV AI Competition 2026: the rubric tracker
+  (`docs/hackathon/rubric-tracker.md`), one row per rubric line, the owner's ask and each owner
+  step, with its status, what it needs, the evidence, the gap, what closes it and what the
+  assistant may say, updated by the PR that closes a row; a format test that fails on a
+  malformed row, run by the Python CI on a pull request that also touches `lambdas/` or
+  `scripts/` and by hand on a docs-only one until `python-ci.yml` lists `docs/hackathon/**`
+  (#303, submission PR P0; `scripts/tests/test_hackathon_docs.py`)
+- [x] The submission round's benchmark and evaluation inputs (Q1): the benchmark writes run files
+  with the code, machine, build, inputs' ETags and every sample, records the rail metrics, their
+  digest, the figure's hash, the peak memory and the OpenCV libraries mapped during a run, gains
+  `--cache`, `--threads`, `--pin-cpu`, `--isolate`, `--only`, `--imds`, `--label`, `compare` (a
+  seeded bootstrap speed-up with parity) and `controls` (the COOL guard's negative controls); the
+  Sydney scene manifest with `vision_eval.py pin` and `coverage` (the first run file, under
+  `docs/hackathon/evidence/runs/`); the network fixture directory's ODbL notice; the COOL runsheet
+  corrected into the Graviton session's script, with the 4.x pin (`opencv-python-headless==4.14.0.94`)
+  (#308, submission PR Q1)
+- [x] A city's first OpenStreetMap network gets the tick's measuring time: with none cached for its
+  polygon, the fetch may take the rest of the budget less 10 s (about 60 s at the default 70 s,
+  70 s at the 80 s cap) instead of 30 s, each Overpass hop reading for as long as that leaves and
+  its query's `[timeout:]` the same; the city is measured on the next tick, and a refresh of a
+  cached network keeps 30 s. The third of the first live tick's defects, after #305 (the content
+  bucket's ListBucket) and #310 (the Overpass User-Agent) (#312, rail PR U;
+  `lambdas/common/adapters/rail_access.py`, `lambdas/common/osm.py`)
+- [x] The submission round's `vision_evidence`: the operator's assistant and Alexa+ answer "what did
+  the vision agent do for rail Sydney this week?" from the evidence lines alone, read-only: three
+  fixed Logs Insights queries by field equality within one 8-second budget, every line parsed and
+  checked, kept, reported and written told apart, one decision's trace step by step, what a person
+  did from the Articles table's topic index, the agent's spend in AUD, one sentence per topic and
+  nothing summed across topics, and no new grant (#313, submission PR P2a, on the integration branch
+  after the evidence trail; `lambdas/ops_mcp/vision_evidence.py`, `lambdas/common/dynamo.py`;
+  [design](enhancements/vision-evidence.md#asking-the-assistant))
+- [x] A slow city's network fetched out of band: `topics trigger <topic> --pipeline
+  network_prefetch` runs the research tick's function only to fetch each site's network, with up to
+  90 s per Overpass reply and 100 s in all, into `vision/<topic>/<site>/network.json`; the next tick
+  adopts it for a site with none, or whose own is stale and older. No Finding, running state or
+  research time is written. For a city that still misses #312's first-fetch minute (#315, rail;
+  `lambdas/common/adapters/rail_access.py`, `lambdas/research_tick_handler.py`)
+- [x] `vision_evidence`'s review nits: the call has a 12-second deadline, and an Articles read that
+  would start after it is said as not checked; that read takes only the fields the join uses and at
+  most 200 articles; no "on screen" when nothing is; a topic whose decisions were all cut off says
+  so, never "nothing was measured"; titles keep their spend whole; a scene of several sites says
+  how many; implausible numbers are never spoken; the vision runsheet lists the tool. The rubric
+  tracker's rows as of 16 October (C1 to C3, S3, S7, A2, A3, O1 met, O2, O5) (#322, rail PR W;
+  `lambdas/ops_mcp/vision_evidence.py`, `docs/hackathon/rubric-tracker.md`)
+- [x] The day-subject round: one topic that rotates through the cities it watches, one a day, as
+  the crypto feed has its market days. A generic adapter hook names the day's subject and the
+  subjects each Finding reports (`subjects`); the daily cycle drafts only the day's subject's
+  Findings, from its own last article (`last_article_by_subject`), and Re-Write, `topic_findings`
+  and `findings list --next-article` read the same way (S1, #320; its review's leftovers, S1b,
+  #324). The rail adapter rotates: each city's network in its own object, `MAX_RAIL_SITES` 8, a
+  weekly rota read in `rotation_timezone`, each city's own first observation, and one template
+  topic, `rail-cities`, with a 192-hour window (S2, #323; its review fixes, #327). The tidy-up: the
+  rotating read logs where it stopped, the hook's text and subjects are bounded before they are
+  cleaned, a stored network S3 fails to hand back waits a tick instead of being fetched again, and
+  the docs say what was built (S3) (`lambdas/common/day_subject.py`,
+  `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
+  `lambdas/common/adapters/rail_access.py`, `scripts/rail_topics.example.json`;
+  [design](enhancements/dailysubject_hook.md))
+- [x] The goal rotation: a topic may take 2 to 7 editorial goals in turn
+  (`editorial_goal_rotation`, `topics create|update --goal-rotation-json`), so one set of Findings is
+  written up from different sides. New Findings get the next goal; with nothing new, the daily run
+  revisits the last set under a goal not yet used on it, and stops once every goal has had it. Per
+  subject on a rotating topic (`goal_rotation_state`); the article keeps `editorial_goal` and
+  `revisit`; a revisit's research is not counted twice. Not yet: `findings list --next-article` and
+  the assistant's `topic_findings` do not say a revisit is coming (`lambdas/common/goal_rotation.py`,
+  `lambdas/daily_cycle_handler.py`; [configuration.md](configuration.md))
+- [x] A city a week: a list rota may set `rotation_period` `"week"`, so each subject has a whole
+  calendar week in turn. A rail city then comes back only after a Finding has expired, so the rail
+  adapter writes a weekly reading on the first tick of a city's week (its newest clear scene, no
+  change claimed, with its map and notes; `reported_period` keeps it to once a week), which the
+  goal rotation writes up from three sides on the days after. `rail-cities` switched over by
+  [RailVisionSeeding.md §7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)
+  (`lambdas/common/day_subject.py`, `lambdas/common/adapters/rail_access.py`)
 
 ## Backlog / not yet scheduled
 

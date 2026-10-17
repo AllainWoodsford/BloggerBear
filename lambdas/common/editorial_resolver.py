@@ -22,7 +22,8 @@ relevance guardrails (common/relevance.py) or the financial-topic safety rules
 
 from __future__ import annotations
 
-from common.adapters import WEB_SEARCH_ADAPTER_KEY
+from common.adapters import RAIL_ACCESS_ADAPTER_KEY, SATELLITE_VISION_ADAPTER_KEY, WEB_SEARCH_ADAPTER_KEY
+from common.adapters.base import DaySubject
 from common.editorial_goals import OFF_ADAPTER_DOMAIN_GOALS, EditorialGoal
 
 # A topic created without an adapter gets independent web research.
@@ -45,6 +46,23 @@ ADAPTER_DEFAULTS = {
     "github_trending": (
         "Focus on rapid open-source star acceleration, architectural paradigm shifts (e.g., "
         "new framework primitives), and infrastructural utilities."
+    ),
+    # The vision adapters: their summary prompts' limits again (common/adapters/rail_access.py and
+    # satellite_vision.py, build_summary_prompt), so a topic created without editorial_goals is not
+    # drafted under the global default's "randomly sampling 5 to 10 articles".
+    RAIL_ACCESS_ADAPTER_KEY: (
+        "Report only what was measured: proxies from Sentinel-2 imagery and OpenStreetMap's rail "
+        "network (built-up density, straight-line walking reach to a station, network measures), with "
+        "their capture dates. Give no ridership, patronage, journey time, cost, cause, forecast or "
+        "recommendation; the rule-based flags and simulations are proxies, never recommendations. Use "
+        "no number or place name that is not in the findings."
+    ),
+    SATELLITE_VISION_ADAPTER_KEY: (
+        "Report only what was measured: counts of objects detected by an automated pipeline (OpenCV) "
+        "in Sentinel-2 imagery at fixed sites, against the same sites' recent scenes, with their "
+        "capture dates. Name no ship, vessel, owner, company or person; give no cause, forecast, price, "
+        "market or trading view; never call an area safe, clear or unaffected. Use no number or place "
+        "name that is not in the findings."
     ),
 }
 
@@ -72,7 +90,11 @@ def _clean(value) -> str | None:
     return value.strip() or None
 
 
-def resolve_editorial_goals(topic: dict, daily_goal: EditorialGoal | None = None) -> str:
+def resolve_editorial_goals(
+    topic: dict,
+    daily_goal: EditorialGoal | DaySubject | None = None,
+    rotation_focus: str | None = None,
+) -> str:
     """The topic's standing editorial goal, as prompt text.
 
     Topic-specific -> adapter-specific -> global default, with the topic's
@@ -82,12 +104,17 @@ def resolve_editorial_goals(topic: dict, daily_goal: EditorialGoal | None = None
     feed). On a day whose goal is outside the adapter's own domain (e.g. crypto's
     general market-news day) the adapter-specific layer is skipped, since it
     describes that domain and would contradict the day; a topic-specific focus
-    still wins.
+    still wins. A rotating topic's day subject (common/day_subject.py) is one of the
+    things the adapter watches, inside its domain, so the adapter's layer is kept.
+
+    `rotation_focus` is the primary focus of the goal a topic's goal rotation picked for this
+    article (common/goal_rotation.py): it stands in for the topic's own `primary_focus`, and the
+    topic's exclusion criteria still apply.
     """
     adapter = topic.get("adapter") or DEFAULT_ADAPTER
     raw_goals = topic.get("editorial_goals")
     goals = raw_goals if isinstance(raw_goals, dict) else {}
-    focus = _clean(goals.get("primary_focus"))
+    focus = _clean(rotation_focus) or _clean(goals.get("primary_focus"))
     exclusions = _clean(goals.get("exclusion_criteria"))
 
     if focus:

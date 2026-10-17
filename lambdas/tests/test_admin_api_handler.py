@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import boto3
@@ -11,6 +12,12 @@ from moto import mock_aws
 from table_schemas import create_table
 
 import admin_api_handler
+import daily_cycle_handler
+from common import evidence
+from common.adapters import MANUAL_REVIEW_ADAPTERS
+from common.adapters.base import DaySubject
+from common.adapters.github_trending import GitHubTrendingAdapter
+from common.adapters.registry import ADAPTER_REGISTRY
 
 REGION = "ap-southeast-2"
 
@@ -216,13 +223,19 @@ def test_create_topic_success(aws_resources):
         "model_id": None,
         "fallback_model_id": None,
         "model_id_candidates": None,
+        # The first topic takes stagger slot 1 (common/stagger.py): its research heartbeat at :05
+        # past, and its daily cycle one slot past the hour's last heartbeat (one topic: :10).
+        # What was written to EventBridge Scheduler is recorded on the row.
+        "stagger_slot": 1,
+        "research_schedule": "cron(5 * * * ? *)",
+        "daily_schedule": "cron(10 9 * * ? *)",
     }
 
     table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
     assert table.get_item(Key={"topic_id": "new-topic"})["Item"] == created
 
     mock_upsert.assert_called_once_with(
-        "new-topic", "rate(1 hour)", "cron(0 9 * * ? *)", "Australia/Sydney"
+        "new-topic", "cron(5 * * * ? *)", "cron(10 9 * * ? *)", "Australia/Sydney", enabled=True
     )
 
 
@@ -328,8 +341,10 @@ def test_create_topic_custom_cadence(aws_resources):
     assert created["research_cadence"] == "rate(30 minutes)"
     assert created["daily_cadence"] == "cron(0 12 * * ? *)"
     assert created["daily_timezone"] == "Australia/Sydney"
+    # A rate in minutes has no hour to be a minute past, so it is written as it is; the daily
+    # cron gets the slot's minute.
     mock_upsert.assert_called_once_with(
-        "new-topic", "rate(30 minutes)", "cron(0 12 * * ? *)", "Australia/Sydney"
+        "new-topic", "rate(30 minutes)", "cron(10 12 * * ? *)", "Australia/Sydney", enabled=True
     )
 
 
@@ -346,7 +361,7 @@ def test_create_topic_custom_daily_timezone(aws_resources):
     assert result["statusCode"] == 201
     assert json.loads(result["body"])["daily_timezone"] == "America/New_York"
     mock_upsert.assert_called_once_with(
-        "new-topic", "rate(1 hour)", "cron(0 9 * * ? *)", "America/New_York"
+        "new-topic", "cron(5 * * * ? *)", "cron(10 9 * * ? *)", "America/New_York", enabled=True
     )
 
 
@@ -457,7 +472,12 @@ def test_update_topic_partial(aws_resources):
     assert updated["research_cadence"] == "rate(1 hour)"
     assert updated["daily_cadence"] == "cron(0 9 * * ? *)"
     assert updated["daily_timezone"] == "UTC"
-    mock_upsert.assert_called_once_with("github-trending", "rate(1 hour)", "cron(0 9 * * ? *)", "UTC")
+    # A topic from before stagger slots existed is given one (the only topic: slot 1) the first
+    # time it is edited, and its schedules are written at that slot's minutes.
+    assert updated["stagger_slot"] == 1
+    mock_upsert.assert_called_once_with(
+        "github-trending", "cron(5 * * * ? *)", "cron(10 9 * * ? *)", "UTC", enabled=True
+    )
 
 
 def test_update_topic_switching_to_crypto_feed_forces_is_financial_true(aws_resources):
@@ -506,7 +526,7 @@ def test_update_topic_custom_cadence(aws_resources):
     assert updated["research_cadence"] == "rate(2 hours)"
     assert updated["daily_cadence"] == "cron(0 18 * * ? *)"
     mock_upsert.assert_called_once_with(
-        "github-trending", "rate(2 hours)", "cron(0 18 * * ? *)", "UTC"
+        "github-trending", "cron(5 */2 * * ? *)", "cron(10 18 * * ? *)", "UTC", enabled=True
     )
 
 
@@ -523,7 +543,7 @@ def test_update_topic_moves_a_legacy_topic_to_sydney_time(aws_resources):
     assert result["statusCode"] == 200
     assert json.loads(result["body"])["daily_timezone"] == "Australia/Sydney"
     mock_upsert.assert_called_once_with(
-        "github-trending", "rate(1 hour)", "cron(0 9 * * ? *)", "Australia/Sydney"
+        "github-trending", "cron(5 * * * ? *)", "cron(10 9 * * ? *)", "Australia/Sydney", enabled=True
     )
 
 
@@ -540,6 +560,32 @@ def test_update_topic_keeps_an_already_set_timezone_on_unrelated_edits(aws_resou
 
     assert result["statusCode"] == 200
     assert mock_upsert.call_args.args[3] == "Australia/Sydney"
+
+
+def test_a_rotating_topics_stamps_per_subject_survive_an_unrelated_update_and_get_returns_them(
+    aws_resources,
+):
+    """The daily cycle's per-subject stamps (common/day_subject.py) are the topic item's like
+    last_article_at: an edit keeps them (it reads the item and writes it back whole), GET shows
+    them, and an update cannot set them."""
+    stamps = {"north": "2026-10-12T22:05:00+00:00", "south": "2026-10-13T22:05:00+00:00"}
+    _put_topic({**TOPIC, "last_article_at": stamps["south"], "last_article_by_subject": stamps})
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"name": "Renamed", "last_article_by_subject": {"north": "2030-01-01T00:00:00+00:00"}},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["last_article_by_subject"] == stamps
+    got = admin_api_handler.handler(
+        _event("GET /topics/{topic_id}", path_params={"topic_id": "github-trending"}), None
+    )
+    topic = json.loads(got["body"])
+    assert topic["name"] == "Renamed"
+    assert topic["last_article_by_subject"] == stamps and topic["last_article_at"] == stamps["south"]
 
 
 def test_update_topic_invalid_daily_timezone_returns_400(aws_resources):
@@ -828,6 +874,334 @@ def test_list_candidates_unknown_topic_returns_404(aws_resources):
     assert result["statusCode"] == 404
 
 
+# --- GET /topics/{topic_id}/findings (`findings list`) ----------------------------------------------
+
+LIST_FINDINGS = "GET /topics/{topic_id}/findings"
+
+
+def _put_finding(hours_ago: float, *, expires_in_days: float = 14, summary: str | None = None, **more):
+    now = datetime.now(UTC)
+    captured = (now - timedelta(hours=hours_ago)).isoformat()
+    item = {
+        "topic_id": "github-trending",
+        "captured_at": captured,
+        "expires_at": int((now + timedelta(days=expires_in_days)).timestamp()),
+        "summary": summary if summary is not None else f"finding from {hours_ago} hours ago",
+        "raw_snapshot_s3_key": f"snapshots/github-trending/{captured}.json",
+        "source_refs": [{"url": "https://example.test/x", "title": "x", "accessed_at": captured}],
+        **more,
+    }
+    boto3.resource("dynamodb", region_name=REGION).Table("Findings").put_item(Item=item)
+    return item
+
+
+def _list_findings(query: dict | None = None, topic_id: str = "github-trending") -> tuple[int, dict]:
+    event = _event(LIST_FINDINGS, path_params={"topic_id": topic_id})
+    if query is not None:
+        event["queryStringParameters"] = query
+    result = admin_api_handler.handler(event, None)
+    return result["statusCode"], json.loads(result["body"])
+
+
+def test_list_findings_is_newest_first_without_the_expired_and_says_how_many(aws_resources):
+    _put_topic()
+    _put_finding(30, research_call={"input_tokens": Decimal("12"), "output_tokens": Decimal("3")})
+    _put_finding(2)
+    _put_finding(50, expires_in_days=-1)  # expired, not yet deleted by the TTL
+    _put_finding(1)
+    before = datetime.now(UTC)
+
+    status, body = _list_findings()
+
+    assert status == 200
+    assert [f["summary"] for f in body["findings"]] == [
+        "finding from 1 hours ago", "finding from 2 hours ago", "finding from 30 hours ago",
+    ]  # fmt: skip
+    assert body["topic_id"] == "github-trending" and body["since"] is None
+    assert datetime.fromisoformat(body["until"]) >= before
+    assert body["count"] == 3 and body["count_is_at_least"] is False
+    assert body["expired_left_out"] == 1 and body["more"] is False and body["truncated"] is False
+    # Decimals came back as JSON numbers, and the raw item is there whole.
+    assert body["findings"][2]["research_call"] == {"input_tokens": 12, "output_tokens": 3}
+    assert body["findings"][0]["raw_snapshot_s3_key"].startswith("snapshots/github-trending/")
+
+
+def test_list_findings_limit_days_and_since(aws_resources):
+    _put_topic()
+    for hours in (1, 2, 20, 30, 70):
+        _put_finding(hours)
+
+    status, body = _list_findings({"limit": "2"})
+    assert status == 200 and len(body["findings"]) == 2
+    assert body["count"] == 5 and body["more"] is True
+
+    status, body = _list_findings({"days": "1"})
+    assert status == 200
+    assert [f["summary"] for f in body["findings"]] == [f"finding from {h} hours ago" for h in (1, 2, 20)]
+    assert body["count"] == 3 and body["more"] is False
+    assert datetime.fromisoformat(body["since"]) < datetime.now(UTC) - timedelta(hours=23)
+
+    since = (datetime.now(UTC) - timedelta(hours=25)).replace(tzinfo=None).isoformat()  # naive: UTC
+    status, body = _list_findings({"since": since})
+    assert status == 200 and body["since"].endswith("+00:00")
+    assert [f["summary"] for f in body["findings"]] == [f"finding from {h} hours ago" for h in (1, 2, 20)]
+
+    ahead = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    status, body = _list_findings({"since": ahead})
+    assert status == 200 and body["findings"] == [] and body["count"] == 0
+
+
+def test_list_findings_next_article_reads_what_the_daily_run_reads(aws_resources):
+    """From the last article, within the topic's window, expired items included (the TTL has not
+    deleted them and the daily run keeps them), at most the daily run's cap."""
+    last_article = datetime.now(UTC) - timedelta(hours=10)
+    _put_topic({**TOPIC, "last_article_at": last_article.isoformat(), "findings_window_hours": 192})
+    _put_finding(1)
+    _put_finding(5, expires_in_days=-1)  # expired but in the window: the daily run reads it
+    _put_finding(12)  # before the last article: not read
+
+    status, body = _list_findings({"next_article": "true", "limit": "1"})
+
+    assert status == 200
+    assert body["since"] == last_article.isoformat()
+    assert [f["summary"] for f in body["findings"]] == ["finding from 1 hours ago"]
+    assert body["count"] == 2 and body["count_is_at_least"] is False
+    assert body["expired_left_out"] == 0 and body["more"] is True
+
+
+def test_list_findings_next_article_caps_at_the_daily_runs_window(aws_resources):
+    assert admin_api_handler.FINDINGS_WINDOW_MAX == daily_cycle_handler.MAX_WINDOW_FINDINGS == 48
+    _put_topic({**TOPIC, "findings_window_hours": 192})
+    for minutes in range(50):
+        _put_finding(minutes / 60)
+
+    status, body = _list_findings({"next_article": "true", "limit": "20"})
+
+    assert status == 200 and len(body["findings"]) == 20
+    assert body["count"] == 49 and body["count_is_at_least"] is True and body["more"] is True
+
+
+def test_list_findings_next_article_on_a_subject_reads_what_that_subjects_day_reads(aws_resources):
+    """A topic that rotates (common/day_subject.py): the window from the subject's own last article,
+    the run's cap, then only the Findings that report the subject."""
+    now = datetime.now(UTC)
+    north_last = now - timedelta(hours=30)
+    _put_topic(
+        {
+            **TOPIC,
+            "findings_window_hours": 96,
+            "last_article_at": (now - timedelta(hours=2)).isoformat(),
+            "last_article_by_subject": {"north": north_last.isoformat()},
+        }
+    )
+    _put_finding(1, subjects=["north"])
+    _put_finding(5, subjects=["south"])
+    _put_finding(10, subjects=["north", "south"])
+    _put_finding(20)  # no subjects: never drafted by a rotating topic
+    _put_finding(40, subjects=["north"])  # before north's last article
+
+    status, body = _list_findings({"next_article": "true", "subject": "north"})
+
+    assert status == 200 and body["subject"] == "north"
+    assert body["since"] == north_last.isoformat()
+    summaries = [f["summary"] for f in body["findings"]]
+    assert summaries == ["finding from 1 hours ago", "finding from 10 hours ago"]
+    assert body["count"] == 2 and body["count_is_at_least"] is False and body["more"] is False
+
+    status, body = _list_findings({"next_article": "true", "subject": "south"})  # never written about
+    assert status == 200
+    summaries = [f["summary"] for f in body["findings"]]
+    assert summaries == ["finding from 5 hours ago", "finding from 10 hours ago"]
+    assert datetime.fromisoformat(body["since"]) < now - timedelta(hours=95)
+
+    status, body = _list_findings({"next_article": "true"})  # a topic that does not rotate: as it always was
+    assert status == 200 and "subject" not in body
+    assert [f["summary"] for f in body["findings"]] == ["finding from 1 hours ago"]
+
+
+class _SouthToday(GitHubTrendingAdapter):
+    """A topic whose rota says today is south's day, as an adapter that rotates would."""
+
+    def day_subject(self, topic_config, at):
+        return DaySubject(key="south", label="South", mandate="Report for South.", style="Plain.")
+
+
+def _south_day():
+    """The reviewer's repro: the last article (on north) 2 hours ago; a north Finding since, and two
+    south ones before it."""
+    now = datetime.now(UTC)
+    _put_topic(
+        {
+            **TOPIC,
+            "adapter": "rota_test",
+            "findings_window_hours": 96,
+            "last_article_at": (now - timedelta(hours=2)).isoformat(),
+            "last_article_by_subject": {"north": (now - timedelta(hours=2)).isoformat()},
+        }
+    )
+    _put_finding(1, subjects=["north"])
+    _put_finding(5, subjects=["south"])
+    _put_finding(10, subjects=["south"])
+
+
+def test_list_findings_next_article_on_a_rotating_topic_reads_todays_subject_as_the_run_does(
+    aws_resources, monkeypatch
+):
+    """With no subject, a topic that rotates is read for the subject the daily cycle would write
+    about now, never for the topic-wide window no run of it reads; the body names the subject."""
+    monkeypatch.setitem(ADAPTER_REGISTRY, "rota_test", _SouthToday)
+    _south_day()
+
+    status, body = _list_findings({"next_article": "true"})
+
+    assert status == 200 and body["subject"] == "south"
+    summaries = [f["summary"] for f in body["findings"]]
+    assert summaries == ["finding from 5 hours ago", "finding from 10 hours ago"]
+    assert body["count"] == 2 and body["count_is_at_least"] is False
+    assert datetime.fromisoformat(body["since"]) < datetime.now(UTC) - timedelta(hours=95)
+    status, named = _list_findings({"next_article": "true", "subject": "south"})
+    assert status == 200 and named["findings"] == body["findings"] and named["count"] == body["count"]
+
+
+def test_list_findings_next_article_on_a_rotating_topic_whose_rota_breaks_is_a_500(
+    aws_resources, monkeypatch
+):
+    class _Broken(_SouthToday):
+        def day_subject(self, topic_config, at):
+            raise ValueError("the rota broke")
+
+    monkeypatch.setitem(ADAPTER_REGISTRY, "rota_test", _Broken)
+    _south_day()
+
+    status, body = _list_findings({"next_article": "true"})
+
+    assert status == 500 and body["error"] == "internal server error"
+
+
+def test_list_findings_on_a_subject_caps_its_own_findings_not_the_windows_newest_48(aws_resources):
+    """The reviewer's probe: 60 newer Findings for north fill the window's newest 48, and south's
+    older one is still read, as the daily run on south's day reads it."""
+    _put_topic({**TOPIC, "findings_window_hours": 96})
+    _put_finding(50, subjects=["south"], summary="south old")
+    for n in range(60):
+        _put_finding(45 - n * 0.5, subjects=["north"], summary=f"north {n:02d}")
+    _put_finding(1, subjects=["south"], summary="south new")
+
+    status, body = _list_findings({"next_article": "true", "subject": "south"})
+
+    assert status == 200 and [f["summary"] for f in body["findings"]] == ["south new", "south old"]
+    assert body["count"] == 2 and body["count_is_at_least"] is False
+
+    status, body = _list_findings({"next_article": "true", "subject": "north", "limit": "20"})
+    assert status == 200 and len(body["findings"]) == 20
+    assert body["count"] == 60 and body["count_is_at_least"] is False and body["more"] is True
+
+
+@pytest.mark.parametrize(
+    "query, words",
+    [
+        ({"subject": "north"}, "'subject' is read with 'next_article=true' only"),
+        ({"subject": "north", "days": "2"}, "'subject' is read with 'next_article=true' only"),
+        ({"subject": "no rth", "next_article": "true"}, "'subject' must be a subject key"),
+        ({"subject": "x" * 65, "next_article": "true"}, "'subject' must be a subject key"),
+        ({"subject": "", "next_article": "true"}, "'subject' must be a subject key"),
+    ],
+)
+def test_list_findings_refuses_a_subject_that_is_not_one_or_without_next_article(aws_resources, query, words):
+    _put_topic()
+
+    status, body = _list_findings(query)
+
+    assert status == 400 and words in body["error"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"limit": "0"},
+        {"limit": "21"},
+        {"limit": "x"},
+        {"limit": "1.5"},
+        {"days": "0"},
+        {"days": "15"},
+        {"days": "two"},
+        {"since": "yesterday"},
+        {"next_article": "yes"},
+        {"next_article": "false"},
+        {"days": "2", "since": "2026-10-01T00:00:00+00:00"},
+        {"days": "2", "next_article": "true"},
+        {"since": "2026-10-01T00:00:00+00:00", "next_article": "true"},
+    ],
+)
+def test_list_findings_refuses_a_bad_parameter_with_a_400(aws_resources, query):
+    _put_topic()
+    _put_finding(1)
+
+    status, body = _list_findings(query)
+
+    assert status == 400 and "error" in body
+
+
+def test_list_findings_unknown_topic_is_404_and_no_findings_is_an_empty_list(aws_resources):
+    assert _list_findings(topic_id="nope")[0] == 404
+    _put_topic()
+    status, body = _list_findings()
+    assert status == 200 and body["findings"] == [] and body["count"] == 0 and body["more"] is False
+
+
+def test_list_findings_drops_the_oldest_items_when_the_body_would_be_too_large(aws_resources, monkeypatch):
+    _put_topic()
+    for hours in (1, 2, 3, 4):
+        _put_finding(hours, summary="s" * 400)
+    monkeypatch.setattr(admin_api_handler, "FINDINGS_BODY_MAX_BYTES", 1_500)
+
+    status, body = _list_findings()
+
+    assert status == 200 and body["truncated"] is True and body["more"] is True
+    kept = [f["captured_at"] for f in body["findings"]]
+    assert 0 < len(kept) < 4 and kept == sorted(kept, reverse=True)  # the newest stayed
+    assert len(json.dumps(body).encode()) <= 1_500 + 200  # the envelope is what is left over
+
+
+def test_list_findings_calls_only_query_on_the_findings_table(aws_resources):
+    import common.dynamo as dynamo_module
+
+    _put_topic({**TOPIC, "last_article_at": (datetime.now(UTC) - timedelta(hours=3)).isoformat()})
+    _put_finding(1)
+    calls: dict[str, list[str]] = {}
+    real_get_table = dynamo_module.get_table
+
+    class _Recorded:
+        def __init__(self, name, table):
+            self._name, self._table = name, table
+
+        def __getattr__(self, attribute):
+            calls.setdefault(self._name, []).append(attribute)
+            return getattr(self._table, attribute)
+
+    with patch.object(dynamo_module, "get_table", lambda name: _Recorded(name, real_get_table(name))):
+        for query in (None, {"days": "3"}, {"next_article": "true"}, {"since": "2026-01-01"}):
+            assert _list_findings(query)[0] == 200
+
+    assert set(calls["Findings"]) == {"query"}
+    assert set(calls["Topics"]) == {"get_item"}
+
+
+# --- the findings routes are declared where API Gateway reads them (as the musings routes are) ----
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_findings_route_is_in_the_environments_terraform(env):
+    main = (Path(__file__).resolve().parents[2] / "infra" / "environments" / env / "main.tf").read_text(
+        encoding="utf-8"
+    )
+    admin_routes = main[: main.index('"GET /articles/{article_id}/feedback-status"')]
+    routes = [route for route in admin_api_handler._ROUTES if "findings" in route]
+    assert set(routes) == {"GET /topics/{topic_id}/findings/latest", "GET /topics/{topic_id}/findings"}
+    for route in routes:
+        assert f'"{route}",' in admin_routes, route
+
+
 # --- Moderation queue -----------------------------------------------------
 
 
@@ -1027,7 +1401,10 @@ def test_a_rejection_posts_a_shocked_musing_naming_only_the_topic(aws_resources)
     _put_article()
     _put_moderation_item()
 
-    with patch("admin_api_handler.generate_and_store_rejection_musing") as mock_musing:
+    with (
+        patch("admin_api_handler.generate_and_store_rejection_musing") as mock_musing,
+        patch("admin_api_handler.get_article", wraps=admin_api_handler.get_article) as get_article,
+    ):
         event = _event("POST /moderation-queue/{queue_id}/reject", path_params={"queue_id": "queue-1"})
         result = admin_api_handler.handler(event, None)
 
@@ -1036,6 +1413,7 @@ def test_a_rejection_posts_a_shocked_musing_naming_only_the_topic(aws_resources)
     kwargs = mock_musing.call_args.kwargs
     assert kwargs["topic_id"] == "github-trending" and kwargs["topic_name"] == "GitHub Trending"
     assert set(kwargs) == {"topic_id", "topic_name", "model_id"}  # no article id, no title
+    assert get_article.call_count == 1  # read once: the decision line and the musing share it
 
 
 def test_a_failed_rejection_musing_never_fails_the_rejection(aws_resources):
@@ -1248,9 +1626,9 @@ def test_unpublish_takes_a_published_article_down(aws_resources):
         "musings_removed": 1,
         "cache_invalidated": True,
     }
-    mock_remove.assert_called_once_with("article-1")
+    mock_remove.assert_called_once_with("article-1", figure_count=0)
     mock_musings.assert_called_once_with("article-1")
-    mock_invalidate.assert_called_once_with("article-1")
+    mock_invalidate.assert_called_once_with("article-1", figure_count=0)
 
     article = boto3.resource("dynamodb", region_name=REGION).Table("Articles").get_item(
         Key={"article_id": "article-1"}
@@ -1339,9 +1717,9 @@ def test_unpublish_can_be_repeated_on_an_already_rejected_article(aws_resources)
     result, mock_remove, mock_musings, mock_invalidate = _unpublish()
 
     assert result["statusCode"] == 200
-    mock_remove.assert_called_once_with("article-1")
+    mock_remove.assert_called_once_with("article-1", figure_count=0)
     mock_musings.assert_called_once_with("article-1")
-    mock_invalidate.assert_called_once_with("article-1")
+    mock_invalidate.assert_called_once_with("article-1", figure_count=0)
 
 
 def test_unpublish_refuses_an_article_still_awaiting_moderation(aws_resources):
@@ -1720,6 +2098,71 @@ def test_updating_other_fields_leaves_editorial_goals_alone(aws_resources):
     result = _update("github-trending", {"name": "Renamed"})
 
     assert json.loads(result["body"])["editorial_goals"] == {"primary_focus": "Keep me"}
+
+
+# --- a goal rotation (common/goal_rotation.py) ------------------------------------------------------
+
+_GOAL_ROTATION = [
+    {"name": "access", "primary_focus": "  The served share.  "},
+    {"name": "network", "primary_focus": "The flags."},
+]
+
+
+def _stored_topic(topic_id):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    return table.get_item(Key={"topic_id": topic_id})["Item"]
+
+
+def test_create_topic_stores_a_stripped_goal_rotation(aws_resources):
+    result = _create({"topic_id": "sec", "name": "Security", "editorial_goal_rotation": _GOAL_ROTATION})
+
+    assert result["statusCode"] == 201
+    assert _stored_topic("sec")["editorial_goal_rotation"] == [
+        {"name": "access", "primary_focus": "The served share."},
+        {"name": "network", "primary_focus": "The flags."},
+    ]
+
+
+def test_create_topic_without_a_goal_rotation_stores_none(aws_resources):
+    _create({"topic_id": "sec", "name": "Security", "editorial_goal_rotation": []})
+
+    assert "editorial_goal_rotation" not in _stored_topic("sec")
+
+
+@pytest.mark.parametrize(
+    "bad", ["nope", _GOAL_ROTATION[:1], [_GOAL_ROTATION[0], {"name": "access", "primary_focus": "x"}]]
+)
+def test_create_topic_rejects_an_invalid_goal_rotation(aws_resources, bad):
+    result = _create({"topic_id": "sec", "name": "Security", "editorial_goal_rotation": bad})
+
+    assert result["statusCode"] == 400
+    assert "editorial_goal_rotation" in json.loads(result["body"])["error"]
+
+
+def test_update_topic_replaces_and_clears_a_goal_rotation_and_keeps_its_state(aws_resources):
+    state = {"*": {"goal": "access", "used": ["access"], "from": "a", "to": "b"}}
+    _put_topic({**TOPIC, "goal_rotation_state": state})
+
+    result = _update("github-trending", {"editorial_goal_rotation": _GOAL_ROTATION})
+    assert result["statusCode"] == 200
+    stored = _stored_topic("github-trending")["editorial_goal_rotation"]
+    assert [goal["name"] for goal in stored] == ["access", "network"]
+
+    result = _update("github-trending", {"editorial_goal_rotation": []})
+    assert result["statusCode"] == 200
+    stored = _stored_topic("github-trending")
+    assert "editorial_goal_rotation" not in stored
+    assert stored["goal_rotation_state"] == state
+
+
+def test_update_topic_rejects_an_invalid_goal_rotation_without_writing(aws_resources):
+    _put_topic()
+
+    bad = [{"name": "Bad Name", "primary_focus": "x"}] * 2
+    result = _update("github-trending", {"editorial_goal_rotation": bad})
+
+    assert result["statusCode"] == 400
+    assert "editorial_goal_rotation" not in _stored_topic("github-trending")
 
 
 # --- Feedback limits -----------------------------------------------------------------------
@@ -2481,6 +2924,96 @@ def test_something_that_is_not_a_number_still_fails_loudly():
         admin_api_handler._response(200, {"when": object()})
 
 
+# --- A topic's findings window (common/findings_window.py) ----------------------------------------
+#
+# How far back the daily article reads findings: validated exactly as research_interval_hours is,
+# stored only when set, and cleared with null.
+
+
+def _stored_topic(topic_id):
+    return boto3.resource("dynamodb", region_name=REGION).Table("Topics").get_item(
+        Key={"topic_id": topic_id}
+    ).get("Item")
+
+
+@pytest.mark.parametrize("hours", [1, 192, 336])
+def test_a_topic_can_be_created_with_a_findings_window(aws_resources, hours):
+    result = _create({"topic_id": "rail-sydney", "name": "Sydney rail", "findings_window_hours": hours})
+
+    assert result["statusCode"] == 201
+    assert json.loads(result["body"])["findings_window_hours"] == hours
+    assert _stored_topic("rail-sydney")["findings_window_hours"] == hours
+
+
+def test_a_topic_created_without_a_findings_window_stores_none(aws_resources):
+    _create({"topic_id": "rail-sydney", "name": "Sydney rail"})
+    _create({"topic_id": "rail-boston", "name": "Boston rail", "findings_window_hours": None})
+
+    assert "findings_window_hours" not in _stored_topic("rail-sydney")
+    assert "findings_window_hours" not in _stored_topic("rail-boston")
+
+
+@pytest.mark.parametrize("bad", [0, 337, 1.5, "24", True, -1, [24]])
+def test_an_invalid_findings_window_is_refused_on_create(aws_resources, bad):
+    result = _create({"topic_id": "rail-sydney", "name": "Sydney rail", "findings_window_hours": bad})
+
+    assert result["statusCode"] == 400
+    assert json.loads(result["body"])["error"] == (
+        "'findings_window_hours' must be a whole number of hours from 1 to 336, or null for the "
+        "default (24)"
+    )
+    assert _stored_topic("rail-sydney") is None
+
+
+def test_a_findings_window_can_be_set_changed_and_cleared_on_update(aws_resources):
+    _put_topic()
+
+    for hours in (192, 336):
+        result = _update("github-trending", {"findings_window_hours": hours})
+        assert result["statusCode"] == 200
+        assert _stored_topic("github-trending")["findings_window_hours"] == hours
+
+    cleared = _update("github-trending", {"findings_window_hours": None})
+
+    assert cleared["statusCode"] == 200
+    assert "findings_window_hours" not in json.loads(cleared["body"])
+    assert "findings_window_hours" not in _stored_topic("github-trending")  # back to the default day
+
+
+@pytest.mark.parametrize("bad", [0, 337, 1.5, "24", True])
+def test_an_invalid_findings_window_is_refused_on_update_and_changes_nothing(aws_resources, bad):
+    _put_topic({**TOPIC, "findings_window_hours": 192})
+
+    result = _update("github-trending", {"findings_window_hours": bad})
+
+    assert result["statusCode"] == 400
+    assert "'findings_window_hours' must be a whole number of hours" in json.loads(result["body"])["error"]
+    assert _stored_topic("github-trending")["findings_window_hours"] == 192
+
+
+def test_an_unrelated_update_keeps_the_findings_window(aws_resources):
+    _put_topic({**TOPIC, "findings_window_hours": 192})
+
+    _update("github-trending", {"name": "Renamed"})
+
+    assert _stored_topic("github-trending")["findings_window_hours"] == 192
+
+
+def test_a_topic_s_findings_window_is_fetched_and_listed_as_a_whole_number(aws_resources):
+    _create({"topic_id": "rail-sydney", "name": "Sydney rail", "findings_window_hours": 192})
+
+    fetched = admin_api_handler.handler(
+        _event("GET /topics/{topic_id}", path_params={"topic_id": "rail-sydney"}), None
+    )
+    listed = admin_api_handler.handler(_event("GET /topics"), None)
+
+    assert fetched["statusCode"] == 200 and listed["statusCode"] == 200
+    window = json.loads(fetched["body"])["findings_window_hours"]
+    assert window == 192 and isinstance(window, int)
+    (topic,) = json.loads(listed["body"])["topics"]
+    assert topic["findings_window_hours"] == 192 and isinstance(topic["findings_window_hours"], int)
+
+
 # --- Creating and deleting gear by hand ------------------------------------------------------
 
 
@@ -3118,8 +3651,8 @@ def test_force_takes_a_published_article_down_before_rewriting_it(aws_resources)
     assert result["statusCode"] == 202
     assert body["unpublished"] is True and body["musings_removed"] == 2 and body["cache_invalidated"] is True
     assert body["model_id"] == "anthropic.claude-3-haiku-20240307-v1:0"  # the topic's (here: the default)
-    mocks["remove"].assert_called_once_with("article-1")
-    mocks["invalidate"].assert_called_once_with("article-1")
+    mocks["remove"].assert_called_once_with("article-1", figure_count=0)
+    mocks["invalidate"].assert_called_once_with("article-1", figure_count=0)
     assert _article_row()["status"] == "pending_moderation"
     rows = _queue_rows()
     assert rows["queue-1"]["status"] == "approved"  # the old decision is history, left alone
@@ -3272,3 +3805,450 @@ def test_a_stored_assistant_access_nobody_understands_is_shown_as_off(aws_resour
 
     assert body["assistant_access"] == "locked"
     assert body["effective_assistant_access"] == "off"
+
+
+POLYGON = [[151.2, -33.97], [151.3, -33.97], [151.3, -34.0]]
+
+
+def test_create_topic_satellite_vision_forces_manual_review(aws_resources):
+    body = {
+        "topic_id": "anchorages",
+        "name": "Anchorages",
+        "adapter": "satellite_vision",
+        "adapter_config": {"sites": [{"id": "a", "polygon": POLYGON}]},
+        "force_manual_review": False,
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])
+    assert created["force_manual_review"] is True
+    # Floats in the config are stored (as Decimals) and come back as the same numbers.
+    assert created["adapter_config"]["sites"][0]["polygon"] == POLYGON
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    stored = table.get_item(Key={"topic_id": "anchorages"})
+    assert stored["Item"]["adapter_config"]["sites"][0]["polygon"][0][0] == Decimal("151.2")
+
+
+def test_update_topic_accepts_floats_in_adapter_config(aws_resources):
+    _put_topic()
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"adapter_config": {"weights": [0.25, 1.5]}},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["adapter_config"] == {"weights": [0.25, 1.5]}
+
+
+def test_force_manual_review_can_be_set_on_any_topic_and_must_be_a_boolean(aws_resources):
+    _put_topic()
+    path = {"topic_id": "github-trending"}
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        on = admin_api_handler.handler(
+            _event("PUT /topics/{topic_id}", path_params=path, body={"force_manual_review": True}), None
+        )
+        bad = admin_api_handler.handler(
+            _event("PUT /topics/{topic_id}", path_params=path, body={"force_manual_review": "yes"}), None
+        )
+        bad_create = admin_api_handler.handler(
+            _event("POST /topics", body={"topic_id": "x", "name": "X", "force_manual_review": 1}), None
+        )
+    assert json.loads(on["body"])["force_manual_review"] is True
+    assert bad["statusCode"] == 400 and bad_create["statusCode"] == 400
+
+
+def test_update_cannot_unset_manual_review_on_a_satellite_vision_topic(aws_resources):
+    _put_topic({**TOPIC, "topic_id": "sv", "adapter": "satellite_vision", "force_manual_review": True})
+    event = _event(
+        "PUT /topics/{topic_id}", path_params={"topic_id": "sv"}, body={"force_manual_review": False}
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert json.loads(result["body"])["force_manual_review"] is True
+
+
+RAIL_CONFIG = {"sites": [{"id": "sydney", "name": "Sydney", "polygon": POLYGON}], "reach_m": 1000}
+
+
+def test_the_manual_review_adapters_are_the_two_vision_ones():
+    assert MANUAL_REVIEW_ADAPTERS == frozenset({"satellite_vision", "rail_access"})
+
+
+def test_create_topic_rail_access_forces_manual_review(aws_resources):
+    body = {
+        "topic_id": "rail",
+        "name": "Rail access",
+        "adapter": "rail_access",
+        "adapter_config": RAIL_CONFIG,
+        "force_manual_review": False,
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])
+    assert created["force_manual_review"] is True
+    assert created["adapter_config"]["reach_m"] == 1000
+
+
+def test_update_cannot_unset_manual_review_on_a_rail_access_topic(aws_resources):
+    _put_topic({**TOPIC, "topic_id": "rail", "adapter": "rail_access", "force_manual_review": True})
+    event = _event(
+        "PUT /topics/{topic_id}", path_params={"topic_id": "rail"}, body={"force_manual_review": False}
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert json.loads(result["body"])["force_manual_review"] is True
+
+
+@pytest.mark.parametrize("adapter", sorted(MANUAL_REVIEW_ADAPTERS))
+def test_switching_a_topic_onto_a_manual_review_adapter_forces_the_flag(aws_resources, adapter):
+    _put_topic()  # github-trending, with no flag at all
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"adapter": adapter, "adapter_config": RAIL_CONFIG},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["force_manual_review"] is True
+
+
+# --- figures (common/figures.py) ------------------------------------------------------------------
+
+_FIGURES = [
+    {"key": "vision/t/s/a.png", "caption": "A map", "alt": "The map"},
+    {"key": "vision/t/s/b.png", "caption": "A chart", "alt": "The chart"},
+    {"key": "vision/t/s/c.png", "caption": "Another", "alt": "Another"},
+]
+
+
+def _store_figures(article_id="article-1", figures=_FIGURES):
+    boto3.resource("dynamodb", region_name=REGION).Table("Articles").update_item(
+        Key={"article_id": article_id},
+        UpdateExpression="SET figures = :f",
+        ExpressionAttributeValues={":f": figures},
+    )
+
+
+def test_unpublish_removes_the_articles_figures_with_its_page(aws_resources):
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+    _store_figures()
+
+    result, mock_remove, _, mock_invalidate = _unpublish()
+
+    assert result["statusCode"] == 200
+    mock_remove.assert_called_once_with("article-1", figure_count=3)
+    mock_invalidate.assert_called_once_with("article-1", figure_count=3)  # and /articles/figures/article-1/*
+
+
+def test_a_forced_rewrite_takes_the_figures_down_with_the_page(aws_resources):
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+    _store_figures()
+
+    result, _, _, mocks = _rewrite_article(body={"instructions": "Out of date.", "force": True})
+
+    assert result["statusCode"] == 202
+    mocks["remove"].assert_called_once_with("article-1", figure_count=3)
+    mocks["invalidate"].assert_called_once_with("article-1", figure_count=3)
+
+
+def test_publishing_renders_the_page_with_the_stored_figures_so_they_are_copied_again(aws_resources):
+    _put_article(status="pending_moderation")
+    _put_topic()
+    _store_figures()
+
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page") as mock_render_page,
+        patch("admin_api_handler.generate_and_store_article_musing"),
+    ):
+        event = _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    assert mock_render_page.call_args.kwargs["figures"] == _FIGURES
+
+
+def test_get_article_shows_the_figures_the_page_will_and_where_they_come_from(aws_resources):
+    _put_article()
+    _store_figures(figures=[*_FIGURES[:1], {"key": "../x.png", "caption": "x", "alt": "x"}])
+
+    with patch("admin_api_handler.read_article_body", return_value="# Body"):
+        code, body = _get_article_route()
+
+    assert code == 200
+    assert body["figures"] == _FIGURES[:1]  # the one that is well-formed, with its content-bucket key
+
+
+def test_get_article_has_an_empty_figures_list_when_there_are_none(aws_resources):
+    _put_article()
+
+    with patch("admin_api_handler.read_article_body", return_value="# Body"):
+        _, body = _get_article_route()
+
+    assert body["figures"] == []
+
+
+# --- the evidence lines (common/evidence.py's moderation_decision and topic_changed) ---------------
+
+
+class Context:
+    aws_request_id = "7c1d2e3f-0000-4000-8000-00000000abcd"
+
+
+API_REQUEST_ID = "9b1c3e2a-0000-4000-8000-0000000000aa"
+
+
+def _api_event(route_key, request_id=API_REQUEST_ID, **kwargs):
+    event = _event(route_key, **kwargs)
+    caller = {"userArn": "arn:aws:iam::123456789012:user/x"}  # what API Gateway knows; never written
+    event["requestContext"] = {"requestId": request_id, "identity": caller}
+    return event
+
+
+def admin_lines(capsys):
+    out = capsys.readouterr().out
+    lines = [evidence.parse(line) for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+    assert "arn:" not in out and "userArn" not in out and "123456789012" not in out  # never who
+    return lines
+
+
+def _decided(capsys, decision, from_status, queue_id="queue-1", article_id="article-1"):
+    (line,) = admin_lines(capsys)
+    assert line == {
+        "evidence": evidence.VERSION, "event": "moderation_decision", "tick": Context.aws_request_id,
+        "topic_id": "github-trending", "api_request_id": API_REQUEST_ID, "queue_id": queue_id,
+        "article_id": article_id, "decision": decision, "from_status": from_status, "by": "human",
+    }, line  # fmt: skip
+    return line
+
+
+def test_approving_or_rejecting_a_held_article_leaves_a_decision_line_and_never_who(aws_resources, capsys):
+    _put_article()
+    _put_moderation_item()
+    _put_topic()
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page"),
+        patch("admin_api_handler.generate_and_store_article_musing"),
+    ):
+        event = _api_event("POST /moderation-queue/{queue_id}/approve", path_params={"queue_id": "queue-1"})
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+    _decided(capsys, "approved", "pending_moderation")
+
+    _put_article(article_id="article-2")
+    _put_moderation_item(queue_id="queue-2", article_id="article-2")
+    with patch("admin_api_handler.generate_and_store_rejection_musing"):
+        event = _api_event("POST /moderation-queue/{queue_id}/reject", path_params={"queue_id": "queue-2"})
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+    _decided(capsys, "rejected", "pending_moderation", queue_id="queue-2", article_id="article-2")
+
+    # A route that fails before the write leaves no line.
+    event = _api_event("POST /moderation-queue/{queue_id}/approve", path_params={"queue_id": "queue-1"})
+    assert admin_api_handler.handler(event, Context())["statusCode"] == 409
+    assert admin_lines(capsys) == []
+
+
+def test_force_publishing_and_unpublishing_leave_their_lines(aws_resources, capsys):
+    _put_article(status="pending_moderation")
+    _put_moderation_item()
+    _put_topic()
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page"),
+        patch("admin_api_handler.generate_and_store_article_musing"),
+    ):
+        event = _api_event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+    _decided(capsys, "force_published", "pending_moderation")
+
+    with (
+        patch("admin_api_handler.remove_article_page"),
+        patch("admin_api_handler.delete_musings_for_article", return_value=1),
+        patch("admin_api_handler.invalidate_article_page", return_value=True),
+    ):
+        event = _api_event("POST /articles/{article_id}/unpublish", path_params={"article_id": "article-1"})
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+    _decided(capsys, "unpublished", "published")
+
+
+def test_sending_an_article_back_for_a_rewrite_leaves_a_line_held_or_published(aws_resources, capsys):
+    _put_model_row()
+    _put_article()
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+    body = {"model_id": REWRITE_MODEL, "instructions": "Fix the second section."}
+    event = _api_event("POST /moderation-queue/{queue_id}/rewrite", path_params={"queue_id": "queue-1"},
+                       body=body)  # fmt: skip
+    with patch("admin_api_handler._get_lambda_client", return_value=MagicMock()):
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 202
+    line = _decided(capsys, "sent_back", "pending_moderation")
+    assert "Fix the second section" not in json.dumps(line) and REWRITE_MODEL not in json.dumps(line)
+
+    _put_article(article_id="article-2", status="published")
+    event = _api_event("POST /articles/{article_id}/rewrite", path_params={"article_id": "article-2"},
+                       body={"instructions": "The second section is out of date."})  # fmt: skip
+    with (
+        patch("admin_api_handler._get_lambda_client", return_value=MagicMock()),
+        patch("admin_api_handler.remove_article_page"),
+        patch("admin_api_handler.delete_musings_for_article", return_value=2),
+        patch("admin_api_handler.invalidate_article_page", return_value=True),
+    ):
+        result = admin_api_handler.handler(event, Context())
+    assert result["statusCode"] == 202
+    (line,) = admin_lines(capsys)
+    assert line["decision"] == "sent_back" and line["from_status"] == "published"
+    assert line["article_id"] == "article-2" and line["queue_id"] == json.loads(result["body"])["rewriting"]
+
+    # A rewrite that cannot be started is not a decision taken.
+    _put_article(article_id="article-3")
+    _put_moderation_item(queue_id="queue-3", article_id="article-3", reasons=["Fabricated claim: x"])
+    client = MagicMock()
+    client.invoke.side_effect = RuntimeError("lambda down")
+    event = _api_event("POST /moderation-queue/{queue_id}/rewrite", path_params={"queue_id": "queue-3"},
+                       body={"model_id": REWRITE_MODEL})  # fmt: skip
+    with patch("admin_api_handler._get_lambda_client", return_value=client):
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 502
+    assert admin_lines(capsys) == []
+
+
+SITES = [{"id": "sydney", "name": "Sydney (demo)", "polygon": [[150.86, -34.16], [151.56, -33.58]]}]
+
+
+def test_creating_and_changing_a_topic_leaves_lines_of_keys_and_numbers_never_text(aws_resources, capsys):
+    with patch("admin_api_handler._apply_topic_schedules"):
+        goals = {"primary_focus": "Watch the rail network", "exclusion_criteria": "planners' opinions"}
+        body = {"topic_id": "rail-sydney", "name": "Rail access: Sydney", "adapter": "rail_access",
+                "adapter_config": {"sites": SITES, "triage": True, "served_share_threshold": 0.02},
+                "editorial_goals": goals}  # fmt: skip
+        result = admin_api_handler.handler(_api_event("POST /topics", body=body), Context())
+        assert result["statusCode"] == 201, result
+        (line,) = admin_lines(capsys)
+        assert line["event"] == "topic_changed" and line["action"] == "created"
+        assert line["topic_id"] == "rail-sydney" and line["api_request_id"] == API_REQUEST_ID
+        # Every key set, cut to the codes cap (a new topic has more than twelve) and said so.
+        assert {"adapter", "adapter_config", "name", "editorial_goals"} <= set(line["fields"])
+        assert len(line["fields"]) == evidence.MAX_CODES and line["cut"] == ["fields"]
+        assert line["config_keys"] == ["served_share_threshold", "sites", "triage"]
+        assert line["config_numbers"] == {"served_share_threshold": 0.02} and line["config_on"] == ["triage"]
+        assert line["force_manual_review"] is True  # a rail topic is always held for a person
+        text = json.dumps(line)
+        for never in ("Sydney", "150.86", "Watch the rail", "planners", "Rail access"):
+            assert never not in text
+
+        # A threshold changed, triage switched off, a polygon edited: the keys, the number and
+        # the switch; the polygon never.
+        changed = {"sites": [{**SITES[0], "polygon": [[150.80, -34.2], [151.56, -33.58]]}], "triage": False,
+                   "served_share_threshold": 0.03}  # fmt: skip
+        event = _api_event("PUT /topics/{topic_id}", path_params={"topic_id": "rail-sydney"},
+                           body={"adapter_config": changed})  # fmt: skip
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+        (line,) = admin_lines(capsys)
+        assert line["action"] == "updated"
+        assert "adapter_config" in line["fields"] and "name" not in line["fields"]
+        assert line["config_keys"] == ["served_share_threshold", "sites", "triage"]
+        assert line["config_numbers"] == {"served_share_threshold": 0.03} and line["config_off"] == ["triage"]
+        assert line["config_on"] == [] and "150.8" not in json.dumps(line)
+
+        # An unrelated edit names only what it touched.
+        event = _api_event("PUT /topics/{topic_id}", path_params={"topic_id": "rail-sydney"},
+                           body={"name": "Sydney"})  # fmt: skip
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+        (line,) = admin_lines(capsys)
+        assert line["fields"] == ["name"] and line["config_keys"] == [] and "Sydney" not in json.dumps(line)
+
+        # A refused request writes nothing and leaves no line.
+        event = _api_event("PUT /topics/{topic_id}", path_params={"topic_id": "rail-sydney"},
+                           body={"adapter_config": "not an object"})  # fmt: skip
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 400
+        assert admin_lines(capsys) == []
+
+
+def test_pausing_and_resuming_a_topic_leave_lines(aws_resources, capsys):
+    _put_topic()
+    with (
+        patch("admin_api_handler.set_topic_schedules_state", return_value=[]),
+        patch("admin_api_handler.generate_and_store_pause_musing"),
+    ):
+        for action in ("pause", "resume", "resume"):
+            route = f"POST /topics/{{topic_id}}/{action}"
+            event = _api_event(route, path_params={"topic_id": "github-trending"})
+            assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+    lines = admin_lines(capsys)
+    assert [(line["action"], line["fields"]) for line in lines] == [
+        ("paused", ["paused", "paused_at"]), ("resumed", ["paused", "resumed_at"]),
+    ]  # fmt: skip  # the third call changed nothing
+
+
+def test_the_api_request_id_is_bound_only_when_it_is_an_id(aws_resources, capsys):
+    _put_topic()
+    with (
+        patch("admin_api_handler.set_topic_schedules_state", return_value=[]),
+        patch("admin_api_handler.generate_and_store_pause_musing"),
+    ):
+        event = _api_event("POST /topics/{topic_id}/pause", request_id="not an id\n",
+                           path_params={"topic_id": "github-trending"})  # fmt: skip
+        assert admin_api_handler.handler(event, None)["statusCode"] == 200
+    (line,) = admin_lines(capsys)
+    assert "api_request_id" not in line and "tick" not in line and line["topic_id"] == "github-trending"
+
+
+def test_changed_config_knows_no_key_and_keeps_only_numbers_and_switches():
+    before = {"a": 1, "b": True, "polygon": [[1, 2]], "name": "x", "same": 3}
+    after = {"a": Decimal("2.5"), "b": False, "polygon": [[1, 3]], "name": "y", "same": 3, "new": "text",
+             "Bad Key": 1, "inf": float("inf"), "n": 7}  # fmt: skip
+    assert admin_api_handler.changed_config(before, after) == {
+        "config_keys": ["a", "b", "inf", "n", "name", "new", "polygon"],
+        "config_numbers": {"a": 2.5, "n": 7},
+        "config_on": [],
+        "config_off": ["b"],
+    }
+    assert admin_api_handler.changed_config(None, {"triage": True}) == {
+        "config_keys": ["triage"], "config_numbers": {}, "config_on": ["triage"], "config_off": [],
+    }  # fmt: skip
+    assert admin_api_handler.changed_config({"a": 1}, "not a dict")["config_keys"] == ["a"]
+    assert admin_api_handler.changed_fields({"a": 1, "b": 2}, {"a": 1, "b": 3, "c": None}) == ["b", "c"]
+
+
+def test_trigger_network_prefetch_invokes_the_research_tick_for_a_rail_topic_only(aws_resources):
+    _put_topic({**TOPIC, "topic_id": "trains", "adapter": "rail_access"})
+    mock_client = MagicMock()
+    with patch("admin_api_handler._get_lambda_client", return_value=mock_client):
+        event = _event(
+            "POST /topics/{topic_id}/trigger",
+            path_params={"topic_id": "trains"},
+            body={"pipeline": "network_prefetch"},
+        )
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 202
+    assert json.loads(result["body"]) == {"triggered": "network_prefetch", "topic_id": "trains"}
+    mock_client.invoke.assert_called_once_with(
+        FunctionName="research-tick-fn",
+        InvocationType="Event",
+        Payload=json.dumps({"topic_id": "trains", "prefetch_network": True}).encode("utf-8"),
+    )
+
+    _put_topic()  # github-trending: no network to prefetch
+    mock_client = MagicMock()
+    with patch("admin_api_handler._get_lambda_client", return_value=mock_client):
+        event = _event(
+            "POST /topics/{topic_id}/trigger",
+            path_params={"topic_id": "github-trending"},
+            body={"pipeline": "network_prefetch"},
+        )
+        result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 400 and "rail_access" in json.loads(result["body"])["error"]
+    mock_client.invoke.assert_not_called()
+
+    event = _event(
+        "POST /topics/{topic_id}/trigger",
+        path_params={"topic_id": "trains"},
+        body={"pipeline": "network_prefetch", "force": True},
+    )
+    assert admin_api_handler.handler(event, None)["statusCode"] == 400

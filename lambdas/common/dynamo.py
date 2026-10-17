@@ -70,12 +70,15 @@ def _paginated_query(
     *,
     newest_first: bool = False,
     limit: int | None = None,
+    fields: tuple[str, ...] | None = None,
 ) -> list[dict]:
     """Query an index to completion (or until `limit` items have been gathered) and return them.
 
     Every index here sorts on `created_at`, so `newest_first` returns the most recent first.
     `limit` is applied after the filter: DynamoDB's own Limit counts items *before* filtering,
     which could stop a page short of a match, so this keeps paging until it has enough instead.
+    `fields`, when given, are the only attributes read (a ProjectionExpression, each name through
+    a placeholder, since several are DynamoDB reserved words, `status` among them).
     """
     kwargs = {
         "IndexName": index_name,
@@ -84,6 +87,10 @@ def _paginated_query(
     }
     if filter_expression is not None:
         kwargs["FilterExpression"] = filter_expression
+    if fields:
+        names = {f"#f{n}": field for n, field in enumerate(fields)}
+        kwargs["ProjectionExpression"] = ", ".join(names)
+        kwargs["ExpressionAttributeNames"] = names
     response = table.query(**kwargs)
     items = response.get("Items", [])
     while "LastEvaluatedKey" in response and (limit is None or len(items) < limit):
@@ -95,12 +102,17 @@ def _paginated_query(
 # --- Topics / Findings (research-tick worker) -------------------------------
 
 
-def get_topic(topic_id: str) -> dict | None:
+def get_topic(topic_id: str, *, table=None) -> dict | None:
     """Fetch a Topic item by `topic_id` from the Topics table.
 
     Returns None if no such topic exists.
+
+    `table`, when given, is read instead of the shared resource's Topics table (which keeps
+    botocore's default timeouts and retries): the operator's assistant passes one that gives each
+    request only the time its call has left (ops_mcp/vision_evidence._Bounded).
     """
-    table = get_table(os.environ["TOPICS_TABLE"])
+    if table is None:
+        table = get_table(os.environ["TOPICS_TABLE"])
     response = table.get_item(Key={"topic_id": topic_id})
     return response.get("Item")
 
@@ -113,6 +125,9 @@ def put_finding(
     raw_snapshot_s3_key: str,
     source_refs: list[dict],
     research_call: dict | None = None,
+    figures: list[dict] | None = None,
+    planner_notes: list[dict] | None = None,
+    subjects: list[str] | None = None,
 ) -> None:
     """Write a Finding item to the Findings table.
 
@@ -124,6 +139,19 @@ def put_finding(
     the Finding so the research spend can be tallied into whichever article the
     Finding ends up feeding (common/costing.py's build_research_lineage). A
     Finding written before research tracking has none.
+
+    `figures` is what the adapter drew for this observation (common/figures.py:
+    [{"key", "caption", "alt"}], the key a PNG in the content bucket), stored only
+    when there is at least one: most sources draw nothing, and an absent field reads
+    the same as an empty list everywhere it is used.
+
+    `planner_notes` is the adapter's rule-based notes on what it measured
+    (Adapter.planner_notes: the rail adapter's flags and simulations), DynamoDB-ready
+    (numbers as Decimal), stored likewise only when there is at least one.
+
+    `subjects` are the subject keys the observation reports (Adapter.subjects, cleaned by
+    common/day_subject.clean_subjects), for a topic that rotates through several: its daily cycle
+    drafts the Finding on each of their days. Stored likewise only when there is at least one.
     """
     table = get_table(os.environ["FINDINGS_TABLE"])
     item = {
@@ -136,6 +164,12 @@ def put_finding(
     }
     if research_call is not None:
         item["research_call"] = research_call
+    if figures:
+        item["figures"] = figures
+    if planner_notes:
+        item["planner_notes"] = planner_notes
+    if subjects:
+        item["subjects"] = list(subjects)
     table.put_item(Item=item)
 
 
@@ -175,6 +209,136 @@ def list_recent_findings(topic_id: str, limit: int = 5, since: str | None = None
         Limit=limit,
     )
     return response.get("Items", [])
+
+
+# Interrogating a topic's Findings (the assistant's topic_findings, the Admin API's findings route
+# and `admin_cli findings list`). Read-only, and only ever a Query on the topic's own key: a test
+# in each caller holds the table to `query` and nothing else. list_recent_findings above stays as
+# it is: the daily cycle and Re-Write read a topic that does not rotate through it, and a rotating
+# topic's window through list_findings below (up to common/findings_window.SUBJECT_READ_LIMIT, so
+# the 48-cap falls after the subject filter).
+#
+# DynamoDB's TTL deletes an expired item lazily, up to about two days after `expires_at`, so a
+# read that wants what is still alive skips any item whose `expires_at` has passed (the daily run
+# keeps them, as it always has). An item with no `expires_at` never expires. A 1 MB page can hold
+# fewer items than asked for, so the readers page, a bounded number of times.
+FINDINGS_PAGES_MAX = 5
+FINDINGS_COUNT_PAGES_MAX = 10
+
+
+def _findings_condition(topic_id: str, since: str | None, until: str | None = None):
+    condition = Key("topic_id").eq(topic_id)
+    if since is not None and until is not None:
+        return condition & Key("captured_at").between(since, until)
+    if since is not None:
+        condition = condition & Key("captured_at").gte(since)
+    elif until is not None:
+        condition = condition & Key("captured_at").lte(until)
+    return condition
+
+
+def finding_is_expired(item: dict, unexpired_at: int | None) -> bool:
+    """Whether a Finding's `expires_at` (epoch seconds) is at or before `unexpired_at`. None, or an
+    item with no readable `expires_at`, is never expired."""
+    if unexpired_at is None:
+        return False
+    expires_at = item.get("expires_at")
+    if isinstance(expires_at, bool) or not isinstance(expires_at, int | float | Decimal):
+        return False
+    return expires_at <= unexpired_at
+
+
+def list_findings_page(
+    topic_id: str,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int,
+    start_key: dict | None = None,
+) -> tuple[list[dict], dict | None]:
+    """One page of a topic's Findings, newest first: at most `limit` items captured at or after
+    `since` and, when `until` is given, at or before it (ISO-8601 UTC timestamps, the sort key's
+    own form, compared as it is), from `start_key` on. Returns the items and the key to continue
+    from (None when there are no more)."""
+    table = get_table(os.environ["FINDINGS_TABLE"])
+    kwargs = {
+        "KeyConditionExpression": _findings_condition(topic_id, since, until),
+        "ScanIndexForward": False,
+        "Limit": limit,
+    }
+    if start_key is not None:
+        kwargs["ExclusiveStartKey"] = start_key
+    response = table.query(**kwargs)
+    return response.get("Items", []), response.get("LastEvaluatedKey")
+
+
+def list_findings(
+    topic_id: str,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int,
+    unexpired_at: int | None = None,
+    max_pages: int = FINDINGS_PAGES_MAX,
+) -> tuple[list[dict], int, bool]:
+    """Up to `limit` of a topic's Findings, newest first, captured at or after `since` and at or
+    before `until` (when given: Re-Write reads an article's window, which ends at its creation, so
+    no read is spent on Findings captured since), paging `list_findings_page` at most `max_pages`
+    times. With `unexpired_at` (epoch seconds, now), an item whose `expires_at` has passed is
+    skipped and counted. Returns the items kept, how many expired items were skipped, and whether
+    more items were there than were kept."""
+    kept: list[dict] = []
+    expired = 0
+    start_key = None
+    for _ in range(max_pages):
+        items, start_key = list_findings_page(
+            topic_id, since=since, until=until, limit=limit + 1 - len(kept), start_key=start_key
+        )
+        for item in items:
+            if finding_is_expired(item, unexpired_at):
+                expired += 1
+            else:
+                kept.append(item)
+        if len(kept) > limit or start_key is None:
+            break
+    more = len(kept) > limit or start_key is not None
+    return kept[:limit], expired, more
+
+
+def count_findings(
+    topic_id: str,
+    *,
+    since: str | None = None,
+    unexpired_at: int | None,
+    max_pages: int = FINDINGS_COUNT_PAGES_MAX,
+    most: int | None = None,
+) -> tuple[int, bool]:
+    """How many Findings a topic has captured at or after `since`: a Select=COUNT Query, paged at
+    most `max_pages` times, counting only the unexpired ones when `unexpired_at` (epoch seconds,
+    now) is given, and stopping once `most` have been counted when that is given. Returns the
+    count and whether it is complete (False: the pages or `most` ran out, so it is a floor)."""
+    table = get_table(os.environ["FINDINGS_TABLE"])
+    kwargs = {
+        "KeyConditionExpression": _findings_condition(topic_id, since),
+        "Select": "COUNT",
+    }
+    if unexpired_at is not None:
+        kwargs["FilterExpression"] = Attr("expires_at").not_exists() | Attr("expires_at").gt(unexpired_at)
+    count = 0
+    start_key = None
+    for _ in range(max_pages):
+        if most is not None:
+            kwargs["Limit"] = most - count
+        if start_key is not None:
+            kwargs["ExclusiveStartKey"] = start_key
+        response = table.query(**kwargs)
+        count += int(response.get("Count") or 0)
+        start_key = response.get("LastEvaluatedKey")
+        if start_key is None:
+            return count, True
+        if most is not None and count >= most:
+            return count, False
+    return count, False
 
 
 def put_candidate_idea(
@@ -283,14 +447,31 @@ def put_article(
     body_original_s3_key: str | None = None,
     equipment_used: list[dict] | None = None,
     attribution: list[dict] | None = None,
+    figures: list[dict] | None = None,
+    subject: str | None = None,
+    editorial_goal: str | None = None,
+    revisit: bool = False,
 ) -> dict:
     """Write an Articles item and return it.
+
+    `subject` is the key of the day's subject the article was written about, for a topic that
+    rotates through several (common/day_subject.py): Re-Write reads that subject's Findings back.
+    Stored only when given; every other article has no such field.
+
+    `editorial_goal` is the name of the goal of a topic's goal rotation the article was written
+    under, and `revisit` says it was written from Findings an earlier article had already used
+    (common/goal_rotation.py). Each stored only when set.
 
     `attribution` is the source credit this article was drafted with (common/attribution.py:
     [{"text", "label", "url"}], copied from its topic's adapter), kept so the article goes on
     showing the credit it was published with even if the adapter's declaration changes. An empty
     list means it was drafted with nothing to credit; absent means it predates this and readers
     of it fall back to the topic's adapter.
+
+    `figures` are the pictures the article shows (common/figures.py: [{"key", "caption", "alt"}],
+    gathered from the findings it was written from), stored only when there is at least one. The
+    count of them is what a take-down needs to remove the copies on the site, so the list is
+    fixed here and never edited afterwards.
 
     `equipment_used` is the gear whose guidance was in the prompts that wrote this article
     (common/equipment.py: [{"topic_id", "version", "slot"}]); an empty list means it was written
@@ -332,6 +513,14 @@ def put_article(
         item["equipment_used"] = equipment_used
     if attribution is not None:
         item["attribution"] = attribution
+    if figures:
+        item["figures"] = figures
+    if subject is not None:
+        item["subject"] = subject
+    if editorial_goal is not None:
+        item["editorial_goal"] = editorial_goal
+    if revisit:
+        item["revisit"] = True
     table.put_item(Item=item)
     return {**item, "lineage": lineage}
 
@@ -382,9 +571,13 @@ def put_moderation_item(
 # --- Admin API ---------------------------------------------------------------
 
 
-def list_topics() -> list[dict]:
-    """Return every Topic item (Scan -- acceptable at this project's scale)."""
-    table = get_table(os.environ["TOPICS_TABLE"])
+def list_topics(*, table=None) -> list[dict]:
+    """Return every Topic item (Scan -- acceptable at this project's scale).
+
+    `table`, when given, is what every page is scanned through instead of the shared resource's
+    Topics table, as for get_topic."""
+    if table is None:
+        table = get_table(os.environ["TOPICS_TABLE"])
     response = table.scan()
     items = response.get("Items", [])
     while "LastEvaluatedKey" in response:
@@ -399,17 +592,95 @@ def put_topic(item: dict) -> None:
     table.put_item(Item=item)
 
 
-def set_topic_last_article_at(topic_id: str, timestamp: str) -> None:
+def set_topic_last_article_at(topic_id: str, timestamp: str, subject_key: str | None = None) -> None:
     """Set only a Topic's `last_article_at` (ISO-8601 UTC), leaving every other
     attribute alone. Fails (ConditionalCheckFailedException) rather than
     creating a Topic that no longer exists.
+
+    With `subject_key` (a topic that rotates through subjects, common/day_subject.py), also that
+    subject's entry in `last_article_by_subject` (a map of subject key to ISO time; the other
+    subjects' entries are left alone). DynamoDB refuses to set a map and a key inside it in one
+    expression, so it is two writes: the map is made if the topic has none, then the subject's
+    entry and `last_article_at` are set together, so the two stamps never disagree. If the first
+    write fails, neither stamp is set.
+
+    A `last_article_by_subject` that is there but is not a map (edited by hand: the Admin API never
+    writes it) is replaced by a fresh one in the first write, and the log says so: DynamoDB refuses
+    a key inside anything else, and a topic whose stamp could never be set would read its subject's
+    whole window again every run. Its readers already read such a field as no stamps
+    (common/findings_window.last_article_at), so only this subject's stamp is in the new map.
     """
     table = get_table(os.environ["TOPICS_TABLE"])
+    if subject_key is None:
+        table.update_item(
+            Key={"topic_id": topic_id},
+            UpdateExpression="SET last_article_at = :t",
+            ConditionExpression="attribute_exists(topic_id)",
+            ExpressionAttributeValues={":t": timestamp},
+        )
+        return
+    try:
+        # Made when missing, replaced when not a map; a map (the usual case) fails the condition
+        # and is left alone, and so is a missing topic, which the second write then refuses.
+        replaced = table.update_item(
+            Key={"topic_id": topic_id},
+            UpdateExpression="SET last_article_by_subject = :empty",
+            ConditionExpression=(
+                "attribute_exists(topic_id) AND (attribute_not_exists(last_article_by_subject) "
+                "OR NOT attribute_type(last_article_by_subject, :map))"
+            ),
+            ExpressionAttributeValues={":empty": {}, ":map": "M"},
+            ReturnValues="UPDATED_OLD",
+        ).get("Attributes") or {}
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        replaced = {}
+    if "last_article_by_subject" in replaced:
+        print(
+            f"dynamo: topic_id={topic_id} had a last_article_by_subject that was a "
+            f"{type(replaced['last_article_by_subject']).__name__}, not a map; replaced it with a "
+            f"map holding subject={subject_key}'s stamp"
+        )
     table.update_item(
         Key={"topic_id": topic_id},
-        UpdateExpression="SET last_article_at = :t",
+        UpdateExpression="SET last_article_at = :t, last_article_by_subject.#subject = :t",
         ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeNames={"#subject": subject_key},
         ExpressionAttributeValues={":t": timestamp},
+    )
+
+
+def set_topic_goal_rotation_state(topic_id: str, key: str, state: dict) -> None:
+    """Set one entry of a Topic's `goal_rotation_state` (common/goal_rotation.py: a map of subject
+    key, or its topic-wide key, to {"goal", "used", "from", "to"}), leaving the other entries and
+    every other attribute alone. Two writes, as set_topic_last_article_at's subject stamp: the map
+    is made when missing (or replaced when it is not a map, which only a hand edit makes, and the
+    log says so), then the entry is set. Fails rather than creating a Topic that no longer exists."""
+    table = get_table(os.environ["TOPICS_TABLE"])
+    try:
+        replaced = table.update_item(
+            Key={"topic_id": topic_id},
+            UpdateExpression="SET goal_rotation_state = :empty",
+            ConditionExpression=(
+                "attribute_exists(topic_id) AND (attribute_not_exists(goal_rotation_state) "
+                "OR NOT attribute_type(goal_rotation_state, :map))"
+            ),
+            ExpressionAttributeValues={":empty": {}, ":map": "M"},
+            ReturnValues="UPDATED_OLD",
+        ).get("Attributes") or {}
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        replaced = {}
+    if "goal_rotation_state" in replaced:
+        print(
+            f"dynamo: topic_id={topic_id} had a goal_rotation_state that was a "
+            f"{type(replaced['goal_rotation_state']).__name__}, not a map; replaced it with a map "
+            f"holding {key}'s entry"
+        )
+    table.update_item(
+        Key={"topic_id": topic_id},
+        UpdateExpression="SET goal_rotation_state.#key = :s",
+        ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeNames={"#key": key},
+        ExpressionAttributeValues={":s": state},
     )
 
 
@@ -1220,6 +1491,46 @@ def get_newest_article_for_topic(topic_id: str) -> dict | None:
     return items[0] if items else None
 
 
+# How many of a topic's articles list_articles_for_topic reads at most: the operator's assistant
+# joins a window of at most 1,000 decision lines to the articles their Findings fed, and a topic
+# writes at most one article a day.
+ARTICLES_FOR_TOPIC_MAX = 200
+# The only attributes list_articles_for_topic reads: what ops_mcp/vision_evidence.py's join uses (the
+# lineage's captured_at finds the article; its id, status, who published it and when say what a
+# person did). Never the title or the body's key, so a topic's 200 articles stay a short read.
+ARTICLES_FOR_TOPIC_FIELDS = ("article_id", "status", "published_by", "created_at", "published_at", "lineage")
+
+
+def list_articles_for_topic(
+    topic_id: str, since_iso: str, *, limit: int = ARTICLES_FOR_TOPIC_MAX, table=None
+) -> list[dict]:
+    """The topic's articles created at or after `since_iso`, in any status, newest first and at
+    most `limit` of them (between one and ARTICLES_FOR_TOPIC_MAX, whatever is asked): one Query on
+    the topic index (by_topic_created_at), with `created_at` in the key condition, paginated, never
+    a Scan, reading only ARTICLES_FOR_TOPIC_FIELDS. For the operator's assistant
+    (ops_mcp/vision_evidence.py), which finds the article a vision decision's Finding fed by the
+    lineage's `captured_at`, and reads its status and `published_by` for what a person did. Lineage
+    Decimals come back as plain numbers, as list_articles_by_status gives them.
+
+    `table`, when given, is what every page is queried through instead of the shared resource's
+    Articles table (which keeps botocore's default timeouts and retries): the assistant passes one
+    that gives each page only the time its call has left (vision_evidence._Bounded)."""
+    if table is None:
+        table = get_table(os.environ["ARTICLES_TABLE"])
+    items = _paginated_query(
+        table,
+        ARTICLES_BY_TOPIC_INDEX,
+        Key("topic_id").eq(topic_id) & Key("created_at").gte(since_iso),
+        newest_first=True,
+        limit=max(1, min(ARTICLES_FOR_TOPIC_MAX, int(limit))),
+        fields=ARTICLES_FOR_TOPIC_FIELDS,
+    )
+    for item in items:
+        if "lineage" in item:
+            item["lineage"] = _lineage_from_item(item["lineage"])
+    return items
+
+
 # --- FailedExecutions (DLQ consumer) -------------------------------------
 #
 # Owned by the dlq_handler worker. A FailedExecutions item is written once
@@ -1452,8 +1763,10 @@ def get_pipeline_config() -> dict | None:
     state: every setting then takes its built-in default)."""
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])
     item = table.get_item(Key={"config_id": _PIPELINE_CONFIG_ID}).get("Item")
-    if item is not None and item.get("research_interval_hours") is not None:
-        item["research_interval_hours"] = int(item["research_interval_hours"])
+    if item is not None:
+        for number in ("research_interval_hours", "stagger_minutes"):
+            if item.get(number) is not None:
+                item[number] = int(item[number])
     return item
 
 
@@ -1466,17 +1779,20 @@ def put_pipeline_config(
     review_mode=_UNSET,
     review_on_unavailable=_UNSET,
     assistant_access=_UNSET,
+    stagger_minutes=_UNSET,
 ) -> dict:
     """Update pipeline-wide settings and return the row.
 
     Only the settings passed are touched (a value sets it, None clears it), so
-    editing one never wipes another or one added later.
+    editing one never wipes another or one added later. `stagger_minutes` is the
+    gap between one topic's schedules and the next (common/stagger.py).
     """
     updates = {
         "research_interval_hours": research_interval_hours,
         "review_mode": review_mode,
         "review_on_unavailable": review_on_unavailable,
         "assistant_access": assistant_access,
+        "stagger_minutes": stagger_minutes,
     }
     sets, removes, values = [], [], {}
     for index, (name, value) in enumerate(updates.items()):
@@ -1760,6 +2076,28 @@ def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
         UpdateExpression="SET last_research_at = :t",
         ConditionExpression="attribute_exists(topic_id)",
         ExpressionAttributeValues={":t": timestamp},
+    )
+
+
+def set_topic_fields(topic_id: str, fields: dict) -> None:
+    """Set the given attributes on a Topic (`paused`, `stagger_slot`, the schedules
+    written for it, ...), leaving every other attribute alone. Fails
+    (ConditionalCheckFailedException) rather than creating a deleted topic. The
+    attribute names go through placeholders, so a reserved word is fine."""
+    if not fields:
+        return
+    names, values, sets = {}, {}, []
+    for index, (name, value) in enumerate(fields.items()):
+        names[f"#f{index}"] = name
+        values[f":v{index}"] = value
+        sets.append(f"#f{index} = :v{index}")
+    table = get_table(os.environ["TOPICS_TABLE"])
+    table.update_item(
+        Key={"topic_id": topic_id},
+        UpdateExpression="SET " + ", ".join(sets),
+        ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
     )
 
 

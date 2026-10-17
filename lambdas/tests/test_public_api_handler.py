@@ -408,6 +408,7 @@ def test_topic_activity_false_when_no_findings(aws_resources):
     assert json.loads(result["body"]) == {
         "topic_id": "github-trending",
         "researching": False,
+        "paused": False,
         "pending_review_count": 0,
         "pipeline_items": [],
     }
@@ -422,6 +423,7 @@ def test_topic_activity_true_when_finding_exists(aws_resources):
     assert json.loads(result["body"]) == {
         "topic_id": "github-trending",
         "researching": True,
+        "paused": False,
         "pending_review_count": 0,
         "pipeline_items": [
             {
@@ -509,7 +511,13 @@ def test_topic_activity_never_leaks_raw_finding_or_moderation_content(aws_resour
     event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
     result = public_api_handler.handler(event, None)
     body = json.loads(result["body"])
-    assert set(body.keys()) == {"topic_id", "researching", "pending_review_count", "pipeline_items"}
+    assert set(body.keys()) == {
+        "topic_id",
+        "researching",
+        "paused",
+        "pending_review_count",
+        "pipeline_items",
+    }
     # Nothing from the pending ModerationQueue item -- not its article_id,
     # not its reasons, not its queue_id -- appears anywhere in the response.
     body_text = result["body"]
@@ -573,6 +581,35 @@ def test_researching_compares_urls_before_titles(aws_resources):
     )
 
     assert _researching_item(_activity())["title"] == "Update"
+
+
+# --- a paused topic (admin CLI `topics pause`) says so instead of "Researching" ---------
+
+
+PAUSED_TOPIC = {**TOPIC, "paused": True, "paused_at": "2026-10-13T09:00:00+00:00"}
+
+
+def test_a_paused_topic_says_paused_in_the_pipeline_box_instead_of_researching(aws_resources):
+    _put_finding(source_refs=[{"url": "https://github.com/example/x", "title": "example/x"}])
+    _put_topic(PAUSED_TOPIC)
+
+    activity = _activity()
+
+    assert activity["paused"] is True and activity["researching"] is False
+    assert activity["pipeline_items"] == [
+        {"status": "paused", "label": "Paused", "title": "", "since": "2026-10-13T09:00:00+00:00"}
+    ]
+    assert "example/x" not in json.dumps(activity)
+
+
+def test_a_running_topic_is_not_paused(aws_resources):
+    _put_finding(source_refs=[{"url": "https://github.com/example/x", "title": "example/x"}])
+    _put_topic(TOPIC)
+
+    activity = _activity()
+
+    assert activity["paused"] is False and activity["researching"] is True
+    assert activity["pipeline_items"][0]["status"] == "researching"
 
 
 def test_researching_reports_when_the_topic_was_last_checked(aws_resources):
@@ -2708,3 +2745,53 @@ def test_the_client_is_the_visitor_behind_the_cdn_but_only_with_the_origin_heade
 
     assert public_api_handler._client_ip(via_cdn) == "1.2.3.4"
     assert public_api_handler._client_ip(forged) == "5.6.7.8"
+
+
+# --- figures (common/figures.py) ------------------------------------------------------------------
+
+
+def test_article_detail_gives_each_figure_as_a_site_path_with_its_caption_and_alt(aws_resources):
+    _put_topic()
+    _put_article()
+    _set_article_field(
+        "article-1",
+        "figures",
+        [
+            {"key": "vision/t/s/a.png", "caption": "A map", "alt": "The map"},
+            {"key": "vision/t/s/b.png", "caption": "A chart", "alt": "The chart"},
+        ],
+    )
+
+    body = _article_detail()
+
+    assert body["figures"] == [
+        {"src": "/articles/figures/article-1/1.png", "caption": "A map", "alt": "The map"},
+        {"src": "/articles/figures/article-1/2.png", "caption": "A chart", "alt": "The chart"},
+    ]
+    assert "vision/" not in json.dumps(body)  # the content-bucket key never leaves the pipeline
+
+
+def test_article_detail_always_has_a_figures_list(aws_resources):
+    _put_topic()
+    _put_article()
+
+    assert _article_detail()["figures"] == []
+
+
+def test_article_detail_leaves_out_a_figure_that_is_not_well_formed(aws_resources):
+    _put_topic()
+    _put_article()
+    _set_article_field(
+        "article-1",
+        "figures",
+        [
+            {"key": "../x.png", "caption": "x", "alt": "x"},
+            "junk",
+            {"key": "vision/ok.png", "caption": "ok", "alt": "ok"},
+        ],
+    )
+
+    # Numbered by its place among the well-formed ones, which is where the page's copy went too.
+    assert _article_detail()["figures"] == [
+        {"src": "/articles/figures/article-1/1.png", "caption": "ok", "alt": "ok"}
+    ]

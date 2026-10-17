@@ -49,18 +49,41 @@ jobs:
     # account ID and state bucket (both secrets, with no variable fallback), so production can
     # live in a different AWS account from dev. Unset, the account ID and the bucket are empty
     # and the prefix is "bloggerbear", and nothing changes.
+    # TF_VAR_waf_regional_enabled, TF_VAR_waf_admin_allowlist, TF_VAR_waf_log_all_requests: the
+    # cost-saving firewall switches (docs/cost-saving.md), each from a GitHub variable: the
+    # production-specific one (WAF_..._PROD) if set, else the shared one (WAF_...), else
+    # 'true', which is the firewall exactly as it has always been. Plain variables, not secrets:
+    # a switch is not a secret, and the Terraform variables are bool, so a typo fails the plan
+    # with "a bool is required" instead of silently picking a mode. Turning one off is for a
+    # deployment that only tries the project out; a fork that stores real people's data keeps
+    # every switch on. The admin API's address allowlist is enforced by its resource policy
+    # whatever the switches say.
+    # TF_VAR_waf_site_enabled: the fourth switch, production only (it owns the shared CloudFront
+    # web ACL): WAF_SITE_ENABLED_PROD, else WAF_SITE_ENABLED, else 'true'. Off, the site and the
+    # public API's CDN run without a web ACL, and dev's web_acl_arn must stay empty.
     # TF_VAR_aws_region, TF_STATE_REGION: the home region and the state bucket's region, as in
     # terraform.yml (see the comment there). This job runs in the `production` environment, so
     # an AWS_REGION or TF_STATE_REGION variable set on that environment wins over the
     # repository's; unset in both, the region is the one this project has always used.
+    # TF_VAR_vision_enabled: whether the vision worker (infra/modules/vision-worker, the OpenCV
+    # work) is deployed at all. A plain VISION_ENABLED variable, because it is a switch and not a
+    # secret. It is read as a switch: `true`, in any letter case (Actions compares strings ignoring
+    # case), turns the worker on, and any other value, or none, is handed to Terraform as `false`
+    # (also the variable's own default), so a deployment that never set it never creates the
+    # worker, and a stray value cannot fail the apply (docs/configuration.md).
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_PROD }}
+      TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_PROD || vars.WAF_REGIONAL_ENABLED || 'true' }}
+      TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_PROD || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
+      TF_VAR_waf_log_all_requests: ${{ vars.WAF_LOG_ALL_REQUESTS_PROD || vars.WAF_LOG_ALL_REQUESTS || 'true' }}
+      TF_VAR_waf_site_enabled: ${{ vars.WAF_SITE_ENABLED_PROD || vars.WAF_SITE_ENABLED || 'true' }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_PROD || vars.ALERT_EMAIL_PROD }}
       TF_VAR_aws_account_id: ${{ secrets.AWS_PROD_ACCOUNT_ID }}
       TF_VAR_unique_name_prefix: ${{ vars.UNIQUE_NAME_PREFIX || 'bloggerbear' }}
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_PROD }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
+      TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

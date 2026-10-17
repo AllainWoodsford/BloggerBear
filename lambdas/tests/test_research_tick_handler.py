@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from unittest.mock import patch
 
 import boto3
@@ -9,10 +10,15 @@ import pytest
 from moto import mock_aws
 
 import research_tick_handler
+from common import evidence
+from common.adapters.base import Adapter
 from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.hacker_news import HackerNewsAdapter
+from common.adapters.rail_access import RailAccessAdapter
+from common.adapters.satellite_vision import SatelliteVisionAdapter
 from common.adapters.web_search import WebSearchAdapter
+from common.day_subject import MAX_SUBJECTS_PER_FINDING
 
 REGION = "ap-southeast-2"
 
@@ -287,6 +293,8 @@ def test_adapter_registry_has_every_registered_adapter():
         "hacker_news": HackerNewsAdapter,
         "crypto_feed": CryptoFeedAdapter,
         "web_search": WebSearchAdapter,
+        "satellite_vision": SatelliteVisionAdapter,
+        "rail_access": RailAccessAdapter,
     }
 
 
@@ -599,3 +607,384 @@ def test_a_complete_summary_says_nothing_about_being_cut_off(aws_resources, monk
     _run_one_tick(monkeypatch, _tracked("all of it"))
 
     assert "cut off" not in capsys.readouterr().out
+
+
+# --- figures (common/figures.py) ------------------------------------------------------------------
+
+
+class _DrawingAdapter(GitHubTrendingAdapter):
+    """An adapter that draws: one good figure, and one whose key reaches outside the bucket."""
+
+    def figures(self, new_state):
+        return [
+            {"key": "vision/t/s/scene.png", "caption": "A map", "alt": "The map, described", "extra": 1},
+            {"key": "../outside.png", "caption": "Bad", "alt": "bad"},
+        ]
+
+
+class _ProlificAdapter(GitHubTrendingAdapter):
+    """An adapter that draws more figures than a Finding may carry."""
+
+    def figures(self, new_state):
+        return [
+            {"key": f"vision/t/s/scene-{n}.png", "caption": f"Map {n}", "alt": f"Map {n}"} for n in range(14)
+        ]
+
+
+def _the_finding():
+    (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
+    return finding
+
+
+def test_an_adapters_figures_are_stored_on_the_finding_well_formed_ones_only(aws_resources, monkeypatch):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _DrawingAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    assert _the_finding()["figures"] == [
+        {"key": "vision/t/s/scene.png", "caption": "A map", "alt": "The map, described"}
+    ]
+
+
+def test_a_finding_carries_at_most_the_figure_cap(aws_resources, monkeypatch):
+    """A Findings item is capped at 400 KB; an adapter that draws without limit is cut at the cap,
+    the first ones kept (common/figures.py MAX_FIGURES_PER_FINDING)."""
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _ProlificAdapter)
+
+    _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    stored = _the_finding()["figures"]
+    assert len(stored) == research_tick_handler.MAX_FIGURES_PER_FINDING == 10
+    assert [f["key"] for f in stored][:2] == ["vision/t/s/scene-0.png", "vision/t/s/scene-1.png"]
+
+
+def test_an_adapter_draws_nothing_unless_it_says_so_and_its_finding_has_no_figures_field(
+    aws_resources, monkeypatch
+):
+    assert GitHubTrendingAdapter().figures({"repos": []}) == []  # the base class's default
+
+    _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert "figures" not in _the_finding()
+
+
+# --- planner notes (Adapter.planner_notes) --------------------------------------------------------
+
+
+class _NotingAdapter(GitHubTrendingAdapter):
+    """An adapter with more rule-based notes than a Finding keeps, one carrying a number."""
+
+    def planner_notes(self, new_state):
+        notes = [{"kind": "flag", "type": "t", "stations": [f"s{n}"], "text": f"Note {n}."} for n in range(9)]
+        notes[0]["ratio"] = 2.5
+        return [*notes[:1], "not a note", *notes[1:]]
+
+
+class _BrokenNotesAdapter(GitHubTrendingAdapter):
+    def planner_notes(self, new_state):
+        raise RuntimeError("the rules broke")
+
+
+class _NanNotesAdapter(GitHubTrendingAdapter):
+    def planner_notes(self, new_state):
+        return [{"kind": "flag", "type": "t", "stations": [], "text": "Odd.", "ratio": float("nan")}]
+
+
+def test_an_adapters_planner_notes_are_stored_on_the_finding_capped_and_dynamodb_ready(
+    aws_resources, monkeypatch
+):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _NotingAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    stored = _the_finding()["planner_notes"]
+    assert len(stored) == research_tick_handler.MAX_PLANNER_NOTES_PER_FINDING == 7
+    assert [note["text"] for note in stored] == [f"Note {n}." for n in range(7)]  # dicts only, in order
+    assert stored[0]["ratio"] == Decimal("2.5") and stored[0]["stations"] == ["s0"]
+
+
+@pytest.mark.parametrize("adapter_class", [_BrokenNotesAdapter, _NanNotesAdapter])
+def test_notes_that_fail_or_cannot_be_stored_cost_the_notes_never_the_finding(
+    aws_resources, monkeypatch, capsys, adapter_class
+):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", adapter_class)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    finding = _the_finding()
+    assert finding["summary"] == "a summary" and "planner_notes" not in finding
+    assert "planner notes dropped" in capsys.readouterr().out
+
+
+def test_an_adapter_has_no_planner_notes_unless_it_says_so_and_its_finding_has_no_such_field(
+    aws_resources, monkeypatch
+):
+    assert GitHubTrendingAdapter().planner_notes({"repos": []}) == []  # the base class's default
+
+    _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert "planner_notes" not in _the_finding()
+
+
+# --- the subjects an observation reports (Adapter.subjects, common/day_subject.py) ----------------
+
+
+class _SubjectsAdapter(GitHubTrendingAdapter):
+    """An adapter that reports more subjects than a Finding keeps, with repeats and junk among them."""
+
+    def subjects(self, new_state):
+        return ["sydney", "sydney", "not a key", 7, "melbourne", *[f"city-{n}" for n in range(12)]]
+
+
+class _BrokenSubjectsAdapter(GitHubTrendingAdapter):
+    def subjects(self, new_state):
+        raise RuntimeError("the rota broke")
+
+
+def test_an_adapters_subjects_are_stored_on_the_finding_cleaned_and_capped(aws_resources, monkeypatch):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _SubjectsAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    stored = _the_finding()["subjects"]
+    assert len(stored) == MAX_SUBJECTS_PER_FINDING == 10
+    assert stored == ["sydney", "melbourne", *[f"city-{n}" for n in range(8)]]  # plain keys, once, in order
+
+
+class _GeneratorSubjectsAdapter(GitHubTrendingAdapter):
+    """Reports its subjects as a generator, as the rail adapter's reported scenes are one."""
+
+    def subjects(self, new_state):
+        return (site for site in ("sydney", "boston", "sydney"))
+
+
+class _WrongTypeSubjectsAdapter(GitHubTrendingAdapter):
+    def subjects(self, new_state):
+        return "sydney"  # one key, not a list of them
+
+
+def test_subjects_reported_as_a_generator_are_kept_as_a_list_is(aws_resources, monkeypatch):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _GeneratorSubjectsAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    assert _the_finding()["subjects"] == ["sydney", "boston"]
+
+
+def test_subjects_that_are_not_an_iterable_of_keys_are_dropped_and_said(aws_resources, monkeypatch, capsys):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _WrongTypeSubjectsAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    finding = _the_finding()
+    assert finding["summary"] == "a summary" and "subjects" not in finding
+    assert "subjects dropped: TypeError" in capsys.readouterr().out
+
+
+def test_subjects_that_fail_cost_the_subjects_never_the_finding(aws_resources, monkeypatch, capsys):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _BrokenSubjectsAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    finding = _the_finding()
+    assert finding["summary"] == "a summary" and "subjects" not in finding
+    assert "subjects dropped: RuntimeError" in capsys.readouterr().out
+
+
+def test_an_adapter_reports_no_subjects_unless_it_says_so_and_its_finding_has_no_such_field(
+    aws_resources, monkeypatch
+):
+    for key, adapter_class in research_tick_handler.ADAPTER_REGISTRY.items():
+        if key != "rail_access":  # the one adapter that names its subjects: its cities (S2)
+            assert adapter_class.subjects is Adapter.subjects, key
+    assert GitHubTrendingAdapter().subjects({"repos": []}) == []  # the base class's default
+
+    _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert "subjects" not in _the_finding()
+
+
+# --- the evidence line (common/evidence.py's research_tick) --------------------------------------
+
+
+class Context:
+    aws_request_id = "7c1d2e3f-0000-4000-8000-00000000abcd"
+
+
+def tick_lines(capsys):
+    out = capsys.readouterr().out
+    return [evidence.parse(line) for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+
+
+def _github_tick(monkeypatch, state, context=Context(), **event):
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: state)
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("a summary")):
+        return research_tick_handler.handler({"topic_id": "github-trending-python", **event}, context)
+
+
+def test_every_invocation_leaves_one_research_tick_line_with_its_outcome(aws_resources, monkeypatch, capsys):
+    """One line per invocation, in a finally: the tick's ids, the adapter as typed, the outcome,
+    whether anything was stored, the Finding's time when one was written, and the returns are
+    what they always were."""
+    state = {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
+    result = _github_tick(monkeypatch, state)
+    assert result["status"] == "material_change"
+    (line,) = tick_lines(capsys)
+    assert line["event"] == "research_tick" and line["tick"] == Context.aws_request_id
+    assert line["topic_id"] == "github-trending-python" and line["adapter"] == "github_trending"
+    assert line["outcome"] == "material_change" and line["stored"] is True
+    assert line["finding"] == state["fetched_at"] and line["decisions"] == 0 and line["triages"] == 0
+    assert line["force"] is False and line["ms"] >= 0 and "error_type" not in line
+    assert len(line["run"]) == 12
+    first_run = line["run"]
+
+    # Nothing new: no Finding, nothing stored (this adapter keeps no running state), a new run.
+    result = _github_tick(monkeypatch, state, force=True)
+    assert result == {"status": "no_change"}
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "no_change" and line["stored"] is False and "finding" not in line
+    assert line["force"] is True and line["run"] != first_run
+
+    # Not due: the schedule's heartbeat found the interval not elapsed.
+    not_due = {"status": "not_due", "topic_id": "github-trending-python", "interval_hours": 2,
+               "next_due_at": None}  # fmt: skip
+    monkeypatch.setattr(research_tick_handler, "_not_due", lambda topic, now: not_due)
+    assert _github_tick(monkeypatch, state) == not_due
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "not_due" and "adapter" not in line and line["stored"] is False
+
+    # Without a Lambda context (a test, an in-process run) there is no tick id, and still a line.
+    assert _github_tick(monkeypatch, state, context=None) == not_due
+    (line,) = tick_lines(capsys)
+    assert "tick" not in line and line["outcome"] == "not_due"
+
+
+def test_a_failed_paused_or_unknown_tick_says_so_in_its_line(aws_resources, monkeypatch, capsys):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    for topic_id, adapter, extra in (
+        ("flaky-topic", "github_trending", {}),
+        ("mystery-topic", "not_a_real_adapter", {}),
+        ("resting-topic", "github_trending", {"paused": True}),
+    ):
+        table.put_item(Item={"topic_id": topic_id, "name": "T", "adapter": adapter, "adapter_config": {},
+                             "is_financial": False, **extra})  # fmt: skip
+
+    with patch.object(GitHubTrendingAdapter, "fetch_state", side_effect=RuntimeError("network blip")):
+        result = research_tick_handler.handler({"topic_id": "flaky-topic"}, Context())
+    assert result == {"status": "error", "topic_id": "flaky-topic", "reason": "network blip"}
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "error" and line["error_type"] == "RuntimeError" and line["stored"] is False
+    assert line["adapter"] == "github_trending" and "network blip" not in json.dumps(line)
+
+    assert research_tick_handler.handler({"topic_id": "does-not-exist"}, Context()) == {
+        "status": "error", "reason": "unknown topic_id: does-not-exist",
+    }  # fmt: skip
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "unknown_topic" and line["topic_id"] == "does-not-exist"
+    assert "adapter" not in line
+
+    result = research_tick_handler.handler({"topic_id": "mystery-topic"}, Context())
+    assert result == {"status": "error", "reason": "unknown adapter: not_a_real_adapter"}
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "unknown_adapter" and "adapter" not in line  # never a key not in the registry
+
+    assert research_tick_handler.handler({"topic_id": "resting-topic"}, Context())["status"] == "paused"
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "paused" and line["stored"] is False
+
+    # An event with no topic id is refused before anything is bound: no line.
+    assert research_tick_handler.handler({}, Context())["status"] == "error"
+    assert tick_lines(capsys) == []
+
+
+def test_a_running_state_stored_on_a_quiet_tick_is_said_so(aws_resources, monkeypatch, capsys):
+    """An adapter that keeps a running state stores it on a quiet tick too: `stored` is true with
+    no Finding, which is how a reader tells a kept decision from a lost one."""
+
+    class Keeps(GitHubTrendingAdapter):
+        keeps_running_state = True
+
+        def fetch_state(self, topic_config, previous_state=None):
+            return {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
+
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", Keeps)
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("a summary")):
+        first = research_tick_handler.handler({"topic_id": "github-trending-python"}, Context())
+        second = research_tick_handler.handler({"topic_id": "github-trending-python"}, Context())
+    assert first["status"] == "material_change" and second == {"status": "no_change"}
+    lines = tick_lines(capsys)
+    assert [(line["outcome"], line["stored"], "finding" in line) for line in lines] == [
+        ("material_change", True, True), ("no_change", True, False),
+    ]  # fmt: skip
+
+
+# --- the prefetch_network event (the Admin API's network_prefetch trigger) -----------------------
+
+
+def _put_rail_topic(paused=False):
+    item = {
+        "topic_id": "trains",
+        "name": "Trains",
+        "adapter": "rail_access",
+        "adapter_config": {
+            "sites": [{"id": "sydney", "name": "Sydney", "polygon": [
+                [Decimal(lon), Decimal(lat)]
+                for lon, lat in (("150.86", "-34.16"), ("151.56", "-34.16"),
+                                 ("151.56", "-33.58"), ("150.86", "-33.58"))
+            ]}],
+        },  # fmt: skip
+        "is_financial": False,
+    }
+    if paused:
+        item["paused"] = True
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(Item=item)
+
+
+def _overpass_network(polygon, *, now=None, **kwargs):
+    return {"source": "overpass", "fetched_at": now.isoformat(), "query_url": "https://overpass-api.de/x",
+            "ways": [], "stations": [], "pois": [],
+            "counts": {"ways": 0, "stations": 0, "pois": 0, "points": 0}, "truncated": False}  # fmt: skip
+
+
+def test_a_prefetch_event_stores_the_network_in_s3_and_records_no_research(aws_resources, capsys):
+    from common import vision_sites
+
+    _put_rail_topic()
+    with patch.object(RailAccessAdapter, "fetch_network", staticmethod(_overpass_network)):
+        result = research_tick_handler.handler({"topic_id": "trains", "prefetch_network": True}, None)
+
+    assert result["status"] == "network_prefetched" and result["topic_id"] == "trains"
+    assert [site["status"] for site in result["sites"]] == ["stored"]
+    stored = vision_sites.load_network("trains", "sydney")
+    assert stored["site_key"] and stored["fetched_at"] == result["sites"][0]["fetched_at"]
+    assert vision_sites.load_network("trains", "melbourne") is None  # a missing object is None
+    topics = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    topic = topics.get_item(Key={"topic_id": "trains"})
+    assert "last_research_at" not in topic["Item"]
+    s3 = boto3.client("s3", region_name=REGION)
+    keys = [o["Key"] for o in s3.list_objects_v2(Bucket="bloggerbear-content-test").get("Contents", [])]
+    assert keys == [vision_sites.network_key("trains", "sydney")]  # no running state, no snapshot
+    assert "network_prefetch trains/sydney: stored" in capsys.readouterr().out
+
+
+def test_a_prefetch_event_refuses_a_paused_topic_or_one_with_no_network(aws_resources):
+    _put_rail_topic(paused=True)
+    with patch.object(RailAccessAdapter, "fetch_network") as fetch:
+        result = research_tick_handler.handler({"topic_id": "trains", "prefetch_network": True}, None)
+    assert result == {"status": "paused", "topic_id": "trains"} and not fetch.called
+
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(
+        Item={"topic_id": "gh", "name": "GH", "adapter": "github_trending", "adapter_config": {},
+              "is_financial": False}  # fmt: skip
+    )
+    result = research_tick_handler.handler({"topic_id": "gh", "prefetch_network": True}, None)
+    assert result == {"status": "error", "reason": "adapter github_trending has no network to prefetch"}
+    result = research_tick_handler.handler({"topic_id": "nope", "prefetch_network": True}, None)
+    assert result == {"status": "error", "reason": "unknown topic_id: nope"}

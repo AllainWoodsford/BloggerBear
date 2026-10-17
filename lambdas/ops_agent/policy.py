@@ -27,6 +27,19 @@ arguments it gave each tool call, and those are cut down to numbers and single w
 `tables` are collected the same way as findings: a tool's `table` block, copied from its result
 and cut to a size the page can show (_table).
 
+**Two rules a prompt cannot hold against text it read** (the assistant's vision round). Tool
+results carry text nobody here wrote: under an `untrusted` key, and in a table column whose title
+ends "(unverified)". Injected text can steer a model past prose, so both rules are code:
+
+- *No list changes after untrusted text* (Ledger.admit). Once a call in the turn has returned
+  either, dismiss, watch and unwatch are refused for the rest of the turn (LIST_TOOLS): one
+  injected dismiss would otherwise hide a card for good, since a dismissal stays alive while its
+  finding recurs (ops_mcp/memory.py). The page's Dismiss button goes through agent.dismiss, with
+  no model, and is not affected; a "yes, watch it" in the next turn is a new Ledger.
+- *No echo* (echoes). Ledger.record keeps that text, normalised; when the model's answer repeats
+  a run of ECHO_WORDS words or ECHO_CHARS characters of it, the agent answers with the tools' own
+  `spoken` instead (ops_agent/agent.py, _answer_text).
+
 **A how-to question is not a briefing, and the rule above does not change for it.** "How do I
 create gear?" asked first in a tab is still a turn of kind `briefing` here: the kind decides the
 budget and whether deep dives are offered, nothing else, and a first question may well need the
@@ -37,8 +50,11 @@ guide tools are ordinary tools, offered on every turn.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from typing import Any
+
+from ops_mcp.redact import WITHHELD, normalised
 
 BRIEFING = "briefing"
 FOLLOW_UP = "follow_up"
@@ -55,6 +71,22 @@ DEEP_DIVE_TOOLS = frozenset({"firewall_review"})
 # this agent in the background, the other reads what it last said. Never given to the agent
 # itself, on any turn: a briefing that started a briefing would run, and spend, without end.
 CLIENT_ONLY_TOOLS = frozenset({"start_briefing", "latest_briefing"})
+
+# The tools that change the assistant's own list (ops_mcp/memory.py). Model-callable, so refused
+# for the rest of a turn in which a tool returned text written outside this project (Ledger.admit).
+LIST_TOOLS = frozenset({"dismiss", "watch", "unwatch"})
+LIST_LOCKED = (
+    "Something a tool returned on this turn was written outside this project, so I won't change your "
+    "list now. Ask the operator to press Dismiss, or to ask again."
+)
+# A table column whose cells are operator or third-party text says so in its title.
+UNVERIFIED = "(unverified)"
+# An answer that repeats this many words in a row, or this many characters, of text a tool marked
+# as written outside this project is an echo (echoes).
+ECHO_WORDS = 6
+ECHO_CHARS = 30
+# The most of that text one turn keeps to compare against, in characters.
+UNTRUSTED_KEPT_MAX_CHARS = 64 * 1024
 
 # Model calls allowed beyond one per tool call: one to read "the budget is spent", one to answer.
 _MODEL_CALLS_OVER_BUDGET = 2
@@ -177,6 +209,12 @@ class Ledger:
         self.spoken: list[str] = []  # each result's own summary, written by the server's code
         self.refused = 0
         self._seen: set[tuple] = set()
+        # Whether a result on this turn held text written outside this project, and that text,
+        # normalised (_normal), for `echoes`.
+        self.saw_untrusted = False
+        self.untrusted: list[str] = []
+        self._kept = 0
+        self.echoed = False  # set by agent._answer_text when the model's answer echoed it
 
     def admit(self, name: str, arguments: Any = None) -> str | None:
         """Decide one tool call. None means go ahead, and the call is counted against the
@@ -189,6 +227,9 @@ class Ledger:
                     "the operator they can ask about it as a follow-up question."
                 )
             return f"There is no tool called {name} on this turn. Answer from what you have."
+        if name in LIST_TOOLS and self.saw_untrusted:
+            self.refused += 1
+            return LIST_LOCKED
         if len(self.tool_calls) >= self.budget:
             self.refused += 1
             return (
@@ -205,6 +246,7 @@ class Ledger:
         page."""
         if not isinstance(structured, Mapping):
             return
+        self._keep_untrusted(structured)
         spoken = structured.get("spoken")
         if isinstance(spoken, str) and spoken.strip() and spoken.strip() not in self.spoken:
             self.spoken.append(spoken.strip())
@@ -223,6 +265,84 @@ class Ledger:
                 continue
             self._seen.add(key)
             self.findings.append(dict(finding))
+
+
+    def _keep_untrusted(self, structured: Mapping) -> None:
+        """Note text written outside this project: every string under an `untrusted` key, at any
+        depth, and every cell of a table column titled "... (unverified)"."""
+        found = list(_under_untrusted(structured, 0))
+        table = structured.get("table")
+        if isinstance(table, Mapping) and isinstance(table.get("columns"), list):
+            marked = [
+                i
+                for i, column in enumerate(table["columns"])
+                if isinstance(column, str) and column.endswith(UNVERIFIED)
+            ]
+            if marked:
+                self.saw_untrusted = True
+            for row in table.get("rows") if isinstance(table.get("rows"), list) else []:
+                if isinstance(row, list):
+                    found += [row[i] for i in marked if i < len(row) and isinstance(row[i], str)]
+        if found or _has_untrusted(structured, 0):
+            self.saw_untrusted = True
+        for value in found:
+            text = _normal(value)
+            if not text or text == _normal(WITHHELD) or self._kept + len(text) > UNTRUSTED_KEPT_MAX_CHARS:
+                continue
+            self.untrusted.append(text)
+            self._kept += len(text)
+
+
+def _has_untrusted(value: Any, depth: int) -> bool:
+    if depth > 8:
+        return False
+    if isinstance(value, Mapping):
+        return "untrusted" in value or any(_has_untrusted(item, depth + 1) for item in value.values())
+    if isinstance(value, list | tuple):
+        return any(_has_untrusted(item, depth + 1) for item in value)
+    return False
+
+
+def _under_untrusted(value: Any, depth: int, inside: bool = False):
+    """Every string at or below an `untrusted` key (values, not keys)."""
+    if depth > 12:
+        return
+    if isinstance(value, str):
+        if inside:
+            yield value
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            yield from _under_untrusted(item, depth + 1, inside or key == "untrusted")
+    elif isinstance(value, list | tuple):
+        for item in value:
+            yield from _under_untrusted(item, depth + 1, inside)
+
+
+def _normal(text: str) -> str:
+    """Text as the echo rule compares it: the instruction check's copy (redact.normalised:
+    compatibility forms decomposed, format characters such as the two joiners redact.scrub keeps
+    and marks such as an accent or the combining grapheme joiner removed, control characters read
+    as spaces, whitespace collapsed), case folded. Both sides alike, so a zero-width non-joiner
+    after every word of an "(unverified)" cell, or a mark after every letter, does not hide its
+    repeat. Hangul is recomposed first (NFC; the marks are already gone, so nothing else is), since
+    NFKD split each syllable into two or three jamo and ECHO_CHARS and UNTRUSTED_KEPT_MAX_CHARS
+    count characters: a Korean syllable counts one."""
+    return " ".join(unicodedata.normalize("NFC", normalised(text)).casefold().split())
+
+
+def echoes(answer: str, ledger: Ledger) -> bool:
+    """Whether `answer` repeats text a tool marked as written outside this project (Ledger.record):
+    a run of ECHO_WORDS words, or of ECHO_CHARS characters, of any of it, after normalising both
+    (case, compatibility forms and spacing do not hide it)."""
+    if not ledger.untrusted or not isinstance(answer, str):
+        return False
+    said = _normal(answer)
+    joined = " " + " \n ".join(ledger.untrusted) + " "
+    words = said.split()
+    for start in range(len(words) - ECHO_WORDS + 1):
+        if f" {' '.join(words[start : start + ECHO_WORDS])} " in joined:
+            return True
+    return any(said[start : start + ECHO_CHARS] in joined for start in range(len(said) - ECHO_CHARS + 1))
 
 
 def suggested_fixes(findings: Iterable[Any]) -> int:

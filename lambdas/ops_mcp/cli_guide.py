@@ -33,6 +33,14 @@ the card shows a template with `<placeholders>`, marked `destructive`, with a wa
 hidden in an article can at most make the model ask for `topics delete`; what reaches the screen
 has no id in it and does not run as it stands.
 
+**A vision topic's sites config is never filled in either** (`_config_by_hand`). An adapter that
+declares `config_by_hand` (the vision adapters: polygons, thresholds, the triage and web_context
+switches) has its `--config-json` or `--adapter-config-json` shown as a <placeholder> on
+`topics create` and `topics update`, whatever value was passed: the admin API replaces the whole
+config, and a value the model passes may come from text it read, which could move a site, drop
+one, or switch the triage agent off. The card is a template, and the shape is the checked-in
+scripts/rail_topics.example.json.
+
 **Everything is a `how_to` finding.** Help, a built command and a template all go to the page as
 findings of kind `how_to`, shaped like any other (suggestions.py): the page's existing card and
 Copy button show them, and the agent copies them from the tool's result in code. `how_to` is not in
@@ -54,11 +62,13 @@ from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 
-from common.dynamo import get_pipeline_config, list_topics
+from common.dynamo import get_pipeline_config, get_topic, list_topics
 from common.editorial_resolver import GOAL_FIELDS, validate_editorial_goals
+from common.findings_window import findings_window_error, findings_window_hours
 from common.research_schedule import resolve_interval_hours
 from common.security_events import untrusted_text
 from ops_mcp import topic_match
+from ops_mcp.suggestions import ID_PATTERN
 from ops_mcp.tools import _join, _parse
 
 REFERENCE_FILE = Path(__file__).with_name("cli_reference.json")
@@ -94,6 +104,13 @@ DESTRUCTIVE_WARNING = (
 
 # On every Admin CLI command the assistant puts on screen (the owner's rule): it is a suggestion,
 # built by code from what the operator said, and they check it before it runs in their terminal.
+# A vision topic's sites config: the flags that carry it, and what the card says instead.
+HAND_WRITTEN_FLAGS = ("config_json", "adapter_config_json")
+EXAMPLE_FILE = "scripts/rail_topics.example.json"
+HAND_WRITTEN_WARNING = (
+    "⚠️ A vision topic's sites config is written by hand: start from " + EXAMPLE_FILE + ", put in "
+    "your own polygons and values, and check them before you run the command."
+)
 DOUBLE_CHECK_WARNING = (
     "⚠️ Suggested by the assistant: double-check every value against the help above and what "
     "you meant before you run it. Nothing runs until you do."
@@ -452,8 +469,38 @@ def _what_it_does(path: str, entry: dict, used: list[dict]) -> str:
     return text if len(text) <= WHAT_IT_DOES_MAX_CHARS else text[: WHAT_IT_DOES_MAX_CHARS - 1] + "…"
 
 
-def _template(path: str, entry: dict, chosen: list[dict]) -> dict:
-    """The card for a command that deletes, takes down or forces: placeholders, never values."""
+def _config_by_hand(path: str, values: Mapping) -> bool:
+    """Whether a command's sites config must be left for the operator to write: a `--config-json`
+    or `--adapter-config-json` was given (`values` by dest), and the topic's adapter declares
+    `config_by_hand`: on `topics create` the `adapter` given, on `topics update` the stored topic's
+    (read only then; a topic that cannot be read counts as one, so the rule fails closed)."""
+    if not any(dest in values for dest in HAND_WRITTEN_FLAGS):
+        return False
+    # Imported here: the registry pulls in every adapter (see ADAPTERS), needed only for this.
+    from common.adapters.registry import ADAPTER_REGISTRY
+
+    if path == "topics create":
+        adapter = values.get("adapter")
+        adapter_cls = ADAPTER_REGISTRY.get(adapter) if isinstance(adapter, str) else None
+        return bool(adapter_cls is not None and adapter_cls.config_by_hand)
+    if path == "topics update":
+        topic_id = values.get("topic_id")
+        if not isinstance(topic_id, str) or not ID_PATTERN.match(topic_id):
+            return True
+        try:
+            topic = get_topic(topic_id)
+        except Exception as exc:  # noqa: BLE001 - a topic that cannot be read is treated as one
+            print(f"ops_cli_guide: could not read a topic to check its adapter ({type(exc).__name__})")
+            return True
+        stored = (topic or {}).get("adapter")
+        adapter_cls = ADAPTER_REGISTRY.get(stored) if isinstance(stored, str) else None
+        return topic is None or bool(adapter_cls is not None and adapter_cls.config_by_hand)
+    return False
+
+
+def _template(path: str, entry: dict, chosen: list[dict], *, hand_written: bool = False) -> dict:
+    """The card for a command that deletes, takes down or forces, or carries a vision topic's
+    sites config (`hand_written`): placeholders, never values."""
     words = []
     for argument in entry["arguments"]:
         wanted = argument["required"] or argument in chosen
@@ -479,9 +526,22 @@ def _template(path: str, entry: dict, chosen: list[dict]) -> dict:
             "command": command,
             "what_it_does": _what_it_does(path, entry, [a for a in entry["arguments"] if a in chosen]),
         },
-        destructive=True,
-        warning=DESTRUCTIVE_WARNING,
+        destructive=not hand_written,
+        warning=HAND_WRITTEN_WARNING if hand_written else DESTRUCTIVE_WARNING,
     )
+    if hand_written:
+        found["where"]["example"] = EXAMPLE_FILE
+        return {
+            "spoken": (
+                "A vision topic's sites config is written by hand, so I have not filled it in. The "
+                "template is on screen: put the values in yourself."
+            ),
+            "findings": [found],
+            "command": path,
+            "destructive": False,
+            "hand_written": True,
+            "built": True,
+        }
     return {
         "spoken": (
             f"{path} deletes something, takes it down or skips a safeguard, so I have not filled it in. "
@@ -544,6 +604,10 @@ def cli_command(command: str, options: Mapping | None = None) -> dict:
         if problems:
             return _cannot_build(path, problems, [])
         return _template(path, entry, given)
+    if _config_by_hand(path, {argument["dest"]: value for argument, value in chosen.values()}):
+        if problems:
+            return _cannot_build(path, problems, [])
+        return _template(path, entry, given, hand_written=True)
 
     words_by_name: dict[str, list[str]] = {}
     quoted_any = False
@@ -643,6 +707,14 @@ def draft(
             elif not argument["destructive"]:
                 given[argument["name"]] = value
 
+    # A vision topic's sites config is never filled in from what was passed: a placeholder.
+    dests = {argument["name"]: argument["dest"] for argument in entry["arguments"]}
+    hand_written = _config_by_hand(path, {dests[name]: value for name, value in given.items()})
+    if hand_written:
+        for name in [name for name in given if dests[name] in HAND_WRITTEN_FLAGS]:
+            del given[name]
+            show = (*show, dests[name])
+
     derived: list[str] = []
     # Only when the command makes something new: on `topics update`, a name is the new name of a
     # topic that already has its id, and an id made from it would point at another topic.
@@ -701,6 +773,10 @@ def draft(
         warning=DOUBLE_CHECK_WARNING,
     )
     found["where"].update(where)
+    if hand_written:
+        found["where"]["example"] = EXAMPLE_FILE
+        found["warning"] = HAND_WRITTEN_WARNING
+        found["hand_written"] = True
     return found
 
 
@@ -736,6 +812,13 @@ ADAPTERS = {
     "hacker_news": "reads Hacker News's top stories",
     # common/adapters/crypto_feed.py; admin_api_handler._create_topic forces is_financial for it.
     "crypto_feed": "reads crypto market data; always treated as financial",
+    # common/adapters/satellite_vision.py: counts what the vision worker sees at the sites in its
+    # config, in each new Sentinel-2 scene.
+    "satellite_vision": "counts objects at fixed sites in new satellite scenes (needs sites in its config)",
+    # common/adapters/rail_access.py: built-up density from each new Sentinel-2 scene against the
+    # OpenStreetMap rail network of each city in its config; admin_api_handler forces
+    # force_manual_review for it, as for satellite_vision.
+    "rail_access": "maps rail access from satellite imagery and OpenStreetMap for the cities in its config",
 }
 
 # The owner's worked example for an editorial goal. `exclusion_criteria` because the validator
@@ -922,6 +1005,147 @@ GUIDES: dict[str, dict] = {
             # scripts/README.md's own examples use this topic id; yours is in `topics list`.
             "options": {"topic_id": "github-trending", "editorial_goals_json": STAR_COUNT_GOAL},
         },
+    },
+    # Vision topics (common/adapters/satellite_vision.py, rail_access.py). Before first-topic: "create
+    # a topic for rail" scores one for each, and _guide_for keeps the first of equal scores. No bare
+    # "site": it is also the public website (architecture.py's alias), and placed before review it
+    # would win the tie for "how do I publish an article to the site".
+    "vision": {
+        "title": "Vision topics: satellite sites and the Rail Access Monitor",
+        "keywords": (
+            "vision",
+            "satellite",
+            "sentinel",
+            "rail",
+            "ships",
+            "polygon",
+            "opencv",
+            "city",
+            "cities",
+            "rail topic",
+            "vision topic",
+            "satellite topic",
+        ),
+        "explanation": [
+            # admin_api_handler.py forces force_manual_review for MANUAL_REVIEW_ADAPTERS.
+            "A vision topic watches a few fixed places in new satellite images, such as ships in a "
+            "harbour or rail access across a city, and every article it writes waits for you to "
+            "approve it.",
+            # VISION_ENABLED (infra/environments/*); common/vision_client.py's "invoke" with no worker;
+            # common/vision_sites.order_sites and time_to_measure; rail_access.py's osm_ttl_days.
+            "It needs the vision worker, the VISION_ENABLED deployment setting; while that is off, "
+            "every site records that the worker couldn't be called. The sites take turns within "
+            "each research tick's time budget, and a rail topic keeps its OpenStreetMap network for "
+            "osm_ttl_days.",
+            # research_tick_handler.py (diff-first); vision_sites.first_observation;
+            # common/findings_window.py.
+            "Research is diff-first: a Finding comes only when a new clear scene changed against the "
+            "site's usual range, and the first clear scene is reported once, as the first "
+            "observation. A topic that writes on some days only widens its findings window "
+            "(findings_window_hours).",
+            # _config_by_hand above; scripts/rail_topics.example.json.
+            "The sites and their polygons are written by hand: start from "
+            "scripts/rail_topics.example.json for a rail city. I never fill a sites config in; ask "
+            "me how the vision pipeline is doing to see each site.",
+        ],
+        "commands": ["topics create", "topics update", "topics trigger", "topics findings", "findings list"],
+        "steps": [
+            {
+                "say": "Create the topic; its sites config is a placeholder for you to write",
+                "command": "topics create",
+                "options": {"adapter": "rail_access"},
+                "ask": ["topic_id", "name", "config_json"],
+            },
+            {
+                "say": "Change its sites, by hand",
+                "command": "topics update",
+                "options": {},
+                "ask": ["topic_id", "adapter_config_json"],
+            },
+            {
+                "say": "Widen its findings window, for a topic that writes on some days only",
+                "command": "topics update",
+                "options": {},
+                "ask": ["topic_id", "findings_window_hours"],
+            },
+            {
+                "say": "Run its research now",
+                "command": "topics trigger",
+                "options": {"pipeline": "research_tick"},
+                "ask": ["topic_id"],
+            },
+            {
+                "say": "See its latest Finding",
+                "command": "topics findings",
+                "options": {},
+                "ask": ["topic_id"],
+            },
+            {
+                "say": "See its Findings, newest first: what each new scene changed, its maps and notes",
+                "command": "findings list",
+                "options": {},
+                "ask": ["topic_id"],
+            },
+        ],
+    },
+    "findings": {
+        "title": (
+            "Reading a topic's findings: what research found, and what the next article will be "
+            "written from"
+        ),
+        "keywords": ("finding", "findings", "found", "next article", "window"),
+        "explanation": [
+            # research_tick_handler.py: diff-first, FINDING_TTL_DAYS.
+            "Research writes a finding only when a topic's source changed, and each finding is kept "
+            "for 14 days.",
+            # daily_cycle_handler.py: MAX_WINDOW_FINDINGS, SUMMARIES_MAX_CHARS; common/findings_window.py;
+            # _select_goal_and_findings for a topic with a daily editorial goal.
+            "The next article reads every finding since the topic's last article, within its "
+            "findings window, at most 48, newest first; a topic with editorial goals may use only "
+            "some.",
+            # common/day_subject.py, findings_window.next_article_subject: a topic that rotates.
+            "A topic that rotates through subjects writes about the day's subject: its next article "
+            "reads only that subject's findings, since that subject's last article.",
+            # common/figures.py, Adapter.planner_notes: what a vision Finding carries besides its summary.
+            "A finding's summary is written by a model; a vision finding also carries maps and "
+            "planner notes.",
+            # admin_api_handler._list_findings_route; ops_mcp/topic_findings.py.
+            "findings list shows them in full; I show how many there are and how old, and the "
+            "summaries on screen.",
+        ],
+        "commands": ["findings list", "topics findings", "topics update"],
+        "steps": [
+            {
+                "say": "See a topic's newest findings",
+                "command": "findings list",
+                "options": {},
+                "ask": ["topic_id"],
+            },
+            {
+                "say": "See what its next article will be written from",
+                "command": "findings list",
+                "options": {"next_article": True},
+                "ask": ["topic_id"],
+            },
+            {
+                "say": "Only the last few days, and more of them",
+                "command": "findings list",
+                "options": {},
+                "ask": ["topic_id", "days", "limit"],
+            },
+            {
+                "say": "The newest one, raw",
+                "command": "topics findings",
+                "options": {},
+                "ask": ["topic_id"],
+            },
+            {
+                "say": "Widen the window, for a topic that writes on some days only",
+                "command": "topics update",
+                "options": {},
+                "ask": ["topic_id", "findings_window_hours"],
+            },
+        ],
     },
     "first-topic": {
         "title": "Getting started: your first topic",
@@ -1336,7 +1560,8 @@ def cli_guides(topic: str | None = None, options: Mapping | None = None) -> dict
 
 OVERVIEW_COLUMNS = [
     "Name", "Topic id", "Adapter", "Research heartbeat", "Research interval", "Daily cadence",
-    "Timezone", "Model", "Financial", "Review mode", "Last researched", "Last article",
+    "Timezone", "Findings window", "Model", "Financial", "Review mode", "Last researched",
+    "Last article",
 ]  # fmt: skip
 
 
@@ -1358,6 +1583,16 @@ def _interval(topic: dict, config: dict | None) -> str:
         topic, {"research_interval_hours": 2}
     )
     return f"{hours} h" if own else f"{hours} h (inherited)"
+
+
+def _findings_window(topic: dict) -> str:
+    """How far back the daily article reads findings (common/findings_window.py): the topic's own
+    window, else the default. A stored value the daily cycle would not use is shown as the default
+    it gets instead."""
+    hours = findings_window_hours(topic)
+    stored = topic.get("findings_window_hours")
+    own = stored is not None and findings_window_error(stored) is None
+    return f"{hours} h" if own else f"{hours} h (default)"
 
 
 def _model(topic: dict) -> str:
@@ -1388,6 +1623,7 @@ def _overview_row(topic: dict, config: dict | None) -> list[str]:
         _cell(topic.get("daily_cadence")),
         # A topic created before the option existed has none and runs on UTC (admin_cli's help).
         _cell(topic.get("daily_timezone")) or "UTC",
+        _findings_window(topic),
         _model(topic),
         "yes" if topic.get("is_financial") else "no",
         _review(topic, config),
@@ -1398,6 +1634,17 @@ def _overview_row(topic: dict, config: dict | None) -> list[str]:
 
 def _as_json(value) -> str:
     return _cell(json.dumps(value, default=str, ensure_ascii=False), DETAIL_MAX_CHARS) if value else ""
+
+
+def _last_article_by_subject(topic: dict) -> str:
+    """A rotating topic's last article per subject (common/day_subject.py, the daily cycle's
+    `last_article_by_subject`), as one cell: "<subject> <when>; ...", by subject. Empty for every
+    other topic, whose single-topic view then has no such row."""
+    stamps = topic.get("last_article_by_subject")
+    if not isinstance(stamps, dict) or not stamps:
+        return ""
+    text = "; ".join(f"{key} {_when(stamps[key])}" for key in sorted(stamps, key=str))
+    return _cell(text, DETAIL_MAX_CHARS)
 
 
 def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = None) -> dict:
@@ -1417,6 +1664,9 @@ def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = Non
                 ["Adapter config", _as_json(one.get("adapter_config")) or "none"],
             ]
         )
+        by_subject = _last_article_by_subject(one)
+        if by_subject:
+            rows.append(["Last article by subject", by_subject])
         name = rows[0][1]
         return {
             "spoken": f"{topic_match.took(matched)}{name}'s settings are on screen.",

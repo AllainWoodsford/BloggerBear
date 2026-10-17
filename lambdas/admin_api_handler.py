@@ -14,26 +14,41 @@ from `httpMethod` + `resource` instead, so `_ROUTES` below needs no changes
 either way. `handler` never raises -- every route function is wrapped in a
 broad top-level try/except that logs the real exception and returns a
 generic 500, per the task contract.
+
+The evidence trail (common/evidence.py, docs/enhancements/vision-evidence.md): `handler` binds
+Lambda's request id as `tick` and API Gateway's as `api_request_id` (which joins the access log,
+holding no caller details), and the routes that act on an article or a topic print one line after
+the write: `moderation_decision` when a person approves, rejects, force-publishes, unpublishes or
+sends back an article, and `topic_changed` when a topic is created, changed, paused or resumed
+(which top-level keys and which `adapter_config` keys changed, the new numbers and switches among
+them: generic over every adapter, no key named in code). The API is IAM-authenticated, so a
+decision is a person's; the line records *that* one decided and when, never who: no ARN, no user
+name, no operator text (rule 1).
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import boto3
 
-from common import equipment, feedback_limits, gear, security_events, sign_ins
-from common.adapters import CRYPTO_FEED_ADAPTER_KEY
+from common import equipment, evidence, feedback_limits, gear, security_events, sign_ins
+from common.adapters import CRYPTO_FEED_ADAPTER_KEY, MANUAL_REVIEW_ADAPTERS
+from common.adapters.base import SUBJECT_KEY
 from common.assistant_access import assistant_access_error, effective_assistant_access
 from common.attribution import sources_for_article
+from common.day_subject import subject_findings
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     REWRITE_FAILED_STATUS,
     claim_moderation_for_rewrite,
+    count_findings,
     delete_musings_for_article,
     delete_prompt_refinement,
     delete_topic,
@@ -56,6 +71,7 @@ from common.dynamo import (
     list_all_moderation_items,
     list_candidate_ideas,
     list_failed_executions,
+    list_findings,
     list_models,
     list_moderation_by_status,
     list_musings,
@@ -75,6 +91,7 @@ from common.dynamo import (
     set_musing_text,
     set_prompt_refinement_equipment,
     set_prompt_refinement_fields,
+    set_topic_fields,
     update_article_lineage,
     update_article_status,
     update_moderation_status,
@@ -86,18 +103,28 @@ from common.editorial_resolver import (
     validate_editorial_goals,
 )
 from common.fact_check import fact_check_label
+from common.figures import clean_figures
+from common.findings_window import (
+    SUBJECT_READ_LIMIT,
+    findings_window_error,
+    next_article_subject,
+    window_start,
+)
 from common.fresh_review import (
     on_unavailable_error,
     resolve_on_unavailable,
     resolve_review_mode,
     review_mode_error,
 )
+from common.goal_rotation import FIELD as GOAL_ROTATION_FIELD
+from common.goal_rotation import normalize_goal_rotation, validate_goal_rotation
 from common.lineage_tools import audit_lineage, plan_backfill
 from common.model_routing import resolve_model
 from common.musings import (
     MAX_MUSING_CHARS,
     generate_and_store_article_musing,
     generate_and_store_loot_musing,
+    generate_and_store_pause_musing,
     generate_and_store_rejection_musing,
     regenerate_article_musing_text,
 )
@@ -114,10 +141,23 @@ from common.scheduler import (
     DEFAULT_TIMEZONE,
     _validate_schedule_expression,
     delete_topic_schedules,
+    set_topic_schedules_state,
     upsert_topic_schedules,
     validate_timezone,
 )
 from common.source_refs import dedupe_source_refs
+from common.stagger import (
+    DEFAULT_STAGGER_MINUTES,
+    describe_expression,
+    effective_schedules,
+    first_free_slot,
+    next_free_slot,
+    resolve_stagger_minutes,
+    slot_error,
+    stagger_error,
+    topic_slot,
+    used_slots,
+)
 from common.static_pages import (
     invalidate_article_page,
     read_article_body,
@@ -157,6 +197,84 @@ def _json_number(value):
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _dynamo_numbers(value):
+    """`value` with every float turned into a Decimal, all the way down: DynamoDB refuses floats,
+    and an adapter_config can hold them (a satellite_vision site's lon/lat polygon). Through str,
+    so 151.2 is stored as 151.2, not as its binary expansion."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {key: _dynamo_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_dynamo_numbers(item) for item in value]
+    return value
+
+
+# --- the evidence lines ----------------------------------------------------------------------------
+
+_MISSING = object()
+
+
+def changed_fields(before: dict | None, after: dict | None) -> list[str]:
+    """The top-level keys whose values differ between two topic items (every key of `after` when
+    there is no `before`), sorted; only keys the evidence `code` kind takes. Knows no key."""
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+    keys = {key for key in set(before) | set(after) if before.get(key, _MISSING) != after.get(key, _MISSING)}
+    return sorted(key for key in keys if evidence.check("code", key))
+
+
+def changed_config(before: dict | None, after: dict | None) -> dict:
+    """What changed between two `adapter_config` blocks, for the `topic_changed` line: the
+    top-level keys whose values differ (`config_keys`), and among them the new values that are
+    finite numbers (`config_numbers`) or switches (`config_on`, `config_off`). A key enters only
+    if it passes the evidence `code` kind, a value only if it is a number or a bool: a name, a
+    polygon, a list or any other operator text never does. Knows no key, so it is the same for
+    every adapter."""
+    after = after if isinstance(after, dict) else {}
+    keys = changed_fields(before, after)
+    numbers, on, off = {}, [], []
+    for key in keys:
+        value = after.get(key)
+        if isinstance(value, bool):
+            (on if value else off).append(key)
+        elif isinstance(value, Decimal):
+            value = float(value)
+            if math.isfinite(value):
+                numbers[key] = value
+        elif isinstance(value, int | float) and math.isfinite(value):
+            numbers[key] = value
+    return {"config_keys": keys, "config_numbers": numbers, "config_on": on, "config_off": off}
+
+
+def _topic_changed(action: str, before: dict | None, after: dict) -> None:
+    """One `topic_changed` line after a topic was written: `created`, `updated`, `paused` or
+    `resumed`, with what changed. Never a name, a polygon, an editorial goal or any other text."""
+    evidence.emit(
+        "topic_changed",
+        topic_id=after.get("topic_id"),
+        action=action,
+        fields=changed_fields(before, after),
+        force_manual_review=after.get("force_manual_review") is True,
+        **changed_config((before or {}).get("adapter_config"), after.get("adapter_config")),
+    )
+
+
+def _moderation_decision(decision: str, *, topic_id, article_id, queue_id=None, from_status=None) -> None:
+    """One `moderation_decision` line after a person's write: `approved`, `rejected`,
+    `force_published`, `unpublished` or `sent_back`, with the article's status before. Always
+    `by: human` (the API is IAM-authenticated), and never who."""
+    evidence.emit(
+        "moderation_decision",
+        topic_id=topic_id,
+        queue_id=queue_id,
+        article_id=article_id,
+        decision=decision,
+        from_status=from_status,
+        by="human",
+    )
 
 
 def _response(status_code: int, payload: dict) -> dict:
@@ -234,10 +352,14 @@ def _create_topic(event: dict) -> dict:
     adapter_config = body.get("adapter_config", {})
     if not isinstance(adapter_config, dict):
         return _error(400, "'adapter_config' must be an object if provided")
+    adapter_config = _dynamo_numbers(adapter_config)
 
     editorial_goals_error = validate_editorial_goals(body.get("editorial_goals"))
     if editorial_goals_error:
         return _error(400, editorial_goals_error)
+    goal_rotation_error = validate_goal_rotation(body.get(GOAL_ROTATION_FIELD))
+    if goal_rotation_error:
+        return _error(400, goal_rotation_error)
 
     is_financial = body.get("is_financial", False)
     if not isinstance(is_financial, bool):
@@ -249,6 +371,15 @@ def _create_topic(event: dict) -> dict:
     # common/adapters/crypto_feed.py's module docstring.
     if adapter == CRYPTO_FEED_ADAPTER_KEY:
         is_financial = True
+
+    force_manual_review = body.get("force_manual_review", False)
+    if not isinstance(force_manual_review, bool):
+        return _error(400, "'force_manual_review' must be a boolean if provided")
+    # The same kind of guarantee for imagery: an article of a satellite_vision or rail_access topic
+    # is always seen by a person before it is published (common/compliance.py's
+    # requires_manual_review; the set is common/adapters/__init__.py's MANUAL_REVIEW_ADAPTERS).
+    if adapter in MANUAL_REVIEW_ADAPTERS:
+        force_manual_review = True
 
     research_cadence = body.get("research_cadence", _DEFAULT_RESEARCH_CADENCE)
     daily_cadence = body.get("daily_cadence", _DEFAULT_DAILY_CADENCE)
@@ -270,6 +401,13 @@ def _create_topic(event: dict) -> dict:
     interval_problem = interval_error(research_interval_hours)
     if interval_problem:
         return _error(400, f"'research_interval_hours' {interval_problem}")
+
+    # How far back the daily article reads findings. Optional: unset is the last day; a topic
+    # that writes on some days only widens it (see common/findings_window.py).
+    findings_window_hours = body.get("findings_window_hours")
+    window_problem = findings_window_error(findings_window_hours)
+    if window_problem:
+        return _error(400, f"'findings_window_hours' {window_problem}")
 
     # Per-topic override of the fresh-data review mode (else the pipeline-wide one).
     review_mode = body.get("review_mode")
@@ -297,8 +435,22 @@ def _create_topic(event: dict) -> dict:
     if candidates_error:
         return _error(400, candidates_error)
 
+    # The topic's turn in the stagger (common/stagger.py): a slot of its own, else the next
+    # free one. Slot 1's research heartbeat runs at :05 past, slot 2's at :10, and so on.
+    stagger_slot = body.get("stagger_slot")
+    slot_problem = slot_error(stagger_slot)
+    if slot_problem:
+        return _error(400, f"'stagger_slot' {slot_problem}")
+
     if get_topic(topic_id) is not None:
         return _error(409, f"topic '{topic_id}' already exists")
+
+    topics = list_topics()
+    taken = used_slots(topics)
+    if stagger_slot is None:
+        stagger_slot = next_free_slot(topics)
+    elif stagger_slot in taken:
+        return _error(409, f"stagger slot {stagger_slot} is taken by topic '{taken[stagger_slot]}'")
 
     item = {
         "topic_id": topic_id,
@@ -306,24 +458,33 @@ def _create_topic(event: dict) -> dict:
         "adapter": adapter,
         "adapter_config": adapter_config,
         "is_financial": is_financial,
+        # Stored only when set: every other topic keeps the shape it had.
+        **({"force_manual_review": True} if force_manual_review else {}),
         "research_cadence": research_cadence,
         "daily_cadence": daily_cadence,
         "daily_timezone": daily_timezone,
         "model_id": model_id,
         "fallback_model_id": fallback_model_id,
         "model_id_candidates": model_id_candidates,
+        "stagger_slot": stagger_slot,
     }
     # Only stored when provided, so a topic without one simply inherits its
     # adapter's/the global default goal (common/editorial_resolver.py).
     if body.get("editorial_goals") is not None:
         item["editorial_goals"] = normalize_editorial_goals(body["editorial_goals"])
+    # Several goals taken in turn (common/goal_rotation.py); stored only when there are some.
+    if body.get(GOAL_ROTATION_FIELD):
+        item[GOAL_ROTATION_FIELD] = normalize_goal_rotation(body[GOAL_ROTATION_FIELD])
     if research_interval_hours is not None:
         item["research_interval_hours"] = research_interval_hours
+    if findings_window_hours is not None:
+        item["findings_window_hours"] = findings_window_hours
     if review_mode is not None:
         item["review_mode"] = review_mode
     put_topic(item)
+    _topic_changed("created", None, item)
     try:
-        upsert_topic_schedules(topic_id, research_cadence, daily_cadence, daily_timezone)
+        _apply_topic_schedules(item, topics=[*topics, item])
     except ValueError as exc:
         return _error(400, str(exc))
     return _response(201, item)
@@ -354,9 +515,12 @@ def _update_topic(event: dict) -> dict:
         "adapter",
         "adapter_config",
         "editorial_goals",
+        GOAL_ROTATION_FIELD,
         "is_financial",
+        "force_manual_review",
         "research_cadence",
         "research_interval_hours",
+        "findings_window_hours",
         "review_mode",
         "daily_cadence",
         "daily_timezone",
@@ -373,12 +537,25 @@ def _update_topic(event: dict) -> dict:
         return _error(400, "'adapter' must be a non-empty string")
     if "adapter_config" in body and not isinstance(updated["adapter_config"], dict):
         return _error(400, "'adapter_config' must be an object")
+    if "adapter_config" in body:
+        updated["adapter_config"] = _dynamo_numbers(updated["adapter_config"])
     if "editorial_goals" in body:
         editorial_goals_error = validate_editorial_goals(body["editorial_goals"])
         if editorial_goals_error:
             return _error(400, editorial_goals_error)
         # A whole-block replace, like adapter_config; {} or null clears it.
         updated["editorial_goals"] = normalize_editorial_goals(body["editorial_goals"])
+    if GOAL_ROTATION_FIELD in body:
+        goal_rotation_error = validate_goal_rotation(body[GOAL_ROTATION_FIELD])
+        if goal_rotation_error:
+            return _error(400, goal_rotation_error)
+        # The whole list is replaced; [] or null clears it (the rotation's state is kept: a goal
+        # whose name comes back picks up where it was, and an unknown one is read as no state).
+        rotation = normalize_goal_rotation(body[GOAL_ROTATION_FIELD])
+        if rotation:
+            updated[GOAL_ROTATION_FIELD] = rotation
+        else:
+            updated.pop(GOAL_ROTATION_FIELD, None)
     if "is_financial" in body and not isinstance(updated["is_financial"], bool):
         return _error(400, "'is_financial' must be a boolean")
     # Phase 7: same forced-True guarantee as _create_topic above -- applies
@@ -387,6 +564,10 @@ def _update_topic(event: dict) -> dict:
     # is_financial (or is trying to unset it).
     if updated["adapter"] == CRYPTO_FEED_ADAPTER_KEY:
         updated["is_financial"] = True
+    if "force_manual_review" in body and not isinstance(updated["force_manual_review"], bool):
+        return _error(400, "'force_manual_review' must be a boolean")
+    if updated["adapter"] in MANUAL_REVIEW_ADAPTERS:
+        updated["force_manual_review"] = True
     if "research_cadence" in body and (
         not isinstance(updated["research_cadence"], str) or not updated["research_cadence"]
     ):
@@ -401,6 +582,12 @@ def _update_topic(event: dict) -> dict:
             return _error(400, f"'research_interval_hours' {interval_problem}")
         if updated["research_interval_hours"] is None:
             del updated["research_interval_hours"]  # cleared: inherit the pipeline default
+    if "findings_window_hours" in body:
+        window_problem = findings_window_error(updated["findings_window_hours"])
+        if window_problem:
+            return _error(400, f"'findings_window_hours' {window_problem}")
+        if updated["findings_window_hours"] is None:
+            del updated["findings_window_hours"]  # cleared: back to the default window
     if "review_mode" in body:
         mode_problem = review_mode_error(updated["review_mode"])
         if mode_problem:
@@ -420,6 +607,24 @@ def _update_topic(event: dict) -> dict:
         if candidates_error:
             return _error(400, candidates_error)
 
+    # The stagger slot (common/stagger.py): set it, clear it (null) for the next free one, or
+    # leave it; a topic from before slots existed is given one the first time it is edited.
+    if "stagger_slot" in body:
+        slot_problem = slot_error(body["stagger_slot"])
+        if slot_problem:
+            return _error(400, f"'stagger_slot' {slot_problem}")
+    topics = list_topics()
+    if "stagger_slot" in body:
+        taken = used_slots(topics, exclude=topic_id)
+        wanted = body["stagger_slot"]
+        if wanted is None:
+            wanted = next_free_slot(topics, exclude=topic_id)
+        elif wanted in taken:
+            return _error(409, f"stagger slot {wanted} is taken by topic '{taken[wanted]}'")
+        updated["stagger_slot"] = wanted
+    elif topic_slot(updated) is None:
+        updated["stagger_slot"] = next_free_slot(topics, exclude=topic_id)
+
     research_cadence = updated.setdefault("research_cadence", _DEFAULT_RESEARCH_CADENCE)
     daily_cadence = updated.setdefault("daily_cadence", _DEFAULT_DAILY_CADENCE)
     # Not the new-topic default: a topic with no stored zone has a UTC schedule,
@@ -433,8 +638,9 @@ def _update_topic(event: dict) -> dict:
         return _error(400, str(exc))
 
     put_topic(updated)
+    _topic_changed("updated", topic, updated)
     try:
-        upsert_topic_schedules(topic_id, research_cadence, daily_cadence, daily_timezone)
+        _apply_topic_schedules(updated, topics=topics)
     except ValueError as exc:
         return _error(400, str(exc))
     return _response(200, updated)
@@ -449,10 +655,217 @@ def _delete_topic(event: dict) -> dict:
     return _response(200, {"deleted": topic_id})
 
 
+def _read_pipeline_config_quietly() -> dict | None:
+    """The pipeline config row, or None if it cannot be read: a schedule written with the default
+    stagger is better than a topic with no schedules."""
+    try:
+        return get_pipeline_config()
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"admin_api_handler: could not read the pipeline config, using its defaults: {exc!r}")
+        return None
+
+
+def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> dict:
+    """Write the topic's two EventBridge Scheduler schedules with its stagger slot applied
+    (common/stagger.py), DISABLED while the topic is paused, and record what was written on its
+    row (`research_schedule`, `daily_schedule`), so the minute it really runs at can be read in
+    DynamoDB and by `topics schedule`. `topics` is every topic, this one included: how many
+    there are is what delays the daily cycles past the hour's research heartbeats.
+
+    Raises ValueError for a cadence or zone EventBridge Scheduler would refuse, before any AWS
+    call, as upsert_topic_schedules does. Returns the effective schedules.
+    """
+    if config is None:
+        config = _read_pipeline_config_quietly()
+    effective = effective_schedules(
+        research_cadence=topic["research_cadence"],
+        daily_cadence=topic["daily_cadence"],
+        slot=topic_slot(topic),
+        stagger_minutes=resolve_stagger_minutes(config),
+        topic_count=len(topics),
+    )
+    upsert_topic_schedules(
+        topic["topic_id"],
+        effective["research"],
+        effective["daily"],
+        topic.get("daily_timezone", _LEGACY_DAILY_TIMEZONE),
+        enabled=topic.get("paused") is not True,
+    )
+    written = {"research_schedule": effective["research"], "daily_schedule": effective["daily"]}
+    set_topic_fields(topic["topic_id"], written)
+    topic.update(written)
+    return effective
+
+
+def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
+    """One topic's schedules as `topics schedule` shows them: the slot, whether it is paused, the
+    expressions written to EventBridge Scheduler and the same in plain words."""
+    effective = effective or {}
+    research = effective.get("research") or topic.get("research_schedule") or topic.get("research_cadence")
+    daily = effective.get("daily") or topic.get("daily_schedule") or topic.get("daily_cadence")
+    return {
+        "topic_id": topic.get("topic_id"),
+        "name": topic.get("name"),
+        "stagger_slot": topic_slot(topic),
+        "paused": topic.get("paused") is True,
+        "research_schedule": research,
+        "research_schedule_text": describe_expression(research or ""),
+        "daily_schedule": daily,
+        "daily_schedule_text": describe_expression(daily or ""),
+        "daily_timezone": topic.get("daily_timezone", _LEGACY_DAILY_TIMEZONE),
+        "research_interval_hours": topic.get("research_interval_hours"),
+        "last_research_at": topic.get("last_research_at"),
+        "last_article_at": topic.get("last_article_at"),
+    }
+
+
+def _topics_schedule(event: dict) -> dict:
+    """Every topic's schedules as they stand (what `topics schedule` prints): the stagger
+    setting, how many topics there are and the delay that gives the daily cycles, then one
+    row per topic in topic-id order with its slot, whether it is paused, the two expressions
+    last written to EventBridge Scheduler and the same in plain words."""
+    config = _read_pipeline_config_quietly()
+    stagger_minutes = resolve_stagger_minutes(config)
+    topics = sorted(list_topics(), key=lambda item: item.get("topic_id") or "")
+    return _response(
+        200,
+        {
+            "stagger_minutes": stagger_minutes,
+            "topic_count": len(topics),
+            # Slot 1's daily cycle: one slot past the hour's last research heartbeat.
+            "daily_delay_minutes": (len(topics) + 1) * stagger_minutes,
+            "topics": [_schedule_view(topic) for topic in topics],
+        },
+    )
+
+
+def _reschedule_topics(event: dict) -> dict:
+    """Rewrite every topic's two schedules with the stagger as it is now (common/stagger.py).
+
+    Run after `stagger_minutes` changes, after a topic is added or deleted (the daily cycles'
+    delay is the number of topics), or to give topics from before slots existed their slots. A
+    topic keeps a valid slot it already has; one with none, an invalid one, or one another topic
+    also holds is given the next free slot, in topic-id order. `{"dry_run": true}` computes and
+    reports without writing anything. A topic whose stored cadence EventBridge Scheduler would
+    refuse is reported with its error and skipped, so one bad topic never stops the rest.
+    """
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    dry_run = body.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        return _error(400, "'dry_run' must be a boolean if provided")
+
+    config = _read_pipeline_config_quietly()
+    stagger_minutes = resolve_stagger_minutes(config)
+    topics = sorted(list_topics(), key=lambda item: item.get("topic_id") or "")
+
+    taken: dict[int, str] = {}
+    for topic in topics:
+        slot = topic_slot(topic)
+        if slot is not None and slot not in taken:
+            taken[slot] = topic["topic_id"]
+    for topic in topics:
+        if taken.get(topic_slot(topic)) != topic["topic_id"]:
+            slot = first_free_slot(taken)
+            taken[slot] = topic["topic_id"]
+            topic["stagger_slot"] = slot
+
+    rows = []
+    for topic in topics:
+        topic.setdefault("research_cadence", _DEFAULT_RESEARCH_CADENCE)
+        topic.setdefault("daily_cadence", _DEFAULT_DAILY_CADENCE)
+        try:
+            if dry_run:
+                effective = effective_schedules(
+                    research_cadence=topic["research_cadence"],
+                    daily_cadence=topic["daily_cadence"],
+                    slot=topic_slot(topic),
+                    stagger_minutes=stagger_minutes,
+                    topic_count=len(topics),
+                )
+            else:
+                set_topic_fields(topic["topic_id"], {"stagger_slot": topic["stagger_slot"]})
+                effective = _apply_topic_schedules(topic, topics=topics, config=config)
+            rows.append(_schedule_view(topic, effective))
+        except Exception as exc:  # noqa: BLE001 - one topic's bad cadence must not stop the rest
+            print(f"admin_api_handler: could not reschedule {topic['topic_id']}: {exc!r}")
+            rows.append({**_schedule_view(topic), "error": str(exc)})
+
+    return _response(
+        200,
+        {
+            "dry_run": dry_run,
+            "stagger_minutes": stagger_minutes,
+            "topic_count": len(topics),
+            "daily_delay_minutes": (len(topics) + 1) * stagger_minutes,
+            "topics": rows,
+        },
+    )
+
+
+def _post_pause_musing(topic_id: str, *, paused: bool) -> None:
+    """BloggerBear's musing about a topic paused or resumed (common/musings.py). The change has
+    already been made by now, so a failure here is logged and swallowed, like the rejection
+    musing's: it must never turn a successful pause into an error."""
+    try:
+        generate_and_store_pause_musing(
+            topic_id=topic_id,
+            topic_name=_topic_display_name(topic_id),
+            paused=paused,
+            model_id=os.environ["BEDROCK_MODEL_ID"],
+        )
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"admin_api_handler: could not post the pause/resume musing: {exc!r}")
+
+
+def _set_topic_paused(event: dict, *, paused: bool) -> dict:
+    """Pause a topic (nothing of it runs until it is resumed: no research tick, no candidate
+    ideas, no daily article) or resume it. The Topics row is the source of truth: `paused` is
+    written first, and both handlers refuse a paused topic whatever invoked them. Its two
+    schedules are then set DISABLED or ENABLED so the heartbeats stop costing invocations; a
+    schedule that could not be changed is said so in the answer, and the handlers' own check
+    still holds. The bear muses about it either way. Doing it again is a no-op."""
+    topic_id = _path_param(event, "topic_id")
+    topic = get_topic(topic_id)
+    if topic is None:
+        return _error(404, f"topic '{topic_id}' not found")
+    if (topic.get("paused") is True) == paused:
+        return _response(200, {"topic_id": topic_id, "paused": paused, "changed": False})
+
+    now = datetime.now(UTC).isoformat()
+    fields = {"paused": paused, "paused_at" if paused else "resumed_at": now}
+    set_topic_fields(topic_id, fields)
+    _topic_changed("paused" if paused else "resumed", topic, {**topic, **fields})
+    payload = {"topic_id": topic_id, "paused": paused, "changed": True, "at": now}
+    try:
+        payload["schedules"] = set_topic_schedules_state(topic_id, enabled=not paused)
+    except Exception as exc:  # noqa: BLE001 - the row is written; the handlers refuse a paused topic
+        print(f"admin_api_handler: could not change the schedules of {topic_id}: {exc!r}")
+        payload["schedules"] = []
+        payload["schedules_error"] = str(exc)
+    _post_pause_musing(topic_id, paused=paused)
+    return _response(200, payload)
+
+
+def _pause_topic(event: dict) -> dict:
+    return _set_topic_paused(event, paused=True)
+
+
+def _resume_topic(event: dict) -> dict:
+    return _set_topic_paused(event, paused=False)
+
+
 _PIPELINE_FUNCTION_ENV_VARS = {
     "research_tick": "RESEARCH_TICK_FUNCTION_NAME",
     "daily_cycle": "DAILY_CYCLE_FUNCTION_NAME",
+    # The research tick's Lambda again, asked only to fetch a vision topic's rail networks with the
+    # time a slow Overpass needs (rail_access.prefetch_networks): no Finding, no research time.
+    "network_prefetch": "RESEARCH_TICK_FUNCTION_NAME",
 }
+# The adapters with a network to prefetch (those with rail_access's prefetch_networks).
+_NETWORK_PREFETCH_ADAPTERS = frozenset({"rail_access"})
 
 
 def _trigger_topic(event: dict) -> dict:
@@ -465,12 +878,24 @@ def _trigger_topic(event: dict) -> dict:
 
     pipeline = body.get("pipeline")
     if pipeline not in _PIPELINE_FUNCTION_ENV_VARS:
-        return _error(400, "'pipeline' must be one of: research_tick, daily_cycle")
+        return _error(400, "'pipeline' must be one of: research_tick, daily_cycle, network_prefetch")
 
-    if get_topic(topic_id) is None:
+    topic = get_topic(topic_id)
+    if topic is None:
         return _error(404, f"topic '{topic_id}' not found")
+    # A paused topic runs nothing, by hand or by schedule: the handlers would refuse it anyway.
+    if topic.get("paused") is True:
+        return _error(409, f"topic '{topic_id}' is paused: resume it first (topics resume {topic_id})")
+
+    if pipeline == "network_prefetch" and topic.get("adapter") not in _NETWORK_PREFETCH_ADAPTERS:
+        return _error(
+            400,
+            f"topic '{topic_id}' has no network to prefetch: only a rail_access topic has one",
+        )
 
     payload = {"topic_id": topic_id}
+    if pipeline == "network_prefetch":
+        payload["prefetch_network"] = True
     # A manual research_tick is "check now": it must not be refused because the
     # topic's research interval hasn't elapsed, so it always bypasses that check.
     if pipeline == "research_tick":
@@ -522,6 +947,145 @@ def _get_latest_finding_route(event: dict) -> dict:
     if finding is None:
         return _error(404, f"no findings yet for topic '{topic_id}'")
     return _response(200, finding)
+
+
+# GET /topics/{topic_id}/findings (scripts/admin_cli.py's `findings list`): a topic's Findings,
+# newest first, with their raw items, for the operator at a terminal and a developer's session.
+# The limits, and the three windows, are the same the operator's assistant's topic_findings
+# applies (lambdas/ops_mcp/topic_findings.py); `next_article` reads exactly what the next daily
+# run reads (common/findings_window.window_start, no expiry filter, at most MAX_WINDOW_FINDINGS).
+# With `subject` too (a topic that rotates through subjects, common/day_subject.py), what the next
+# daily run on that subject's day reads: from that subject's last article, its Findings only.
+# Without one, a rotating topic is read for today's subject, as the daily cycle asks it
+# (common/findings_window.next_article_subject); every other topic as it always was.
+FINDINGS_LIMIT_DEFAULT, FINDINGS_LIMIT_MAX = 5, 20
+FINDINGS_DAYS_MAX = 14
+FINDINGS_WINDOW_MAX = 48  # daily_cycle_handler.MAX_WINDOW_FINDINGS; a test holds the two equal
+# Lambda answers at most 6 MB. Past this many bytes of body the oldest items are dropped until it
+# fits, and the body says so.
+FINDINGS_BODY_MAX_BYTES = 5_000_000
+_WHOLE_NUMBER = re.compile(r"^\d{1,6}$")
+
+
+def _whole_number_param(event: dict, name: str, low: int, high: int, default: int | None):
+    """A whole-number query parameter from `low` to `high`, or `default` when absent. Raises
+    ValueError, with the message for the 400, otherwise."""
+    raw = _query_param(event, name)
+    if raw is None:
+        return default
+    if not _WHOLE_NUMBER.match(raw.strip()) or not low <= int(raw) <= high:
+        raise ValueError(f"'{name}' must be a whole number from {low} to {high}")
+    return int(raw)
+
+
+def _since_param(event: dict) -> datetime | None:
+    """`since` as an aware UTC datetime, or None when absent. Raises ValueError when it is not
+    ISO-8601."""
+    raw = _query_param(event, "since")
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.strip())
+    except ValueError as exc:
+        raise ValueError("'since' must be an ISO-8601 timestamp") from exc
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _list_findings_route(event: dict) -> dict:
+    """A topic's Findings, newest first (raw items, numbers as JSON numbers): the unexpired ones,
+    or the last `days`, or those `since` a timestamp, or with `next_article=true` what the next
+    daily run will read. `limit` (1 to 20, default 5) is how many are listed; `count` is how many
+    the window holds (a floor when `count_is_at_least`), `more` whether some were not listed.
+
+    `subject` (with `next_article=true` only), for a topic that rotates through subjects: what
+    the next daily run on that subject's day reads, as the daily cycle reads it (its window from
+    the subject's own last article, read up to SUBJECT_READ_LIMIT, only the Findings that report
+    the subject, then the run's cap of those). `count` is then how many of the subject's Findings
+    the read held, a floor when the read stopped at its limit; the run reads at most
+    FINDINGS_WINDOW_MAX of them. Absent, a rotating topic is read for today's subject (the one the
+    daily cycle would write about now), named in the body's `subject`; a hook that raises is the
+    route's 500, never the topic-wide window. Every other topic is read as it always was."""
+    try:
+        limit = _whole_number_param(event, "limit", 1, FINDINGS_LIMIT_MAX, FINDINGS_LIMIT_DEFAULT)
+        days = _whole_number_param(event, "days", 1, FINDINGS_DAYS_MAX, None)
+        since_given = _since_param(event)
+    except ValueError as exc:
+        return _error(400, str(exc))
+    next_article_raw = _query_param(event, "next_article")
+    if next_article_raw is not None and next_article_raw != "true":
+        return _error(400, "'next_article' must be 'true' when given")
+    next_article = next_article_raw == "true"
+    if sum(1 for chosen in (days, since_given, next_article) if chosen) > 1:
+        return _error(400, "give at most one of 'days', 'since' and 'next_article'")
+    subject = _query_param(event, "subject")
+    if subject is not None:
+        if not SUBJECT_KEY.fullmatch(subject):
+            return _error(400, "'subject' must be a subject key: letters, digits, '_' and '-', at most 64")
+        if not next_article:
+            return _error(400, "'subject' is read with 'next_article=true' only")
+
+    topic_id = _path_param(event, "topic_id")
+    topic = get_topic(topic_id)
+    if topic is None:
+        return _error(404, f"topic '{topic_id}' not found")
+
+    now = datetime.now(UTC)
+    unexpired_at: int | None = int(now.timestamp())
+    if next_article and subject is None:
+        # A topic that rotates writes its next article on the day's subject, as the daily cycle
+        # asks it; None (every other topic) leaves the route as it always was.
+        today = next_article_subject(topic, now)
+        if today is not None:
+            subject = today.key
+    if next_article and subject is not None:
+        # What the daily run on the subject's day reads: the window from the subject's last
+        # article, read further than the run's cap, then the Findings that report the subject, and
+        # the run's cap of those.
+        since = window_start(topic, now, subject_key=subject)
+        unexpired_at = None
+        window, expired, cut = list_findings(
+            topic_id, since=since, limit=SUBJECT_READ_LIMIT, unexpired_at=None
+        )
+        own = subject_findings(window, subject)
+        count, complete = len(own), not cut
+        findings = own[:FINDINGS_WINDOW_MAX][:limit]
+    elif next_article:
+        # What the daily run reads: the window from the last article, every item in it whether or
+        # not its TTL has passed, at most the cap (read one more to know whether there are more).
+        since = window_start(topic, now)
+        unexpired_at = None
+        findings, expired, _ = list_findings(
+            topic_id, since=since, limit=FINDINGS_WINDOW_MAX + 1, unexpired_at=None
+        )
+        count, complete = len(findings), len(findings) <= FINDINGS_WINDOW_MAX
+        findings = findings[:limit]
+    else:
+        if days is not None:
+            since = (now - timedelta(days=days)).isoformat()
+        elif since_given is not None:
+            since = since_given.isoformat()
+        else:
+            since = None
+        findings, expired, _ = list_findings(topic_id, since=since, limit=limit, unexpired_at=unexpired_at)
+        count, complete = count_findings(topic_id, since=since, unexpired_at=unexpired_at)
+    body = {
+        "topic_id": topic_id,
+        "since": since,
+        "until": now.isoformat(),
+        "count": count,
+        "count_is_at_least": not complete,
+        "expired_left_out": expired,
+        "more": count > len(findings),
+        "truncated": False,
+        "findings": findings,
+    }
+    if subject is not None:
+        body["subject"] = subject
+    while findings and len(json.dumps(body, default=_json_number).encode("utf-8")) > FINDINGS_BODY_MAX_BYTES:
+        findings.pop()  # the oldest
+        body["truncated"] = True
+        body["more"] = True
+    return _response(200, body)
 
 
 # --- Articles ---------------------------------------------------------
@@ -593,6 +1157,9 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         # that was stored, its topic's adapter's sources as declared today (the digest: every
         # topic's). See common/attribution.py.
         attribution=sources_for_article(article, get_topic=get_topic, list_topics=list_topics),
+        # The figures stored when it was drafted (common/figures.py): copied onto the site again
+        # on every render, so an article that was taken down and approved gets them back.
+        figures=article.get("figures"),
     )
     generate_and_store_article_musing(
         article_id=article["article_id"],
@@ -637,6 +1204,9 @@ def _get_article(event: dict) -> dict:
         ],
         "models_used": lineage.get("models_used") or [],
         "cost_aud": float(total_cost) if isinstance(total_cost, int | float) else None,
+        # The pictures the page shows, with their content-bucket keys (common/figures.py): a
+        # reviewer can see what a reader will, and where it came from. Empty for most articles.
+        "figures": clean_figures(article.get("figures")),
     }
     if body_error:
         payload["body_error"] = body_error
@@ -673,6 +1243,10 @@ def _publish_article(event: dict) -> dict:
     # result (common/rewrite.py only finishes an item that is still "rewriting").
     if moderation_item is not None and moderation_item.get("status") in ("pending", "rewriting"):
         update_moderation_status(moderation_item["queue_id"], "approved")
+    _moderation_decision(
+        "force_published", topic_id=article.get("topic_id"), article_id=article_id,
+        queue_id=(moderation_item or {}).get("queue_id"), from_status=article.get("status"),
+    )  # fmt: skip
 
     refresh_articles_snapshot()
     return _response(200, {"published": article_id})
@@ -703,23 +1277,31 @@ def _unpublish_article(event: dict) -> dict:
             "use the moderation reject route for one still awaiting review",
         )
 
-    remove_article_page(article_id)
+    remove_article_page(article_id, figure_count=len(article.get("figures") or []))
     update_article_status(article_id, "rejected")
 
     moderation_item = get_moderation_item_by_article_id(article_id)
     if moderation_item is not None and moderation_item.get("status") != "rejected":
         update_moderation_status(moderation_item["queue_id"], "rejected")
+    _moderation_decision(
+        "unpublished", topic_id=article.get("topic_id"), article_id=article_id,
+        queue_id=(moderation_item or {}).get("queue_id"), from_status=article.get("status"),
+    )  # fmt: skip
 
     refresh_articles_snapshot()
-    return _response(200, {"unpublished": article_id, **_clear_article_traces(article_id)})
+    return _response(200, {"unpublished": article_id, **_clear_article_traces(article)})
 
 
-def _clear_article_traces(article_id: str) -> dict:
+def _clear_article_traces(article: dict) -> dict:
     """What is left of an article once its page is gone: the musings written about it, and its
-    page in the CDN's cache. Shared by unpublish and a rewrite of a published article."""
+    page (and its figures, if it has any) in the CDN's cache. Shared by unpublish and a rewrite of
+    a published article."""
+    article_id = article["article_id"]
     return {
         "musings_removed": delete_musings_for_article(article_id),
-        "cache_invalidated": invalidate_article_page(article_id),
+        "cache_invalidated": invalidate_article_page(
+            article_id, figure_count=len(article.get("figures") or [])
+        ),
     }
 
 
@@ -898,7 +1480,7 @@ def _rewrite_moderation_item(event: dict) -> dict:
             "it, or say what is wrong with 'instructions' (admin_cli articles rewrite)",
         )
 
-    return _start_rewrite(item, model_id, instructions)
+    return _start_rewrite(item, model_id, instructions, from_status="pending_moderation")
 
 
 def _rewrite_model_error(model_id: str) -> str | None:
@@ -924,10 +1506,13 @@ def _rewrite_instructions(body: dict, *, required: bool) -> tuple[str, str | Non
     return instructions, None
 
 
-def _start_rewrite(item: dict, model_id: str, instructions: str, extra: dict | None = None) -> dict:
+def _start_rewrite(
+    item: dict, model_id: str, instructions: str, extra: dict | None = None, *, from_status: str | None = None
+) -> dict:
     """Claim a pending queue item for a Re-Write and start it in the background (the daily-cycle
     Lambda, asynchronously). 202, or 409 if someone else claimed it first, or 502 (and the item
-    back to pending) if the Lambda could not be invoked."""
+    back to pending) if the Lambda could not be invoked. `from_status` is the article's status
+    before (a pending item's article is `pending_moderation`), for the evidence line."""
     queue_id = item["queue_id"]
     rewrite_id = str(uuid.uuid4())
     requested_at = datetime.now(UTC).isoformat()
@@ -939,15 +1524,23 @@ def _start_rewrite(item: dict, model_id: str, instructions: str, extra: dict | N
         instructions=instructions or None,
     ):
         return _error(409, f"moderation queue item '{queue_id}' is not pending")
-    return _invoke_rewrite(item, rewrite_id, model_id, extra)
+    return _invoke_rewrite(item, rewrite_id, model_id, extra, from_status=from_status)
 
 
 def _invoke_rewrite(
-    item: dict, rewrite_id: str, model_id: str, extra: dict | None = None, *, still_published: bool = False
+    item: dict,
+    rewrite_id: str,
+    model_id: str,
+    extra: dict | None = None,
+    *,
+    still_published: bool = False,
+    from_status: str | None = None,
 ) -> dict:
     """Start the Re-Write that owns `item` (already `rewriting` under `rewrite_id`). 202, or 502
     with the item released if the Lambda could not be invoked: back to the inbox, or, when the
-    article is `still_published` (it stays up while it is rewritten), closed as `rewrite_failed`."""
+    article is `still_published` (it stays up while it is rewritten), closed as `rewrite_failed`.
+    `from_status` is the article's status before, for the evidence line (`published` when it is
+    still up, or was taken down for this rewrite)."""
     queue_id = item["queue_id"]
     try:
         _get_lambda_client().invoke(
@@ -970,6 +1563,10 @@ def _invoke_rewrite(
         update_moderation_status(queue_id, "pending")
         return _error(502, "could not start the rewrite; the item is back in the inbox")
 
+    _moderation_decision(
+        "sent_back", topic_id=item.get("topic_id"), article_id=item["article_id"], queue_id=queue_id,
+        from_status=from_status,
+    )  # fmt: skip
     return _response(
         202,
         {"rewriting": queue_id, "article_id": item["article_id"], "model_id": model_id, **(extra or {})},
@@ -1051,13 +1648,15 @@ def _rewrite_article(event: dict) -> dict:
             extra=claim,
         )
         extra = {"unpublished": False, "stays_published_until_rewritten": True}
-        return _invoke_rewrite(item, rewrite_id, model_id, extra, still_published=True)
+        return _invoke_rewrite(
+            item, rewrite_id, model_id, extra, still_published=True, from_status="published"
+        )
     if status == "published":
         # Forced. Off the site first (page, then status), so a failure part-way leaves it down,
         # not half-up.
-        remove_article_page(article_id)
+        remove_article_page(article_id, figure_count=len(article.get("figures") or []))
         update_article_status(article_id, "pending_moderation")
-        extra = {"unpublished": True, **_clear_article_traces(article_id)}
+        extra = {"unpublished": True, **_clear_article_traces(article)}
     elif status == "rejected":
         update_article_status(article_id, "pending_moderation")
 
@@ -1069,7 +1668,7 @@ def _rewrite_article(event: dict) -> dict:
             reasons=[SENT_BACK_REASON],
             created_at=datetime.now(UTC).isoformat(),
         )
-    return _start_rewrite(item, model_id, instructions, extra)
+    return _start_rewrite(item, model_id, instructions, extra, from_status=status)
 
 
 _STATS_RECENT_LIMIT = 20
@@ -1148,8 +1747,8 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
 
     article_id = item["article_id"]
     published_at = datetime.now(UTC).isoformat() if article_status == "published" else None
+    article = get_article(article_id)
     if article_status == "published":
-        article = get_article(article_id)
         # published_by="humans": this only ever reaches "published" via an
         # operator's moderation-approve action (docs/project-plan.md §11,
         # PR 2 of 5) -- lineage is untouched, fixed at draft time.
@@ -1161,8 +1760,12 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
     else:
         update_article_status(article_id, article_status, published_at=published_at)
     update_moderation_status(queue_id, new_status)
+    _moderation_decision(
+        new_status, topic_id=item.get("topic_id") or (article or {}).get("topic_id"),
+        article_id=article_id, queue_id=queue_id, from_status=(article or {}).get("status"),
+    )  # fmt: skip
     if article_status == "rejected":
-        _post_rejection_musing(item.get("topic_id") or (get_article(article_id) or {}).get("topic_id"))
+        _post_rejection_musing(item.get("topic_id") or (article or {}).get("topic_id"))
     refresh_articles_snapshot()
 
     action_key = "approved" if new_status == "approved" else "rejected"
@@ -1954,6 +2557,9 @@ def _get_pipeline_config_route(event: dict) -> dict:
             "effective_review_on_unavailable": resolve_on_unavailable(config),
             "assistant_access": config.get("assistant_access"),
             "effective_assistant_access": effective_assistant_access(config),
+            "stagger_minutes": config.get("stagger_minutes"),
+            "effective_stagger_minutes": resolve_stagger_minutes(config),
+            "default_stagger_minutes": DEFAULT_STAGGER_MINUTES,
         },
     )
 
@@ -1970,6 +2576,9 @@ def _put_pipeline_config_route(event: dict) -> dict:
     - `assistant_access`: who may reach the operator's assistant: `open` (any signed-in
       caller, the default), `allowlist` (only from the operator's addresses) or `off`
       (nobody). The assistant reads it on every request, so it applies without a deploy.
+    - `stagger_minutes`: the minutes between one topic's schedules and the next
+      (common/stagger.py; 0 turns staggering off). Takes effect on each topic's next write,
+      or on every topic at once with POST /topics/reschedule.
 
     A setting that isn't in the body is left as it is.
     """
@@ -1999,11 +2608,16 @@ def _put_pipeline_config_route(event: dict) -> dict:
         if access_problem:
             return _error(400, f"'assistant_access' {access_problem}")
         updates["assistant_access"] = body["assistant_access"]
+    if "stagger_minutes" in body:
+        stagger_problem = stagger_error(body["stagger_minutes"])
+        if stagger_problem:
+            return _error(400, f"'stagger_minutes' {stagger_problem}")
+        updates["stagger_minutes"] = body["stagger_minutes"]
     if not updates:
         return _error(
             400,
-            "send 'research_interval_hours', 'review_mode', 'review_on_unavailable' and/or "
-            "'assistant_access' (null clears a setting)",
+            "send 'research_interval_hours', 'review_mode', 'review_on_unavailable', "
+            "'assistant_access' and/or 'stagger_minutes' (null clears a setting)",
         )
 
     put_pipeline_config(**updates)
@@ -2125,8 +2739,13 @@ _ROUTES = {
     "PUT /topics/{topic_id}": _update_topic,
     "DELETE /topics/{topic_id}": _delete_topic,
     "POST /topics/{topic_id}/trigger": _trigger_topic,
+    "POST /topics/{topic_id}/pause": _pause_topic,
+    "POST /topics/{topic_id}/resume": _resume_topic,
+    "GET /topics/schedule": _topics_schedule,
+    "POST /topics/reschedule": _reschedule_topics,
     "GET /topics/{topic_id}/candidates": _list_candidates,
     "GET /topics/{topic_id}/findings/latest": _get_latest_finding_route,
+    "GET /topics/{topic_id}/findings": _list_findings_route,
     "GET /articles/{article_id}": _get_article,
     "POST /articles/{article_id}/publish": _publish_article,
     "POST /articles/{article_id}/unpublish": _unpublish_article,
@@ -2194,8 +2813,12 @@ def handler(event, context) -> dict:
     if route_fn is None:
         return _error(404, f"no route for '{route_key}'")
 
-    try:
-        return route_fn(event)
-    except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
-        print(f"admin_api_handler: unhandled exception on {route_key}: {exc!r}")
-        return _error(500, "internal server error")
+    # API Gateway's request id joins its access log (which holds no caller details); it is bound
+    # only when it is an id, so nothing the request carries can be written as one.
+    api_request_id = evidence.check("id", ((event or {}).get("requestContext") or {}).get("requestId"))
+    with evidence.bind(tick=getattr(context, "aws_request_id", None), api_request_id=api_request_id):
+        try:
+            return route_fn(event)
+        except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
+            print(f"admin_api_handler: unhandled exception on {route_key}: {exc!r}")
+            return _error(500, "internal server error")

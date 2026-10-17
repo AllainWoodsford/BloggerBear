@@ -59,11 +59,18 @@ from ops_mcp import redact
 MAX_TOKENS = 600
 
 # API Gateway gives up on a request after 29 seconds, so nothing here may wait long: one retry on
-# a Bedrock error, and a read that does not hang.
+# a Bedrock error, and a read that does not hang. Two attempts in all: botocore reads
+# `max_attempts` as the number of retries, so it is `total_max_attempts` that says two.
+# One call's worst case is still more than 29 s: two attempts of 5 s connect and 20 s read, with up
+# to 1 s of backoff between them, is 51 s. It is kept: the retry is for an error that comes back at
+# once (a throttle, a 5xx), and the retry of a read that timed out is stopped by the function's own
+# 29 s timeout (infra/modules/ops-assistant/agent.tf), the caller told it failed either way. Two
+# whole attempts inside 29 s would need reads of 9 s, less than a MAX_TOKENS answer, not streamed,
+# can take; and a question is several model calls and tool calls, which share the 29 s.
 _BEDROCK_CONFIG = Config(
     connect_timeout=5,
     read_timeout=20,
-    retries={"max_attempts": 2, "mode": "standard"},
+    retries={"total_max_attempts": 2, "mode": "standard"},
     user_agent_extra="bloggerbear-ops-agent",
 )
 _MCP_STARTUP_TIMEOUT_SECONDS = 10
@@ -151,7 +158,8 @@ SYSTEM_PROMPT = "\n".join(
         "Four other first questions are not briefings either, so do not check the pipeline for "
         "them. Asked what you can do: call no tool, and say in a few sentences that you report "
         "what needs attention in the pipeline, including security incidents and sign-ins to "
-        "this assistant, remember what you suggested before, explain the "
+        "this assistant and how the vision pipeline's satellite sites are doing, remember what "
+        "you suggested before, explain the "
         "Admin CLI and what each AWS resource is for, and never run anything. Asked what you "
         "suggested before: call follow_up, and say what is still waiting and what has been "
         "fixed. Asked where someone new should start: call cli_guides with `first-topic`. Asked "
@@ -180,7 +188,9 @@ SYSTEM_PROMPT = "\n".join(
         # cli_guides and cli_help put it on screen, as the CLI prints it; the model's part is to
         # point at the right command and the right option, in a sentence or two.
         "For a how-to question, show the help first: cli_guides when it is about a feature "
-        "(costs, gear, editorial goals, a first topic, reviewing, musings), cli_help with the command "
+        "(costs, gear, editorial goals, a first topic, vision topics, reviewing, musings, a topic's "
+        "findings (`findings`)), cli_help "
+        "with the command "
         "paths when it is about a command. Then say which command it is, which option answers "
         "the question, and that its help is on screen. Never read the help aloud.",
         # The owner's ask: under the help, a suggested exact command, filled in from what they
@@ -257,6 +267,22 @@ SYSTEM_PROMPT = "\n".join(
         "X\", say that first (\"I took that to mean Crypto & Investing, stop me if not\") and "
         "then what it found. If it asks \"did you mean A or B?\", ask the operator that, and "
         "look again with their answer.",
+        # The owner's ask: the agent and Alexa+ can see the vision pipeline. Its per-site state is
+        # only in the running state, which vision_status reads; site names and errors are operator
+        # and third-party text.
+        "For the vision pipeline (satellite or rail topics, their sites, the vision worker) call "
+        "vision_status, with `topic=` for one topic or one site. Say whether the worker is on, how "
+        "many sites were measured and how recently, and what stopped any that were not, as its "
+        "`spoken` says; the sites are on screen. Never say a site's name, an error's text or a "
+        "table's cells. In a briefing, say what pipeline_health says about vision and call "
+        "vision_status only when the operator asks. For the worker's own errors call log_review "
+        "with `function` \"vision-worker\"; asked how the vision pipeline works, call architecture "
+        "with `feature` \"vision-pipeline\".",
+        # The owner's ask: interrogate the evidence. vision_evidence reads the pipeline's evidence
+        # lines from the logs (ops_mcp/vision_evidence.py); its `spoken` and rows are code-derived.
+        "Asked what the vision pipeline or its agent did, why a change was or was not reported, or for "
+        "evidence that OpenCV's output changed a decision: call vision_evidence (`scene` for one "
+        "decision step by step). Say what its `spoken` says; it says when rows are on screen.",
         # The architecture tool answers for this environment whatever name is pasted; the model
         # only has to pass the name as given and repeat what came back about the environment.
         "When the operator asks what a table, function, log group, dashboard or other AWS "
@@ -266,7 +292,14 @@ SYSTEM_PROMPT = "\n".join(
         # table_sample's rows are pipeline, model, reader or attacker text: on the page, not spoken.
         "To see what is in a table, or whether it is working as expected (\"are candidate ideas "
         "being written?\"), call table_sample with the name as given. Say how old the newest row "
-        "is and whether writes look on time; the row is on screen. Never read a row's values aloud.",
+        "is and whether writes look on time; the row is on screen. Never read a row's values aloud; "
+        "for a topic's research findings use topic_findings.",
+        # A topic's Findings (ops_mcp/topic_findings.py): summaries are a model's text from the web,
+        # shown on the page only; the model says counts and ages.
+        "Asked what research found for a topic, what its findings are, or what its next article will "
+        "be written from: call topic_findings with `topic=` as the operator said it (`next_article` "
+        "true for the next article). Say how many there are, how old the newest is and what its "
+        "`spoken` says; never read a summary or a table's cells aloud.",
         # The budget is enforced in code (policy.py). Telling the model means it plans for it,
         # and reads a refusal as "answer now" and not as an error to retry.
         "You have a small budget of tool calls: 8 for a first question, 3 for a later one. If a "
@@ -418,15 +451,19 @@ def _hooks(ledger: policy.Ledger) -> list:
 
 
 def _answer_text(result: Any, ledger: policy.Ledger) -> str:
-    """What is spoken. The model's words when it finished an answer; otherwise (it ran out of
-    turns, or was cut off) the tools' own summaries, which code wrote and are safe to say. Either
-    way it passes the PII sweep last (redact.sweep_answer): an e-mail, a whole address, a token or
-    a key the model repeated from something it read is replaced before the operator hears it."""
+    """What is spoken. The model's words when it finished an answer, unless they repeat text a
+    tool marked as written outside this project (policy.echoes: `ledger.echoed` is then set);
+    otherwise (it ran out of turns, was cut off, or echoed) the tools' own summaries, which code
+    wrote and are safe to say. Either way it passes the PII sweep last (redact.sweep_answer): an
+    e-mail, a whole address, a token or a key the model repeated from something it read is
+    replaced before the operator hears it."""
     if result is not None and result.stop_reason == "end_turn":
         text = " ".join(
             block["text"].strip() for block in result.message.get("content", []) if block.get("text")
         ).strip()
-        if text:
+        if text and policy.echoes(text, ledger):
+            ledger.echoed = True
+        elif text:
             return redact.sweep_answer(text)
     return redact.sweep_answer(" ".join(ledger.spoken) or _NO_ANSWER)
 
@@ -468,12 +505,16 @@ def run(question: str, history: list[dict] | None, tools: list, model: Any = Non
         # What the run cost, whether it answered, was cut off or failed: tokens a failed run
         # spent were still billed. Recorded here, by code, from Strands' own count.
         _record_usage(agent)
+    spoken = _answer_text(result, ledger)
     return {
-        "answer": _answer_text(result, ledger),
+        "answer": spoken,
         "tool_calls": ledger.tool_calls,
         "findings": ledger.findings,
         "tables": ledger.tables,
         "turn": turn,
+        # For the handler's log line only (it is taken out before the answer is sent): the model's
+        # answer repeated text a tool marked as written outside this project.
+        "echo": ledger.echoed,
     }
 
 

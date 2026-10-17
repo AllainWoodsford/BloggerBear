@@ -1,0 +1,171 @@
+"""How far back a topic's daily article reads its Findings.
+
+The daily cycle writes from every Finding since the topic's previous article, but never from
+further back than the topic's findings window. A day (FINDINGS_WINDOW_HOURS) suits a topic that
+writes every day. A topic that writes on some days only (one day of a rotation, a weekly topic)
+sets `findings_window_hours` on its item, so a Finding made on a day it does not write is still
+in the window on the day it does. The previous article still bounds the window either way, so a
+wide window never writes the same Findings twice. Re-Write (common/rewrite.py) reads the same
+window back from an article's creation to find the Findings the article was written from.
+
+Whole hours, 1 to MAX_FINDINGS_WINDOW_HOURS. A stored value that is not valid (edited by hand,
+or written before a bound changed) is skipped and the default applies, never trusted.
+
+`window_start` is the one rule for where the window starts: the daily cycle reads from it, and so
+does anything that wants to show what the next article will be written from (the operator's
+assistant's topic_findings, the Admin API's findings route), so the two can never disagree.
+
+A topic that rotates through several subjects (common/day_subject.py) writes about one of them a
+day, so its previous article on *that subject* bounds the window, not its previous article on any:
+the topic item keeps one stamp per subject (`last_article_by_subject`, a map of subject key to ISO
+time) beside `last_article_at`, which every topic keeps as before. With `subject_key`, the window
+reads the subject's own stamp and ignores the topic-wide one; a subject never written about yet is
+bounded by the window alone.
+
+Which subject the next article is on is one rule too (`next_article_subject`): the daily cycle asks
+it at its run's start, and the assistant's topic_findings and the Admin API's findings route ask it
+when they are asked about the next article without a subject, so for a rotating topic all three
+read the day's subject's window and Findings. A rotating topic's run keeps only the subject's
+Findings, so it reads further into the window before it caps them (`SUBJECT_READ_LIMIT`).
+
+Topic-agnostic: nothing here knows about any adapter or domain.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from common.adapters.base import DaySubject
+from common.day_subject import resolve_day_subject
+from common.editorial_goals import resolve_goal_for_topic
+
+FIELD = "findings_window_hours"
+# The topic item's stamps: when its last article began, on any subject and per subject (the daily
+# cycle's _record_article_written, common/dynamo.set_topic_last_article_at).
+LAST_ARTICLE_FIELD = "last_article_at"
+SUBJECT_STAMPS_FIELD = "last_article_by_subject"
+FINDINGS_WINDOW_HOURS = 24
+# Two weeks: Findings expire after research_tick_handler.FINDING_TTL_DAYS (14), so a longer window
+# would reach back to nothing. tests/test_daily_cycle_handler.py holds the two together.
+MAX_FINDINGS_WINDOW_HOURS = 336
+# How much of the window a rotating topic's readers read before they keep the day subject's
+# Findings and cap those at the 48 an article is written from (daily_cycle_handler's
+# MAX_WINDOW_FINDINGS, and the same cap in Re-Write, topic_findings and the findings route; a test
+# holds this to four of it). Capping first would let other subjects' newer Findings push the
+# subject's older ones out, and the subject's stamp would then pass them for good. What 4 x 48 =
+# 192 guarantees: every Finding of a one-slot rota of up to 7 subjects at one Finding an hour (its
+# window is 24 h a day of the longest gap plus a day, 192 h, dailysubject_hook.md 3.4, and the
+# hourly research tick writes at most one Finding a run), within the read's page cap
+# (common/dynamo.FINDINGS_PAGES_MAX pages of up to 1 MB: 192 Findings of about 26 KB each at most).
+# A wider window (up to MAX_FINDINGS_WINDOW_HOURS), a longer rota or larger Findings can hold more
+# than the read reaches: the daily cycle and Re-Write then say in the log where the read stopped
+# and how many it held (`read_stopped_at`), as they say what the 48-cap left out. Bounded, so a
+# busier window still costs a bounded read; a topic that does not rotate reads exactly what it
+# always read.
+SUBJECT_READ_LIMIT = 4 * 48
+
+
+def _as_hours(value) -> int | None:
+    """`value` as a whole number of hours in range, else None. Accepts the Decimal DynamoDB hands
+    back; rejects bools, floats, strings and out-of-range."""
+    if isinstance(value, bool) or not isinstance(value, int | Decimal):
+        return None
+    if isinstance(value, Decimal) and not value.is_finite():
+        return None  # int() of a NaN or Infinity raises
+    if value != int(value):
+        return None
+    hours = int(value)
+    return hours if 1 <= hours <= MAX_FINDINGS_WINDOW_HOURS else None
+
+
+def findings_window_error(value) -> str | None:
+    """A message if `value` isn't a valid stored window, else None. None (unset) is valid and
+    means the default."""
+    if value is None or _as_hours(value) is not None:
+        return None
+    return (
+        f"must be a whole number of hours from 1 to {MAX_FINDINGS_WINDOW_HOURS}, "
+        f"or null for the default ({FINDINGS_WINDOW_HOURS})"
+    )
+
+
+def findings_window_hours(topic: dict) -> int:
+    """The window in force for a topic: its own valid `findings_window_hours`, else the default."""
+    hours = _as_hours((topic or {}).get(FIELD))
+    return FINDINGS_WINDOW_HOURS if hours is None else hours
+
+
+def last_article_at(topic: dict, subject_key: str | None = None):
+    """The stored stamp that bounds the topic's next window: `last_article_at`, or with
+    `subject_key` that subject's entry in `last_article_by_subject` (None when the map, or the
+    subject in it, is missing or the map is not a map). As stored: not parsed or checked."""
+    topic = topic or {}
+    if subject_key is None:
+        return topic.get(LAST_ARTICLE_FIELD)
+    stamps = topic.get(SUBJECT_STAMPS_FIELD)
+    return stamps.get(subject_key) if isinstance(stamps, dict) else None
+
+
+def window_start(
+    topic: dict,
+    now: datetime,
+    *,
+    force: bool = False,
+    hours: int | None = None,
+    subject_key: str | None = None,
+) -> str:
+    """ISO timestamp Findings must be captured at or after to feed the topic's next article.
+
+    The window is the topic's findings window (`hours`, which defaults to `findings_window_hours`:
+    the last FINDINGS_WINDOW_HOURS unless the topic sets its own), but never reaches back past the
+    topic's previous article (`last_article_at`), so a second run with nothing found since the last
+    one has nothing to write about instead of rewriting the same Findings. `force` ignores the
+    previous article (an operator asking for a fresh take on the whole window); the window itself
+    still applies. A `last_article_at` that is missing, unreadable or naive is read as the daily
+    cycle reads it: missing or unreadable leaves the window alone, naive is UTC.
+
+    `subject_key`, for a topic that rotates through subjects (the day's subject, or the one an
+    operator asks about): the previous article *on that subject* bounds the window instead (its
+    entry in `last_article_by_subject`, read the same way), and the topic-wide stamp is not read.
+    `force` ignores both. None, the default, is the rule every other topic has always had.
+
+    Pure: `now` is passed in, and nothing is read or written.
+    """
+    floor = now - timedelta(hours=findings_window_hours(topic) if hours is None else hours)
+    previous_at = None if force else last_article_at(topic, subject_key)
+    if previous_at:
+        try:
+            previous = datetime.fromisoformat(previous_at)
+        except (TypeError, ValueError):
+            previous = None
+        if previous is not None:
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=UTC)  # stored in UTC
+            return max(floor, previous).isoformat()
+    return floor.isoformat()
+
+
+def read_stopped_at(read: int) -> str:
+    """Where a rotating topic's read of its window stopped when the window held more (the paged read,
+    common/dynamo.list_findings, said so): at SUBJECT_READ_LIMIT, or, with fewer read, at the read's
+    page cap, DynamoDB's 1 MB pages having held fewer Findings than asked. For the log line the
+    daily cycle and Re-Write print then: any of the subject's Findings beyond it were not read."""
+    if read >= SUBJECT_READ_LIMIT:
+        return f"its read limit ({SUBJECT_READ_LIMIT})"
+    return "the page cap"
+
+
+def next_article_subject(topic: dict, at: datetime) -> DaySubject | None:
+    """The subject the topic's daily run starting at `at` writes about, for a topic that rotates
+    through several (common/day_subject.resolve_day_subject), or None for every other topic.
+
+    The daily cycle asks it once, at its run's start; the assistant's topic_findings and the Admin
+    API's findings route ask it at `now` when asked about the next article with no subject, so the
+    three read the same subject's window and Findings. A topic with a daily editorial goal (the
+    crypto feed) keeps its goal and its adapter is not asked. Whatever the hook raises (a broken
+    rota, or something that is not a usable DaySubject) is raised here: never an answer about
+    every subject at once."""
+    if resolve_goal_for_topic(topic, at.date()) is not None:
+        return None
+    return resolve_day_subject(topic, at)

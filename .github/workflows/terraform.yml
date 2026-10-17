@@ -105,6 +105,15 @@ jobs:
     # names do not change. It must be the prefix infra/bootstrap was applied with, because the
     # deploy role may only touch resources whose names start with it.
     # scripts/setup_repo.py sets all of them.
+    # TF_VAR_waf_regional_enabled, TF_VAR_waf_admin_allowlist, TF_VAR_waf_log_all_requests: the
+    # cost-saving firewall switches (docs/cost-saving.md), each from a GitHub variable: the
+    # dev-specific one (WAF_..._DEV) if set, else the shared one (WAF_...), else
+    # 'true', which is the firewall exactly as it has always been. Plain variables, not secrets:
+    # a switch is not a secret, and the Terraform variables are bool, so a typo fails the plan
+    # with "a bool is required" instead of silently picking a mode. Turning one off is for a
+    # deployment that only tries the project out; a fork that stores real people's data keeps
+    # every switch on. The admin API's address allowlist is enforced by its resource policy
+    # whatever the switches say.
     # TF_VAR_aws_region, TF_STATE_REGION: the deployment's home region, from the AWS_REGION
     # variable (a plain variable: a region is not a secret, and it is in every ARN and host name
     # the logs print anyway). Unset, it is the region this project has always used, written out
@@ -112,14 +121,24 @@ jobs:
     # the credentials step below gets the region it always got. TF_STATE_REGION is only for the
     # state bucket (see the init step): its own TF_STATE_REGION variable if the bucket is not in
     # the home region, else AWS_REGION, else empty, which leaves the backend block's region alone.
+    # TF_VAR_vision_enabled: whether the vision worker (infra/modules/vision-worker, the OpenCV
+    # work) is deployed at all. A plain VISION_ENABLED variable, because it is a switch and not a
+    # secret. It is read as a switch: `true`, in any letter case (Actions compares strings ignoring
+    # case), turns the worker on, and any other value, or none, is handed to Terraform as `false`
+    # (also the variable's own default), so a deployment that never set it never creates the
+    # worker, and a stray value cannot fail the apply (docs/configuration.md).
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
+      TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
+      TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_DEV || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
+      TF_VAR_waf_log_all_requests: ${{ vars.WAF_LOG_ALL_REQUESTS_DEV || vars.WAF_LOG_ALL_REQUESTS || 'true' }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_DEV || vars.ALERT_EMAIL_DEV }}
       TF_VAR_aws_account_id: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
       TF_VAR_unique_name_prefix: ${{ vars.UNIQUE_NAME_PREFIX || 'bloggerbear' }}
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_DEV }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
+      TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

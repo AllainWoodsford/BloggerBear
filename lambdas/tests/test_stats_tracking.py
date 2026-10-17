@@ -1079,3 +1079,29 @@ def test_refresh_fails_open_and_does_nothing_without_a_stats_table(bill_tables, 
     with patch("common.stats_tracking.list_all_articles") as scan:
         st.refresh_articles_snapshot()
     scan.assert_not_called()
+
+
+def test_record_model_usage_tallies_an_agent_loop_as_one_entry(monkeypatch):
+    from decimal import Decimal
+
+    import common.stats_tracking as st_module
+
+    calls = []
+    monkeypatch.setenv("STATS_CURRENT_TABLE", "StatsCurrent")
+    monkeypatch.setattr(st_module, "increment_current_stats", lambda updates, week: calls.append(updates))
+    monkeypatch.setattr(st_module, "pricing_for", lambda model_id: {"price": Decimal("1")})
+    monkeypatch.setattr(st_module, "call_cost_usd", lambda call, pricing: 0.01)
+    st_module.record_model_usage("vision_triage", "m", 1200, 300, 3)
+    assert calls[0]["vision_triage_calls"] == 3
+    assert calls[0]["vision_triage_input_tokens"] == 1200 and calls[0]["vision_triage_output_tokens"] == 300
+    assert "vision_triage_cost_aud" in calls[0]
+
+    monkeypatch.setattr(st_module, "call_cost_usd", lambda call, pricing: None)
+    st_module.record_model_usage("vision_triage", "unknown-model", 10, 1, 1)
+    assert calls[1]["vision_triage_unpriced_calls"] == 1
+
+    with pytest.raises(ValueError):
+        st_module.record_model_usage("not_a_category", "m", 1, 1, 1)
+    monkeypatch.delenv("STATS_CURRENT_TABLE")
+    st_module.record_model_usage("vision_triage", "m", 1, 1, 1)
+    assert len(calls) == 2  # no Stats table: nothing recorded, nothing raised

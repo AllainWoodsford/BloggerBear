@@ -1,0 +1,55 @@
+{
+  "about": "One rail_access topic, rail-cities, that watches the Rail Access Monitor's four starting cities (docs/enhancements/rail-access-monitor.md §2) and writes about one of them a day (docs/enhancements/dailysubject_hook.md §4). It is a complete body for the admin API's POST /topics; docs/deployment-runsheet.md, 'rail_access topics', shows how to create it with scripts/admin_cli.py. Each city's box sits inside one 100 km UTM square, so inside one Sentinel-2 tile. adapter_config sets the four sites, their reach, the 80 s time_budget_seconds cap (Sydney's first OpenStreetMap network takes most of a minute: docs/deployment-runsheet.md, 'rail_access topics') and the rota: Sydney on Monday and Friday, Melbourne on Tuesday and Saturday, Singapore on Wednesday and Sunday, Boston on Thursday, each day as Sydney's calendar has it (rotation_timezone). Every other key takes the rail_access adapter's default (docs/enhancements/vision.md §5). The research tick measures the cities in turn, one per tick, whatever the day. The daily cycle runs every day at 09:05 Sydney time and writes about the day's city alone, from every Finding about that city since its last article on that city. findings_window_hours is 192 (8 days): Boston's 7 days between its Thursdays, the longest gap in the rota, plus a day for a clock change or a late run (the two-day cities need only 120). The window never reaches back past the city's own last article, so no Finding is drafted twice; one that reports two cities is drafted on each one's day. A day with no new Finding about its city stops before any model call. The editorial goal names no city: the day's mandate adds it. Adding a city means adding a site and giving it a day in the rota; every site needs one. force_manual_review is forced on for this adapter whether or not it is sent.",
+  "topics": [
+    {
+      "topic_id": "rail-cities",
+      "name": "Rail access",
+      "adapter": "rail_access",
+      "adapter_config": {
+        "sites": [
+          {
+            "id": "sydney",
+            "name": "Sydney",
+            "polygon": [[150.86, -33.58], [151.56, -33.58], [151.56, -34.16], [150.86, -34.16]]
+          },
+          {
+            "id": "melbourne",
+            "name": "Melbourne",
+            "polygon": [[144.80, -37.55], [145.30, -37.55], [145.30, -37.90], [144.80, -37.90]]
+          },
+          {
+            "id": "singapore",
+            "name": "Singapore",
+            "polygon": [[103.56, 1.61], [104.08, 1.61], [104.08, 1.09], [103.56, 1.09]]
+          },
+          {
+            "id": "boston",
+            "name": "Boston",
+            "polygon": [[-71.30, 42.42], [-70.90, 42.42], [-70.90, 42.15], [-71.30, 42.15]]
+          }
+        ],
+        "reach_m": 1000,
+        "time_budget_seconds": 80,
+        "rotation": {
+          "MON": "sydney",
+          "TUE": "melbourne",
+          "WED": "singapore",
+          "THU": "boston",
+          "FRI": "sydney",
+          "SAT": "melbourne",
+          "SUN": "singapore"
+        },
+        "rotation_timezone": "Australia/Sydney"
+      },
+      "editorial_goals": {
+        "primary_focus": "Report what the rail access measurements show for the day's city: the share of its built-up area within walking reach of a rail station, the built-up area beyond it, the station count, the scene's capture date and coverage, and the rule-based flags and simulations, as proxies measured from satellite imagery and OpenStreetMap.",
+        "exclusion_criteria": "No ridership, timetable, journey time, cost or funding claims; no recommendation to build, extend or close anything; no cause, forecast, political or planning view; no comparison with a city the findings do not measure; no place names or numbers that are not in the findings."
+      },
+      "is_financial": false,
+      "force_manual_review": true,
+      "daily_cadence": "cron(5 9 * * ? *)",
+      "daily_timezone": "Australia/Sydney",
+      "findings_window_hours": 192
+    }
+  ]
+}

@@ -7,6 +7,13 @@ module whenever a topic is written or removed, and this module manages the
 two EventBridge Scheduler schedules (hourly research tick, daily authoring
 cycle) that keep that topic running unattended.
 
+The expressions written here are the topic's *effective* ones: the Admin API
+applies the topic's stagger slot first (common/stagger.py), so the minute each
+schedule runs at is the slot's, not the cadence's. A paused topic keeps both
+schedules, DISABLED (`set_topic_schedules_state`), so resuming it is a state
+change and not a rebuild; the handlers also refuse to run a paused topic, so
+the Topics row is the source of truth either way.
+
 The two Lambda/Step-Functions targets, the IAM role EventBridge Scheduler
 assumes to invoke them, and the environment name used for schedule naming
 all come from environment variables set on the Lambda by `infra/`:
@@ -71,6 +78,10 @@ def _schedule_name(topic_id: str, suffix: str) -> str:
     return f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}{topic_id}-{suffix}"
 
 
+def _schedule_state(enabled: bool) -> str:
+    return "ENABLED" if enabled else "DISABLED"
+
+
 def _upsert_schedule(
     client,
     *,
@@ -79,6 +90,7 @@ def _upsert_schedule(
     target_arn: str,
     topic_id: str,
     timezone: str = DEFAULT_TIMEZONE,
+    enabled: bool = True,
 ) -> None:
     kwargs = {
         "Name": name,
@@ -86,6 +98,7 @@ def _upsert_schedule(
         "ScheduleExpression": schedule_expression,
         "ScheduleExpressionTimezone": timezone,
         "FlexibleTimeWindow": {"Mode": "OFF"},
+        "State": _schedule_state(enabled),
         "Target": {
             "Arn": target_arn,
             "RoleArn": os.environ["SCHEDULER_INVOKE_ROLE_ARN"],
@@ -103,12 +116,18 @@ def upsert_topic_schedules(
     research_cadence: str,
     daily_cadence: str,
     daily_timezone: str = DEFAULT_TIMEZONE,
+    *,
+    enabled: bool = True,
 ) -> None:
     """Create (or update, if they already exist) a topic's two schedules.
 
     `daily_timezone` is the zone the daily cadence's `cron(...)` is read in
-    (so "9 AM Australia/Sydney" follows daylight saving); the hourly research
-    schedule is a `rate(...)` and has no wall-clock time to interpret.
+    (so "9 AM Australia/Sydney" follows daylight saving); the research
+    schedule is a `rate(...)`, or the cron its stagger slot turned it into,
+    and is read in UTC.
+
+    `enabled` is False for a paused topic: both schedules are written
+    DISABLED, so an edit to a paused topic does not quietly start it again.
 
     Validates both cadence expressions and the zone before making any AWS
     calls, so a bad value never leaves one schedule created and the other not.
@@ -124,6 +143,7 @@ def upsert_topic_schedules(
         schedule_expression=research_cadence,
         target_arn=os.environ["RESEARCH_TICK_FUNCTION_ARN"],
         topic_id=topic_id,
+        enabled=enabled,
     )
     _upsert_schedule(
         client,
@@ -132,7 +152,46 @@ def upsert_topic_schedules(
         target_arn=os.environ["STATE_MACHINE_ARN"],
         topic_id=topic_id,
         timezone=daily_timezone,
+        enabled=enabled,
     )
+
+
+def set_topic_schedules_state(topic_id: str, *, enabled: bool) -> list[str]:
+    """Pause (DISABLED) or resume (ENABLED) a topic's two schedules as they are, without
+    rewriting what they run or when. Returns the names of the schedules changed.
+
+    EventBridge Scheduler has no "set the state" call: an update must carry the whole
+    schedule again, so each is read first and written back with only its state changed.
+    A schedule that does not exist (a topic made before its schedules could be, or one
+    whose creation failed) is skipped: the Topics row's `paused` flag is what the handlers
+    obey, and the schedules follow it when they next exist.
+    """
+    client = _get_scheduler_client()
+    changed = []
+    for suffix in ("research-tick", "daily-cycle"):
+        name = _schedule_name(topic_id, suffix)
+        try:
+            current = client.get_schedule(Name=name, GroupName=_SCHEDULE_GROUP_NAME)
+        except client.exceptions.ResourceNotFoundException:
+            continue
+        target = current["Target"]
+        kwargs = {
+            "Name": name,
+            "GroupName": _SCHEDULE_GROUP_NAME,
+            "ScheduleExpression": current["ScheduleExpression"],
+            "FlexibleTimeWindow": current.get("FlexibleTimeWindow") or {"Mode": "OFF"},
+            "State": _schedule_state(enabled),
+            "Target": {
+                "Arn": target["Arn"],
+                "RoleArn": target["RoleArn"],
+                **({"Input": target["Input"]} if target.get("Input") else {}),
+            },
+        }
+        if current.get("ScheduleExpressionTimezone"):
+            kwargs["ScheduleExpressionTimezone"] = current["ScheduleExpressionTimezone"]
+        client.update_schedule(**kwargs)
+        changed.append(name)
+    return changed
 
 
 def delete_topic_schedules(topic_id: str) -> None:

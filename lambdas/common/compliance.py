@@ -121,6 +121,13 @@ _STREET_ADDRESS = re.compile(
     r"Way|Court|Ct|Boulevard|Blvd|Place|Pl|Terrace|Crescent)\b"
 )
 _QUOTED_CLAIM = re.compile(r"[\"“](.+?)[\"”]")
+# A nominated quote is everything up to the closing quotation mark before its " | why": a draft
+# sentence that itself holds quoted text (a quoted station name, the vision agent's quoted note)
+# is taken whole, not cut at its first inner quotation mark. Without a reason, the whole quoted
+# line; failing both, the first quoted span. Either longer reading counts only when the draft holds
+# it word for word (_nominated_quote).
+_QUOTE_BEFORE_REASON = re.compile(r"^\s*[\"“](.+?)[\"”]\s*\|")
+_WHOLE_QUOTE = re.compile(r"^\s*[\"“](.+)[\"”]\s*$")
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _PROPER_NOUN = re.compile(r"\b[A-Z][A-Za-z0-9]{3,}")
 # A figure counts as found in the sources if one is within this fraction of it ("over 170" for
@@ -223,8 +230,8 @@ def _review_verdict(response: str, source: str, draft: str) -> dict:
         if label == "NOTE":
             notes.append(f"NOTE: {text}")
             continue
-        quote = _QUOTED_CLAIM.search(text)
-        if quote is not None and _item_stands(label, quote.group(1), source):
+        quote = _nominated_quote(text, draft)
+        if quote is not None and _item_stands(label, quote, source):
             standing.append(f"{_ITEM_TITLES[label]}: {text}")
         else:
             notes.append(f"{_ITEM_TITLES[label]} flagged but not held: {text}")
@@ -238,9 +245,38 @@ def _review_verdict(response: str, source: str, draft: str) -> dict:
     return {"compliant": False, "reasons": [response.strip()]}
 
 
+def _nominated_quote(text: str, draft: str | None = None) -> str | None:
+    """The draft text a labelled line quotes (see _QUOTE_BEFORE_REASON); None when it quotes nothing.
+
+    The longer readings (_QUOTE_BEFORE_REASON, _WHOLE_QUOTE) are taken only when `draft` holds
+    them word for word: with no " | why", the whole-line reading runs from the first quotation mark
+    to the last, and on `"x" is commentary, not a call to "buy"` would take in the reviewer's own
+    words. Otherwise the first quoted span is the quote, as it always was. With no `draft`, the
+    longer readings are taken unchecked."""
+    for pattern in (_QUOTE_BEFORE_REASON, _WHOLE_QUOTE):
+        match = pattern.search(text)
+        if match is not None and (draft is None or match.group(1) in draft):
+            return match.group(1)
+    match = _QUOTED_CLAIM.search(text)
+    return match.group(1) if match is not None else None
+
+
 def is_financial_topic(topic: dict) -> bool:
     """Return whether a topic is financial/investment-adjacent."""
     return topic.get("is_financial", False)
+
+
+# Every draft of a topic with `force_manual_review` is held for a person, whatever the compliance
+# review says. Unlike `is_financial` it changes nothing about the drafting or the review (no
+# financial guidance, no disclaimer, and the review still runs, so the moderator sees its verdict);
+# it only takes away automatic publishing. admin_api_handler.py sets it on every topic whose adapter
+# is in common/adapters MANUAL_REVIEW_ADAPTERS (satellite_vision, rail_access): no imagery article
+# without a human (docs/risks/opencv-bushfire-watch-01.md item 9).
+MANUAL_REVIEW_REASON = "this topic's articles are always reviewed by a person before publishing"
+
+
+def requires_manual_review(topic: dict) -> bool:
+    return topic.get("force_manual_review") is True
 
 
 # --- Financial-topic drafting guidance (Phase 7) -----------------------

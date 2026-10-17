@@ -200,6 +200,21 @@ SETTINGS: tuple[Setting, ...] = (
 
 # Names the workflows read that this script deliberately does not ask for.
 NOT_ASKED = {
+    # The cost-saving firewall switches (docs/cost-saving.md): each is read as its per-environment
+    # name (_DEV or _PROD), else the shared one, else true. Unset means the firewall as it has
+    # always been, which is what a first deploy wants, so this script does not ask; an operator
+    # who wants to save on the firewall sets them by hand after reading what each one gives up.
+    "WAF_REGIONAL_ENABLED",
+    "WAF_REGIONAL_ENABLED_DEV",
+    "WAF_REGIONAL_ENABLED_PROD",
+    "WAF_ADMIN_ALLOWLIST",
+    "WAF_ADMIN_ALLOWLIST_DEV",
+    "WAF_ADMIN_ALLOWLIST_PROD",
+    "WAF_LOG_ALL_REQUESTS",
+    "WAF_LOG_ALL_REQUESTS_DEV",
+    "WAF_LOG_ALL_REQUESTS_PROD",
+    "WAF_SITE_ENABLED",
+    "WAF_SITE_ENABLED_PROD",
     # GitHub creates this for every workflow run. Nobody sets it.
     "GITHUB_TOKEN",
     # Only claude-issue-worker.yml reads it. That workflow is an optional extra with its own
@@ -208,6 +223,10 @@ NOT_ASKED = {
     # Only ruff-autofix.yml reads it, and it is optional: without it that workflow reports the
     # fixes in its job summary and pushes nothing. No deploy needs it.
     "RUFF_AUTOFIX_TOKEN",
+    # The switch that deploys the vision worker (docs/configuration.md). Off unless someone sets it
+    # to "true" by hand, after the bootstrap step the runsheet describes; a first deploy never
+    # wants it, so this script does not ask.
+    "VISION_ENABLED",
 }
 
 # Secrets the workflows still read as `secrets.X || vars.X`, left over from when they were
