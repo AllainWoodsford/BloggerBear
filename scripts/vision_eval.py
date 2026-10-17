@@ -1542,7 +1542,14 @@ def access_baseline(analysis, pixel_size_m: float, reach_m: float) -> tuple[dict
 def scene_analysis(scene: dict, polygon: list, network: dict, fetch, reach_m: float):
     """The worker's own read and analysis of `scene` in this process (vision_worker_handler's rail
     path: the bands on swir16's 20 m grid, no-data folded into SCL), returning the analysis with its
-    layers, which the reply never carries."""
+    layers, which the reply never carries, and the grid's pixel size."""
+    analysis, site = scene_site_analysis(scene, polygon, network, fetch, reach_m)
+    return analysis, site.pixel_size_m
+
+
+def scene_site_analysis(scene: dict, polygon: list, network: dict, fetch, reach_m: float):
+    """scene_analysis's read and analysis, with the site's bands as read (vision/scene.SiteBands:
+    the grid's UTM transform and EPSG code, which E8 resamples its reference onto)."""
     import vision_worker_handler
     from vision import scene as scene_module
     from vision.rail_analyse import RailParams, analyse_rail_access
@@ -1561,7 +1568,7 @@ def scene_analysis(scene: dict, polygon: list, network: dict, fetch, reach_m: fl
             bands["scl"] = scl
     analysis = analyse_rail_access(bands, [site.polygon_px], site.pixel_size_m, site.transform, site.epsg,
                                    network, RailParams(reach_m=reach_m), rail_rule()[0])  # fmt: skip
-    return analysis, site.pixel_size_m
+    return analysis, site
 
 
 def _main_access_baseline(args, manifest: dict) -> int:
@@ -1661,6 +1668,7 @@ KIND_WORDS = {
     "eval-agent": "2.6.1-2.6.3: the agent's cases, per class, against numeric-only and always-artefact",
     "eval-counterfactual": "2.6.6: only OpenCV's output changed, at the agent and at the coverage gate",
     "eval-stability": "E3: the year set through the production rule on one network: false alarms, spreads",
+    "eval-builtup-check": "E8: the built-up mask against ESA WorldCover 2021's built-up class",
 }
 
 
@@ -1911,6 +1919,10 @@ def main(argv: list[str] | None = None) -> int:
     cache_option(a)
     a.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
     a.add_argument("--tag", help="a suffix for the run id")
+    # E8 (Q3): its arguments and its run are vision_eval_reference's, which imports no adapter.
+    import vision_eval_reference
+
+    vision_eval_reference.add_parser(sub, MANIFEST_FILE, cache_option)
     i = sub.add_parser("index", help="2.9: index.json and RESULTS.md from the run files")
     i.add_argument("--evidence", type=Path, default=EVIDENCE_DIR, help="the evidence directory")
     i.add_argument("--check", action="store_true", help="fail when either file is stale, or a label is wrong")
@@ -1932,6 +1944,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_failures(args, manifest)
     if args.command == "access-baseline":
         return _main_access_baseline(args, manifest)
+    if args.command == "builtup-check":
+        return vision_eval_reference.main(args, manifest)
     if args.command in vision_eval_agent_cli.COMMANDS:
         import vision_eval_agent
 

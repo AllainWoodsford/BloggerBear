@@ -149,3 +149,44 @@ def test_no_denylist_passes_with_a_notice(repo, capsys):
     _stage(repo, "notes.md", f"by {SECRET_NAME}\n")
     assert pdc.main(["--staged"]) == 0
     assert "nothing to check" in capsys.readouterr().out
+
+
+# --- --files: files whole, tracked or not (the evidence export's freshly written files) --------------
+
+
+def test_files_reads_untracked_files_whole_naming_the_file_and_line_not_the_entry(repo, monkeypatch, capsys):
+    monkeypatch.setenv(pdc.DENYLIST_ENV, SECRET_NAME)
+    written = repo / "live" / "2026-10-24"
+    written.mkdir(parents=True)
+    (written / "summary.json").write_text('{"ok": true}\n', encoding="utf-8")
+    (written / "ticks.jsonl").write_text(f'{{"a": 1}}\n{{"note": "by {SECRET_NAME}"}}\n', encoding="utf-8")
+
+    assert pdc.main(["--files", str(written / "summary.json"), str(written / "ticks.jsonl")]) == 1
+    err = capsys.readouterr().err
+    assert f"{written / 'ticks.jsonl'}:2 contains denylist entry #1" in err
+    assert "summary.json" not in err and SECRET_NAME.lower() not in err.lower()
+    assert pdc.main(["--files", str(written / "summary.json")]) == 0
+
+
+def test_files_works_outside_a_repository_and_skips_binary_files(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)  # no git repository here
+    monkeypatch.setenv(pdc.DENYLIST_ENV, SECRET_NAME)
+    figure = tmp_path / "figure.png"
+    figure.write_bytes(b"\x89PNG\0\0" + SECRET_NAME.encode())
+    text = tmp_path / "README.md"
+    text.write_bytes(f"caf\xe9 {SECRET_NAME}\n".encode("latin-1"))  # not UTF-8: still read
+
+    assert pdc.main(["--files", str(figure)]) == 0
+    assert pdc.main(["--files", str(figure), str(text)]) == 1
+    assert f"{text}:1 contains denylist entry #1" in capsys.readouterr().err
+
+
+def test_files_refuses_a_path_that_is_not_a_file_rather_than_finding_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(pdc.DENYLIST_ENV, SECRET_NAME)
+    assert pdc.main(["--files", str(tmp_path / "missing.json")]) == 2
+    assert "missing.json: not a file" in capsys.readouterr().err
+    assert pdc.main(["--files", str(tmp_path)]) == 2
+    with pytest.raises(SystemExit):
+        pdc.main(["--files"])  # at least one path
+    with pytest.raises(SystemExit):
+        pdc.main(["--files", "a.json", "--all"])  # one mode at a time
