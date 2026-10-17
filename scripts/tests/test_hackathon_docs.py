@@ -17,8 +17,9 @@ embeds it, and names what the rubric asks for; README.md sends judges to the pac
 placeholder is marked for R2 in one form; and REPRODUCE.md's tier 1a is CI's own commands with only
 the judges' constraints file added, parsed from `python-ci.yml`, so it cannot drift unseen. The
 review fixes are held too: each SVG carries every word of its source whole, the workflow's captions
-match the diagram and the code, no page names a CI run on the tag as the freeze's source, and a
-number taken from a design doc is marked indicative.
+match the diagram and the code, no page names a CI run on the tag as the freeze's source, a
+number taken from a design doc is marked indicative, the front page names the commit the rotation
+is described at, and §2 says what `topic_findings` does not show on a revisit day.
 
 The parser is deliberately plain: a cell holds no `|`, so a row is split on it. The "Say" list is
 `SAY_PHRASES` until `scripts/submission_index.py` exists; the test then imports it from there.
@@ -808,6 +809,43 @@ def test_the_reports_window_budget_is_the_codes():
     report = " ".join(REPORT.read_text(encoding="utf-8").split())
     assert "41 to 56 s with the read" in report
     assert "a full 30 s read on top of the worst case would not fit" in report
+
+
+def test_the_front_page_names_the_commit_the_rotation_is_described_at():
+    """The rotation the report describes (a city a week, the goal rotation's angles) reached `dev`
+    after 4a3d1b8, the commit the rest of the report and its file:line anchors are at: the front
+    page names the later commit for it, so a reader who checks out 4a3d1b8 is not sent to code it
+    does not have."""
+    report = REPORT.read_text(encoding="utf-8")
+    assert "`lambdas/common/goal_rotation.py`" in report and "`rotation_period`" in report
+    front = " ".join(report[: report.index("## 1. The problem")].split())
+    scope = front[front.index("**What is written here.**") :]
+    scope = scope[: scope.index("A sentence that needs a number")]
+    assert "describes the code on `dev` at 4a3d1b8 (16 October). Code anchors" not in scope
+    assert "except the rotation as it runs" in scope and "#338" in scope and "#335" in scope
+    assert "as at a952db1 (17 October)" in scope
+    assert "Code anchors are `file:line` at 4a3d1b8" in scope and "checked again at the tag" in scope
+
+
+def test_the_reports_topic_findings_line_says_a_revisit_is_not_shown():
+    """`topic_findings`' next-article window starts at the subject's last article and never reads
+    the goal rotation, so on a day with nothing new it shows no Findings while the daily run writes
+    the week's earlier ones up again under the next goal: §2 says the tool does not show those."""
+    tool = (ROOT / "lambdas" / "ops_mcp" / "topic_findings.py").read_text(encoding="utf-8")
+    assert "goal_rotation" not in tool and "revisit" not in tool, (
+        "topic_findings reads the goal rotation now: say what it shows on a revisit day in the "
+        "report's §2, then change this test"
+    )
+    cycle = (ROOT / "lambdas" / "daily_cycle_handler.py").read_text(encoding="utf-8")
+    assert "goal_rotation.next_unused(goals, state)" in cycle and "pick_for_revisit" in cycle
+    report = REPORT.read_text(encoding="utf-8")
+    users = " ".join(report[report.index("## 2. Users") : report.index("## 3. Architecture")].split())
+    assert "what the next article will be written from" not in users
+    assert (
+        "`topic_findings` (the new Findings the next article on the week's city reads; on a day with "
+        "none, the run writes the week's earlier Findings up again under the next goal, which the tool "
+        "does not show)"
+    ) in users
 
 
 def _passages(text: str) -> list[str]:

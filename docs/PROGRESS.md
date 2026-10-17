@@ -850,6 +850,15 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   interpreter, with the benchmark's packages in a folder beside it. The repository is public
   (`docs/hackathon/evidence/cool/`, `docs/deployment-runsheet.md`,
   `scripts/tests/test_cool_evidence.py`)
+- [x] The submission package describes the rotation as it runs (R1b): a city a week in the
+  owner's order (Sydney's week is 19 to 25 October, Melbourne's 26 October), the Monday weekly
+  reading with no change claimed and no agent, and an article a day from it under the next goal
+  (access, the network's flags, the simulated links); the report, the Devpost text, REPRODUCE's
+  tier 2 (create from the template, then switch by RailVisionSeeding.md §7), the README and the
+  vision page say so, and the claim that an article needs a change is corrected. Both diagrams
+  re-exported, with a fixed `handDrawnSeed` so an export is the same byte for byte; the video's
+  shots and the live demonstration are re-planned around Sydney's week (#346, submission PR R1b;
+  `docs/hackathon/`, `docs/architecture/blogger-vision.md`, `README.md`)
 
 ## Backlog / not yet scheduled
 
