@@ -828,6 +828,17 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   interval, the spreads). CI runs all three scripted on the synthetic city; the live runs are the
   operator's (#337, submission PR Q2b; `scripts/vision_eval_agent.py`, `scripts/vision_eval_cases/`;
   [the cases](hackathon/evidence/README.md#the-agents-cases))
+- [x] The submission round's evidence export (Q3): `scripts/evidence_export.py export` reads, read
+  only, what the deployed system measured, decided and did (the decision rings, the evidence lines
+  through the assistant's own queries and parser, Lambda's REPORT lines, the Articles and Findings
+  tables) into `docs/hackathon/evidence/live/<date>/`, schema fields only, with each line's
+  provenance and the deploy's commit, a redaction backstop and the PII check's new `--files` mode;
+  its summary holds the human-control and observability numbers, the failures observed in the
+  deployment with their zero rows, E11 and the worker by caller, build and CPU, the demo topic
+  apart; `trace` prints one decision's chain from an export or live, and `agreement` recounts the
+  operator's labels (O9). E8 (`vision_eval.py builtup-check`) compares the built-up mask with ESA
+  WorldCover 2021; E6 and E7 were cut (submission PR Q3; `scripts/evidence_export.py`,
+  `scripts/vision_eval_reference.py`; [the live evidence](hackathon/evidence/README.md#the-live-evidence-live))
 
 ## Backlog / not yet scheduled
 

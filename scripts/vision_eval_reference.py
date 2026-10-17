@@ -58,7 +58,10 @@ REFERENCE_PREFIX = f"https://{REFERENCE_HOST}/v200/2021/map/"
 REFERENCE_FILE = "ESA_WorldCover_10m_2021_v200_{tile}_Map.tif"
 REFERENCE_PRODUCT = "ESA WorldCover 10 m 2021 v200"
 REFERENCE_LICENCE = "CC BY 4.0"
-REFERENCE_CREDIT = "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021)"
+REFERENCE_CREDIT = (
+    "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA "
+    "WorldCover consortium"
+)
 # One HEAD from the build container on 17 October 2026: 200, the bucket in eu-central-1
 # (x-amz-bucket-region), Last-Modified 26 October 2022.
 REFERENCE_PINS = {"S36E150": {"etag": "b80441256064dfdeacf0e397722cd017-3", "bytes": 20060792}}

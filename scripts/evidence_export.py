@@ -150,7 +150,7 @@ _ARN = re.compile(r"\barn:[^\s\"',\]\}]*")
 # A Lambda REPORT line's numbers and status, as Lambda writes them.
 _REPORT_REQUEST = re.compile(r"RequestId: ([A-Za-z0-9-]{1,64})")
 _REPORT_FIELDS = {
-    "duration_ms": re.compile(r"\tDuration: ([0-9.]+) ms"),
+    "duration_ms": re.compile(r"(?<!Billed )Duration: ([0-9.]+) ms"),
     "billed_ms": re.compile(r"Billed Duration: ([0-9]+) ms"),
     "memory_mb": re.compile(r"Memory Size: ([0-9]+) MB"),
     "max_memory_mb": re.compile(r"Max Memory Used: ([0-9]+) MB"),
@@ -375,7 +375,7 @@ REPORT_QUERY = (
 )
 # The research tick's REPORT lines are read only for the attempts that ended badly (a timeout, an
 # error): one per invocation of every topic otherwise.
-TICK_REPORT_EXTRA = ' and strcontains(@message, "Status: ")'
+TICK_REPORT_EXTRA = " and @message like /Status: (timeout|error)/"
 
 
 def _derive(text: str, old: str, new: str) -> str:
@@ -770,7 +770,7 @@ def ring_records(topic_id: str, state: dict | None, *, with_notes: bool) -> list
     records = []
     sites = (state or {}).get("sites") if isinstance((state or {}).get("sites"), dict) else {}
     for site_id in sorted(sites):
-        if not ID_PATTERN.match(site_id) and evidence.check("id", site_id) is None:
+        if evidence.check("id", site_id) is None:
             continue
         ring = (sites[site_id] or {}).get("decisions") if isinstance(sites[site_id], dict) else None
         for entry in ring if isinstance(ring, list) else []:
@@ -1331,7 +1331,11 @@ def read_labels(live_dir: Path) -> list[dict]:
 def agreement(labels: list[dict], decisions: list[dict], demos) -> dict:
     """The operator's agreement with the agent on triaged live decisions (O9's labels): k of n with
     a Wilson 95 % interval, cities and demo apart; a decision labelled twice counts once (the last)."""
-    triaged = {f"{r['topic_id']}/{r['site_id']}/{r['scene_id']}": r for r in decisions if r.get("triage")}
+    triaged = {
+        f"{r['topic_id']}/{r['site_id']}/{r['scene_id']}": r
+        for r in decisions
+        if r.get("triage") and r.get("kept")
+    }
     latest = {row["decision"]: row for row in labels if row.get("decision") in triaged}
     out = {}
     for group in ("cities", "demo"):
@@ -1434,7 +1438,10 @@ def summarise(data: dict) -> dict:
         "ended_without_a_reply": _zeros(
             ("timeout", "out_of_memory", "error", "other"), Counter(no_reply_cause(r) for r in no_reply)
         ),
-        "note": "a worker timeout never writes vision_measure: these are counted from Lambda's REPORT lines",
+        "note": (
+            "a worker timeout never writes vision_measure: these are counted from Lambda's REPORT lines, "
+            "of every caller (a run that wrote no line names no site)"
+        ),
     }
     failures["research_tick"] = {
         "timeouts": sum(1 for r in tick_reports if r.get("status") == "timeout"),
