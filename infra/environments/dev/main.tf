@@ -2175,6 +2175,8 @@ locals {
     "robots.txt"           = "text/plain"
     "logo.svg"             = "image/svg+xml"
     "logo.webp"            = "image/webp"
+    "logo-2x.webp"         = "image/webp" # the header logo at 2x and 3x pixel density (srcset)
+    "logo-3x.webp"         = "image/webp"
     "favicon.ico"          = "image/x-icon"
     "apple-touch-icon.png" = "image/png"
   }
