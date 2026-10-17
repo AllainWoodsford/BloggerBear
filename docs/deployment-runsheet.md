@@ -1514,7 +1514,61 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    Each exits 0 when it reproduced its recording; a failed check names the tick and the field. A
    recording refused before it runs ("input changed", or a recorded response that calls a tool the
    profile no longer offers) names what moved.
-6. **Index and commit.**
+6. **The agent's evaluation (2.6.1-2.6.3)**, with the same `W` and `M`: the thirteen cases in
+   `scripts/vision_eval_cases/` (the [evidence README](hackathon/evidence/README.md#the-agents-cases)
+   lists them), each case's history through the real adapter, then its newest tick asked of the
+   real model five times from the same state, against the deployed worker. C7 and C9 run their
+   scripts; C8 is asked with an invalid model id on purpose; C3 and C10 count only if their scene
+   passes the gate. About 55 live runs of up to five turns: a few US dollars of model calls (the
+   run file totals them in USD and AUD, by the built-in price table) and cents of worker time.
+
+   ```sh
+   python scripts/vision_eval.py agent --worker "$W" --agent bedrock --model-id "$M" --region ap-southeast-2 --repeats 5 --out $E
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py agent --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
+   ```
+
+   It exits 1 when an unconditional case never reached the agent, a failure case did not fail
+   closed as it must, or the worker did not measure a case's newest scene (the run keeps its code
+   and scores that repeat nowhere); `--case C1` (repeatable) re-runs one. Without Bedrock access
+   every case ends `bedrock_error`, counted, never dropped: check the summary's
+   `failed_closed_task_runs` before committing a run that only measured that. To run the worker
+   in this process instead, add `$C` and pass `--worker in-process`; without a cache it is refused
+   off an EC2 instance in us-west-2.
+7. **The counterfactuals (2.6.6)**: C1 and C10 (C4 in C10's place if C10 does not pass the gate),
+   five repeats per arm with only `look_again`'s numbers differing, and the same scene clouded to
+   coverage 0.62 and 0.58 in this process (arm (b), which needs the cache). About 22 model runs.
+
+   ```sh
+   python scripts/vision_eval.py counterfactual --worker "$W" $C --agent bedrock --model-id "$M" --region ap-southeast-2 --repeats 5 --out $E
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py counterfactual --worker $W --cache $HOME\cogs --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
+   ```
+
+   Its checks hold that both sides were measured at their coverage and that no model was asked
+   below the floor. Arm (a)'s `baseline` arm is a constructed tool output, and the report says so.
+8. **E3, stability over the year**: the manifest's `year-2024` set (17 scenes) through the
+   production rule, triage off, on one network, in this process so the built-up masks can be
+   compared: about 1 GB read once into the cache, so run it on the Graviton instance or another
+   machine in us-west-2. No model, no worker invocation.
+
+   ```sh
+   python scripts/vision_eval.py stability $C --out $E
+   ```
+
+   ```powershell
+   python scripts\vision_eval.py stability --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   ```
+
+   Its summary's `false_material` of `decisions`, with `wilson_low` and `wilson_high`, is the
+   false-alarm rate a quiet city would call the agent at; `results.false_alarms.by_month` breaks it
+   down. If a summer scene against winter ones crossed a threshold here, C3 reaches the agent in
+   step 6; otherwise its gate held, which the report says.
+9. **Index and commit.**
 
    ```sh
    python scripts/vision_eval.py index && python scripts/vision_eval.py index --check
@@ -1533,7 +1587,7 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    which can name a suburb or a station.
 
    Commit the run files and figures, `docs/hackathon/evidence/replay/`, `index.json` and
-   `RESULTS.md`, and update the tracker's A2 and S7 rows. A run file made before the submission tag
+   `RESULTS.md`, and update the tracker's A2, A3 and S7 rows. A run file made before the submission tag
    on code that changed since in a way that matters to it goes in
    `docs/hackathon/evidence/older-code.json` with the reason, and `index` again.
 
