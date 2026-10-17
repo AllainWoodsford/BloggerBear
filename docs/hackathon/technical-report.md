@@ -23,8 +23,11 @@ Best Use of COOL ([Appendix A](#appendix-a-best-use-of-cool)) and Agentic Vision
 | How to build and test it | [REPRODUCE.md](REPRODUCE.md) |
 | The evidence | [evidence/README.md](evidence/README.md): every number below cites a file there or a code anchor, or is marked indicative and cites the design doc that recorded it |
 
-**What is written here.** Every section describes the code on `dev` at 4a3d1b8 (16 October). Code
-anchors are `file:line` at that commit, and are checked again at the tag. A sentence that needs a
+**What is written here.** Every section describes the code on `dev` at 4a3d1b8 (16 October),
+except the rotation as it runs: a city a week (#338), the angles of the goal rotation (#335) and
+the runsheet that set the live topic up ([RailVisionSeeding.md](../RailVisionSeeding.md), #334)
+are described as at a952db1 (17 October), the `dev` commit that brought them in. Code anchors are
+`file:line` at 4a3d1b8, and all of them are checked again at the tag. A sentence that needs a
 number not yet measured holds a marked placeholder, `[R2: ...]`, naming the run or file the number
 will come from; `scripts/submission_check.py` fails while any is left. A few numbers were measured
 before the run files existed (PR D's smoke run, the build container's timings, a workstation's
@@ -87,9 +90,10 @@ map, and a person approves every article, because the numbers are proxies.
     inbox`, `approve`).
   - They ask the operator's assistant, on its page or by voice through Alexa+, what the pipeline
     saw and why: `vision_status` (which cities were measured, and why the others were not),
-    `topic_findings` (what the next article will be written from, for the week's city) and
-    `vision_evidence` (each decision, what the agent did, what a person did), read-only
-    ([the evidence trail](../enhancements/vision-evidence.md#asking-the-assistant)).
+    `topic_findings` (the new Findings the next article on the week's city reads; on a day with
+    none, the run writes the week's earlier Findings up again under the next goal, which the tool
+    does not show) and `vision_evidence` (each decision, what the agent did, what a person did),
+    read-only ([the evidence trail](../enhancements/vision-evidence.md#asking-the-assistant)).
   - They need three things: little effort, never a wrong number published, and the evidence on
     demand.
 - **Readers.** People following their city's growth and its trains: commuters, local-news
