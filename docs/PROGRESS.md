@@ -859,7 +859,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   deployment with their zero rows, E11 and the worker by caller, build and CPU, the demo topic
   apart; `trace` prints one decision's chain from an export or live, and `agreement` recounts the
   operator's labels (O9). E8 (`vision_eval.py builtup-check`) compares the built-up mask with ESA
-  WorldCover 2021; E6 and E7 were cut (submission PR Q3; `scripts/evidence_export.py`,
+  WorldCover 2021; E6 and E7 were cut (#347, submission PR Q3; `scripts/evidence_export.py`,
   `scripts/vision_eval_reference.py`; [the live evidence](hackathon/evidence/README.md#the-live-evidence-live))
 
 ## Backlog / not yet scheduled
