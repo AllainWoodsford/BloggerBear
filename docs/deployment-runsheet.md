@@ -821,9 +821,11 @@ Finding: its `summary` (the model wrote it from a diff that, for a change the ag
 quoted the agent's reason as `the vision agent's note (not a measurement): "…"`), `figures`,
 `planner_notes`, `subjects` and `raw_snapshot_s3_key`. That snapshot (and the running state) holds
 the whole trail under `triage`, keyed by site id: `verdict`, `reason`, `tool_calls` (each tool's
-`name`, its `input` and whether it was `ok`), `model_id`, the tokens and `model_calls`; the newest
-history entry repeats the verdict and reason. A change the agent judged an artefact writes no
-Finding, so its trail is only in the running state. The review evidence, which the fresh-data
+`name`, its `input` and whether it was `ok`), `steps` (each tool's code-derived result), `stop`,
+`model_id`, the tokens and `model_calls`; the newest history entry repeats the verdict and reason.
+A change the agent judged an artefact writes no Finding, so its trail is in the site's decision
+ring in the running state (the last 12 decisions) and in the logs (the `vision_triage` line, 90
+days: [Evidence](#evidence-what-the-pipeline-measured-and-decided), below). The review evidence, which the fresh-data
 review checks the draft against, carries each city's measured numbers and planner notes, not the
 trail: to see why a change was or was not reported, read `triage`.
 
@@ -898,8 +900,9 @@ Every step the vision pipeline takes leaves one JSON line in the logs, and every
 entry in the site's decision ring in the running state ([the evidence
 trail](enhancements/vision-evidence.md)). The lines are read in the CloudWatch console (Logs →
 Logs Insights, pick the Region, the log group and a window) with the fixed queries below, which
-filter by field equality: a query on `rail-sydney` never matches `rail-sydney-demo`. The
-operator's assistant and Alexa+ read the same lines in the next round.
+filter by field equality: a query on one topic id never matches another that it prefixes (a
+`rail-sydney` beside `rail-sydney-demo`). The operator's assistant and Alexa+ read the same lines
+with `vision_evidence` ([Asking the assistant](enhancements/vision-evidence.md#asking-the-assistant)).
 
 - (a), (b), (c), (c2) and (f) run on `/aws/lambda/<prefix>-<env>-research-tick` in the home
   Region;
@@ -907,9 +910,9 @@ operator's assistant and Alexa+ read the same lines in the next round.
 - (e) on `/aws/lambda/<prefix>-<env>-admin-api` in the home Region.
 
 ```
-(a) A topic's decisions (one topic: equality, so rail-sydney never matches rail-sydney-demo)
+(a) A topic's decisions (one topic, by equality: rail-cities never matches rail-sydney-demo)
 fields @timestamp, site_id, scene_id, code, moved, network_changed, verdict, reported, coverage, tick, run
-| filter evidence = "bloggerbear/1" and event = "vision_decision" and topic_id = "rail-sydney"
+| filter evidence = "bloggerbear/1" and event = "vision_decision" and topic_id = "rail-cities"
 | sort @timestamp desc | limit 50
 
 (b) What the agent did
@@ -960,7 +963,7 @@ the demo topic's site is `demo-sydney`, not `sydney`.
 
 **The first-deploy check**, once, on dev, right after the deploy that carries this:
 
-1. Force a tick (`python scripts/admin_cli.py topics trigger rail-sydney --pipeline
+1. Force a tick (`python scripts/admin_cli.py topics trigger rail-cities --pipeline
    research_tick`) and run (c) with its tick id (the `START RequestId:` line of the invocation,
    or the `tick` field of any evidence line in the window). Every line of the tick must come
    back with Lambda's own `START`, `END` and `REPORT` lines.

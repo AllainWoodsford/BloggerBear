@@ -262,6 +262,11 @@ Alexa+ and the ask page both call `vision_evidence` (`lambdas/ops_mcp/vision_evi
 > with OpenCV once and read the news once. 2 findings were written; 1 article is waiting for
 > review, 0 were approved and 0 rejected. The decisions are on screen.
 
+Since the rotating topic, `rail-cities`, ask for it by its name, "rail access": a topic is matched
+by its exact id or name first, then by the closest words (`lambdas/ops_mcp/topic_match.py`), and
+"rail Sydney" is closer to the demo topic, "Rail access: Sydney (demo)", which the assistant would
+take instead. The submission's check (T1) and its video ask for "rail access".
+
 Of the gate's counts (first observation, too cloudy to count, still building a baseline, within
 the usual range) only those above zero are said, so a quiet week is not a list of zeros; the
 agent's count is always said, as it is what the question is about, and the findings sentence says
