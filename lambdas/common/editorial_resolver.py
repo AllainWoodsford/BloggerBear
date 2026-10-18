@@ -50,12 +50,21 @@ ADAPTER_DEFAULTS = {
     # The vision adapters: their summary prompts' limits again (common/adapters/rail_access.py and
     # satellite_vision.py, build_summary_prompt), so a topic created without editorial_goals is not
     # drafted under the global default's "randomly sampling 5 to 10 articles".
+    # The rail default is also a day subject's mandate with the city's name folded into its first
+    # sentence (rail_access.subject_mandate, "Report only what was measured for Sydney: ..."), which
+    # the daily cycle refuses over MAX_GOAL_TEXT_CHARS (1000): so it stays under 900 characters,
+    # room for " for " and a site name of at most 80 characters (vision_sites.MAX_SITE_NAME_CHARS).
     RAIL_ACCESS_ADAPTER_KEY: (
         "Report only what was measured: proxies from Sentinel-2 imagery and OpenStreetMap's rail "
-        "network (built-up density, straight-line walking reach to a station, network measures), with "
-        "their capture dates. Give no ridership, patronage, journey time, cost, cause, forecast or "
-        "recommendation; the rule-based flags and simulations are proxies, never recommendations. Use "
-        "no number or place name that is not in the findings."
+        "network and bus, tram and ferry stops (built-up density, straight-line reach to a station or "
+        "stop, minutes as that distance at a stated 80 m a minute, network measures, built-up km² "
+        "within reach per 100 stops, the overlap with station reach, the multimodal isolation "
+        "weight), with capture dates. Give no ridership, journey, travel or waiting time, cost, cause, "
+        "forecast or recommendation: flags are proxies; every simulated link is a theoretical what-if "
+        "on the mapped graph, justified by its numbers and what its straight line crosses (water, "
+        "unmeasured ground), never a route, alignment or recommendation. Say what the measures show "
+        "and what a theoretical link would change, never a complaint, blame or a cost, political or "
+        "resource-allocation view. Use no number or place name that is not in the findings."
     ),
     SATELLITE_VISION_ADAPTER_KEY: (
         "Report only what was measured: counts of objects detected by an automated pipeline (OpenCV) "

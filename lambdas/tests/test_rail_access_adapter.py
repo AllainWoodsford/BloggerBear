@@ -32,7 +32,16 @@ from terraform_text import INFRA
 import daily_cycle_handler
 import research_tick_handler
 from common import day_subject as day_subject_module
-from common import evidence, findings_window, osm, scheduler, vision_client, vision_sites, vision_triage
+from common import (
+    evidence,
+    findings_window,
+    fresh_review,
+    osm,
+    scheduler,
+    vision_client,
+    vision_sites,
+    vision_triage,
+)
 from common.adapters import MANUAL_REVIEW_ADAPTERS, RAIL_ACCESS_ADAPTER_KEY
 from common.adapters import rail_access as ra
 from common.adapters.base import DaySubject
@@ -60,10 +69,12 @@ def item(scene_id, when, bbox=WIDE, assets=RAIL_ASSETS, cloud=12.0):
     }
 
 
-def network(fetched_at="2026-10-01T03:00:00+00:00", polygon=SYDNEY):
+def network(fetched_at="2026-10-01T03:00:00+00:00", polygon=SYDNEY, stops=None):
     """What common/osm.fetch_network returns: the network with its bookkeeping (and, as the
-    adapter caches it, the `site_key` of the polygon it was fetched for)."""
-    return {
+    adapter caches it, the `site_key` of the polygon it was fetched for). Without `stops` it is a
+    network from before the stops layer, as a cached one is; with it, the layer (bare points by
+    mode, as common/osm.py now returns it)."""
+    built = {
         "source": "overpass",
         "endpoint": osm.OVERPASS_ENDPOINTS[0],
         "fetched_at": fetched_at,
@@ -75,6 +86,13 @@ def network(fetched_at="2026-10-01T03:00:00+00:00", polygon=SYDNEY):
         "counts": {"ways": 1, "stations": 1, "pois": 1, "points": 2},
         "truncated": False,
     }
+    if stops is not None:
+        built["stops"] = stops
+    return built
+
+
+# A stops layer as common/osm.py returns one: bare [lon, lat] points by mode, no ids or names.
+STOPS = {"bus": [[151.201, -33.9], [151.205, -33.9]], "tram": [[151.21, -33.91]]}
 
 
 class Clock:
@@ -185,13 +203,52 @@ def metrics(served_share=0.73, desert_km2=111.3, station_count=178, coverage=0.9
     }
 
 
+# The worker's stop measures for a scene measured with a stops layer (test_vision_worker.py holds
+# the real shape): the stops received by mode, the shares and areas within stop reach, within reach
+# of any mode and beyond both, and the efficiency of the mapped stops.
+STOP_MEASURES = {
+    "stops": {"bus": 3000, "tram": 100, "ferry": 10},
+    "stop_served_share": 0.62,
+    "stop_served_share_by_mode": {"bus": 0.6, "tram": 0.05, "ferry": 0.01},
+    "any_mode_served_share": 0.85,
+    "any_mode_served_km2": 350.5,
+    "any_mode_desert_km2": 61.8,
+    "stops_only_km2": 49.5,
+    "stop_coverage_km2_per_100": 8.2,
+    "stop_overlap_share": 0.7,
+}
+# The worker's second figure (the transit reach map), as the client decodes it.
+MODES_PNG = vision_client.PNG_SIGNATURE + b"transit reach"
+
+
+def layered(**changes):
+    """The worker's metrics for a scene measured with a stops layer: the stop measures, the two
+    stop params echoed, the layer counted in the network block, and feeder coverage with the
+    multimodal isolation weight on every station row (`changes` as `metrics` takes them)."""
+    rows = changes.pop("stations", None) or [station_row(n) for n in range(3)]
+    for row in rows:
+        row.setdefault("feeder_coverage", 0.25)
+        row.setdefault("multimodal_isolation_weight", round(row["isolation_weight"] * 0.75, 4))
+    base = metrics(stations=rows)
+    return {
+        **base,
+        "params": {**base["params"], "stop_reach_m": 400.0, "feeder_reach_m": 2000.0},
+        "network": {**base["network"], "stops": 3100},
+        **STOP_MEASURES,
+        **changes,
+    }
+
+
 class FakeRailWorker:
     """Answers with metrics from a dict keyed by scene id, echoing the params it was given, with
-    `request_id` as the worker's Lambda request id (None, as a fake that gives none)."""
+    `request_id` as the worker's Lambda request id (None, as a fake that gives none) and
+    `figures` as the reply's further figures by name ({"modes": png}; none by default, as a reply
+    for a network without a stops layer, or one the reply-size guard trimmed, carries none)."""
 
-    def __init__(self, by_scene, error=None, takes=0.0, clock=None, request_id=None):
+    def __init__(self, by_scene, error=None, takes=0.0, clock=None, request_id=None, figures=None):
         self.by_scene, self.error, self.calls = by_scene, error, []
         self.takes, self.clock, self.request_id = takes, clock, request_id
+        self.figures = dict(figures or {})
 
     def __call__(self, site, scene, backend, params, coverage_floor, task, network, read_timeout):
         self.calls.append({"site": site, "scene": scene, "backend": backend, "params": params,
@@ -209,7 +266,9 @@ class FakeRailWorker:
             "metrics": {**m, "params": {**m["params"], **params},
                         "network": {**m["network"], "fetched_at": network["fetched_at"]}},
         }  # fmt: skip
-        return vision_client.VisionResult(reply=reply, image_png=PNG, request_id=self.request_id)
+        return vision_client.VisionResult(
+            reply=reply, image_png=PNG, request_id=self.request_id, figures=dict(self.figures)
+        )
 
 
 class FakeAgent:
@@ -253,9 +312,9 @@ def adapter():
     a.load_image = lambda key: PNG
     a.stored = []
 
-    def store(topic_id, site_id, scene_id, png):
-        a.stored.append(scene_id)
-        return f"vision/{topic_id}/{site_id}/{scene_id}.png"
+    def store(topic_id, site_id, scene_id, png, suffix=""):
+        a.stored.append(f"{scene_id}{suffix}")
+        return f"vision/{topic_id}/{site_id}/{scene_id}{suffix}.png"
 
     a.store_image = store
     # The network objects (vision_sites.store_network / load_network), by (topic, site): the one
@@ -915,7 +974,7 @@ def test_a_transient_worker_failure_is_tried_again_next_tick(adapter, code):
 
 
 def test_a_lost_figure_does_not_lose_the_measurement(adapter):
-    def broken(*args):
+    def broken(*args, **kwargs):
         raise OSError("s3 down")
 
     adapter.store_image = broken
@@ -1368,8 +1427,17 @@ def test_history_entries_keep_the_metrics_and_cap_the_station_list(adapter):
         "scene_id", "captured_at", "scene_cloud_cover", "coverage", "built_up_km2", "served_km2",
         "desert_km2", "served_share", "station_count", "edge_count", "hubs", "flags", "flag_count",
         "suggestions", "deserts", "stations", "quality_flags", "backend", "build_sha256", "timings_ms",
-        "image_key", "assets", "network_fetched_at", "network_stale", "site_key", "params",
+        "image_key", *ra.STOP_MEASURE_KEYS, "modes_image_key", "assets", "network_fetched_at",
+        "network_stale", "site_key", "params",
     }  # fmt: skip
+    assert ra.STOP_MEASURE_KEYS == (
+        "stops", "stop_served_share", "stop_served_share_by_mode", "any_mode_served_share",
+        "any_mode_served_km2", "any_mode_desert_km2", "stops_only_km2", "stop_coverage_km2_per_100",
+        "stop_overlap_share",
+    )  # fmt: skip
+    # A worker from before the stops layer: every stop measure None, no second figure.
+    assert {key: entry[key] for key in ra.STOP_MEASURE_KEYS} == dict.fromkeys(ra.STOP_MEASURE_KEYS)
+    assert entry["modes_image_key"] is None
     assert entry["scene_cloud_cover"] == 12.0 and entry["built_up_km2"] == 412.3
     assert entry["edge_count"] == 262
     assert len(entry["stations"]) == ra.MAX_HISTORY_STATIONS == 2000
@@ -1473,7 +1541,7 @@ def test_the_first_tick_is_material_with_a_plain_summary(adapter):
         "First observation. Sydney: served share 73 %, 178 stations, 111.3 km² beyond 1 km of a station "
         "(coverage 93 %)"
         # The worker's flag, as a planner note (common/rail_notes.py).
-        '. Sydney: Rule-based flags and simulations (proxies, not recommendations): "Station 0" lies on 2.4 '
+        f'. Sydney: {NOTES_LEAD}"Station 0" lies on 2.4 '
         "times as many shortest paths through the mapped rail network as any other station: the pipeline "
         "flags it as a single point of failure, where a disruption would cut more routes than anywhere else "
         "on the map."
@@ -1781,11 +1849,11 @@ def test_figures_name_the_scene_year_and_osm(adapter):
     assert figure["caption"] == (
         "Rail access in Sydney, Sentinel-2 2026-10-10: built-up density (warm colours), areas beyond 1 km "
         "of a station (outlined), OpenStreetMap rail lines and stations, flagged stations (red rings) and "
-        "simulated links (dashed). Processed imagery; contains modified Copernicus Sentinel data 2026; map "
+        "theoretical links (dashed). Processed imagery; contains modified Copernicus Sentinel data 2026; map "
         "data © OpenStreetMap contributors."
     )
     assert figure["alt"] == (
-        "Processed satellite map of Sydney showing rail lines, stations, flagged stations, simulated links "
+        "Processed satellite map of Sydney showing rail lines, stations, flagged stations, theoretical links "
         "and built-up areas beyond walking reach of a station"
     )
     assert clean_figures([figure]) == [figure]  # within common/figures.py's limits, nothing changed
@@ -1811,8 +1879,276 @@ def test_a_long_site_name_is_cut_so_the_figure_is_kept(adapter):
     # A longer one (a state written before names were capped) is cut the same way.
     state["sites"]["sydney"]["name"] = name * 4
     (figure,) = adapter.figures(state)
-    assert len(figure["caption"]) == MAX_CAPTION_CHARS and clean_figures([figure]) == [figure]
-    assert "(red rings) and simulated links (dashed)" in figure["caption"]
+    # Cut to the limit; one character under it when the cut lands after a space (rstripped).
+    assert MAX_CAPTION_CHARS - 1 <= len(figure["caption"]) <= MAX_CAPTION_CHARS
+    assert clean_figures([figure]) == [figure]
+    assert "(red rings) and theoretical links (dashed)" in figure["caption"]
+
+
+# --- the stops layer: the measures, the second figure and the lines (bus, tram and ferry stops) -------
+
+# The summary clause of a scene measured with STOP_MEASURES at the default reaches: the share within
+# reach of any mode, each reach as walking minutes at the contract's 80 m a minute, the area beyond all,
+# the stops by mode and the built-up ground within reach per 100 stops (rail_access._transit_clause).
+LAYERED_CLAUSE = (
+    "; with bus, tram and ferry stops: 85 % of built-up area within 400 m (5 minutes' walk at 80 m a "
+    "minute) of a stop or 1 km (about 12 minutes) of a station, 61.8 km² beyond all; 3000 bus, 100 tram "
+    "and 10 ferry stops mapped, 8.2 km² of built-up ground within reach per 100 stops"
+)
+
+
+def test_the_worker_request_and_look_again_carry_the_stops_layer_only_when_the_network_has_one(adapter):
+    worker = FakeRailWorker({"S1": layered()}, figures={"modes": MODES_PNG})
+    first = run(adapter, scene(1), worker, FakeOverpass(network(stops=STOPS)))
+    (call,) = worker.calls
+    assert set(call["network"]) == {"ways", "stations", "pois", "fetched_at", "stops"}
+    assert call["network"]["stops"] == STOPS and stored_network(adapter)["stops"] == STOPS
+    # The agent's look_again re-measures with the network the scene was measured with, layer included.
+    moved = FakeRailWorker({"S2": layered(served_share=0.80)}, figures={"modes": MODES_PNG})
+    state = run(adapter, scene(2, day=4), moved, previous=first)
+    changed, _summary = adapter.material_diff(first, state)
+    assert changed and moved.calls[0]["network"]["stops"] == STOPS
+    (asked,) = adapter.agent.calls
+    assert asked["network"]["stops"] == STOPS and asked["params"] == {"reach_m": 1000.0}
+    # A network from before the layer, or one carrying it as None, sends none: the worker then
+    # reports the stop measures as not measured, never as no stops anywhere.
+    assert set(ra.worker_network(network())) == {"ways", "stations", "pois", "fetched_at"}
+    assert "stops" not in ra.worker_network({**network(), "stops": None})
+    assert ra.worker_network(network(stops={"bus": [], "tram": []}))["stops"] == {"bus": [], "tram": []}
+
+
+def test_a_reach_past_the_default_feeder_reach_is_sent_with_a_feeder_reach_the_contract_takes(adapter):
+    """A topic's reach_m may be up to 5 km, but the contract refuses a request whose station reach
+    is over its feeder reach, each read against the other's default (2 km): the adapter sends the
+    pair, equal, rather than a request the worker would refuse every tick. An explicit feeder reach
+    in params is sent as it is (a bad one is the contract's refusal, as any bad param is)."""
+    assert ra.contract.DEFAULT_FEEDER_M == (1000.0, 2000.0)
+    lifted = {"reach_m": 2500.0, "feeder_reach_m": 2500.0}
+    assert ra.worker_params({"reach_m": 2500.0, "params": {}}) == lifted
+    assert ra.worker_params({"reach_m": 2000.0, "params": {}}) == {"reach_m": 2000.0}
+    assert ra.worker_params({"reach_m": 2500.0, "params": {"feeder_reach_m": 3000}}) == {
+        "reach_m": 2500.0, "feeder_reach_m": 3000,
+    }  # fmt: skip
+    assert ra.worker_params({"reach_m": 1000.0, "params": {"reach_m": 2500}}) == {
+        "reach_m": 2500, "feeder_reach_m": 2500,
+    }  # fmt: skip
+    worker = FakeRailWorker({"S1": metrics()})
+    state = run(adapter, scene(1), worker, reach_m=2500)
+    (call,) = worker.calls
+    assert call["params"] == {"reach_m": 2500.0, "feeder_reach_m": 2500.0}
+    assert call["params"]["feeder_reach_m"] >= call["params"]["reach_m"]
+    # Echoed, so the entry says what it was measured with; the feeder reach is not in the baseline key.
+    entry = state["sites"]["sydney"]["history"][-1]
+    assert entry["params"]["feeder_reach_m"] == 2500.0 and ra._reach_m(entry) == 2500.0
+
+
+def test_a_scene_measured_with_a_stops_layer_keeps_the_stop_measures_both_weights_and_the_second_figure(
+    adapter,
+):
+    worker = FakeRailWorker({"S1": layered()}, figures={"modes": MODES_PNG})
+    state = run(adapter, scene(1), worker, FakeOverpass(network(stops=STOPS)))
+    entry = state["sites"]["sydney"]["history"][-1]
+    assert {key: entry[key] for key in ra.STOP_MEASURE_KEYS} == STOP_MEASURES
+    assert entry["image_key"] == "vision/rail/sydney/S1.png"
+    assert entry["modes_image_key"] == "vision/rail/sydney/S1-modes.png" and ra.MODES_SUFFIX == "-modes"
+    assert adapter.stored == ["S1", "S1-modes"]
+    assert entry["params"]["stop_reach_m"] == 400.0 and entry["params"]["feeder_reach_m"] == 2000.0
+    # The station rows keep the feeder coverage and the multimodal isolation weight for the notes.
+    row = entry["stations"][0]
+    assert set(row) == set(ra.STATION_FIELDS) and ra.STATION_FIELDS[-2:] == (
+        "feeder_coverage", "multimodal_isolation_weight",
+    )  # fmt: skip
+    assert row["feeder_coverage"] == 0.25 and row["multimodal_isolation_weight"] == 1.5
+    json.dumps(state, allow_nan=False)
+    # The verdict carries the measures for the summary line, the material rules read none of them.
+    (verdict,) = adapter.assess(state)
+    assert verdict["any_mode_served_share"] == 0.85 and verdict["stop_reach_m"] == 400.0
+    assert verdict["stops"] == STOP_MEASURES["stops"] and verdict["stop_coverage_km2_per_100"] == 8.2
+    assert verdict["reason"] == "baseline still building"
+    # An older entry keeps them too (they are scalars and small dicts, not NEWEST_ONLY_KEYS).
+    later = run(adapter, scene(2, day=4), FakeRailWorker({"S2": layered()}), previous=state)
+    older = later["sites"]["sydney"]["history"][0]
+    assert older["any_mode_served_share"] == 0.85 and older["modes_image_key"].endswith("S1-modes.png")
+    # A station row from before the layer: both None, never a number.
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    row = state["sites"]["sydney"]["history"][-1]["stations"][0]
+    assert row["feeder_coverage"] is None and row["multimodal_isolation_weight"] is None
+
+
+def test_figures_give_the_transit_reach_map_after_the_rail_map_with_its_fills_and_minutes(adapter):
+    worker = FakeRailWorker({"S1": layered()}, figures={"modes": MODES_PNG})
+    state = run(adapter, scene(1, day=10), worker)
+    rail, modes = adapter.figures(state)
+    assert rail["key"] == "vision/rail/sydney/S1.png" and modes["key"] == "vision/rail/sydney/S1-modes.png"
+    assert rail["caption"].startswith("Rail access in Sydney, Sentinel-2 2026-10-10: built-up density")
+    # The three fills as rail_annotate draws them (aqua, orange, violet with its pale outline), each
+    # reach in walking minutes at 80 m a minute: 1 km is about 12, 400 m is 5 exactly.
+    assert modes["caption"] == (
+        "Transit reach in Sydney, Sentinel-2 2026-10-10: built-up area within 1 km (about 12 min walk) of a "
+        "rail station (aqua), beyond that but within 400 m (5 min) of a mapped bus, tram or ferry stop "
+        "(orange), and beyond both (violet, outlined). Straight-line reach over OpenStreetMap stops. "
+        "Processed imagery; contains modified Copernicus Sentinel data 2026; map data © OpenStreetMap "
+        "contributors."
+    )
+    assert modes["alt"] == (
+        "Processed satellite map of Sydney showing built-up areas within walking reach of a rail station, "
+        "within reach of a bus, tram or ferry stop only, and beyond both"
+    )
+    assert clean_figures([rail, modes]) == [rail, modes]
+    assert ra._minutes_text(1000.0) == "about 12 min" and ra._minutes_text(400.0) == "5 min"
+    assert ra._minutes_text(50.0) == "about 1 min" and ra._minutes_text(800.0, "minutes") == "10 minutes"
+    # The reaches the scene was measured with: 800 m is 10 minutes exactly, 600 m about 8.
+    edited = layered()
+    edited["params"]["stop_reach_m"] = 600.0
+    worker = FakeRailWorker({"S2": edited}, figures={"modes": MODES_PNG})
+    _rail, modes = adapter.figures(run(adapter, scene(2, day=11), worker, reach_m=800))
+    assert (
+        "within 800 m (10 min walk) of a rail station (aqua), beyond that but within 600 m (about 8 min)"
+    ) in modes["caption"]
+    # A reply without the figure (no stops layer, or the reply-size guard dropped it): the rail map alone.
+    (only,) = adapter.figures(run(adapter, scene(3, day=12), FakeRailWorker({"S3": layered()})))
+    assert only["key"] == "vision/rail/sydney/S3.png"
+    # The longest site name: both captions and alt texts fit, the name cut and marked where it must be.
+    name = "Greater Sydney metropolitan area with the Illawarra, the Blue Mountains and more"
+    sites = [{"id": "sydney", "name": name, "polygon": SYDNEY}]
+    worker = FakeRailWorker({"S4": layered()}, figures={"modes": MODES_PNG})
+    rail, modes = adapter.figures(run(adapter, scene(4, day=13), worker, sites=sites))
+    for figure in (rail, modes):
+        assert len(figure["caption"]) <= MAX_CAPTION_CHARS and len(figure["alt"]) <= MAX_ALT_CHARS
+    assert modes["caption"].startswith("Transit reach in Greater Sydney") and "…" in modes["caption"]
+    assert modes["caption"].endswith(
+        "(violet, outlined). Straight-line reach over OpenStreetMap stops. Processed imagery; contains "
+        "modified Copernicus Sentinel data 2026; map data © OpenStreetMap contributors."
+    )
+    assert "…" in modes["alt"] and modes["alt"].endswith("or ferry stop only, and beyond both")
+    assert clean_figures([rail, modes]) == [rail, modes]
+
+
+def test_a_lost_transit_reach_map_loses_nothing_else_and_a_lost_rail_map_keeps_it(adapter):
+    stored = adapter.store_image
+
+    def lost_when(suffix_lost: bool):
+        def store(topic_id, site_id, scene_id, png, suffix=""):
+            if bool(suffix) == suffix_lost:
+                raise OSError("s3 down")
+            return stored(topic_id, site_id, scene_id, png, suffix)
+
+        return store
+
+    worker = FakeRailWorker({"S1": layered(), "S2": layered()}, figures={"modes": MODES_PNG})
+    adapter.store_image = lost_when(True)
+    state = run(adapter, scene(1), worker)
+    entry = state["sites"]["sydney"]["history"][-1]
+    assert entry["image_key"] == "vision/rail/sydney/S1.png" and entry["modes_image_key"] is None
+    assert entry["any_mode_served_share"] == 0.85
+    assert state["measured"] == [{"site_id": "sydney", "scene_id": "S1"}]
+    assert [f["key"] for f in adapter.figures(state)] == ["vision/rail/sydney/S1.png"]
+    adapter.store_image = lost_when(False)
+    state = run(adapter, scene(2, day=4), worker, previous=state)
+    entry = state["sites"]["sydney"]["history"][-1]
+    assert entry["image_key"] is None and entry["modes_image_key"] == "vision/rail/sydney/S2-modes.png"
+    assert [f["key"] for f in adapter.figures(state)] == ["vision/rail/sydney/S2-modes.png"]
+
+
+def test_the_summary_lines_carry_the_stops_clause_only_when_the_scene_measured_them(adapter):
+    """FIRST_LINE and MATERIAL_LINE (test_without_notes_the_summary_and_the_prompt_are_what_they_were)
+    are what a scene without the layer still gives, byte for byte; with it, one clause more."""
+    # The first observation ...
+    state = run(adapter, scene(0, day=10), FakeRailWorker({"S0": layered(flags=[], suggestions=[])}))
+    changed, summary = adapter.material_diff(None, state)
+    assert changed and summary == FIRST_LINE + LAYERED_CLAUSE
+    assert f"at {ra.contract.WALK_M_PER_MIN:g} m a minute" in summary
+    # ... a material change, where the clause sits with the measures, before the verdict and the
+    # agent's note ...
+    worker = FakeRailWorker({"S1": layered(served_share=0.70, flags=[], suggestions=[])})
+    state = run(adapter, scene(1, day=11), worker, previous=state)
+    changed, summary = adapter.material_diff(EARLIER, state)
+    with_clause = MATERIAL_LINE.replace("; coverage 93 %;", f"; coverage 93 %{LAYERED_CLAUSE};")
+    assert changed and summary == with_clause != MATERIAL_LINE
+    # ... and a weekly reading, which restates the first line.
+    (verdict,) = adapter.assess(state)
+    assert ra._weekly_line(verdict) == (
+        f"{ra.WEEKLY_LEAD} Sydney: served share 70 %, 178 stations, 111.3 km² beyond 1 km of a station "
+        f"(coverage 93 %){LAYERED_CLAUSE}; newest clear scene S1, captured 2026-10-11T00:00:00Z"
+    )
+    # An empty layer measures as no stop within reach of anything, and says so, with no per-100 figure
+    # (nothing to divide by) rather than a zero.
+    empty = layered(
+        stops={"bus": 0, "tram": 0, "ferry": 0}, any_mode_served_share=0.73, any_mode_desert_km2=111.3,
+        stop_coverage_km2_per_100=None, flags=[], suggestions=[],
+    )
+    state = run(adapter, scene(2, day=12), FakeRailWorker({"S2": empty}))
+    _changed, summary = adapter.material_diff(None, state)
+    assert summary.endswith(
+        "of a stop or 1 km (about 12 minutes) of a station, 111.3 km² beyond all; 0 bus, 0 tram and 0 ferry "
+        "stops mapped"
+    )
+    # Other reaches: 600 m is about 8 minutes, 800 m exactly 10.
+    edited = layered(flags=[], suggestions=[])
+    edited["params"]["stop_reach_m"] = 600.0
+    _changed, summary = adapter.material_diff(
+        None, run(adapter, scene(3, day=13), FakeRailWorker({"S3": edited}), reach_m=800)
+    )
+    assert (
+        "within 600 m (about 8 minutes' walk at 80 m a minute) of a stop or 800 m (10 minutes) of a station"
+    ) in summary
+
+
+def test_an_edited_stop_or_feeder_reach_starts_no_new_baseline_and_older_entries_stay_comparable(adapter):
+    """The stop measures are reported, never material: a scene measured with another stop or feeder
+    reach, or with the layer where the baseline's scenes had none, is compared with them as before
+    (an edited station reach, parameter or polygon still starts a new baseline)."""
+    assert ra.contract.STOP_PARAMS == ("stop_reach_m", "feeder_reach_m")
+    state = history_state(adapter, [(0.73, 111.3, 178), (0.735, 112.0, 178)])  # from before the layer
+    for edit in ({"stop_reach_m": 600}, {"feeder_reach_m": 3000}, {}):
+        worker = FakeRailWorker({"S7": layered(served_share=0.70)})
+        edited = run(adapter, scene(7, day=20), worker, previous=state, params=edit)
+        (verdict,) = adapter.assess(edited)
+        assert verdict["params_changed"] is False and verdict["baseline_scenes"] == 2
+        assert verdict["material"] and verdict["reason"] == "served share moved"
+        params = edited["sites"]["sydney"]["history"][-1]["params"]
+        assert {key: params[key] for key in edit} == edit and "stop_reach_m" in params
+    # The baseline key: every rail parameter the worker echoed, none of the stops layer's.
+    edited = {"reach_m": 1000.0, "stop_reach_m": 600.0, "feeder_reach_m": 3000.0}
+    values = ra._param_values({"params": edited})
+    assert values == ra._param_values({"params": {"reach_m": 1000.0}})
+    assert values != ra._param_values({"params": {"reach_m": 800.0}})
+    assert len(values) == len(ra.contract.RAIL_PARAM_LIMITS) - len(ra.contract.STOP_PARAMS)
+
+
+def test_review_evidence_carries_the_stop_shares_and_the_stop_reach(adapter):
+    state = run(adapter, scene(1), FakeRailWorker({"S1": layered()}))
+    text = adapter.review_evidence(topic(), state)
+    site = json.loads(text)["sites"]["sydney"]
+    assert site["any_mode_served_share"] == 0.85 and site["any_mode_desert_km2"] == 61.8
+    assert site["stop_reach_m"] == 400.0 and site["stops"] == {"bus": 3000, "tram": 100, "ferry": 10}
+    assert site["stop_coverage_km2_per_100"] == 8.2
+    # The reviewer reads plain JSON (base.render_review_evidence): every key as it is, nothing lost.
+    assert '"stop_coverage_km2_per_100":8.2' in text and '"stops":{"bus":3000,"tram":100,"ferry":10}' in text
+    for never in ("stop_served_share_by_mode", "stops_only_km2", "modes_image_key"):
+        assert never not in text  # what an article could not quote stays out
+
+
+def test_the_drafting_guidance_and_the_style_carry_the_register_the_theoretical_links_and_the_minutes():
+    guidance = ra.RailAccessAdapter.drafting_guidance
+    assert guidance == (
+        "Write in a constructive register: say what the measures show and what each theoretical link "
+        "would change, never a complaint, blame, cost, funding, political or resource-allocation view. "
+        "Call every simulated link theoretical: a what-if on the mapped graph and straight lines, with "
+        "what its straight line crosses; never a route, an alignment or a recommendation. Minutes are "
+        "walking time at 80 m a minute over straight-line distance; give no rail or bus travel time."
+    )
+    assert len(guidance.split(". ")) == 3 and f"at {ra.contract.WALK_M_PER_MIN:g} m a minute" in guidance
+    # It reaches the drafting prompt, and the Re-Write and review rules, through fresh_review.writing_rules.
+    assert fresh_review.writing_rules(topic())["drafting_guidance"] == guidance
+    # The day subject's style names the multimodal reach and the theoretical simulations.
+    style = ra.subject_style("Sydney")
+    assert style.startswith("a plain report of what the rail access measurements show for Sydney: ")
+    for words in ("multimodal reach", "bus, tram and ferry stops", "per 100 stops", "theoretical simulations",
+                  "never routes or recommendations", "constructive register"):  # fmt: skip
+        assert words in style
+    for never in ("journey", "travel time", "cost", "political", "complain"):
+        assert never not in style
 
 
 def test_source_refs_link_the_scene_and_the_overpass_query(adapter):
@@ -1849,6 +2185,9 @@ def test_review_evidence_is_the_stored_measurement_without_the_network(adapter):
     assert site == {
         "name": "Sydney", "scene_id": "S1", "captured_at": "2026-10-11T00:00:00Z", "served_share": 0.7,
         "desert_km2": 120.0, "station_count": 180, "reach_m": 1000.0, "coverage": 0.93, "flag_count": 1,
+        # Measured before the stops layer: not measured, never zero (the stop reach is a setting).
+        "any_mode_served_share": None, "any_mode_desert_km2": None, "stop_reach_m": 400.0, "stops": None,
+        "stop_coverage_km2_per_100": None, "deserts_mostly_stop_covered": None,
         "previous_served_shares": [0.73],
     }  # fmt: skip
     for never in ("ways", "points", "query_url", "Central", "pois"):
@@ -1866,13 +2205,20 @@ def test_the_summary_prompt_keeps_to_proxies():
     )
     for rule in (
         "none is ridership, patronage or journey time",
+        # The stops are proxies the same way, and minutes are a reach restated, never a time.
+        "reach of a stop as the same straight-line distance to the nearest mapped bus, tram or ferry "
+        "stop, and minutes as that distance at a stated walking pace",
         "station and line names exactly as given",
         "what was not measured (ridership, service frequency, planned works)",
+        # The constructive register, before the final rule, which still closes the prompt.
+        "Describe what the measures show and what a theoretical link would change; give no complaint, "
+        "blame, cost, political or resource-allocation view. Give no cause, forecast,",
         "Give no cause, forecast, political, planning or investment view",
         "do not say any area is well or badly served in absolute terms",
         "do not invent place names or numbers that are not given above",
     ):
         assert rule in prompt
+    assert prompt.count("Give no cause, forecast,") == 1 and prompt.endswith("not given above.")
 
 
 # --- the research tick keeps the running state -----------------------------------------------------
@@ -2065,13 +2411,16 @@ MATERIAL_LINE = (
 PROMPT_WITHOUT_NOTES = (
     "You are summarising a change measured in satellite imagery and OpenStreetMap data for the topic "
     '"Rail access".\n\nWhat was measured: <summary>\n\nThe figures are proxies: built-up density from '
-    "Sentinel-2 reflectance at 20 m, walking reach as straight-line distance to the nearest station, and "
-    "network measures from OpenStreetMap's rail lines; none is ridership, patronage or journey time. "
-    "Write 2-4 plain sentences describing only these observations: station and line names exactly as "
-    "given, the served share, the built-up area beyond reach, the capture date, and what was not measured "
-    "(ridership, service frequency, planned works). Give no cause, forecast, political, planning or "
-    "investment view; do not say any area is well or badly served in absolute terms; do not invent place "
-    "names or numbers that are not given above."
+    "Sentinel-2 reflectance at 20 m, walking reach as straight-line distance to the nearest station, "
+    "reach of a stop as the same straight-line distance to the nearest mapped bus, tram or ferry stop, "
+    "and minutes as that distance at a stated walking pace, with network measures from OpenStreetMap's "
+    "rail lines; none is ridership, patronage or journey time. Write 2-4 plain sentences describing only "
+    "these observations: station and line names exactly as given, the served share, the built-up area "
+    "beyond reach, the capture date, and what was not measured (ridership, service frequency, planned "
+    "works). Describe what the measures show and what a theoretical link would change; give no "
+    "complaint, blame, cost, political or resource-allocation view. Give no cause, forecast, political, "
+    "planning or investment view; do not say any area is well or badly served in absolute terms; do not "
+    "invent place names or numbers that are not given above."
 )
 
 
@@ -2087,13 +2436,17 @@ def test_the_first_observation_ends_with_the_planner_notes(adapter):
     assert [n["type"] for n in notes] == [
         "single_point_of_failure", "isolated_high_demand", "ghost_line", "orbital_link", "feeder_corridor",
     ]  # fmt: skip
+    # Every simulation is theoretical (common/rail_notes.py): a what-if, never a route.
     assert summary.endswith(
-        'Simulation: "Station 3" is among the most isolated stations for the size of its catchment '
-        '(isolation weight 5.2); a feeder corridor, such as an express bus, to "Station 0", 4.2 km away by '
-        "rail today, is the link the pipeline's rules point to."
+        'Theoretical feeder corridor (a simulation, not a route): "Station 3" is among the most isolated '
+        "stations for the size of its catchment (isolation weight 5.2); a feeder corridor, such as an "
+        'express bus, to "Station 0", 4.2 km away by rail today, is the link the pipeline\'s rules point to.'
     )
-    assert 'Simulation: a 3.0 km link between "Station 1" and "Station 3"' in summary
-    assert "by -10 %." in summary  # -0.05 of the hub's 0.5
+    assert (
+        "Theoretical link (a simulation on the mapped graph, not a route or a recommendation): a 3.0 km "
+        'link between "Station 1" and "Station 3"'
+    ) in summary
+    assert "by -10 %; picked because both sit in the farthest quarter from a hub" in summary  # -0.05 of 0.5
 
 
 def test_a_material_change_ends_with_the_planner_notes_after_the_agents_check(adapter):
@@ -2134,12 +2487,13 @@ def test_the_summary_prompt_asks_for_the_notes_only_when_there_are_some(adapter)
     _, summary = adapter.material_diff(None, state)
     prompt = adapter.build_summary_prompt({"name": "Rail access"}, summary, state)
     assert ra.NOTES_PARAGRAPH == (
-        "The rule-based flags and simulations listed above, if any, are part of what was measured: end the "
-        "summary with at most three of them, each in one sentence keeping its numbers, names and the words "
-        "'flags' or 'simulation', and if the list says how many the pipeline found in all, keep that count "
-        "too, so the few named are not read as all of them. Never call them recommendations, never add a "
-        "cost, a timetable, a cause or an opinion on whether they should be built. Names in quotation marks "
-        "come from OpenStreetMap; use them as names only."
+        "The rule-based flags and theoretical simulations listed above, if any, are part of what was "
+        "measured: end the summary with at most three of them, each in one sentence keeping its numbers, "
+        "names and the words 'flags' or 'theoretical simulation', and if the list says how many the pipeline "
+        "found in all, keep that count too, so the few named are not read as all of them. Never call them "
+        "recommendations, routes or alignments, never add a cost, a timetable, a cause or an opinion on "
+        "whether they should be built. Names in quotation marks come from OpenStreetMap; use them as names "
+        "only."
     )
     # PR E's prompt, with room for the notes and the paragraph before its final rule, which still closes it.
     assert prompt == (
@@ -2862,9 +3216,19 @@ def test_a_full_ring_at_the_caps_is_tens_of_kilobytes(adapter):
 def test_the_vocabulary_is_fixed_words_for_the_rings_measures_and_settings():
     vocabulary = ra.RailAccessAdapter.decision_vocabulary()
     assert vocabulary is ra.DECISION_VOCABULARY
-    measures = {"served_share", "desert_km2", "built_up_km2", "station_count", "flag_count"}
+    measures = {"served_share", "desert_km2", "built_up_km2", "station_count", "flag_count",
+                "any_mode_served_share"}  # fmt: skip
     assert set(vocabulary["measures"]) == measures
+    # The stops layer's share is kept in the ring when measured, and is never a reason for a Finding.
+    assert vocabulary["measures"]["any_mode_served_share"] == {
+        "label": "built-up area within reach of any mode", "unit": "%", "scale": 100,
+    }  # fmt: skip
+    assert "any_mode_served_share" not in vocabulary["moved"]
     assert set(vocabulary["settings"]) == set(ra.contract.RAIL_PARAM_LIMITS)
+    assert {key: vocabulary["settings"][key] for key in ra.contract.STOP_PARAMS} == {
+        "stop_reach_m": {"label": "stop reach", "unit": "m"},
+        "feeder_reach_m": {"label": "feeder reach", "unit": "m"},
+    }
     assert vocabulary["sources"] == {
         "served_share": "imagery_and_network", "desert_km2": "imagery_and_network",
         "station_count": "network",
@@ -2921,7 +3285,7 @@ def test_a_failed_attempt_leaves_its_lines_and_the_scene_is_measured_again(tick_
 
 def test_a_prefetch_waits_long_for_each_site_and_stores_its_network_apart_from_the_state(adapter):
     adapter.clock = Clock(1000.0)
-    overpass = FakeOverpass(network())
+    overpass = FakeOverpass({**network(), "bytes": 2_048})  # the Overpass body's size, as osm records it
     adapter.fetch_network = overpass
     sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
 
@@ -2936,7 +3300,11 @@ def test_a_prefetch_waits_long_for_each_site_and_stores_its_network_apart_from_t
     assert stored["site_key"] == vision_sites.site_key(MELBOURNE)
     assert results[0]["fetched_at"] == stored_network(adapter)["fetched_at"]
     assert results[0]["counts"] == {"ways": 1, "stations": 1, "pois": 1, "points": 2}
-    assert results[0]["truncated"] is False
+    assert results[0]["truncated"] is False and results[0]["bytes"] == 2_048
+    assert set(results[0]) == {"site_id", "status", "fetched_at", "counts", "truncated", "bytes"}
+    # A fetch that recorded no size (a fake, an older client) says so rather than a number.
+    adapter.fetch_network = FakeOverpass(network())
+    assert adapter.prefetch_networks(topic())[0]["bytes"] is None
     # A prefetch writes no state of its own and asks no worker: only the stored networks.
     assert adapter.stored == [] and adapter.loads == []
     assert ra.PREFETCH_BUDGET_SECONDS + 15 <= 120  # under the research tick's Lambda timeout
@@ -3656,3 +4024,32 @@ def test_a_rotation_period_without_a_rota_stops_the_day_subject():
     config = {**topic(sites=TWO_CITIES, rotation_period="week"), "daily_timezone": "Australia/Sydney"}
     with pytest.raises(ra.ConfigError, match="'rotation_period' is set but there is no 'rotation'"):
         ra.RailAccessAdapter().day_subject(config, datetime(2026, 10, 19, tzinfo=UTC))
+
+
+def test_the_stops_clause_counts_the_largest_rail_deserts_the_stops_mostly_cover(adapter):
+    """The transit angle asks what the stops cover: the summary says how many of the reported
+    deserts (the largest built-up patches beyond a station's reach) have half or more of their
+    pixels within reach of a stop (MOSTLY_STOP_COVERED), and the review evidence carries the same
+    two numbers; deserts without the share (from before the layer) add nothing."""
+    deserts = [
+        {"lon": 150.98, "lat": -33.9, "area_km2": 6.2, "nearest_station": "s:n0", "nearest_station_m": 2300.0,
+         "stop_covered_share": 0.8},
+        {"lon": 151.1, "lat": -33.8, "area_km2": 2.0, "nearest_station": "s:n1", "nearest_station_m": 1800.0,
+         "stop_covered_share": 0.5},
+        {"lon": 151.2, "lat": -33.7, "area_km2": 1.0, "nearest_station": "s:n2", "nearest_station_m": 1500.0,
+         "stop_covered_share": 0.1},
+    ]  # fmt: skip
+    worker = FakeRailWorker({"S0": layered(deserts=deserts, flags=[], suggestions=[])})
+    state = run(adapter, scene(0, day=10), worker)
+    _changed, summary = adapter.material_diff(None, state)
+    assert (
+        ", 61.8 km² beyond all, 2 of the 3 largest patches beyond a station's reach mostly within reach of a "
+        "stop; 3000 bus, 100 tram and 10 ferry stops mapped"
+    ) in summary
+    assert '"deserts_mostly_stop_covered":[2,3]' in adapter.review_evidence({}, state)
+    bare = [{k: v for k, v in d.items() if k != "stop_covered_share"} for d in deserts]
+    worker = FakeRailWorker({"S1": layered(deserts=bare, flags=[], suggestions=[])})
+    _changed, summary = adapter.material_diff(None, run(adapter, scene(1, day=11), worker))
+    assert "largest patches" not in summary and summary == FIRST_LINE + LAYERED_CLAUSE
+    assert ra._deserts_mostly_covered({"deserts": []}) is None and ra._deserts_mostly_covered({}) is None
+    assert ra.MOSTLY_STOP_COVERED == 0.5

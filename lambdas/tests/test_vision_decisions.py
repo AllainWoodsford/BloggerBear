@@ -539,6 +539,10 @@ def test_the_vision_adapters_declare_a_vocabulary_and_the_others_none():
 
     assert RAIL_VOCABULARY and SHIPS_VOCABULARY
     assert set(RAIL_VOCABULARY["settings"]) == set(contract.RAIL_PARAM_LIMITS)
+    assert set(contract.STOP_PARAMS) <= set(RAIL_VOCABULARY["settings"])  # the stops layer's reaches
+    # The stops layer's share is a ring measure when the scene had one, and never a moved one.
+    assert "any_mode_served_share" in RAIL_VOCABULARY["measures"]
+    assert "any_mode_served_share" not in RAIL_VOCABULARY["moved"]
     assert set(SHIPS_VOCABULARY["settings"]) == set(contract.PARAM_LIMITS)
     assert RAIL_VOCABULARY["sources"] == {
         "served_share": "imagery_and_network", "desert_km2": "imagery_and_network",
