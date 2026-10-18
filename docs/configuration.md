@@ -378,7 +378,7 @@ is 192 ([DynamoDB settings](#dynamodb-settings-changed-with-no-deploy)): Boston'
 its Thursdays plus a day, so each article drafts every Finding about its city since that city's
 last. The runsheet's [rail_access topics](deployment-runsheet.md#rail_access-topics) creates it
 and says how to add a city. In dev, `rail-cities` has since moved to a city a week, written up
-from three sides ([RailVisionSeeding.md, section 7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)).
+from four sides ([RailVisionSeeding.md, section 7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)).
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -387,9 +387,9 @@ from three sides ([RailVisionSeeding.md, section 7](RailVisionSeeding.md#7-a-cit
 | `rotation_timezone` | the topic's `daily_timezone`, else UTC | The IANA zone whose calendar day decides the rota's day, so "Tuesday" is Tuesday there. Only with a `rotation`. |
 | `rotation_period` | `"day"` | With a list `rotation` only: `"day"` cycles one city a day, `"week"` gives each city in turn a whole calendar week, Monday to Sunday in `rotation_timezone` (the weeks since Monday 1970-01-05, so every reader agrees). A city then comes back only after every other city's week, longer than a Finding lives (14 days), so the research tick writes a **weekly reading**: on the first tick of a city's week that reports nothing else about it, its newest clear scene (one the agent did not doubt) is reported as that week's reading, no change claimed, with its map and planner notes, once a week (`reported_period` on the city's record). With a [goal rotation](#dynamodb-settings-changed-with-no-deploy) the following days write it up from other sides. Set `findings_window_hours` to at least 24 (the reading is written in the week's first hours). A weekday `rotation` refuses `"week"`. |
 | `backend` | `"opencv"` | Or `"cool"`, once a COOL worker exists. |
-| `params` | `{}` | Rail parameter overrides, any of the `RailParams` fields in [vision.md's table](enhancements/archive/vision.md#the-rail-tasks-request), within the worker contract's bounds (checked before any call). |
+| `params` | `{}` | Rail parameter overrides, any of the `RailParams` fields in [vision.md's table](enhancements/archive/vision.md#the-rail-tasks-request), within the worker contract's bounds (checked before any call); among them `stop_reach_m` (400: the straight-line walking reach of a mapped bus, tram or ferry stop, 5 minutes at 80 m a minute) and `feeder_reach_m` (2000: how far beyond a station's own reach its hinterland is read for feeder coverage; at least `reach_m`). The stop measures are reported, never material, and these two are left out of the baseline's comparability key, so changing them starts no new baseline. |
 | `reach_m` | 1000 | Walking reach of a station, straight-line metres, 200 to 5000 (the contract's bounds). Always sent to the worker; a `reach_m` in `params` wins over it. |
-| `osm_ttl_days` | 30 | How long a city's stored OpenStreetMap network serves before it is fetched again; more than 0 and at most 365. |
+| `osm_ttl_days` | 30 | How long a city's stored OpenStreetMap network serves before it is fetched again; more than 0 and at most 365. A network stored before the stops layer (every bus and tram stop as bare points) carries none, so the city's stop measures stay absent (`no_stops_layer`, not zero) and it gets no transit-reach map until that refresh or a `network_prefetch` ([the runsheet](deployment-runsheet.md#rail_access-topics)). |
 | `max_cloud_cover` | 40 | Scene-level cloud filter in the search, %. |
 | `lookback_days` | 20 | How far back to search for a scene. |
 | `coverage_floor` | 0.6 | 0 to 1. Below it a scene is never material and never part of a baseline, and never the first observation. |

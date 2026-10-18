@@ -174,9 +174,9 @@ adapter.fetch_state ── Earth Search STAC ──► the newest clear Sentinel
    │ vision_client.measure: one request, across regions   us-west-2, beside the imagery
    ├─────────────────────────────────────────────────────► vision worker (arm64, OpenCV 5)
    │                                                        range-reads only the tiles under
-   │ ◄──── metrics, one small PNG, build record, timings ── the site from sentinel-cogs;
+   │ ◄──── metrics, small figures, build record, timings ── the site from sentinel-cogs;
    │                                                        keeps nothing, writes nothing
-   │ history → running state; the PNG → content bucket
+   │ history → running state; the figures → content bucket
 adapter.material_diff: this scene against the site's own baseline
    │ within the usual range → stop; no model call
    │ (rail, first tick of a city's week: its newest clear scene as the weekly reading,
@@ -192,7 +192,7 @@ daily cycle → the day's subject (rail: the city whose week it is by the rotati
    │   (nothing new: the same Findings again under a goal not yet used on them)
    │ → fresh-data and compliance reviews → held: force_manual_review
    ▼
-a person approves → the article page, with the figure at articles/figures/<article>/<n>.png
+a person approves → the article page, with its figures at articles/figures/<article>/<n>.png
                     and the Copernicus, AWS Open Data and OpenStreetMap credits
 ```
 
@@ -201,12 +201,12 @@ a person approves → the article page, with the figure at articles/figures/<art
 | # | Step | What happens | Where in the code / infra |
 |---|---|---|---|
 | 1 | **Topic and adapter** | A vision topic is a row of settings like any other: its adapter, its sites as lon/lat polygons, its thresholds and its schedule, all in `adapter_config`. `force_manual_review` is forced on when the topic is created or updated and cannot be unset. Two adapters: `satellite_vision` (the `ships` task, up to ten sites) and `rail_access` (up to eight cities, `MAX_RAIL_SITES`; one topic writes about one city a week by its `rotation`), both thin, on one shared module for the config checks, the scene search, the figure store, the time budget and the site order. | `topics` table; `lambdas/common/adapters/satellite_vision.py`, `rail_access.py`; `lambdas/common/vision_sites.py`; `admin_api_handler.py` forces the flag (`MANUAL_REVIEW_ADAPTERS`) |
-| 2 | **Sources** | Three public sources and no key for any of them. **Sentinel-2** scenes are found through the Earth Search STAC API (the newest scene over the whole site, under a cloud-cover cap, within a lookback window) and read from the public `sentinel-cogs` bucket as Cloud-Optimized GeoTIFFs. **OpenStreetMap** rail ways, stations and intermodal points come through the Overpass API: two allow-listed endpoints, one fallback hop, points decimated to the 20 m grid and capped, a coded error on failure; the rail adapter keeps each city's network in an object of its own (`vision/<topic>/<site>/network.json`) for `osm_ttl_days` (30), with the polygon it was fetched for. **GDELT**, through the existing news search, with the AgentCore web-search gateway as its fallback when GDELT fails (`lambdas/common/web_search.py`), is the agent's `web_context` tool for the rail task. | `STAC_SEARCH_URL` in `lambdas/common/vision_sites.py`; `DEFAULT_ALLOWED_URL_PREFIXES` in `common/vision_contract.py`; `lambdas/common/osm.py`; `lambdas/common/web_search.py` |
+| 2 | **Sources** | Three public sources and no key for any of them. **Sentinel-2** scenes are found through the Earth Search STAC API (the newest scene over the whole site, under a cloud-cover cap, within a lookback window) and read from the public `sentinel-cogs` bucket as Cloud-Optimized GeoTIFFs. **OpenStreetMap** rail ways, stations, intermodal points and every bus and tram stop in the site come through the Overpass API: two allow-listed endpoints, one fallback hop, way points decimated to the 20 m grid and capped, the stops thinned to one per 20 m cell and capped at 40,000 across modes (the `stops` layer: bare `[lon, lat]` points per mode, no ids or names; ferry terminals stay among the intermodal points), the reply's size kept as `bytes`, a coded error on failure; the rail adapter keeps each city's network in an object of its own (`vision/<topic>/<site>/network.json`) for `osm_ttl_days` (30), with the polygon it was fetched for. **GDELT**, through the existing news search, with the AgentCore web-search gateway as its fallback when GDELT fails (`lambdas/common/web_search.py`), is the agent's `web_context` tool for the rail task. | `STAC_SEARCH_URL` in `lambdas/common/vision_sites.py`; `DEFAULT_ALLOWED_URL_PREFIXES` in `common/vision_contract.py`; `lambdas/common/osm.py`; `lambdas/common/web_search.py` |
 | 3 | **The research tick: diff first, with running state** | The tick is the same Lambda every topic uses. The adapter visits its sites inside a **time budget** (`time_budget_seconds`, 45 to 80 of the tick's 120 s), in rotation (those never attempted first, then the one attempted longest ago), skips a scene it has already measured, and appends each new measurement to the site's history. Both adapters keep one measuring rule (`vision_sites.time_to_measure`): the worker is asked only with 45 s of the budget left and waited on for at most 58 s, and a site left without time is deferred to the next tick, keeping its place; with a ship topic's default 60 s budget, a tick asks the worker only in about its first 15 s, so only the sites whose new scene is found by then are measured: how many depends on the search's and the worker's times, often fewer than the five `max_sites_per_tick` allows. The rail adapter works scene first: a city with no usable stored network fetches it (started with 30 s of the budget left, and given the rest of it less 10 s: a big city's query takes most of a minute, and the city is then measured on the next tick); a new scene is measured with the stored network, even past its TTL (with 45 s left); with nothing new, a stale network is refreshed, and after a failed refresh not again for 6 hours. Both adapters set `keeps_running_state`, so the tick keeps the newest state after every tick, not only when it writes a Finding: a baseline includes every scene measured, and a scene is never measured twice. `material_diff` then compares the new scene with the median of the site's earlier clear scenes measured the same way. The tick measures every city in turn whatever the rota; with a week rota (`rotation_period` `"week"`) it reads the rota for one thing, the **weekly reading**: on the first tick of a city's week that reports nothing else about it, the city's newest clear scene is reported, no change claimed, with its map and planner notes, once a week (`reported_period`). | `lambdas/research_tick_handler.py`; `snapshots/<topic_id>/running-state.json` in the `<prefix>-<env>-content` bucket |
-| 4 | **The stateless worker** | One cross-region `lambda:InvokeFunction`. The worker validates the request against the **contract** (version 1; the `task`, `ships` or `rail_access`, and its assets; every asset URL must start with an allowed prefix, the `sentinel-cogs` bucket by default, and an entry of `VISION_ALLOWED_URL_PREFIXES` that is not `https://<host>/` and a path is skipped; parameter bounds; a polygon of 3 to 64 points; for rail, the network's shape and caps), reads only the tiles under the site with HTTP range requests, following no redirect (a 3xx is `unreadable_scene`, its body unread) and reading no further than the range asked for, even from a server that ignores `Range` (no GDAL: a small reader for the TIFF subset Sentinel-2 uses; for rail, the 10 m bands from their 20 m COG overviews, and a window of at most 3,584 px a side), measures with OpenCV, draws the figure, and replies with the metrics, the PNG, the **build record** and per-stage timings. Every failure is a code (`bad_request`, `backend_mismatch`, `not_cool`, `site_outside_scene`, `window_too_large`, `unreadable_scene`, `internal`): the caller's mistakes are `bad_request`, and any other failure inside the worker is `internal` and logged. **Two backends** share the handler: `VISION_BACKEND` says which one a deployment is, a request for the other is refused, and a `cool` worker whose OpenCV build does not match the pinned `COOL_BUILD_SHA256` fingerprint refuses everything, so a result can never claim a build it did not run on. | `lambdas/vision_worker_handler.py`; `lambdas/vision/`; `lambdas/common/vision_contract.py`; `lambdas/common/vision_client.py`; `infra/modules/vision-worker/` (`<prefix>-<env>-vision-worker`, arm64, python3.12, 2048 MB, 60 s, in `vision_region`) |
+| 4 | **The stateless worker** | One cross-region `lambda:InvokeFunction`. The worker validates the request against the **contract** (version 1; the `task`, `ships` or `rail_access`, and its assets; every asset URL must start with an allowed prefix, the `sentinel-cogs` bucket by default, and an entry of `VISION_ALLOWED_URL_PREFIXES` that is not `https://<host>/` and a path is skipped; parameter bounds; a polygon of 3 to 64 points; for rail, the network's shape and caps), reads only the tiles under the site with HTTP range requests, following no redirect (a 3xx is `unreadable_scene`, its body unread) and reading no further than the range asked for, even from a server that ignores `Range` (no GDAL: a small reader for the TIFF subset Sentinel-2 uses; for rail, the 10 m bands from their 20 m COG overviews, and a window of at most 3,584 px a side), measures with OpenCV, draws the figures (for rail, the map and, when the network carries its stops layer, the transit-reach figure), and replies with the metrics, the PNGs, the **build record** and per-stage timings; a rail reply that would serialise over 5 MiB (`REPLY_BYTES_BUDGET`) drops the transit-reach figure with the warning `modes_figure_dropped`, never the map, so it stays under Lambda's 6 MB. Every failure is a code (`bad_request`, `backend_mismatch`, `not_cool`, `site_outside_scene`, `window_too_large`, `unreadable_scene`, `internal`): the caller's mistakes are `bad_request`, and any other failure inside the worker is `internal` and logged. **Two backends** share the handler: `VISION_BACKEND` says which one a deployment is, a request for the other is refused, and a `cool` worker whose OpenCV build does not match the pinned `COOL_BUILD_SHA256` fingerprint refuses everything, so a result can never claim a build it did not run on. | `lambdas/vision_worker_handler.py`; `lambdas/vision/`; `lambdas/common/vision_contract.py`; `lambdas/common/vision_client.py`; `infra/modules/vision-worker/` (`<prefix>-<env>-vision-worker`, arm64, python3.12, 2048 MB, 60 s, in `vision_region`) |
 | 5 | **The bounded triage agent** | A numeric change is only a candidate. Before it becomes a Finding, the agent is given the metrics, the baseline, the detector's rejection tally (ships) and the figure as an image, and may call `look_again` (re-measure the same scene with other settings: active perception), `previous_scene` and `site_history`; the rail profile adds `web_context` (recent news about the city's stations and lines). The bounds are in code, not in the prompt: at most `triage_max_tool_calls` tool calls and that plus two model turns, and a **deadline** (`triage_deadline_seconds`, 85 s from the tick's start) under which no model turn starts with under 10 s left. `look_again` waits on the worker for at most the deadline less that 10 s answer turn and a 5 s connect allowance (rounded down to 5 s, and never more than the worker read timeout), and is refused when that is under 10 s for ships or 30 s for rail, whose run takes 20 to 40 s. The answer must be `{"verdict": "real" or "artefact", "reason"}`; a malformed answer, a model error, the turn limit or running out of time is **artefact**. It fails closed: an unsure agent never makes a Finding. What the tools return is data, cut and cleaned; the agent's reason reaches a summary only quoted, as "the vision agent's note (not a measurement)". The trail is stored in the state and the spend lands on the Stats page as `vision_triage`. The first observation is not triaged: it has no baseline; nor is a weekly reading, which claims no change. | `lambdas/common/vision_triage.py`, called from the adapter's `material_diff` |
-| 6 | **The person** | The daily cycle runs every day and writes about the week's city alone: the topic's `rotation`, with `rotation_period` `"week"`, gives each city a whole week in turn (the template gives each city weekdays; the live `rail-cities` was switched to a city a week by [RailVisionSeeding.md §7](../RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)), and the run drafts the Findings that report that city, from every one since the city's last article, within the topic's `findings_window_hours` (192 hours). The topic's goal rotation (`editorial_goal_rotation`) gives each article its angle: new Findings get the next goal, and with nothing new the run revisits the same Findings under a goal not yet used on them, so the Monday weekly reading becomes an `access` article on Monday, a `network` one on Tuesday and a `simulations` one on Wednesday, and nothing more until something new (a real change starts the goals again). It reviews the article as for any topic, then holds it: `force_manual_review` adds "this topic's articles are always reviewed by a person before publishing" to the hold reasons, whatever the compliance review said. The article waits in the review inbox until `admin_cli approve`. The daily trending digest, the one other path that publishes with no person, leaves out every topic for which `compliance.requires_manual_review` is true (#298), so a vision topic's text never reaches an auto-published page. | `lambdas/daily_cycle_handler.py`; `lambdas/common/findings_window.py`; `lambdas/common/goal_rotation.py`; `moderation-queue`; `scripts/admin_cli.py` (`inbox`, `approve`) |
-| 7 | **The page: the figures path** | An adapter that draws something returns `[{"key", "caption", "alt"}]` from `figures()`; the tick stores the list on the Finding; the daily cycle gathers the figures of the findings an article was written from (newest first, de-duplicated, at most three); publishing copies each PNG from the private content bucket to the site bucket as `articles/figures/<article_id>/<n>.png` (one server-side copy, stored as `image/png`), and the static page and the SPA show each as a `<figure>` with its caption, under the credit line and above the body. A figure whose copy failed is left off the static page, and the SPA removes a figure whose image fails to load, so both show the same. Unpublishing and take-down remove the copies, and, for an article with figures, ask CloudFront to drop `/articles/figures/<article>/*` with the page. The path is generic: the rail adapter attaches one figure per site its summary reports (not one under the coverage floor, not one the agent judged an artefact), with a caption that says what the symbols are and carries the credits and the year, and the ship adapter does not yet attach its figure (the base adapter's default is an empty list). The rail Finding also keeps its planner notes (`planner_notes`), the flags and simulated links in words. | `lambdas/common/figures.py`; `publish_figures` in `lambdas/common/static_pages.py`; `frontend/app.js`; the site bucket under `articles/` |
+| 6 | **The person** | The daily cycle runs every day and writes about the week's city alone: the topic's `rotation`, with `rotation_period` `"week"`, gives each city a whole week in turn (the template gives each city weekdays; the live `rail-cities` was switched to a city a week by [RailVisionSeeding.md §7](../RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)), and the run drafts the Findings that report that city, from every one since the city's last article, within the topic's `findings_window_hours` (192 hours). The topic's goal rotation (`editorial_goal_rotation`) gives each article its angle: new Findings get the next goal, and with nothing new the run revisits the same Findings under a goal not yet used on them, so the Monday weekly reading becomes an `access` article on Monday, a `network` one on Tuesday, a `simulations` one on Wednesday and a `transit` one on Thursday, and nothing more until something new (a real change starts the goals again). It reviews the article as for any topic, then holds it: `force_manual_review` adds "this topic's articles are always reviewed by a person before publishing" to the hold reasons, whatever the compliance review said. The article waits in the review inbox until `admin_cli approve`. The daily trending digest, the one other path that publishes with no person, leaves out every topic for which `compliance.requires_manual_review` is true (#298), so a vision topic's text never reaches an auto-published page. | `lambdas/daily_cycle_handler.py`; `lambdas/common/findings_window.py`; `lambdas/common/goal_rotation.py`; `moderation-queue`; `scripts/admin_cli.py` (`inbox`, `approve`) |
+| 7 | **The page: the figures path** | An adapter that draws something returns `[{"key", "caption", "alt"}]` from `figures()`; the tick stores the list on the Finding; the daily cycle gathers the figures of the findings an article was written from (newest first, de-duplicated, at most three); publishing copies each PNG from the private content bucket to the site bucket as `articles/figures/<article_id>/<n>.png` (one server-side copy, stored as `image/png`), and the static page and the SPA show each as a `<figure>` with its caption, under the credit line and above the body. A figure whose copy failed is left off the static page, and the SPA removes a figure whose image fails to load, so both show the same. Unpublishing and take-down remove the copies, and, for an article with figures, ask CloudFront to drop `/articles/figures/<article>/*` with the page. The path is generic: the rail adapter attaches two figures per site its summary reports (none for a site under the coverage floor or one the agent judged an artefact): the rail map and, when the city's network carried its stops layer, the transit-reach map (`modes_image_key`), each with a caption that says what the symbols or fills are and carries the credits and the year; with two per Finding, an article drafted from two Findings shows three (the newest scene's two, then the older rail map). The ship adapter does not yet attach its figure (the base adapter's default is an empty list). The rail Finding also keeps its planner notes (`planner_notes`), the flags and theoretical links in words. | `lambdas/common/figures.py`; `publish_figures` in `lambdas/common/static_pages.py`; `frontend/app.js`; the site bucket under `articles/` |
 
 ### Where state lives
 
@@ -217,7 +217,7 @@ group and the bucket its package is uploaded through, and nothing of ours to mig
 |---|---|
 | Per-site history, `last_error`, each site's decision ring (the last 12 decisions with the agent's trails), what each rail city's record knows of its network (key, fetch time, counts) | `snapshots/<topic>/running-state.json` in the content bucket, and each Finding's snapshot |
 | One line per step in the logs: a tick ran, a site's turn, OpenCV measured, the numbers were compared, the agent decided, a person decided | the research tick's, the worker's (us-west-2) and the admin API's log groups, 90 days |
-| The worker's PNG for each scene | `vision/<topic>/<site>/<scene>.png` in the content bucket (private) |
+| The worker's PNGs for each scene: the rail map and, with a stops layer, the transit-reach map | `vision/<topic>/<site>/<scene>.png` and `vision/<topic>/<site>/<scene>-modes.png` in the content bucket (private) |
 | Each rail city's OpenStreetMap network, its only copy | `vision/<topic>/<site>/network.json` in the content bucket (private, outside `snapshots/`) |
 | A published article's figures | `articles/figures/<article>/<n>.png` in the site bucket, behind CloudFront |
 | The Finding's and the article's figure lists | `figures` on the Finding and on the article row |
@@ -255,11 +255,11 @@ been re-applied with `vision_region` first. The steps are in the
 |---|---|---|
 | What it watches | fixed sites on water: an anchorage, a port approach | a city, inside one Sentinel-2 tile |
 | Bands | NIR, green and the scene classification at 10 m | red, NIR, SWIR and the scene classification on a 20 m grid, read from the COG overviews |
-| Extra input | none | the OpenStreetMap network, fetched by the adapter and sent inline |
-| What OpenCV does | NDWI water mask, adaptive threshold, `minAreaRect` length and elongation filters, a buffer beside anything unmeasured, a tally of why candidates were dropped | NDBI and NDVI thresholds, a Gaussian heat map, a distance transform with labels, connected components, `polylines`, hit-or-miss thinning, `filter2D` junctions, a networkx graph |
+| Extra input | none | the OpenStreetMap network, with its bus and tram stops, fetched by the adapter and sent inline |
+| What OpenCV does | NDWI water mask, adaptive threshold, `minAreaRect` length and elongation filters, a buffer beside anything unmeasured, a tally of why candidates were dropped | NDBI and NDVI thresholds, a Gaussian heat map, a distance transform with labels for the stations and plain ones for the stops, connected components, `polylines`, hit-or-miss thinning, `filter2D` junctions, a networkx graph, a 1 px `line` under each theoretical link |
 | What is diffed | the count against the median of earlier clear scenes, past both an absolute and a relative threshold | the served share, the desert area and the station count against the baseline of earlier clear scenes measured with the same polygon and parameters |
 | Agent tools | `look_again`, `previous_scene`, `site_history` | the same, and `web_context` |
-| What the article gets | the summary | the summary with up to three planner notes, and the map |
+| What the article gets | the summary | the summary with up to three planner notes, the rail map and, with a stops layer, the transit-reach map |
 | Where it stands | on `dev` since #285 | on `dev` since #285, and live as `rail-cities`: the core [#289](https://github.com/AllainWoodsford/BloggerBear/pull/289), the worker task [#291](https://github.com/AllainWoodsford/BloggerBear/pull/291), the adapter [#292](https://github.com/AllainWoodsford/BloggerBear/pull/292), the figure [#293](https://github.com/AllainWoodsford/BloggerBear/pull/293), planner notes [#294](https://github.com/AllainWoodsford/BloggerBear/pull/294), time bounds [#295](https://github.com/AllainWoodsford/BloggerBear/pull/295), the findings window [#297](https://github.com/AllainWoodsford/BloggerBear/pull/297), the integration review's fixes [#298](https://github.com/AllainWoodsford/BloggerBear/pull/298) |
 
 ### Asking the assistant
@@ -329,8 +329,9 @@ told so, and say so.
 
 Every station is a point on the grid. One distance transform gives each pixel its straight-line
 distance to the nearest station and which station that is. Within the **reach** (1,000 m by
-default) a built-up pixel is *served*; the **served share** is the served built-up area over all
-the built-up area. Reach is straight-line distance, not a walking route: a river, a motorway or
+default: about 12 minutes at the stated walking pace of 80 m a minute, a distance restated, not
+a journey time) a built-up pixel is *served*; the **served share** is the served built-up area
+over all the built-up area. Reach is straight-line distance, not a walking route: a river, a motorway or
 a rail yard in between is not seen.
 
 A built-up patch beyond reach is a **transit desert**. Patches of at least half a square
@@ -344,9 +345,13 @@ unmeasured (with how much of its catchment was visible), never as quiet.
 ### The station graph
 
 The network's geometry comes from OpenStreetMap, not from the imagery: rail, light-rail and
-subway ways (yards, sidings and industrial lines excluded; trams not fetched), stations and
-halts, and the intermodal points (bus stations, ferry terminals, park-and-rides, and bus stops
-within 400 m of a station). The imagery verifies and scores it. The graph is built in pixels:
+subway ways (yards, sidings and industrial lines excluded; tram ways stay out), stations and
+halts (a station tagged as a tram station is a tram stop, not a station), the intermodal points
+(bus stations, ferry terminals, park-and-rides), and the **stops layer**: every bus and tram stop
+in the site as bare points, which [the transit-reach measures](#the-second-figure-transit-reach)
+use and which never enter the graph (a tram stop is a stop here, like a bus stop; Melbourne's
+1,700 of them would swamp the station caps). The imagery verifies and scores the graph, which is
+built in pixels:
 
 1. **Rasterise.** The ways are drawn into the 20 m grid as one-pixel lines, tunnels into a
    second mask.
@@ -394,13 +399,41 @@ that distance in kilometres divided by the station's catchment activity (floored
 empty catchment far from a hub is "very isolated" rather than infinitely so). A busy station a
 long way from any hub scores high; a quiet station next to one scores near zero.
 
+### Feeder coverage and the multimodal isolation weight
+
+With a stops layer, each station also gets a **feeder coverage**: over the ground nearest to it
+(its cell in the station distance transform), take the built-up pixels the scene could see that
+lie beyond its own reach but within the **feeder reach** (`feeder_reach_m`, 2 km by default): its
+hinterland, the ground a feeder service would bring to it. The coverage is the share of those
+pixels within reach of a mapped bus, tram or ferry stop (`stop_reach_m`, 400 m). The
+**multimodal isolation weight** discounts the rail weight by it:
+
+```
+feeder_coverage = built-up pixels in the cell with reach < d ≤ feeder reach that are within stop reach
+                  ───────────────────────────────────────────────────────────────────────────────
+                  all built-up pixels in the cell with reach < d ≤ feeder reach
+
+W_multimodal = W × (1 − feeder_coverage)
+```
+
+A station whose hinterland the stops already reach keeps little of its rail weight; one whose
+hinterland they do not reach keeps all of it. Both are None, not zero, when there is no stops
+layer, and the coverage is None for a station with no built-up ground between the two reaches in
+its cell (every station in a dense core, whose cell ends inside its own reach), so the two
+weights are one scale: the rail weight, less whatever feeder cover was measured. The
+isolated-high-demand flag keeps its condition on the rail weight and quotes both; the theoretical
+links are ranked by the multimodal weight where a station has one, else its rail weight
+(`rail_analyse._ranking_weight`), and the planner notes and articles quote the two side by side.
+
 ### The three flags
 
 Each flag is a pattern in the numbers, reported with the station names exactly as mapped:
 
 - **Isolated high demand:** a station in the top quarter by activity, on a plain line (degree
   at most 2), and in the top quarter by isolation weight. The busy places the network reaches
-  least well.
+  least well. The condition is on the rail weight; the flag also carries the station's feeder
+  coverage and multimodal isolation weight, so the note can say how much of its hinterland the
+  mapped stops already reach.
 - **Single point of failure:** the station whose betweenness is at least twice the next one's.
   Most journeys pass through it, and the graph has no second way round.
 - **Ghost line:** three or more consecutive stations along a line, each in the bottom quarter by
@@ -411,32 +444,55 @@ stands out and nothing is flagged.
 
 ### The two suggestion types
 
-Both are **simulations on the graph**, deterministic for a given scene and map:
+Both are **theoretical links**: simulations on the graph, deterministic for a given scene and
+map, each reported with `"theoretical": true`, the numbers that justify it and what its straight
+line crosses. A link is a what-if on the mapped graph and straight lines, never a route, an
+alignment or a recommendation.
 
 - **Orbital link:** among pairs of stations that are both in the farthest quarter from a hub,
   within 5 km of each other in a straight line and not already neighbours, the twelve pairs with
-  the largest product of isolation weights are each tried on a copy of the graph with a new edge
-  1.2 times the straight line long. The three that most reduce the mean distance to a hub are
-  reported, with that reduction and the change in the top hub's betweenness. A link that brings
-  nobody closer is not suggested.
-- **Feeder corridor:** the three stations with the largest isolation weight, each with its
-  nearest hub and the distance to it along the existing track.
+  the largest product of ranking weights (the multimodal isolation weight where a station has
+  one, else its rail weight) are each tried on a copy of the graph with a new edge 1.2 times the
+  straight line long. A link that brings nobody closer is dropped. Each kept link reports its
+  **justification** (both stations' distance to a hub before it, `from_d_hub_m` and `to_d_hub_m`;
+  the fall in the mean distance to a hub; how many stations come closer, `stations_closer`; the
+  change in the top hub's betweenness) and its **crossing**: the straight line between the two
+  station pixels is drawn one pixel wide and read against the scene's layers for the share of it
+  over water (`water_share`, and `water_km`), over ground the scene could not see
+  (`unmeasured_share`) and over built-up ground (`built_share`); every share is None, not zero,
+  when the line leaves the grid. The ranking: the links whose line is less than half over water,
+  by the fall in mean hub distance, then the rest in the same order, so a harbour crossing is
+  reported after the dry links and never dropped; the three best are kept. A link mostly over
+  water (half or more) stands for a corridor, not an alignment, and the figure dashes it in a
+  second colour.
+- **Feeder corridor:** the three stations with the largest ranking weight, each with its nearest
+  hub and the distance to it along the existing track, reporting the station's rail isolation
+  weight, its multimodal isolation weight and its feeder coverage, so the note can say how much
+  of the station's hinterland the mapped stops already reach.
 
 **What none of this means.** There is no ridership or patronage, no timetable or service
-frequency, no journey time, no cost, no land, no engineering: a suggestion is an edge added to a
-graph of drawn lines, and a flag is a pattern in a density proxy and a map. The summary prompt
-forbids causes, forecasts, political, planning or investment views, and saying any area is well
-or badly served in absolute terms.
+frequency, no journey time (the only minutes anywhere are walking minutes: a straight-line
+reach restated at 80 m a minute), no cost, no land, no engineering: a theoretical link is an
+edge added to a graph of drawn lines and a straight line read against the scene, and a flag is a
+pattern in a density proxy and a map. The summary prompt and the drafting guidance forbid causes,
+forecasts, political, planning or investment views, complaint or blame, cost, funding or
+resource-allocation views, and saying any area is well or badly served in absolute terms; they
+ask for a constructive register: what the measures show and what a theoretical link would
+change.
 
 **Where the flags and suggestions appear.** On the **figure**, a flagged station has a red ring
-around its white one, a ghost line is a red line through its stations, and each simulated link
-(orbital or feeder) is dashed in green. In words, as **planner notes**: code writes one sentence
-per flag and per simulation from the measured values (`common/rail_notes.py`; the templates are in
+around its white one, a ghost line is a red line through its stations, and each theoretical link
+(orbital or feeder) is dashed in green, or in azure when its straight line is mostly over water.
+In words, as **planner notes**: code writes one sentence per flag and per simulation from the
+measured values (`common/rail_notes.py`; the templates are in
 [vision.md §6.8](../enhancements/archive/vision.md#68-planner-notes-the-flags-and-simulations-in-words)),
-calling flags flags and simulations simulations, with every station name in quotation marks as
-OpenStreetMap has it. Up to seven follow the measured change in what the summary model is given,
-so the **Finding's summary** can use them; the **article** ends with at most three, each keeping
-its numbers and the words "flags" or "simulation", never called recommendations, with no cost,
+calling flags flags and simulations theoretical ("a simulation on the mapped graph, not a route
+or a recommendation"), each orbital link with why its pair was picked (both stations' distance to
+a hub) and what its straight line crosses, each feeder corridor with the station's two isolation
+weights and the share of its hinterland the stops cover, with every station name in quotation
+marks as OpenStreetMap has it. Up to seven follow the measured change in what the summary model
+is given, so the **Finding's summary** can use them; the **article** ends with at most three, each keeping
+its numbers and the words "flags" or "theoretical simulation", never called recommendations, routes or alignments, with no cost,
 timetable or cause; the **review evidence**, which the fresh-data review checks a draft against,
 lists them per city; and the Finding keeps them as data (`planner_notes`), leaving out a scene
 the agent judged an artefact.
@@ -455,16 +511,79 @@ The map is the city at 20 m, with nothing on it but the analysis:
 - **White rings** are stations, larger the busier the catchment; a thicker ring marks the top
   quarter by isolation weight. **Green diamonds** are the hubs.
 - **Red** is a flag: a second ring round a flagged station, a line along a possible ghost line.
-  **Dashed green** lines are the simulated links.
+  **Dashed green** lines are the theoretical links; a **dashed azure** line is a theoretical link
+  whose straight line is mostly over water (half or more of its pixels), reported after the dry
+  ones and standing for a corridor, not an alignment.
 
 Under the map, a dark strip holds the three caption lines (processed imagery, the Copernicus
 sentence with the year, the OpenStreetMap credit), a thin rule, and a legend of the symbols
-(station, hub, flagged, "simulated link", beyond walking reach) in one to three columns, so no word
-ever covers a station. The page repeats it in the caption: "Rail access in {name}, Sentinel-2
-{date}: built-up density (warm colours), areas beyond {reach} of a station (outlined),
-OpenStreetMap rail lines and stations, flagged stations (red rings) and simulated links (dashed).
+(station, hub, flagged, "theoretical link", beyond walking reach, "theoretical link (mostly over
+water)") in one to three columns, so no word ever covers a station. The page repeats it in the
+caption: "Rail access in {name}, Sentinel-2 {date}: built-up density (warm colours), areas beyond {reach} of a station (outlined),
+OpenStreetMap rail lines and stations, flagged stations (red rings) and theoretical links (dashed).
 Processed imagery; contains modified Copernicus Sentinel data {year}; map data © OpenStreetMap
 contributors."
+
+### The second figure: transit reach
+
+With a stops layer, each scene gets a second figure, the **transit-reach map**
+(`<scene>-modes.png`), which reads the city by what reaches each built-up pixel. The scene's red
+band is in grey, with the same slate tint over what it could not see, and nothing on it but three
+translucent fills, over built-up ground only:
+
+- **Aqua** (a green-teal): within reach of a rail station (1 km by default, "about 12 min walk").
+- **Orange**: beyond that, but within reach of a mapped bus, tram or ferry stop (`stop_reach_m`,
+  400 m by default, "5 min walk").
+- **Violet, with a pale outline**: beyond both. The outline is a second cue, so the residual reads
+  without colour.
+
+The rail lines are thin white lines and the stations small white rings; no hubs, flags or links.
+The strip under it holds the same three caption lines and its own legend, which names each reach
+in metres and in walking minutes. The colours were chosen with the colour-vision checks of the
+`dataviz` skill, apart from each other and from the slate tint.
+
+**The minutes convention.** Every minutes figure in the figures, the summaries and the articles
+is a straight-line reach restated at a stated walking pace of **80 m a minute** (`WALK_M_PER_MIN`
+in `common/vision_contract.py`, the one module both the worker and the pipeline ship, so the
+strip and the text quote the same pace): 1 km is "about 12 min", 400 m is "5 min". It is a
+distance in other units, not a journey, travel or waiting time; the investigation gives no rail
+or bus travel time, and reach to a stop is the same straight-line proxy as reach to a station (a
+river or a motorway in between is not seen).
+
+**What the stops add to the numbers.** The worker runs one plain distance transform over every
+stop and one per mode (bus and tram from the layer, ferry from the ferry terminals among the
+points of interest), beside the station transform:
+
+- `stop_served_share` and `stop_served_km2`: built-up area within stop reach, and
+  `stop_served_share_by_mode` for bus, tram and ferry;
+- `any_mode_served_share` and `any_mode_served_km2`: within reach of a station or a stop;
+  `any_mode_desert_km2`: beyond both; `stops_only_km2`: beyond station reach but within stop
+  reach (the orange);
+- the **transport efficiency of the mapped stops**: `stop_coverage_km2_per_100`, the built-up km²
+  within stop reach per 100 mapped stops of the three modes, and `stop_overlap_share`, the part
+  of the stop-served ground that is already within station reach: a city whose stops mostly sit
+  around its stations scores high on the overlap and low on the efficiency, one whose stops reach
+  the ground the stations do not scores the other way;
+- each reported desert's `stop_covered_share`: how much of that rail desert the stops reach. The
+  summary line says how many of the largest patches beyond a station's reach are mostly (half or
+  more) within reach of a stop, so an article can say what the stops cover without a number per
+  patch;
+- the counts received: `stops` (bus, tram, ferry) and `network.stops`;
+- and, per station, the [feeder coverage and the multimodal isolation weight](#feeder-coverage-and-the-multimodal-isolation-weight).
+
+All of it is reported, never material: the adapter diffs the served share, the desert area and
+the station count as before. Without a stops layer (a network stored before the layer existed)
+every one of these is None, the quality flag `no_stops_layer` says so, and there is no second
+figure: not measured is never nothing there. An empty layer measures as zero. The stop and feeder
+reaches are left out of the comparability key, so an edited stop reach starts no new baseline.
+
+The page caption repeats the fills in words: "Transit reach in {name}, Sentinel-2 {date}: built-up
+area within {reach} (about {n} min walk) of a rail station, beyond that but within {stop reach}
+({m} min) of a mapped bus, tram or ferry stop, and beyond both (outlined). Straight-line reach
+over OpenStreetMap stops. Processed imagery; contains modified Copernicus Sentinel data {year};
+map data © OpenStreetMap contributors." A reply that would serialise over 5 MiB
+(`REPLY_BYTES_BUDGET`) drops this figure with the warning `modes_figure_dropped` and keeps the
+map, so a crowded city still answers under Lambda's 6 MB.
 
 ### Corridor visibility and tunnels
 
@@ -484,13 +603,16 @@ figure tints everything unmeasured so a cloud never looks like an empty suburb. 
 itself takes only scenes under a cloud-cover cap, and only those whose footprint holds the whole
 site, which is why a city must sit inside one Sentinel-2 tile. The quality flags
 (`empty_site`, `low_coverage`, `no_network`, `few_stations_snapped`, `graph_fragmented`,
-`graph_too_large`, `betweenness_sampled`) travel with every reply and into the history.
+`graph_too_large`, `betweenness_sampled`, and `no_stops_layer` when the network carried no stops
+layer, so every stop measure is None) travel with every reply and into the history.
 
 ### What is diffed, and what the agent checks
 
 The adapter diffs the served share, the desert area and the station count against the city's
 baseline: the median of its earlier clear scenes measured with the same polygon and parameters, so
-editing the reach or the box starts a new baseline instead of reading as a change. A move of the
+editing the reach or the box starts a new baseline instead of reading as a change; the stop and
+feeder reaches (`stop_reach_m`, `feeder_reach_m`) are left out of that key, and the stop measures
+are reported, never material, so entries from before the stops layer stay comparable. A move of the
 served share by 2 points, of the desert area by a tenth of its median, or any change in the station
 count is material (the defaults). The first scene measured at or above the coverage floor is the
 first observation, reported once; a cloudy first scene reports nothing. With a city a week, the

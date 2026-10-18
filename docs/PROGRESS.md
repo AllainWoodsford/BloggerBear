@@ -890,6 +890,25 @@ submission-round entries after them are docs and tests, with nothing to deploy.
 - [x] The Musings page names the topic an article musing is for, in grey italics beside "read the
   article": the public API's `GET /musings` adds `topic_name` to each musing, read once per page
   from the Topics table (`None` for a topic since deleted, and then no name is shown)
+- [x] Bus, tram and ferry stops join the rail-cities investigation: the OpenStreetMap client
+  fetches every bus and tram stop in a city as a bare-point `stops` layer (thinned to the 20 m
+  grid, capped at 40,000 across modes, the Overpass body's `bytes` kept beside the counts); the
+  worker measures straight-line reach to the nearest mapped stop beside station reach (the
+  any-mode share, the area beyond both, the mapped stops' efficiency as built-up km² within reach
+  per 100 stops and their overlap with station reach, each desert's stop cover, each station's
+  feeder coverage and a multimodal isolation weight, the rail weight × (1 − feeder coverage),
+  which ranks the theoretical links); it draws a second figure per scene, the transit-reach map,
+  with minutes as reach restated at a stated 80 m a minute, and calls every simulated link
+  theoretical, with its justification and what its straight line crosses (water, unmeasured
+  ground; a link mostly over water is ranked after the dry ones and dashed in azure). Nothing new
+  is material, and a network stored before the layer measures as not measured (`no_stops_layer`)
+  until its refresh or a prefetch. The goals, the adapter's default mandate and its drafting
+  guidance take a constructive register (what the measures show and what a theoretical link would
+  change; no cost, political, agency or resource-allocation view), and a fourth rotating goal,
+  `transit`, joins the week (`lambdas/common/osm.py`, `vision_contract.py`,
+  `vision/rail_analyse.py`, `rail_annotate.py`, `vision_worker_handler.py`,
+  `adapters/rail_access.py`, `rail_notes.py`; [RailVisionSeeding.md §7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides);
+  on `claude/wonderful-brahmagupta-9vt5t3`, to merge after the hackathon results)
 
 ## Backlog / not yet scheduled
 
