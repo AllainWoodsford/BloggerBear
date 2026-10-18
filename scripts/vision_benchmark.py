@@ -223,12 +223,18 @@ def synthetic_city(size: int, seed: int = 0) -> dict:
     return bands
 
 
-def synthetic_network(size: int, lines: int = 4, stations_per_line: int = 5) -> dict:
+def synthetic_network(size: int, lines: int = 4, stations_per_line: int = 5, stops: bool = False) -> dict:
     """A rail network over `synthetic_city(size)`, in the shape the worker takes: `lines`
     horizontal and `lines` vertical ways across the city (the first vertical one in tunnel),
     `stations_per_line` stations on each (40 by default, none on a junction) and a bus stop
-    beside every station. Lon/lat come from pixels through the UTM inverse, as OpenStreetMap's
-    would, so the projection is part of what is timed."""
+    beside every station. With `stops`, a `stops` layer too, so the transit-reach stage runs: the
+    same stops beside the stations, bus stops along the streets midway between the rail lines
+    (the ground farthest from a station) and tram stops along the first of those streets; the bus
+    stops stay in `pois` as well, as a network cached before the layer has them (the worker reads
+    those only without a layer). Without `stops` the network is the one from before the layer,
+    which the evaluation driver's committed fixture (scripts/tests/fixtures/synthetic-city-
+    network.json) is, written out. Lon/lat come from pixels through the UTM inverse, as
+    OpenStreetMap's would, so the projection is part of what is timed."""
     from vision import geo
 
     def lonlat(x, y):
@@ -238,6 +244,7 @@ def synthetic_network(size: int, lines: int = 4, stations_per_line: int = 5) -> 
     span = size - 2 * margin
     positions = [margin + span * i // max(1, lines - 1) for i in range(lines)]
     ways, stations, pois = [], [], []
+    layer: dict[str, list] = {"bus": [], "tram": []}
     for i, p in enumerate(positions):
         ways.append({"id": f"wh{i}", "points": [lonlat(margin, p), lonlat(size - margin, p)],
                      "tunnel": False, "name": f"Line H{i}"})  # fmt: skip
@@ -251,7 +258,21 @@ def synthetic_network(size: int, lines: int = 4, stations_per_line: int = 5) -> 
                                  "lat": lat})  # fmt: skip
                 lon, lat = lonlat(x + 2, y + 2)
                 pois.append({"id": f"b{sid}", "kind": "bus_stop", "lon": lon, "lat": lat})
-    return {"ways": ways, "stations": stations, "pois": pois, "fetched_at": "2026-01-01T00:00:00+00:00"}
+                layer["bus"].append([lon, lat])
+    network = {"ways": ways, "stations": stations, "pois": pois, "fetched_at": "2026-01-01T00:00:00+00:00"}
+    if not stops:
+        return network
+    # A stop every quarter of a station spacing along each street between two rail lines.
+    stop_step = max(1, span // (4 * stations_per_line))
+    for k, (above, below) in enumerate(zip(positions, positions[1:], strict=False)):
+        street = (above + below) // 2
+        for x in range(margin, size - margin + 1, stop_step):
+            layer["bus"].append(lonlat(x, street))
+            if k == 0 and (x - margin) % (2 * stop_step) == 0:
+                layer["tram"].append(lonlat(x, street + 1))
+    return {
+        "ways": ways, "stations": stations, "pois": pois, "stops": layer, "fetched_at": network["fetched_at"],
+    }  # fmt: skip
 
 
 def kernels(size: int = 2048, repeats: int = 20) -> dict:
@@ -274,7 +295,7 @@ def kernels(size: int = 2048, repeats: int = 20) -> dict:
     params = DetectParams()
 
     # The rail task's inputs: the city, its network in pixels, the rasters the stages work on.
-    city, network = synthetic_city(size), synthetic_network(size)
+    city, network = synthetic_city(size), synthetic_network(size, stops=True)  # the stops stage too
     projected = project_network(network, CITY_EPSG, CITY_TRANSFORM, (size, size))
     way_pts = [np.round(np.asarray(way)).astype(np.int32).reshape(-1, 1, 2) for way in projected["ways_px"]]
     rails = rail_network.rasterise_ways((size, size), projected["ways_px"] + projected["tunnels_px"])
@@ -1452,7 +1473,9 @@ def main(argv: list[str] | None = None) -> int:
         if out is None:
             parser.error("the scene has no network_file: pass --out")
         network = fetch_network(scene, out)
-        print(f"wrote {out}: {json.dumps(network.get('counts'))}")
+        # The counts and the Overpass body's size: the runsheet reads a real city's `bytes` against
+        # common/osm.MAX_RESPONSE_BYTES (20 MB) now that the reply carries every stop.
+        print(f"wrote {out}: {json.dumps(network.get('counts'))} bytes={json.dumps(network.get('bytes'))}")
         return 0
 
     if args.mode == "compare":

@@ -173,13 +173,23 @@ def later(fetched_at: str | None) -> str | None:
 
 
 def recount(network: dict) -> dict:
-    """`network` with `counts` made from its lists, as common/osm.py makes them."""
-    network["counts"] = {
+    """`network` with `counts` made from its lists, as common/osm.py makes them: `stops` is the
+    stops across modes (0 without the layer, which no recipe touches) and `stops_by_mode` is there
+    only with the layer, since no layer is not measured."""
+    counts = {
         "ways": len(network.get("ways") or []),
         "stations": len(network.get("stations") or []),
         "pois": len(network.get("pois") or []),
         "points": sum(len(way.get("points") or []) for way in network.get("ways") or []),
     }
+    stops = network.get("stops")
+    if isinstance(stops, dict):
+        by_mode = {mode: len(points or []) for mode, points in stops.items()}
+        counts["stops"] = sum(by_mode.values())
+        counts["stops_by_mode"] = by_mode
+    else:
+        counts["stops"] = 0
+    network["counts"] = counts
     return network
 
 

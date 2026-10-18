@@ -95,9 +95,23 @@ def test_the_synthetic_city_and_network_are_deterministic_and_measure():
     network = bench.synthetic_network(128)
     assert len(network["ways"]) == 8 and len(network["stations"]) == 40 and len(network["pois"]) == 40
     assert vision_contract.validate_network(network)["stations"] == network["stations"]
+    assert set(network) == {"ways", "stations", "pois", "fetched_at"}  # the eval driver's fixture, no layer
+    # With `stops`, the layer the transit-reach stage runs on: the stop beside every station, more
+    # along the three streets between the four horizontal lines, tram stops along the first street.
+    layered = bench.synthetic_network(128, stops=True)
+    stops = layered["stops"]
+    assert {k: v for k, v in layered.items() if k != "stops"} == network
+    assert list(stops) == list(vision_contract.STOP_MODES) == ["bus", "tram"]
+    assert vision_contract.validate_network(layered)["stops"] == stops
+    beside_stations = [[poi["lon"], poi["lat"]] for poi in network["pois"]]
+    assert stops["bus"][:40] == beside_stations and len(stops["bus"]) == 40 + 3 * 25
+    assert len(stops["tram"]) == 13 and stops == bench.synthetic_network(128, stops=True)["stops"]
+    # The street stops run between the first two horizontal lines (latitude falls down the image).
+    first, second = (s for s in network["stations"] if s["id"] in ("nh0_0", "nh1_0"))
+    assert all(second["lat"] < p[1] < first["lat"] for p in stops["bus"][40:65])
     whole = [[[0, 0], [127, 0], [127, 127], [0, 127]]]
     grid = (bench.CITY_PIXEL_M, bench.CITY_TRANSFORM, bench.CITY_EPSG)
-    m = analyse_rail_access(city, whole, *grid, network).metrics
+    m = analyse_rail_access(city, whole, *grid, layered).metrics  # as the kernel runs it
     assert m["station_count"] == m["snapped_station_count"] == 40
     assert m["components"] == 1 and 0 < m["served_share"] <= 1
     assert all(s["intermodal"]["bus_stop_near"] >= 1 for s in m["stations"])
@@ -241,11 +255,16 @@ def test_fetch_network_writes_the_scenes_network_file(tmp_path, monkeypatch, cap
 
     def fake_fetch(polygon):
         polygons.append(polygon)
-        return {**STUB_NETWORK, "counts": {"ways": 1, "stations": 1, "pois": 0, "points": 2}}
+        counts = {"ways": 1, "stations": 1, "pois": 0, "points": 2, "stops": 1,
+                  "stops_by_mode": {"bus": 1, "tram": 0}}  # fmt: skip
+        return {**STUB_NETWORK, "stops": {"bus": [[151.205, -33.9]], "tram": []}, "counts": counts,
+                "truncated": False, "bytes": 4096}  # fmt: skip
 
     out = tmp_path / "networks" / "sydney.json"
     network = bench.fetch_network(rail_scene(), out, fetch=fake_fetch)
     assert polygons == [rail_scene()["polygon"]] and json.loads(out.read_text()) == network
+    assert network["stops"] == {"bus": [[151.205, -33.9]], "tram": []}  # written whole, with the layer
+    assert network["bytes"] == 4096
     # The subcommand goes through the OSM client, writes the scene's network_file by default and
     # says what it wrote; an unknown scene is a usage error.
     monkeypatch.setattr(osm, "fetch_network", fake_fetch)
@@ -256,7 +275,8 @@ def test_fetch_network_writes_the_scenes_network_file(tmp_path, monkeypatch, cap
     argv = ["fetch-network", "--scenes-file", str(scenes_file), "--scene", "sydney-rail-2024-01-05"]
     assert bench.main(argv) == 0
     assert json.loads((tmp_path / "nets" / "sydney.json").read_text()) == network
-    assert "wrote" in capsys.readouterr().out
+    said = capsys.readouterr().out
+    assert "wrote" in said and '"stops": 1' in said and "bytes=4096" in said  # read against the 20 MB cap
     elsewhere = tmp_path / "elsewhere.json"
     assert bench.main([*argv, "--out", str(elsewhere)]) == 0
     assert elsewhere.is_file()

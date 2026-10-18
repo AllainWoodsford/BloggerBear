@@ -1,11 +1,15 @@
 """OpenStreetMap rail networks through the Overpass API: fetch, decimate, cap, cache rules.
 
 The rail access task (docs/enhancements/archive/rail-access-monitor.md §3, PR B) needs the rail lines,
-stations and intermodal points inside a site polygon. The adapter fetches them here, keeps the
-result in its running state for `osm_ttl_days` (`is_stale` says when to fetch again), and sends it
-inline to the vision worker, whose egress stays "public imagery over HTTPS, nothing else". So the
-network dict must be small: way points are decimated to `MIN_SPACING_M` and the whole thing is
-capped (`cap_network`), which keeps the synchronous invoke payload near 1.5 MB.
+stations and intermodal points inside a site polygon, and its transit-reach measures need every
+bus and tram stop in it (the `stops` layer: bare [lon, lat] points per mode, no ids or names, so
+nothing in it is shown or stored per stop). The adapter fetches them here, keeps the result in its
+running state for `osm_ttl_days` (`is_stale` says when to fetch again), and sends it inline to the
+vision worker, whose egress stays "public imagery over HTTPS, nothing else". So the network dict
+must be small: way points are decimated to `MIN_SPACING_M`, stops are thinned to one per cell of
+the same grid, and the whole thing is capped (`cap_network`), which keeps the synchronous invoke
+payload near 1.5 MB plus about 1 MB for a big city's stops. The reply's size in `bytes` is kept
+beside `counts`, so a real city's reply can be read against `MAX_RESPONSE_BYTES`.
 
 Two allow-listed Overpass endpoints, one fallback hop: a request that times out or is refused
 (429, 5xx) by the first is tried once on the mirror, and a failure on both is an `OsmError` whose
@@ -70,8 +74,19 @@ MAX_POINTS = 60_000
 MAX_WAYS = 5_000
 MAX_STATIONS = 2_000
 MAX_POIS = 5_000
+# The most stops a network carries, counted across every mode (vision_contract.NETWORK_LIMITS holds
+# the same figure): a bare [lon, lat] is some 25 bytes once serialised, so a full layer is about
+# 1 MB, and a big city has 20-30 k bus stops, so the cap is rarely reached and never by much.
+MAX_STOPS = 40_000
+# The modes of the `stops` layer, in the order the layer lists them (vision_contract.STOP_MODES is
+# the same tuple). Ferry terminals stay points of interest in `pois`, as before the layer.
+STOP_MODES = ("bus", "tram")
 # The analysis grid is 20 m, so closer points land in the same pixel.
 MIN_SPACING_M = 20.0
+# Over MAX_STOPS the stops' grid cell doubles this many times (20 m -> 40, 80, 160, 320 m) before
+# the lists are cut: a city with that many stops has them a few hundred metres apart on average,
+# so the last doubling still keeps most of them.
+_STOP_SPACING_DOUBLINGS = 4
 MAX_NAME_CHARS = 80
 
 OSM_SOURCE = {
@@ -85,8 +100,13 @@ OSM_SOURCE = {
 _METRES_PER_DEGREE = 111_195.0
 
 # The query. Rail, light rail and subway ways (yards, sidings and industrial lines left out, so
-# the graph is the passenger network), stations and halts, the intermodal points, and bus stops
-# within 400 m of a station. `{poly}` is the site as "lat lon lat lon ..." (Overpass' order).
+# the graph is the passenger network), stations and halts, the intermodal points (bus stations,
+# ferry terminals, park-and-rides), and every stop in the polygon by mode: bus stops (either
+# tagging in use) printed `skel` (ids and coordinates only, about 50 bytes a node, so a big city's
+# 20-30 k of them stay a couple of MB) and tram stops with their tags (a few hundred nodes; a
+# platform tagged for both modes is in both sets). Tram ways are not fetched: a tram stop is a
+# stop here, like a bus stop, never a station. `{poly}` is the site as "lat lon lat lon ..."
+# (Overpass' order).
 _QUERY = """[out:json][timeout:{timeout}];
 ( way["railway"~"^(rail|light_rail|subway)$"]["service"!~"^(yard|siding|spur|crossover)$"]
      ["usage"!~"^(industrial|military|tourism)$"](poly:"{poly}"); ) -> .rail;
@@ -94,9 +114,12 @@ _QUERY = """[out:json][timeout:{timeout}];
   way["railway"~"^(station|halt)$"](poly:"{poly}"); ) -> .stations;
 ( node["amenity"="bus_station"](poly:"{poly}"); way["amenity"="bus_station"](poly:"{poly}");
   node["amenity"="ferry_terminal"](poly:"{poly}"); way["amenity"="ferry_terminal"](poly:"{poly}");
-  node["park_ride"](poly:"{poly}"); way["park_ride"](poly:"{poly}");
-  node["highway"="bus_stop"](around.stations:400); ) -> .pois;
-.rail out geom; .stations out center; .pois out center;
+  node["park_ride"](poly:"{poly}"); way["park_ride"](poly:"{poly}"); ) -> .pois;
+( node["highway"="bus_stop"](poly:"{poly}");
+  node["public_transport"="platform"]["bus"="yes"](poly:"{poly}"); ) -> .bus;
+( node["railway"="tram_stop"](poly:"{poly}");
+  node["public_transport"="platform"]["tram"="yes"](poly:"{poly}"); ) -> .tram;
+.rail out geom; .stations out center; .pois out center; .bus out skel qt; .tram out qt;
 """
 # The short bbox form of the same question, for a source reference a reader can open.
 _LINK_QUERY = (
@@ -225,23 +248,54 @@ def _is_number(value) -> bool:
 
 def _poi_kind(tags: dict) -> str | None:
     """The intermodal class of an element, or None when it is not one. A `park_ride=no` is a
-    car park that is explicitly not one, so it is nothing here."""
+    car park that is explicitly not one, so it is nothing here. A bus stop is not one either: the
+    stops layer has them all (a node that is both a bus stop and a bus station is both)."""
     if tags.get("amenity") in _POI_AMENITIES:
         return tags["amenity"]
     if tags.get("park_ride") and tags["park_ride"] != "no":
         return "park_ride"
-    if tags.get("highway") == "bus_stop":
-        return "bus_stop"
     return None
 
 
+def _stop_modes(element: dict, tags: dict) -> tuple[str, ...]:
+    """The modes an element is a stop of, in STOP_MODES' order; empty when it is none.
+
+    A node without tags (no "tags", or an empty dict) is a bus stop: the `.bus` set is printed
+    `skel`, ids and coordinates only, and nothing else in the query prints a node bare (ways come
+    `out geom`, stations and points of interest with their tags). With tags, a bus stop is
+    `highway=bus_stop` or a platform with `bus=yes`; a tram stop is `railway=tram_stop`, a platform
+    with `tram=yes`, or a station or halt tagged `station=tram` (a node, or a station area's
+    centre), which is a stop here and never a station, as tram ways are not fetched. A node tagged
+    for both modes is both."""
+    if element.get("type") != "node":
+        return ("tram",) if tags.get("railway") in _STATIONS and tags.get("station") == "tram" else ()
+    if not tags:
+        return ("bus",)
+    platform = tags.get("public_transport") == "platform"
+    modes = []
+    if tags.get("highway") == "bus_stop" or (platform and tags.get("bus") == "yes"):
+        modes.append("bus")
+    if (
+        tags.get("railway") == "tram_stop"
+        or (platform and tags.get("tram") == "yes")
+        or (tags.get("railway") in _STATIONS and tags.get("station") == "tram")
+    ):
+        modes.append("tram")
+    return tuple(modes)
+
+
 def parse_elements(elements) -> dict:
-    """Overpass `elements` as {"ways", "stations", "pois"}: rail ways with their points as
-    [lon, lat], stations and halts (tram stations dropped: tram ways are not fetched), and the
-    intermodal points. Elements are classified by their tags, so one that Overpass printed in two
-    sets lands in one list, once. Anything unknown or without a position is skipped."""
+    """Overpass `elements` as {"ways", "stations", "pois", "stops"}: rail ways with their points
+    as [lon, lat], stations and halts (a tram station is a tram stop instead: tram ways are not
+    fetched), the intermodal points, and the stops by mode as bare [lon, lat] points
+    ({"bus": [...], "tram": [...]}, no ids or names). Elements are classified by their tags, so
+    one that Overpass printed in two sets lands in one of the first three lists, once; a stop is
+    counted once per mode it serves, beside whatever else it is (a bus station that is a bus stop
+    is both). Anything unknown or without a position is skipped."""
     ways, stations, pois = [], [], []
+    stops: dict[str, list] = {mode: [] for mode in STOP_MODES}
     seen: set[str] = set()
+    seen_stops: dict[str, set[str]] = {mode: set() for mode in STOP_MODES}
     for element in elements if isinstance(elements, list) else []:
         if not isinstance(element, dict):
             continue
@@ -255,11 +309,11 @@ def parse_elements(elements) -> dict:
         ):
             continue
         element_id = f"{prefix}{element['id']}"
-        if element_id in seen:
-            continue
         tags = element.get("tags") if isinstance(element.get("tags"), dict) else {}
         railway = tags.get("railway")
         if railway in _RAIL_WAYS and element["type"] == "way":
+            if element_id in seen:
+                continue
             points = [
                 [round(float(p["lon"]), 5), round(float(p["lat"]), 5)]
                 for p in element.get("geometry") or []
@@ -281,9 +335,17 @@ def parse_elements(elements) -> dict:
         if position is None:
             continue
         lon, lat = position
+        # A stop is taken per mode, with its own seen set: the global one would lose the bus stop
+        # in a bus station, and a node printed bare by `.bus` and again with its tags by `.tram`.
+        for mode in _stop_modes(element, tags):
+            if element_id not in seen_stops[mode]:
+                seen_stops[mode].add(element_id)
+                stops[mode].append([lon, lat])
+        if element_id in seen:
+            continue
         if railway in _STATIONS:
             if tags.get("station") == "tram":
-                continue
+                continue  # a tram stop (above), not a station
             seen.add(element_id)
             name = clean_name(tags.get("name")) or f"Unnamed station ({element_id})"
             stations.append({"id": element_id, "name": name, "lon": lon, "lat": lat, "kind": railway})
@@ -292,7 +354,7 @@ def parse_elements(elements) -> dict:
         if kind is not None:
             seen.add(element_id)
             pois.append({"id": element_id, "lon": lon, "lat": lat, "kind": kind})
-    return {"ways": ways, "stations": stations, "pois": pois}
+    return {"ways": ways, "stations": stations, "pois": pois, "stops": stops}
 
 
 def _metres_between(a, b) -> float:
@@ -319,23 +381,114 @@ def decimate(points, min_spacing_m: float = MIN_SPACING_M) -> list:
 
 
 def _counts(network: dict) -> dict:
-    return {
+    """The network's "counts": its lists' lengths and the ways' points in all, plus "stops" (the
+    stops across modes, 0 for a network without the layer) and, with a layer, "stops_by_mode"
+    (each mode the layer carries). No layer gives no by-mode entry: it was not measured."""
+    counts = {
         "ways": len(network["ways"]),
         "stations": len(network["stations"]),
         "pois": len(network["pois"]),
         "points": sum(len(way["points"]) for way in network["ways"]),
     }
+    stops = network.get("stops")
+    if isinstance(stops, dict):
+        by_mode = {mode: len(points) for mode, points in stops.items()}
+        counts["stops"] = sum(by_mode.values())
+        counts["stops_by_mode"] = by_mode
+    else:
+        counts["stops"] = 0
+    return counts
 
 
-def cap_network(network: dict, max_points: int = MAX_POINTS) -> dict:
-    """`network` (at least "ways", "stations", "pois") brought under the caps, with its "counts"
-    and "truncated". Over `max_points`, the ways are decimated again at 1.5x the spacing, up to
-    four times (20 m -> 30, 45, 68, 101 m); if that is still too many, the longest ways are
-    dropped, as that loses the fewest. Over MAX_WAYS, MAX_STATIONS or MAX_POIS, the list is cut at
-    the cap. `truncated` is true whenever anything was taken away."""
+def _grid_cell(point, spacing_m: float, cos_lat: float) -> tuple[int, int]:
+    """The `spacing_m` grid cell a [lon, lat] point falls in, as (rows north, columns east) on the
+    equirectangular plane `_metres_between` measures on: metres north of the equator and east of
+    the prime meridian, the longitude scaled by `cos_lat` once for the whole network (its stops'
+    middle latitude), so every point is read on one grid. Across a city the true scale differs
+    from it by well under a percent, which moves no point more than a few centimetres in its cell."""
+    north = float(point[1]) * _METRES_PER_DEGREE
+    east = float(point[0]) * cos_lat * _METRES_PER_DEGREE
+    return math.floor(north / spacing_m), math.floor(east / spacing_m)
+
+
+def _middle_cos_lat(points) -> float:
+    """cos of the middle latitude of `points` ([lon, lat] each): the grid's longitude scale."""
+    latitudes = [float(point[1]) for point in points]
+    return math.cos(math.radians((min(latitudes) + max(latitudes)) / 2)) if latitudes else 1.0
+
+
+def _one_per_cell(points, spacing_m: float, cos_lat: float, taken: frozenset | set = frozenset()) -> list:
+    """`points` with every one after the first in a grid cell dropped, and every one whose cell is
+    in `taken`, in their order. The analysis grid is MIN_SPACING_M, so two stops in one cell (the
+    pair on either side of a street) are one pixel to the worker: nothing is lost at its scale."""
+    kept, cells = [], set()
+    for point in points:
+        cell = _grid_cell(point, spacing_m, cos_lat)
+        if cell in cells or cell in taken:
+            continue
+        cells.add(cell)
+        kept.append(point)
+    return kept
+
+
+def _evenly(points: list, keep: int) -> list:
+    """`keep` of `points`, taken at an even stride rather than from the front: Overpass prints a
+    set by quadtile (`qt`), so the front of a list is one corner of the city."""
+    if keep >= len(points):
+        return list(points)
+    if keep <= 0:
+        return []
+    return [points[i * len(points) // keep] for i in range(keep)]
+
+
+def _stop_total(stops: dict) -> int:
+    return sum(len(points) for points in stops.values())
+
+
+def _thin_stops(stops: dict, stations: list, max_stops: int) -> tuple[dict, dict]:
+    """`stops` ({mode: [[lon, lat], ...]}) thinned to the analysis grid, then brought under
+    `max_stops`: (on the grid, capped). On the grid: one stop per mode per MIN_SPACING_M cell, and
+    no tram stop in a cell that holds a station (a light-rail platform mapped as both is a
+    station, not also a stop). Over `max_stops` across modes the cell doubles, up to
+    _STOP_SPACING_DOUBLINGS times, and if that is still too many each mode's list is cut in
+    proportion (the floor of its share, so the total is never over), at an even stride."""
+    cos_lat = _middle_cos_lat([point for points in stops.values() for point in points])
+    station_cells = {
+        _grid_cell([station["lon"], station["lat"]], MIN_SPACING_M, cos_lat) for station in stations
+    }
+    on_grid = {
+        mode: _one_per_cell(points, MIN_SPACING_M, cos_lat, station_cells if mode == "tram" else frozenset())
+        for mode, points in stops.items()
+    }
+    capped, spacing = on_grid, MIN_SPACING_M
+    for _ in range(_STOP_SPACING_DOUBLINGS):
+        if _stop_total(capped) <= max_stops:
+            break
+        spacing *= 2
+        capped = {mode: _one_per_cell(points, spacing, cos_lat) for mode, points in capped.items()}
+    total = _stop_total(capped)
+    if total > max_stops:
+        capped = {mode: _evenly(points, len(points) * max_stops // total) for mode, points in capped.items()}
+    return on_grid, capped
+
+
+def cap_network(network: dict, max_points: int = MAX_POINTS, max_stops: int = MAX_STOPS) -> dict:
+    """`network` (at least "ways", "stations", "pois"; "stops" when it has the layer) brought under
+    the caps, with its "counts" and "truncated". Over `max_points`, the ways are decimated again at
+    1.5x the spacing, up to four times (20 m -> 30, 45, 68, 101 m); if that is still too many, the
+    longest ways are dropped, as that loses the fewest. Over MAX_WAYS, MAX_STATIONS or MAX_POIS,
+    the list is cut at the cap. Stops are first put on the MIN_SPACING_M grid (one per mode per
+    cell, no tram stop in a station's cell: the analysis grid's own resolution, so not a
+    truncation, as the ways' first decimation is not), then over `max_stops` the cell doubles up to
+    four times and the lists are cut in proportion (_thin_stops). `truncated` is true whenever
+    anything was taken away. A network without the layer is left without it, its counts saying
+    "stops": 0 and nothing by mode: not measured."""
     ways = [dict(way) for way in network["ways"]]
     stations, pois = list(network["stations"]), list(network["pois"])
-    before = _counts(network)
+    stops = on_grid = None
+    if isinstance(network.get("stops"), dict):
+        on_grid, stops = _thin_stops(network["stops"], network["stations"], max_stops)
+    before = _counts({**network, "stops": on_grid})
 
     spacing = MIN_SPACING_M
     for _ in range(4):
@@ -356,6 +509,8 @@ def cap_network(network: dict, max_points: int = MAX_POINTS) -> dict:
     ways, stations, pois = ways[:MAX_WAYS], stations[:MAX_STATIONS], pois[:MAX_POIS]
 
     capped = {**network, "ways": ways, "stations": stations, "pois": pois}
+    if stops is not None:
+        capped["stops"] = stops
     capped["counts"] = _counts(capped)
     capped["truncated"] = bool(network.get("truncated")) or capped["counts"] != before
     return capped
@@ -379,12 +534,12 @@ def is_stale(network, now: datetime, ttl_days) -> bool:
 
 def _request(
     post, endpoint: str, query: str, timeout: float, deadline: float | None = None, clock=time.monotonic
-) -> list:
-    """One POST to `endpoint`; the reply's `elements`, or the OsmError it amounts to. Redirects are
-    not followed (the allowlist is about the host actually read), and the body is streamed so the
-    size cap holds while it arrives, and read only until `deadline` (_read_body). Any other failure
-    of the request library is a connection failure worth the mirror: a connection cut mid-body is
-    one of them."""
+) -> tuple[list, int]:
+    """One POST to `endpoint`; the reply's `elements` and its body's size in bytes, or the OsmError
+    it amounts to. Redirects are not followed (the allowlist is about the host actually read), and
+    the body is streamed so the size cap holds while it arrives, and read only until `deadline`
+    (_read_body). Any other failure of the request library is a connection failure worth the
+    mirror: a connection cut mid-body is one of them."""
     try:
         response = post(
             endpoint,
@@ -413,10 +568,14 @@ def _request(
     return _read_elements(response, endpoint, deadline, clock)
 
 
-def _read_elements(response, endpoint: str, deadline: float | None = None, clock=time.monotonic) -> list:
-    """The `elements` of a 2xx reply. The adapter must never take a partial network for a whole
-    one, so a "runtime error" remark (Overpass answers 200 with what it had when the query timed
-    out) is a failure too, and a timed-out one is worth the mirror."""
+def _read_elements(
+    response, endpoint: str, deadline: float | None = None, clock=time.monotonic
+) -> tuple[list, int]:
+    """The `elements` of a 2xx reply, and the body's size in bytes (what the cap is read against,
+    kept so a real city's reply can be checked against MAX_RESPONSE_BYTES). The adapter must never
+    take a partial network for a whole one, so a "runtime error" remark (Overpass answers 200 with
+    what it had when the query timed out) is a failure too, and a timed-out one is worth the
+    mirror."""
     body = _read_body(response, endpoint, deadline, clock)
     try:
         payload = json.loads(body)
@@ -429,7 +588,7 @@ def _read_elements(response, endpoint: str, deadline: float | None = None, clock
         if "timed out" in remark.lower():
             raise OsmError("timeout", remark[:300], transient=True)
         raise OsmError("bad_response", remark[:300])
-    return payload["elements"]
+    return payload["elements"], len(body)
 
 
 def _read_body(response, endpoint: str, deadline: float | None = None, clock=time.monotonic) -> bytes:
@@ -518,11 +677,14 @@ def fetch_network(
         {"source": "overpass", "endpoint": ..., "fetched_at": iso, "query_url": ...,
          "ways": [{"id": "w1", "points": [[lon, lat], ...], "tunnel": bool, "name": str | None}],
          "stations": [{"id": "n2", "name": str, "lon", "lat", "kind": "station" | "halt"}],
-         "pois": [{"id": "n3", "lon", "lat",
-                   "kind": "bus_stop" | "bus_station" | "ferry_terminal" | "park_ride"}],
-         "counts": {"ways", "stations", "pois", "points"}, "truncated": bool}
+         "pois": [{"id": "n3", "lon", "lat", "kind": "bus_station" | "ferry_terminal" | "park_ride"}],
+         "stops": {"bus": [[lon, lat], ...], "tram": [[lon, lat], ...]},
+         "counts": {"ways", "stations", "pois", "points", "stops", "stops_by_mode": {"bus", "tram"}},
+         "truncated": bool, "bytes": int}
 
-    One POST per endpoint, in order, each with a 5 s connect and `timeout` read limit; on a 429,
+    `bytes` is the size of the body the elements were read from (the prefetch log and the runsheet
+    read it against MAX_RESPONSE_BYTES). One POST per endpoint, in order, each with a 5 s connect
+    and `timeout` read limit; on a 429,
     a 5xx, a timeout or a connection error the next endpoint is tried, once. A 4xx, a redirect, an
     oversized body or a body that is not the JSON asked for is raised at once: the mirror would
     repeat it. When every endpoint fails the last failure is raised as `OsmError`.
@@ -553,7 +715,7 @@ def fetch_network(
                 raise failure or OsmError("timeout", "no time left before the deadline")
         try:
             query = overpass_query(polygon, hop_timeout)
-            elements = _request(post, endpoint, query, hop_timeout, deadline, clock)
+            elements, body_bytes = _request(post, endpoint, query, hop_timeout, deadline, clock)
             break
         except OsmError as exc:
             failure = exc
@@ -571,4 +733,5 @@ def fetch_network(
         "fetched_at": fetched_at,
         "query_url": query_url(polygon, endpoint),
         **network,
+        "bytes": body_bytes,
     }

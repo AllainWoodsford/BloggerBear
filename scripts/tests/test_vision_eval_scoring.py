@@ -77,10 +77,13 @@ def test_every_derivation_leaves_a_later_recounted_copy_and_never_touches_a():
         assert json.dumps(network, sort_keys=True) == before, f"{name} changed fixture A"
         assert change["recipe"] == name
         assert derived["fetched_at"] == "2026-01-02T00:00:00+00:00"  # a day after A's
+        # No stops layer (the benchmark's network without `stops=True`): `stops` is 0 across modes
+        # and there is no by-mode count, as common/osm.py counts such a network.
         assert derived["counts"] == {
             "ways": len(derived["ways"]), "stations": len(derived["stations"]), "pois": len(derived["pois"]),
-            "points": sum(len(w["points"]) for w in derived["ways"]),
+            "points": sum(len(w["points"]) for w in derived["ways"]), "stops": 0,
         }  # fmt: skip
+        assert "stops" not in derived and "stops_by_mode" not in derived["counts"]
         assert (derived["source"], derived["endpoint"], derived["query_url"]) == ("overpass",
                                                                                  network["endpoint"], "q")
         assert ids(derived["stations"]) == (ids(network["stations"]) - set(change["removed_stations"])

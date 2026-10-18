@@ -779,6 +779,19 @@ def test_access_baseline_on_the_synthetic_city_writes_e5s_run_file(tmp_path, cap
     assert "network_file missing" in capsys.readouterr().err
 
 
+def test_access_baseline_takes_a_reach_past_the_default_feeder_reach(tmp_path, capsys):
+    # RailParams refuses a feeder reach under the station reach, and --reach-m may go to 5000 m
+    # against the 2000 m default feeder reach: the run lifts the feeder reach to the reach, as the
+    # adapter does, instead of crashing. 2500 m is 125 px on the synthetic city's 20 m grid.
+    out = tmp_path / "runs"
+    assert vision_eval.main(["access-baseline", "--scene", "synthetic-1", "--reach-m", "2500",
+                             "--out", str(out)]) == 0  # fmt: skip
+    run = vision_runs.load(next(out.glob("*.json")))
+    assert run["params"]["reach_m"] == 2500.0 and run["results"]["reach_px"] == 125.0
+    assert run["checks"][0]["pass"] and run["results"]["methods"]["production"]["iou_vs_production"] == 1.0
+    assert "| production | " in capsys.readouterr().out
+
+
 # --- index (2.9) -----------------------------------------------------------------------------------------
 
 
