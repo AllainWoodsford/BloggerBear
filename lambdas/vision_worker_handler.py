@@ -4,15 +4,21 @@ docs/enhancements/archive/opencv-agentic-vision-enhancement.md §2 and
 docs/enhancements/archive/rail-access-monitor.md §3. Invoked by the research tick's adapters through
 common/vision_client.py, usually from another region: the worker runs next to the imagery
 (`sentinel-cogs`, us-west-2), reads only the tiles under the site, and sends back a few KB of
-metrics and one small figure. It keeps no state and writes nothing; the adapter stores what it is
-given in the home region.
+metrics and one or two small figures. It keeps no state and writes nothing; the adapter stores
+what it is given in the home region.
 
 Two tasks share the handler, chosen by the request's `task` (common/vision_contract.py's TASKS):
 
     ships        nir and green at 10 m, scl optional: vessels counted and measured (vision/analyse.py)
     rail_access  red, nir, swir16 and scl on swir16's 20 m grid, the 10 m bands from their COG
                  overviews, plus the OpenStreetMap network sent with the request: built-up heat,
-                 station reach, the rail graph and its measures (vision/rail_analyse.py)
+                 station reach, the rail graph and its measures and, when the network carries its
+                 bus and tram stops layer, the reach of bus, tram and ferry stops and each
+                 station's feeder coverage (vision/rail_analyse.py). The reply carries the rail
+                 map as `image_png_b64` and, with a stops layer, the transit reach figure as
+                 `figures_png_b64["modes"]` (vision/rail_annotate.py's annotate_modes). Without
+                 the layer every stop measure is None under the quality flag `no_stops_layer`
+                 and there is no second figure: not measured is never nothing there.
 
 The same handler is both backends. Which one this deployment is comes from its environment, and a
 request for the other is refused, so a result can never claim a backend it didn't run on:
@@ -27,7 +33,9 @@ request for the other is refused, so a result can never claim a backend it didn'
 
 The request and reply are common/vision_contract.py's. Every reply carries the task, the build
 record and per-stage timings (read, analyse, annotate; the rail task adds the graph stage), which
-is what the COOL benchmark compares.
+is what the COOL benchmark compares; `annotate` covers both figures. A reply that serialises to
+more than REPLY_BYTES_BUDGET loses its transit reach figure, with the warning
+`modes_figure_dropped` in metrics.warnings; the map and the measures are never dropped here.
 
 **One evidence line per request that returns** (`_evidence`; docs/enhancements/archive/vision-evidence.md):
 after the reply is built, success or refusal, the handler prints one JSON line in exactly
@@ -61,7 +69,7 @@ from vision.analyse import analyse_site
 from vision.annotate import annotate
 from vision.detect import DetectParams
 from vision.rail_analyse import RailParams, analyse_rail_access
-from vision.rail_annotate import annotate_rail
+from vision.rail_annotate import annotate_modes, annotate_rail
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -89,6 +97,17 @@ RAIL_REFERENCE_BAND = "swir16"
 # has been timed yet: PR J's synthetic city (180 stations, 221 nodes) took 9.2 to 9.6 s at 4096 px
 # on four cores. A worker that times out is an `invoke` error the adapter retries on its next tick.
 RAIL_MAX_WINDOW_PX = 3584
+# The reply's size guard (_within_budget). Lambda's synchronous invoke carries at most 6 MB each
+# way, and a reply over it never reaches the client as a reply: it is an "invoke" error the
+# adapter would retry on its next tick, every tick, for a scene whose measurement is sound. The
+# map has its own budget (rail_annotate.FIGURE_BYTE_BUDGET, 2 MiB, under the client's 3 MiB
+# MAX_IMAGE_BYTES) and the metrics are bounded by the analysis's caps (MAX_STATIONS, MAX_EDGES,
+# TOP_SUGGESTIONS, MAX_WARNINGS), so the transit reach figure (MODES_FIGURE_BYTE_BUDGET, 512 KiB,
+# which the 512 px floor may exceed) is the part that goes when the serialised reply is over
+# this. 5 MiB leaves Lambda's own framing and the base64 rounding a MiB under the 6 MB.
+REPLY_BYTES_BUDGET = 5 * 1024 * 1024
+# The warning the guard appends to metrics["warnings"] when it drops the transit reach figure.
+MODES_FIGURE_DROPPED = "modes_figure_dropped"
 _session: requests.Session | None = None
 
 
@@ -346,8 +365,8 @@ def _of_kind(kind: str, value):
 
 
 def _measure(request: dict, info: dict, fetch, started: float) -> dict:
-    site, metrics, png, timings = _MEASURERS[request["task"]](request, fetch)
-    return {
+    site, metrics, png, figures, timings = _MEASURERS[request["task"]](request, fetch)
+    reply = {
         "version": contract.VERSION,
         "ok": True,
         "task": request["task"],
@@ -363,10 +382,36 @@ def _measure(request: dict, info: dict, fetch, started: float) -> dict:
         "io": {"requests": site.requests, "bytes": site.bytes_read, "levels_used": site.levels_used},
         "timings_ms": {**timings, "total": _ms(started, time.perf_counter())},
     }
+    # Only a reply with a further figure carries the key: the ships reply and a rail reply without
+    # a stops layer are what they were (common/vision_contract.py's validate_reply takes both).
+    if figures:
+        encoded = {name: base64.b64encode(data).decode("ascii") for name, data in figures.items()}
+        reply["figures_png_b64"] = encoded
+    return _within_budget(reply)
 
 
-def _measure_ships(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes | None, dict]:
-    """Vessels in the site: the bands on nir's grid, the analysis, the figure, the stage timings."""
+def _within_budget(reply: dict) -> dict:
+    """The reply, less its transit reach figure when the serialised reply is over
+    REPLY_BYTES_BUDGET, with MODES_FIGURE_DROPPED appended to metrics["warnings"] so the adapter
+    can tell a dropped figure from a network without stops. json.dumps with its
+    defaults is what Lambda's runtime does to the handler's return value, and ensure_ascii keeps
+    every character one byte, so the length is the response's size. The list stays bounded: the
+    analysis caps its own warnings (vision/network.py's MAX_WARNINGS plus one line for the rest)
+    and this adds one. A reply without the figure is never measured: there is nothing to drop,
+    and the map keeps its own budget."""
+    figures = reply.get("figures_png_b64")
+    if not figures or "modes" not in figures or len(json.dumps(reply)) <= REPLY_BYTES_BUDGET:
+        return reply
+    del figures["modes"]
+    if not figures:
+        del reply["figures_png_b64"]
+    reply["metrics"].setdefault("warnings", []).append(MODES_FIGURE_DROPPED)
+    return reply
+
+
+def _measure_ships(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes | None, dict, dict]:
+    """Vessels in the site: the bands on nir's grid, the analysis, the figure, no further figures,
+    the stage timings."""
     params = _params(DetectParams, request)  # before any read: a bad combination costs no bytes
     t0 = time.perf_counter()
     site = scene.read_site(request["scene"]["assets"], request["site"]["polygon"], fetch)
@@ -398,12 +443,15 @@ def _measure_ships(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes |
         detections = analysis.metrics["detections"]
         png = annotate(nir, analysis.measurable, detections, stretch_max=params.stretch_max)
     t3 = time.perf_counter()
-    return site, analysis.metrics, png, {"read": _ms(t0, t1), "analyse": _ms(t1, t2), "annotate": _ms(t2, t3)}
+    timings = {"read": _ms(t0, t1), "analyse": _ms(t1, t2), "annotate": _ms(t2, t3)}
+    return site, analysis.metrics, png, {}, timings
 
 
-def _measure_rail(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes | None, dict]:
+def _measure_rail(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes | None, dict, dict]:
     """Rail access over the site: the bands on swir16's 20 m grid, the analysis against the
-    network in the request, the figure, the stage timings (with the graph stage apart)."""
+    network in the request, the map, the further figures by name (the transit reach figure as
+    "modes", with a stops layer), the stage timings (with the graph stage apart; `annotate`
+    covers both figures)."""
     params = _params(RailParams, request)  # before any read: a bad combination costs no bytes
     t0 = time.perf_counter()
     site = scene.read_site(
@@ -437,9 +485,15 @@ def _measure_rail(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes | 
     )
     t2 = time.perf_counter()
 
-    png = None
+    png, figures = None, {}
     if request["image"]:
-        png = annotate_rail(analysis, bands["red"], year=request["scene"]["captured_at"][:4])
+        year = request["scene"]["captured_at"][:4]
+        png = annotate_rail(analysis, bands["red"], year=year)
+        # None without a stops layer (the quality flag no_stops_layer): nothing was measured, so
+        # nothing is drawn and the reply carries no second figure.
+        modes = annotate_modes(analysis, bands["red"], year=year)
+        if modes is not None:
+            figures["modes"] = modes
     t3 = time.perf_counter()
     timings = {
         "read": _ms(t0, t1),
@@ -447,7 +501,7 @@ def _measure_rail(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes | 
         "graph": analysis.layers["timings"]["graph"],
         "annotate": _ms(t2, t3),
     }
-    return site, analysis.metrics, png, timings
+    return site, analysis.metrics, png, figures, timings
 
 
 _MEASURERS = {"ships": _measure_ships, "rail_access": _measure_rail}
