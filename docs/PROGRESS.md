@@ -890,6 +890,15 @@ submission-round entries after them are docs and tests, with nothing to deploy.
 - [x] The Musings page names the topic an article musing is for, in grey italics beside "read the
   article": the public API's `GET /musings` adds `topic_name` to each musing, read once per page
   from the Topics table (`None` for a topic since deleted, and then no name is shown)
+- [x] Backups: `admin_cli backup snapshot` writes one file of a deployment's content and
+  configuration (articles with their final text and figures, costs and stats, gear and refinements,
+  musings, feedback, the moderation queue, topics, models and settings; never findings, candidate
+  ideas or failed runs) into the bootstrap state bucket, weekly on its own; `backup restore` loads
+  one into a deployment (another environment's or region's too), then writes the topics' schedules
+  and renders the published pages through the Admin API's own functions; `backup export` copies
+  every article to a bucket. Each runs as a job of ~20-second steps of the admin-api Lambda, with
+  progress the CLI follows: no new function, queue or table (`lambdas/common/backup.py`,
+  `scripts/README.md`, the deployment runsheet's "Keeping dev's content across a teardown")
 
 ## Backlog / not yet scheduled
 

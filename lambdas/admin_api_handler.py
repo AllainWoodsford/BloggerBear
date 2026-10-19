@@ -38,7 +38,7 @@ from decimal import Decimal
 
 import boto3
 
-from common import equipment, evidence, feedback_limits, gear, security_events, sign_ins
+from common import backup, equipment, evidence, feedback_limits, gear, security_events, sign_ins
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY, MANUAL_REVIEW_ADAPTERS
 from common.adapters.base import SUBJECT_KEY
 from common.assistant_access import assistant_access_error, effective_assistant_access
@@ -1111,21 +1111,11 @@ def _baked_view_count(article: dict) -> int:
         return stored
 
 
-def _render_published_page(article: dict, *, published_at: str) -> None:
-    """Regenerate the static article page (docs/project-plan.md §11) and
-    generate an article musing for an article that just became published.
-
-    Shared by both admin-console publish paths below (moderation-approve
-    and force-publish) -- daily_cycle_handler.py's own compliant-draft
-    branch calls common.static_pages.render_and_publish_article_page and
-    common.musings.generate_and_store_article_musing directly instead,
-    since it already has the freshly-drafted body text in memory and
-    doesn't need read_article_body's S3 round-trip. Both admin-console
-    paths reaching this function needed a moderation-approve or
-    force-publish override first, so their musing is always generated with
-    compliant=False -- the more measured/thoughtful mood, not the
-    published-cleanly proud one.
-    """
+def _render_article_page(article: dict, *, published_at: str, published_by: str | None) -> None:
+    """Regenerate an article's static page (docs/project-plan.md §11) from its stored row and body.
+    The page half of _render_published_page below, and on its own what a restore (common/backup.py)
+    does for every published article: the row already says who published it, and its musings come
+    back from the snapshot, so nothing is generated."""
     # Bugfix: get_topic("digest") returns None -- the cross-topic digest
     # (trending_digest_handler.py) isn't a real Topics-table row -- so
     # without this special case, a digest article reaching this function
@@ -1144,14 +1134,12 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         source_refs=article.get("source_refs"),
         view_count=_baked_view_count(article),
         # lineage was fixed at draft time and never changes -- reread from
-        # the already-stored article, not recomputed here. published_by is
-        # hardcoded "humans": both routes reaching this function (approve,
-        # force-publish) required an operator action.
+        # the already-stored article, not recomputed here.
         lineage=article.get("lineage"),
-        published_by="humans",
+        published_by=published_by,
         # The reader-facing line about the fresh-data review, from the stored record:
         # a person approving a held article is what "reviewed by a person" means.
-        fact_check=fact_check_label(article.get("review"), "humans"),
+        fact_check=fact_check_label(article.get("review"), published_by),
         equipment_used=article.get("equipment_used"),
         # The source credit stored when the article was drafted; for an article from before
         # that was stored, its topic's adapter's sources as declared today (the digest: every
@@ -1161,10 +1149,28 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         # on every render, so an article that was taken down and approved gets them back.
         figures=article.get("figures"),
     )
+
+
+def _render_published_page(article: dict, *, published_at: str) -> None:
+    """Regenerate the static article page (docs/project-plan.md §11) and
+    generate an article musing for an article that just became published.
+
+    Shared by both admin-console publish paths below (moderation-approve
+    and force-publish) -- daily_cycle_handler.py's own compliant-draft
+    branch calls common.static_pages.render_and_publish_article_page and
+    common.musings.generate_and_store_article_musing directly instead,
+    since it already has the freshly-drafted body text in memory and
+    doesn't need read_article_body's S3 round-trip. Both admin-console
+    paths reaching this function needed a moderation-approve or
+    force-publish override first, so their musing is always generated with
+    compliant=False -- the more measured/thoughtful mood, not the
+    published-cleanly proud one. published_by is "humans" for the same reason.
+    """
+    _render_article_page(article, published_at=published_at, published_by="humans")
     generate_and_store_article_musing(
         article_id=article["article_id"],
         topic_id=article["topic_id"],
-        topic_name=topic_name,
+        topic_name=_topic_display_name(article["topic_id"]),
         title=article["title"],
         compliant=False,
         model_id=os.environ["BEDROCK_MODEL_ID"],
@@ -2732,6 +2738,129 @@ def _feedback_lock_article(event: dict) -> dict:
     )
 
 
+# --- Backups (common/backup.py) ------------------------------------------------------------------
+#
+# A snapshot, a restore and an article export each run as a job inside this same function: the
+# route saves the job and starts its first step asynchronously, and each step starts the next
+# (handler's "backup_job" event below). `backup status` reads where a job has got to.
+
+
+def _restore_schedules(topics: list[dict]) -> dict:
+    """A restore's schedules phase: every topic's two schedules written as `topics create` and
+    `topics reschedule` write them (_apply_topic_schedules), against the restored pipeline config.
+    A topic that fails is named and the rest still get theirs."""
+    config = _read_pipeline_config_quietly()
+    written, failed = 0, []
+    for topic in topics:
+        try:
+            _apply_topic_schedules(topic, topics=topics, config=config)
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - one topic must not stop the rest
+            print(f"admin_api_handler: could not write {topic.get('topic_id')}'s schedules: {exc!r}")
+            failed.append(topic.get("topic_id"))
+    return {"written": written, "failed": failed}
+
+
+def _restore_page(article: dict) -> None:
+    """A restore's pages phase: one published article's page, rendered as it was published."""
+    _render_article_page(
+        article,
+        published_at=article.get("published_at") or article.get("created_at"),
+        published_by=article.get("published_by"),
+    )
+
+
+def _backup_hooks() -> backup.Hooks:
+    return backup.Hooks(
+        apply_schedules=_restore_schedules,
+        render_page=_restore_page,
+        refresh_stats=refresh_articles_snapshot,
+        load_topics=list_topics,
+        query_published=backup.published_page,
+    )
+
+
+def _start_backup_job(job: dict) -> dict:
+    backup.invoke_step(job)
+    return _response(202, {"job": backup.job_view(job)})
+
+
+def _list_backups(event: dict) -> dict:
+    return _response(200, {"snapshots": backup.list_snapshots(), "jobs": backup.list_jobs()})
+
+
+def _start_snapshot(event: dict) -> dict:
+    return _start_backup_job(backup.start_snapshot("manual"))
+
+
+def _start_restore(event: dict) -> dict:
+    body = _parse_body(event)
+    try:
+        job = backup.start_restore(
+            body.get("key"),
+            bucket=body.get("bucket"),
+            pages=body.get("pages", True) is not False,
+            schedules=body.get("schedules", True) is not False,
+        )
+    except backup.BackupError as exc:
+        return _error(400, str(exc))
+    return _start_backup_job(job)
+
+
+def _start_export(event: dict) -> dict:
+    body = _parse_body(event)
+    try:
+        job = backup.start_export(bucket=body.get("bucket"), prefix=body.get("prefix"))
+    except backup.BackupError as exc:
+        return _error(400, str(exc))
+    return _start_backup_job(job)
+
+
+def _get_backup_job(event: dict) -> dict:
+    job = backup.load_job(_path_param(event, "job_id") or "")
+    if job is None:
+        return _error(404, "no such backup job")
+    return _response(200, {"job": backup.job_view(job)})
+
+
+def _resume_backup_job(event: dict) -> dict:
+    """Start a stopped job's current step again (a step whose invocation was lost or ran out of
+    retries). A job still moving is left alone: two steps at once would do the same work twice."""
+    job = backup.load_job(_path_param(event, "job_id") or "")
+    if job is None:
+        return _error(404, "no such backup job")
+    view = backup.job_view(job)
+    if job["status"] != "running":
+        return _error(409, f"the job has already {job['status']}")
+    if not view.get("stalled"):
+        return _error(409, "the job is still moving; resume only one that has stalled")
+    return _start_backup_job(job)
+
+
+def _run_backup_job(request: dict, context) -> dict:
+    """One step of a backup job (an asynchronous self-invocation), or the weekly schedule's
+    `{"start": "snapshot"}`, which saves the job and starts its first step. A step whose number is
+    not the job's current one is a duplicate delivery (Lambda's async retries) and does nothing."""
+    if request.get("start") == "snapshot":
+        # Only started here, and its steps run as any job's do: a retry of this event (should a
+        # step fail) would otherwise start a second snapshot rather than continue the first.
+        job = backup.start_snapshot(request.get("trigger") or "schedule")
+        backup.invoke_step(job)
+        return {"status": "started", "job_id": job["job_id"]}
+    job = backup.load_job(str(request.get("job_id") or ""))
+    if job is None or job["status"] != "running" or job["step"] != request.get("step"):
+        print(f"admin_api_handler: backup step {request!r} is not current; nothing to do")
+        return {"status": "skipped"}
+    job = backup.run_step(job, time_left_ms=context.get_remaining_time_in_millis, hooks=_backup_hooks())
+    print(
+        f"admin_api_handler: backup job {job['job_id']} step {job['step']} "
+        f"{job['status']} ({job['phase']}): {json.dumps(job['progress'])}"
+    )
+    if job["status"] == "running":
+        backup.invoke_step(job)
+    return {"status": job["status"], "job_id": job["job_id"]}
+
+
 _ROUTES = {
     "GET /topics": _list_topics,
     "POST /topics": _create_topic,
@@ -2789,6 +2918,12 @@ _ROUTES = {
     "GET /feedback-config": _get_feedback_config_route,
     "PUT /feedback-config": _put_feedback_config_route,
     "PUT /articles/{article_id}/feedback-lock": _feedback_lock_article,
+    "GET /backups": _list_backups,
+    "POST /backups/snapshot": _start_snapshot,
+    "POST /backups/restore": _start_restore,
+    "POST /backups/export": _start_export,
+    "GET /backups/jobs/{job_id}": _get_backup_job,
+    "POST /backups/jobs/{job_id}/resume": _resume_backup_job,
 }
 
 
@@ -2807,6 +2942,11 @@ def _route_key(event: dict) -> str | None:
 
 
 def handler(event, context) -> dict:
+    # Not an API request: a backup job's next step (common/backup.py), from this function itself
+    # or the weekly schedule. Errors are raised, not answered: Lambda's async retries run it again.
+    if isinstance(event, dict) and "backup_job" in event:
+        return _run_backup_job(event["backup_job"] or {}, context)
+
     route_key = _route_key(event)
     route_fn = _ROUTES.get(route_key)
 

@@ -349,3 +349,23 @@ variable "vision_region" {
     error_message = "vision_region must look like an AWS region, e.g. us-west-2."
   }
 }
+
+variable "backup_bucket_name" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    The bucket backups are kept in (lambdas/common/backup.py): the bootstrap state bucket, under
+    backup/<prefix>-<env>/. Empty means the backend block's default, bloggerbear-terraform-state;
+    CI passes the TF_STATE_BUCKET_* secret, the same name the backend is initialised with.
+  EOT
+}
+
+variable "backup_export_buckets" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Buckets besides the backup bucket that `admin_cli backup export --bucket` may copy articles
+    into, and `backup restore --bucket` may read a snapshot from. Each is granted to the Lambda role
+    (GetObject/PutObject on its objects); the bucket itself is made and kept outside Terraform.
+  EOT
+}

@@ -1260,3 +1260,57 @@ def test_topics_trigger_network_prefetch_posts_once_and_never_polls(capsys):
         body={"pipeline": "network_prefetch"},
     )
     assert "network_prefetch" in capsys.readouterr().err
+
+
+# --- backup ----------------------------------------------------------------------------------
+
+
+def _job(status="running", **extra):
+    return {"job": {"job_id": "j1", "status": status, "phase": "tables", "progress": {}, **extra}}
+
+
+def test_backup_snapshot_starts_a_job_and_follows_it_to_the_end(capsys):
+    responses = [
+        FakeResponse(202, _job()),
+        FakeResponse(200, _job(progress={"articles": 5}, estimates={"articles": 10})),
+        FakeResponse(200, _job("succeeded", phase="done", result={"key": "backup/x.jsonl.gz"})),
+    ]
+    with patch("admin_cli.signed_request", side_effect=responses) as m, patch("admin_cli.time.sleep"):
+        _run(["backup", "snapshot"])
+    assert [c.args[:3] for c in m.call_args_list] == [
+        ("POST", "https://api.example.com", "/backups/snapshot"),
+        ("GET", "https://api.example.com", "/backups/jobs/j1"),
+        ("GET", "https://api.example.com", "/backups/jobs/j1"),
+    ]
+    out = capsys.readouterr()
+    assert "articles 5/~10" in out.err
+    assert json.loads(out.out)["result"]["key"] == "backup/x.jsonl.gz"
+
+
+def test_a_failed_backup_job_exits_nonzero():
+    responses = [FakeResponse(202, _job()), FakeResponse(200, _job("failed", error="cut off"))]
+    with patch("admin_cli.signed_request", side_effect=responses), patch("admin_cli.time.sleep"):
+        with pytest.raises(SystemExit) as exc:
+            _run(["backup", "snapshot"])
+    assert exc.value.code == 1
+
+
+def test_backup_restore_asks_first_and_stops_unless_told_to_go_on(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit):
+            _run(["backup", "restore", "backup/x.jsonl.gz"])
+    m.assert_not_called()
+
+
+def test_backup_restore_with_yes_sends_the_key_and_its_switches():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(202, _job())) as m:
+        _run(["backup", "restore", "backup/x.jsonl.gz", "--yes", "--no-pages", "--no-wait"])
+    assert m.call_args.args[:3] == ("POST", "https://api.example.com", "/backups/restore")
+    assert m.call_args.kwargs["body"] == {"key": "backup/x.jsonl.gz", "pages": False, "schedules": True}
+
+
+def test_backup_export_names_its_bucket_and_prefix():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(202, _job())) as m:
+        _run(["backup", "export", "--bucket", "archive", "--prefix", "teardown", "--no-wait"])
+    assert m.call_args.kwargs["body"] == {"bucket": "archive", "prefix": "teardown"}

@@ -458,6 +458,77 @@ data "aws_iam_policy_document" "lambda_exec" {
   }
 }
 
+# -----------------------------------------------------------------------
+# Backups (lambdas/common/backup.py): snapshots of this environment's content and configuration,
+# restores of one, and article exports, all run as jobs inside the admin-api Lambda. They live in
+# the bootstrap state bucket under backup/<prefix>-dev/, outside Terraform state and outside
+# anything a destroy of this environment removes. The bucket is the backend's: var.backup_bucket_name
+# (CI passes the TF_STATE_BUCKET_* secret) or else the backend block's default name.
+# -----------------------------------------------------------------------
+locals {
+  backup_bucket = var.backup_bucket_name != "" ? var.backup_bucket_name : "bloggerbear-terraform-state"
+  backup_prefix = "backup/${var.unique_name_prefix}-dev/"
+}
+
+data "aws_iam_policy_document" "lambda_backup" {
+  # This environment's own snapshots, job state and exports: written, read, and pruned (the
+  # bucket is versioned, so a pruned snapshot can still be recovered).
+  statement {
+    sid       = "BackupOwnPrefix"
+    effect    = "Allow"
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]
+    resources = ["arn:aws:s3:::${local.backup_bucket}/${local.backup_prefix}*"]
+  }
+
+  # Any environment's snapshot may be restored here (production's into dev, say), so reads
+  # cover all of backup/. Never the Terraform state beside it.
+  statement {
+    sid       = "BackupReadAll"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["arn:aws:s3:::${local.backup_bucket}/backup/*"]
+  }
+
+  statement {
+    sid       = "BackupList"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${local.backup_bucket}"]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["backup/*"]
+    }
+  }
+
+  # A snapshot reads each table's size for its progress line, and a restore writes rows back in
+  # batches of 25. The same tables as the DynamoDBAppTables statement.
+  statement {
+    sid       = "BackupTables"
+    effect    = "Allow"
+    actions   = ["dynamodb:DescribeTable", "dynamodb:BatchWriteItem"]
+    resources = module.app_data.table_arns
+  }
+
+  # Other buckets an export may copy articles into (and a restore may read a snapshot from).
+  # Empty by default: the statement is only written when there is a bucket to name.
+  dynamic "statement" {
+    for_each = length(var.backup_export_buckets) > 0 ? [1] : []
+    content {
+      sid       = "BackupExportBuckets"
+      effect    = "Allow"
+      actions   = ["s3:GetObject", "s3:PutObject"]
+      resources = [for bucket in var.backup_export_buckets : "arn:aws:s3:::${bucket}/*"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_backup" {
+  name   = "${var.unique_name_prefix}-dev-lambda-backup"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.lambda_backup.json
+}
+
 resource "aws_iam_role_policy" "lambda_exec" {
   name   = "${var.unique_name_prefix}-dev-lambda-exec"
   role   = aws_iam_role.lambda_exec.id
@@ -594,6 +665,13 @@ locals {
     # Sign-ins to the operator's assistant (common/sign_ins.py): written by the
     # sign-in-events Lambda, read and unlocked through the Admin API.
     SIGN_INS_TABLE = module.app_data.sign_ins_table_name
+
+    # Backups (lambdas/common/backup.py, `admin_cli backup`): the bucket snapshots, job state and
+    # default exports are kept in (local.backup_bucket, the bootstrap state bucket, which outlives
+    # this environment), and the other buckets an export may write to and a restore may read from.
+    # Read by admin_api_handler.py only; harmless on every other Lambda.
+    BACKUP_BUCKET         = local.backup_bucket
+    BACKUP_EXPORT_BUCKETS = join(",", var.backup_export_buckets)
 
     # The AgentCore web search gateway (module.web_search below): the
     # fallback search backend common/web_search.py uses when GDELT fails,
@@ -832,14 +910,23 @@ resource "aws_lambda_function" "admin_api" {
 
 # Second inline policy on the same shared exec role (rather than folding
 # into aws_iam_role_policy.lambda_exec above) so this grant stays visibly
-# scoped to exactly the two pipeline Lambda ARNs -- deliberately NOT
-# aws_lambda_function.admin_api.arn (no self-invoke) and NOT "*".
+# scoped to exactly the pipeline Lambda ARNs, never "*".
 data "aws_iam_policy_document" "lambda_invoke_pipeline" {
   statement {
     sid       = "InvokePipelineLambdas"
     effect    = "Allow"
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.research_tick.arn, aws_lambda_function.daily_cycle.arn]
+  }
+
+  # Backups: a snapshot, restore or export runs as a chain of ~20-second steps of the admin-api
+  # Lambda, each invoking the next asynchronously (lambdas/common/backup.py), so a job of thousands
+  # of articles needs no function, queue or table of its own. Only this function, by its own ARN.
+  statement {
+    sid       = "InvokeAdminApiBackupSteps"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.admin_api.arn]
   }
 }
 
@@ -1001,6 +1088,15 @@ module "admin_api" {
     "GET /feedback-config",
     "PUT /feedback-config",
     "PUT /articles/{article_id}/feedback-lock",
+    # Backups: list snapshots and jobs, start a snapshot, restore or article export (each a job
+    # in the admin-api Lambda), follow one, and restart a stalled one. See common/backup.py and
+    # `admin_cli backup`.
+    "GET /backups",
+    "POST /backups/snapshot",
+    "POST /backups/restore",
+    "POST /backups/export",
+    "GET /backups/jobs/{job_id}",
+    "POST /backups/jobs/{job_id}/resume",
   ])
 }
 
@@ -1374,6 +1470,14 @@ data "aws_iam_policy_document" "scheduler_invoke" {
     effect    = "Allow"
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.cost_explorer_poll.arn]
+  }
+
+  # The weekly backup snapshot (aws_scheduler_schedule.weekly_backup), run by the admin-api Lambda.
+  statement {
+    sid       = "InvokeWeeklyBackup"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.admin_api.arn]
   }
 }
 
@@ -2314,6 +2418,28 @@ resource "aws_scheduler_schedule" "stats_rollover" {
   target {
     arn      = aws_lambda_function.stats_rollover.arn
     role_arn = aws_iam_role.scheduler_invoke.arn
+  }
+}
+
+# Backups: a weekly snapshot of this environment's content and configuration (lambdas/common/backup.py),
+# taken by the admin-api Lambda (the job runs there, step by step), into the bootstrap state bucket.
+# Sunday 3am Sydney, when nothing else is scheduled. The newest backup.KEEP_SCHEDULED scheduled
+# snapshots are kept; `admin_cli backup snapshot` takes one by hand, which is never pruned.
+resource "aws_scheduler_schedule" "weekly_backup" {
+  name                = "${var.unique_name_prefix}-dev-weekly-backup"
+  group_name          = "default"
+  schedule_expression = "cron(0 3 ? * SUN *)"
+
+  schedule_expression_timezone = "Australia/Sydney"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.admin_api.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+    input    = jsonencode({ backup_job = { start = "snapshot", trigger = "schedule" } })
   }
 }
 
