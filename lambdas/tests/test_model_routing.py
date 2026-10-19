@@ -82,7 +82,27 @@ def test_resolve_model_topic_with_no_override_fields_falls_through(aws_resources
     topic = {"topic_id": "github-trending"}
     model_id, fallback_model_id = model_routing.resolve_model(topic)
     assert model_id == "config-default-model"
-    assert fallback_model_id is None
+    # No fallback configured anywhere: the env default stands in.
+    assert fallback_model_id == "env-default-model"
+
+
+def test_resolve_model_env_default_is_the_fallback_when_none_is_configured(aws_resources):
+    """A topic or ModelConfig naming a model Bedrock has since retired still gets a fallback."""
+    topic = {"topic_id": "t", "model_id": "retired-model"}
+    assert model_routing.resolve_model(topic) == ("retired-model", "env-default-model")
+
+    topic = {"topic_id": "t", "model_id_candidates": ["retired-model"]}
+    assert model_routing.resolve_model(topic) == ("retired-model", "env-default-model")
+
+
+def test_resolve_model_configured_fallback_wins_over_the_env_default(aws_resources):
+    topic = {"topic_id": "t", "model_id": "topic-model", "fallback_model_id": "topic-fallback"}
+    assert model_routing.resolve_model(topic) == ("topic-model", "topic-fallback")
+
+
+def test_resolve_model_no_fallback_when_the_model_is_the_env_default(aws_resources):
+    topic = {"topic_id": "t", "model_id": "env-default-model"}
+    assert model_routing.resolve_model(topic) == ("env-default-model", None)
 
 
 def test_resolve_model_none_topic_same_as_no_topic(aws_resources):
