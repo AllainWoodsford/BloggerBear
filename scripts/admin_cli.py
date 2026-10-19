@@ -910,7 +910,65 @@ def _cmd_models_add(args: argparse.Namespace) -> None:
         "output_price_usd_per_1k_tokens": args.output_price,
         "enabled": args.enabled,
     }
+    if args.price_locked is not None:
+        body["price_locked"] = args.price_locked
     _do_request(args, "POST", "/models", body=body)
+
+
+def _cmd_models_reprice(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", "/models/reprice")
+    print(
+        "Repricing in the background. A changed price applies now and is reviewed twice later "
+        "(by default 1 and 2 hours on); `model-catalog get` shows the run and its next review.",
+        file=sys.stderr,
+    )
+
+
+def _cmd_models_discover(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", "/models/discover")
+    print(
+        "Discovering in the background. New models are added disabled, priced, and their prices "
+        "reviewed like a reprice's; `models list` shows them.",
+        file=sys.stderr,
+    )
+
+
+# --- model-catalog subcommands ----------------------------------------------
+
+def _cmd_model_catalog_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/model-catalog-config")
+
+
+def _whole_or_clear(name: str, raw: str):
+    """A whole-number setting from the command line, or None for '' (clears it)."""
+    if raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise CliError(f"{name} must be a whole number, or '' to clear it") from exc
+
+
+def _cmd_model_catalog_set(args: argparse.Namespace) -> None:
+    body: dict = {}
+    for name, value in (("discover_enabled", args.discover), ("reprice_enabled", args.reprice)):
+        if value is not None:
+            body[name] = {"on": True, "off": False}.get(value)  # '' clears it (back to on)
+    for name in ("review_tolerance_pct", "max_change_factor", "max_web_lookups"):
+        raw = getattr(args, name)
+        if raw is not None:
+            body[name] = _whole_or_clear("--" + name.replace("_", "-"), raw)
+    if args.review_after_hours is not None:
+        if args.review_after_hours == "":
+            body["review_after_hours"] = None
+        else:
+            body["review_after_hours"] = [
+                _whole_or_clear("--review-after-hours", part.strip())
+                for part in args.review_after_hours.split(",")
+            ]
+    if not body:
+        raise CliError("model-catalog set needs at least one setting (see --help)")
+    _do_request(args, "PUT", "/model-catalog-config", body=body)
 
 
 def _cmd_model_config_get(args: argparse.Namespace) -> None:
@@ -1950,7 +2008,63 @@ def build_parser() -> argparse.ArgumentParser:
         "--disabled", dest="enabled", action="store_false", default=True,
         help="Register the model as disabled (default: enabled)",
     )
+    models_add_parser.add_argument(
+        "--lock-price", dest="price_locked", action=argparse.BooleanOptionalAction, default=None,
+        help=(
+            "--lock-price keeps the model catalog's reprice from ever changing this price (e.g. "
+            "a geo-profile premium you set on purpose); --no-lock-price lets it again"
+        ),
+    )
     models_add_parser.set_defaults(func=_cmd_models_add)
+
+    models_sub.add_parser(
+        "reprice",
+        help=(
+            "Look up every model's price now, as the weekly reprice does: changed prices apply "
+            "at once and are reviewed 1 and 2 hours later, and put back if a review is not confident"
+        ),
+    ).set_defaults(func=_cmd_models_reprice)
+    models_sub.add_parser(
+        "discover",
+        help="Add every model the account can call that the registry lacks now (disabled), and price them",
+    ).set_defaults(func=_cmd_models_discover)
+
+    model_catalog_parser = subparsers.add_parser(
+        "model-catalog",
+        help="The weekly model discover and reprice jobs: their pause flags and price reviews",
+    )
+    model_catalog_sub = model_catalog_parser.add_subparsers(dest="action", required=True)
+    model_catalog_sub.add_parser(
+        "get", help="Show the settings, what each job last did, and the pricing run under review"
+    ).set_defaults(func=_cmd_model_catalog_get)
+    model_catalog_set = model_catalog_sub.add_parser(
+        "set", help="Change settings (send any of them; a setting not sent is unchanged; '' clears one)"
+    )
+    model_catalog_set.add_argument(
+        "--discover", choices=["on", "off", ""], default=None,
+        help="Run (on) or pause (off) discover's weekly schedule (Tuesdays)",
+    )
+    model_catalog_set.add_argument(
+        "--reprice", choices=["on", "off", ""], default=None,
+        help="Run (on) or pause (off) reprice's weekly schedule (Wednesdays)",
+    )
+    model_catalog_set.add_argument(
+        "--review-after-hours", dest="review_after_hours", default=None,
+        help="Hours after a run each review runs, comma-separated (default 1,2; 1 to 4 reviews)",
+    )
+    model_catalog_set.add_argument(
+        "--review-tolerance-pct", dest="review_tolerance_pct", default=None,
+        help="How far, in percent, a review's fresh price may be from the applied one (default 5)",
+    )
+    model_catalog_set.add_argument(
+        "--max-change-factor", dest="max_change_factor", default=None,
+        help="A price moving more than this many times either way fails review (default 10)",
+    )
+    model_catalog_set.add_argument(
+        "--max-web-lookups", dest="max_web_lookups", default=None,
+        help="Paid web searches one run may make (default 10)",
+    )
+    model_catalog_set.set_defaults(func=_cmd_model_catalog_set)
 
     model_config_parser = subparsers.add_parser(
         "model-config", help="Manage the global default/fallback model"

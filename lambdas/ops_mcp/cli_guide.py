@@ -120,7 +120,7 @@ DOUBLE_CHECK_WARNING = (
 # CliError before any request). argparse cannot say so, so it is said here; the test runs each
 # one's handler with no options and expects that refusal, and expects no other command to have it.
 AT_LEAST_ONE_OPTION = frozenset(
-    {"topics update", "pipeline-config set", "feedback-config set", "model-config set"}
+    {"topics update", "pipeline-config set", "feedback-config set", "model-config set", "model-catalog set"}
 )
 
 # A line break or any other control character in a value. Quoting would keep it inside one word,

@@ -634,3 +634,33 @@ def test_a_paused_vision_topic_s_sites_are_not_asked_about(tables, vision):
     assert [card for card in result["findings"] if card["kind"].startswith("vision_")] == []
     assert "sites" not in result["topics"][0]
     assert "wasn't measured" not in result["spoken"]
+
+
+def test_a_price_the_model_catalog_put_back_is_reported_for_a_week_without_its_ids(tables):
+    put_topic(tables, "a-published", "Alpha", researched=ago(minutes=10))
+    put_article(tables, "a1", "a-published", "published", ago(hours=2))
+    failures = tables.Table("FailedExecutions")
+    for failure_id, created, reverted in (
+        ("p1", ago(days=2), [{"model_id": HOSTILE, "why": "x"}, {"model_id": "b", "why": "y"}]),
+        ("p2", ago(days=8), [{"model_id": "c", "why": "z"}]),  # older than a week
+    ):
+        failures.put_item(
+            Item={
+                "failure_id": failure_id,
+                "topic_id": None,
+                "kind": "model_pricing",
+                "created_at": created,
+                "error": {"Error": "ModelPricingReverted", "Cause": f"{HOSTILE}: x"},
+                "raw_message": json.dumps({"reverted": reverted}),
+            }
+        )
+
+    result = tools.pipeline_health(now=NOW)
+
+    assert kinds(result) == [("model_pricing_reverted", None)]
+    [found] = result["findings"]
+    assert found["noticed"] == "The model catalog put back 2 models' prices it could not confirm, 2 days ago"
+    assert found["suggestion"]["command"].endswith("models reprice")
+    assert "Ignore" not in json.dumps(result)
+    # Asked about one topic, it is not that topic's business.
+    assert tools.pipeline_health("a-published", now=NOW)["findings"] == []

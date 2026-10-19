@@ -244,8 +244,8 @@ def test_every_pipeline_lambda_gets_one_90_day_log_group(env):
     assert 'resource "aws_cloudwatch_log_group" "lambda"' in text
     assert "for_each          = toset(local.lambda_log_group_function_names)" in text
     function_names = re.findall(r"aws_lambda_function\.[a-z_]+\.function_name,", text)
-    assert len(function_names) == 12  # module.observability's list: each function named once
-    assert len(set(function_names)) == 12
+    assert len(function_names) == 13  # module.observability's list: each function named once
+    assert len(set(function_names)) == 13
 
 
 # --- the www redirect, as CloudFront will run it ---------------------------------------------------
@@ -3178,7 +3178,7 @@ _REGION_SCANNED_SUFFIXES = {
 # Why a us-east-1 written in code is allowed to be there: a comment beside it has to give one of
 # these reasons. CloudFront (its certificate, its web ACL with that ACL's logs and metrics, its own
 # metrics) and Cost Explorer's only endpoint are the things AWS serves from that region alone.
-_US_EAST_1_REASON = re.compile(r"cloudfront|cost explorer", re.I)
+_US_EAST_1_REASON = re.compile(r"cloudfront|cost explorer|price list", re.I)
 _US_EAST_1_COMMENT_REACH = 6  # lines above the literal in which the comment must sit
 
 
@@ -3231,8 +3231,9 @@ def test_every_us_east_1_left_in_code_sits_beside_a_comment_saying_why():
     assert not unexplained, "say why this must be us-east-1, in a comment just above:\n" + "\n".join(
         unexplained
     )
-    # Production's provider alias, the dashboards' CloudFront region, two log group ARN pairs and
-    # the Cost Explorer client: if this drops to nothing the scan has stopped finding them.
+    # Production's provider alias, the dashboards' CloudFront region, two log group ARN pairs, the
+    # Cost Explorer client and the Price List endpoint: if this drops to nothing the scan has
+    # stopped finding them.
     assert values >= 5
 
 

@@ -510,6 +510,9 @@ row keyed by profile id.
   of a model matches) prices a model when the registry has no row; the registry always
   wins, so a price is corrected without a deploy. A model with neither is logged and
   left unpriced -- never guessed.
+- *The registry keeps itself up to date.* The model catalog discovers every provider's new
+  models weekly (added disabled) and reprices the registry, keeping a changed price only if
+  two later reviews confirm it -- see [model-catalog-refresh.md](enhancements/model-catalog-refresh.md).
 - *Research is a running tally, bundled into the article.* Each Finding records the
   Bedrock call behind its summary (`research_call`: model, tokens). When an article is
   written, the daily cycle sums the calls of every Finding in its window (before any
