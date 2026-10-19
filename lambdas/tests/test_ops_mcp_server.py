@@ -179,6 +179,7 @@ PIPELINE_TOOLS = {
     "alarms",
     "spend",
     "vision_status",
+    "model_catalog",
 }
 MEMORY_TOOLS = {"follow_up", "dismiss", "watch", "unwatch", "watch_list"}
 # The guide to the Admin CLI (cli_guide.py): help, how-to commands, and the topics as a table.

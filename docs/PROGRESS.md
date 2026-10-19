@@ -901,7 +901,10 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   passes both reviews leaves a snapshot of the old prices at `pricing/<date>-<run>.json` in the
   content bucket. The pause flags and review settings are the `model-catalog` row of the
   ModelConfig table (`admin_cli.py model-catalog get|set`). `models reprice` and `models discover`
-  run a job now, with its own reviews. `models add --lock-price` keeps the reprice off a price
+  run a job now, with its own reviews. `models add --lock-price` keeps the reprice off a price.
+  The assistant (page and Alexa+) answers about it with a new `model_catalog` tool, a
+  `model-prices` guide, and the architecture's table entries; configuration.md, admin-cli.md,
+  ops-mcp-agent.md, scripts/README.md and alexa/README.md list the new rows, commands and phrases
 
 ## Backlog / not yet scheduled
 

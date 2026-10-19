@@ -233,6 +233,9 @@ in .34"):
 | "...what the next crypto article will be written from" | `topic_findings` with `next_article` |
 | "...what the vision agent did for rail Sydney this week" | `vision_evidence` with `topic` |
 | "...to walk me through the latest Sydney scene" | `vision_evidence` with `topic` and `scene` "latest" |
+| "...whether model prices are being updated", "...about the last reprice", "...whether repricing is paused" | `model_catalog`: discover and reprice paused or not, what each last did, and a pricing run under review with when its next check is (counts and times only; the model ids are on the page) |
+| "...whether any model prices were put back" | `pipeline_health` (its `model_pricing_reverted` finding) |
+| "...how to pause repricing", "...how to reprice the models now" | `cli_guides` with `model-prices`: the help and a suggested command are on the page |
 
 For the vision pipeline and a topic's Findings Alexa+ hears counts, ages and reasons only, from
 fixed words: never a site's name, an error's text or what a Finding's summary says. Those are on

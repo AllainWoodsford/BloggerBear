@@ -227,6 +227,22 @@ python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5
     --input-price 0.001 --output-price 0.005
 # (USD per 1K tokens. Confirm against the Bedrock price page for your region -- a
 # geographic inference profile can cost more than the provider's list price.)
+# The model catalog keeps this list and its prices current by itself
+# (docs/enhancements/model-catalog-refresh.md): every Tuesday 03:00 Sydney it adds every model the
+# account can call, from every provider, switched off; every Wednesday it reprices every model.
+# A changed price is used at once and checked 1 and 2 hours later; one a check cannot confirm
+# goes back to the old price (a failed-executions row). `models add` with the same id switches a
+# discovered model on; --lock-price keeps the reprice off a price you set on purpose.
+python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0" \
+    --display-name "Claude Haiku 4.5" --provider anthropic \
+    --input-price 0.0011 --output-price 0.0055 --lock-price
+python scripts/admin_cli.py models reprice     # now, even when paused, with its own two checks
+python scripts/admin_cli.py models discover    # now, even when paused
+python scripts/admin_cli.py model-catalog get  # paused or not, what each job last did, any run under review
+python scripts/admin_cli.py model-catalog set --reprice off   # pause the weekly reprice ('' or on resumes)
+python scripts/admin_cli.py model-catalog set --discover off  # pause the weekly discover
+python scripts/admin_cli.py model-catalog set --review-after-hours "1,2" --review-tolerance-pct 5 \
+    --max-change-factor 10 --max-web-lookups 10   # the defaults; '' clears one
 python scripts/admin_cli.py model-config get
 python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 

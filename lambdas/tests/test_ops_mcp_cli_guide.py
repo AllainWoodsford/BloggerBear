@@ -578,6 +578,7 @@ FILLER = {
     "findings_window_hours": 192,
     "limit": 10,
     "days": 2,
+    "reprice": "off",
 }
 
 
@@ -599,6 +600,7 @@ def test_the_guides_are_the_ones_the_owner_asked_for():
         "topic-setup",
         "review",
         "musings",
+        "model-prices",
     ]
     listing = cli_guide.cli_guides()
     assert [guide["id"] for guide in listing["guides"]] == list(cli_guide.GUIDES)

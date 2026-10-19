@@ -173,10 +173,18 @@ standing are written to the S3 snapshot and the run is closed.
   discover and reprice results, and the run under review.
 - `admin_cli.py models list` shows the registry, now with `enabled`, `price_source` and
   `price_checked_at`.
-- **The assistant:** `pipeline_health` adds a `model_pricing_reverted` finding for each pricing
-  failure in the last 7 days. It suggests `models list` to see the prices now in use and
-  `models reprice` to try again. It has no id, so it is read fresh each time and never remembered
-  (ops_mcp/memory.py).
+- **The assistant, on the page and through Alexa+** (both use the same MCP tools):
+  - `model_catalog` (ops_mcp/model_prices.py) says whether discover and reprice are paused, what
+    each last did, and the pricing run under review with when its next check is. Alexa+ hears
+    counts and times only; the model ids are on the page.
+  - `pipeline_health` adds a `model_pricing_reverted` finding for each pricing failure in the last
+    7 days. It suggests `models list` to see the prices now in use and `models reprice` to try
+    again. It has no id, so it is read fresh each time and never remembered (ops_mcp/memory.py).
+  - `cli_guides` `model-prices` explains the catalog and puts the help of `model-catalog get|set`,
+    `models reprice|discover` and `models add` on screen, each with a suggested command.
+    `cli_help` and `cli_command` know the new commands from the regenerated `cli_reference.json`.
+  - `architecture` describes the model-catalog Lambda, its rows in `model-config`, the reverted
+    prices in `failed-executions` and `pricing/` in the content bucket.
 
 ## Permissions (Terraform, both environments)
 
