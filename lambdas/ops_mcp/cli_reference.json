@@ -52,7 +52,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-catalog,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-catalog,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-catalog       The weekly model discover and reprice jobs: their days, pause flags and\n                        reviews\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-catalog,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-catalog,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-catalog       The weekly model discover and reprice jobs: their pause flags and price\n                        reviews\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -2275,7 +2275,7 @@
         "reprice",
         "discover"
       ],
-      "help_text": "usage: admin_cli.py models [-h] {list,add,reprice,discover} ...\n\npositional arguments:\n  {list,add,reprice,discover}\n    list                List the supported-models registry\n    add                 Add or update a model in the registry\n    reprice             Look up every model's price now, as the weekly reprice does: changed\n                        prices apply at once and are reviewed twice later, and put back if a\n                        review is not confident\n    discover            Add the account's text models the registry lacks now (disabled), and price\n                        them\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py models [-h] {list,add,reprice,discover} ...\n\npositional arguments:\n  {list,add,reprice,discover}\n    list                List the supported-models registry\n    add                 Add or update a model in the registry\n    reprice             Look up every model's price now, as the weekly reprice does: changed\n                        prices apply at once and are reviewed 1 and 2 hours later, and put back if\n                        a review is not confident\n    discover            Add every model the account can call that the registry lacks now\n                        (disabled), and price them\n\noptions:\n  -h, --help            show this help message and exit\n"
     },
     "models list": {
       "help": "List the supported-models registry",
@@ -2408,21 +2408,21 @@
       "help_text": "usage: admin_cli.py models add [-h] --model-id MODEL_ID --display-name DISPLAY_NAME\n                               --provider PROVIDER --input-price INPUT_PRICE\n                               --output-price OUTPUT_PRICE [--disabled]\n                               [--lock-price | --no-lock-price]\n\noptions:\n  -h, --help            show this help message and exit\n  --model-id MODEL_ID\n  --display-name DISPLAY_NAME\n  --provider PROVIDER\n  --input-price INPUT_PRICE\n                        USD per 1k input tokens\n  --output-price OUTPUT_PRICE\n                        USD per 1k output tokens\n  --disabled            Register the model as disabled (default: enabled)\n  --lock-price, --no-lock-price\n                        --lock-price keeps the model catalog's reprice from ever changing this\n                        price (e.g. a geo-profile premium you set on purpose); --no-lock-price\n                        lets it again\n"
     },
     "models reprice": {
-      "help": "Look up every model's price now, as the weekly reprice does: changed prices apply at once and are reviewed twice later, and put back if a review is not confident",
+      "help": "Look up every model's price now, as the weekly reprice does: changed prices apply at once and are reviewed 1 and 2 hours later, and put back if a review is not confident",
       "group": false,
       "arguments": [],
       "destructive": false,
       "help_text": "usage: admin_cli.py models reprice [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "models discover": {
-      "help": "Add the account's text models the registry lacks now (disabled), and price them",
+      "help": "Add every model the account can call that the registry lacks now (disabled), and price them",
       "group": false,
       "arguments": [],
       "destructive": false,
       "help_text": "usage: admin_cli.py models discover [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "model-catalog": {
-      "help": "The weekly model discover and reprice jobs: their days, pause flags and reviews",
+      "help": "The weekly model discover and reprice jobs: their pause flags and price reviews",
       "group": true,
       "subcommands": [
         "get",
@@ -2448,7 +2448,7 @@
           "flags": [
             "--discover"
           ],
-          "help": "Run (on) or pause (off) discover",
+          "help": "Run (on) or pause (off) discover's weekly schedule (Tuesdays)",
           "type": "str",
           "choices": [
             "on",
@@ -2468,7 +2468,7 @@
           "flags": [
             "--reprice"
           ],
-          "help": "Run (on) or pause (off) reprice",
+          "help": "Run (on) or pause (off) reprice's weekly schedule (Wednesdays)",
           "type": "str",
           "choices": [
             "on",
@@ -2482,95 +2482,13 @@
           "destructive": false
         },
         {
-          "name": "--discover-day",
-          "dest": "discover_day",
-          "kind": "option",
-          "flags": [
-            "--discover-day"
-          ],
-          "help": "Discover's weekday (default TUE)",
-          "type": "str",
-          "choices": [
-            "MON",
-            "TUE",
-            "WED",
-            "THU",
-            "FRI",
-            "SAT",
-            "SUN",
-            ""
-          ],
-          "default": null,
-          "required": false,
-          "nargs": null,
-          "metavar": null,
-          "destructive": false
-        },
-        {
-          "name": "--reprice-day",
-          "dest": "reprice_day",
-          "kind": "option",
-          "flags": [
-            "--reprice-day"
-          ],
-          "help": "Reprice's weekday (default WED)",
-          "type": "str",
-          "choices": [
-            "MON",
-            "TUE",
-            "WED",
-            "THU",
-            "FRI",
-            "SAT",
-            "SUN",
-            ""
-          ],
-          "default": null,
-          "required": false,
-          "nargs": null,
-          "metavar": null,
-          "destructive": false
-        },
-        {
-          "name": "--run-hour",
-          "dest": "run_hour",
-          "kind": "option",
-          "flags": [
-            "--run-hour"
-          ],
-          "help": "Local hour (0-23) the jobs are due from (default 3)",
-          "type": "str",
-          "choices": null,
-          "default": null,
-          "required": false,
-          "nargs": null,
-          "metavar": null,
-          "destructive": false
-        },
-        {
-          "name": "--timezone",
-          "dest": "timezone",
-          "kind": "option",
-          "flags": [
-            "--timezone"
-          ],
-          "help": "IANA time zone the days and hour are in (default Australia/Sydney)",
-          "type": "str",
-          "choices": null,
-          "default": null,
-          "required": false,
-          "nargs": null,
-          "metavar": null,
-          "destructive": false
-        },
-        {
           "name": "--review-after-hours",
           "dest": "review_after_hours",
           "kind": "option",
           "flags": [
             "--review-after-hours"
           ],
-          "help": "Hours after a run each review runs, comma-separated (default 2,24; 1 to 4 reviews)",
+          "help": "Hours after a run each review runs, comma-separated (default 1,2; 1 to 4 reviews)",
           "type": "str",
           "choices": null,
           "default": null,
@@ -2629,7 +2547,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py model-catalog set [-h] [--discover {on,off,}] [--reprice {on,off,}]\n                                      [--discover-day {MON,TUE,WED,THU,FRI,SAT,SUN,}]\n                                      [--reprice-day {MON,TUE,WED,THU,FRI,SAT,SUN,}]\n                                      [--run-hour RUN_HOUR] [--timezone TIMEZONE]\n                                      [--review-after-hours REVIEW_AFTER_HOURS]\n                                      [--review-tolerance-pct REVIEW_TOLERANCE_PCT]\n                                      [--max-change-factor MAX_CHANGE_FACTOR]\n                                      [--max-web-lookups MAX_WEB_LOOKUPS]\n\noptions:\n  -h, --help            show this help message and exit\n  --discover {on,off,}  Run (on) or pause (off) discover\n  --reprice {on,off,}   Run (on) or pause (off) reprice\n  --discover-day {MON,TUE,WED,THU,FRI,SAT,SUN,}\n                        Discover's weekday (default TUE)\n  --reprice-day {MON,TUE,WED,THU,FRI,SAT,SUN,}\n                        Reprice's weekday (default WED)\n  --run-hour RUN_HOUR   Local hour (0-23) the jobs are due from (default 3)\n  --timezone TIMEZONE   IANA time zone the days and hour are in (default Australia/Sydney)\n  --review-after-hours REVIEW_AFTER_HOURS\n                        Hours after a run each review runs, comma-separated (default 2,24; 1 to 4\n                        reviews)\n  --review-tolerance-pct REVIEW_TOLERANCE_PCT\n                        How far, in percent, a review's fresh price may be from the applied one\n                        (default 5)\n  --max-change-factor MAX_CHANGE_FACTOR\n                        A price moving more than this many times either way fails review (default\n                        10)\n  --max-web-lookups MAX_WEB_LOOKUPS\n                        Paid web searches one run may make (default 10)\n"
+      "help_text": "usage: admin_cli.py model-catalog set [-h] [--discover {on,off,}] [--reprice {on,off,}]\n                                      [--review-after-hours REVIEW_AFTER_HOURS]\n                                      [--review-tolerance-pct REVIEW_TOLERANCE_PCT]\n                                      [--max-change-factor MAX_CHANGE_FACTOR]\n                                      [--max-web-lookups MAX_WEB_LOOKUPS]\n\noptions:\n  -h, --help            show this help message and exit\n  --discover {on,off,}  Run (on) or pause (off) discover's weekly schedule (Tuesdays)\n  --reprice {on,off,}   Run (on) or pause (off) reprice's weekly schedule (Wednesdays)\n  --review-after-hours REVIEW_AFTER_HOURS\n                        Hours after a run each review runs, comma-separated (default 1,2; 1 to 4\n                        reviews)\n  --review-tolerance-pct REVIEW_TOLERANCE_PCT\n                        How far, in percent, a review's fresh price may be from the applied one\n                        (default 5)\n  --max-change-factor MAX_CHANGE_FACTOR\n                        A price moving more than this many times either way fails review (default\n                        10)\n  --max-web-lookups MAX_WEB_LOOKUPS\n                        Paid web searches one run may make (default 10)\n"
     },
     "model-config": {
       "help": "Manage the global default/fallback model",

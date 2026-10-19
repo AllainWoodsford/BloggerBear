@@ -718,10 +718,12 @@ locals {
     AGENTCORE_WEB_SEARCH_REGION = module.web_search.region
     AGENTCORE_WEB_SEARCH_TOOL   = module.web_search.tool_name
 
-    # The model catalog (aws_lambda_function.model_catalog below): the Admin API invokes it for
-    # `models reprice` / `models discover`. A literal, like RESEARCH_TICK_FUNCTION_NAME above, for
-    # the same dependency-cycle reason; keep it in sync with that function_name.
+    # The model catalog (aws_lambda_function.model_catalog below): the Admin API invokes it by name
+    # for `models reprice` / `models discover`, and a pricing run's one-shot review schedules target
+    # it by ARN (common/model_catalog.py's schedule_reviews). Literals, like the research tick's
+    # above, for the same dependency-cycle reason; keep them in sync with that function_name.
     MODEL_CATALOG_FUNCTION_NAME = "${var.unique_name_prefix}-production-model-catalog"
+    MODEL_CATALOG_FUNCTION_ARN  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.unique_name_prefix}-production-model-catalog"
   }
 }
 
@@ -2594,11 +2596,12 @@ resource "aws_scheduler_schedule" "cost_explorer_poll" {
 }
 
 # The model catalog (docs/enhancements/model-catalog-refresh.md): keeps the Models registry's list
-# and prices up to date. One hourly heartbeat; which job is due (discover on Tuesdays, reprice on
-# Wednesdays, and the price reviews after each) and whether either is paused is read from the
-# `model-catalog` row of the ModelConfig table on every beat, so none of it needs an apply. At :50,
-# after every topic's research heartbeat for the hour (stagger slots start at :05). A reprice can
-# make a web search and a model call per model, hence the long timeout.
+# and prices up to date. Two weekly schedules, discover on Tuesdays and reprice on Wednesdays, at
+# 03:00 Sydney time, when no topic's daily cycle runs; each job skips itself while paused (the
+# `model-catalog` row of the ModelConfig table). A run that changed a price creates its own two
+# one-shot review schedules (1 and 2 hours later by default, `<prefix>-<env>-price-review-*`, under
+# the role's scheduler_manage grant), which delete themselves once fired. A reprice can make a web
+# search and a model call per model, hence the long timeout.
 resource "aws_lambda_function" "model_catalog" {
   function_name = "${var.unique_name_prefix}-production-model-catalog"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
@@ -2616,10 +2619,11 @@ resource "aws_lambda_function" "model_catalog" {
   }
 }
 
-resource "aws_scheduler_schedule" "model_catalog" {
-  name                = "${var.unique_name_prefix}-production-model-catalog"
-  group_name          = "default"
-  schedule_expression = "cron(50 * * * ? *)"
+resource "aws_scheduler_schedule" "model_catalog_discover" {
+  name                         = "${var.unique_name_prefix}-production-model-discover"
+  group_name                   = "default"
+  schedule_expression          = "cron(0 3 ? * TUE *)"
+  schedule_expression_timezone = "Australia/Sydney"
 
   flexible_time_window {
     mode = "OFF"
@@ -2628,6 +2632,24 @@ resource "aws_scheduler_schedule" "model_catalog" {
   target {
     arn      = aws_lambda_function.model_catalog.arn
     role_arn = aws_iam_role.scheduler_invoke.arn
+    input    = jsonencode({ job = "discover", trigger = "schedule" })
+  }
+}
+
+resource "aws_scheduler_schedule" "model_catalog_reprice" {
+  name                         = "${var.unique_name_prefix}-production-model-reprice"
+  group_name                   = "default"
+  schedule_expression          = "cron(0 3 ? * WED *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.model_catalog.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+    input    = jsonencode({ job = "reprice", trigger = "schedule" })
   }
 }
 

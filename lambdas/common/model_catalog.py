@@ -1,23 +1,27 @@
 """The model catalog: keeps the Models registry's list of models and their prices up to date by
 itself (docs/enhancements/model-catalog-refresh.md).
 
-Two weekly jobs, run from one hourly heartbeat (model_catalog_handler.py):
+Two weekly jobs, each on its own EventBridge Scheduler cron (model_catalog_handler.py), and on
+demand from the admin CLI:
 
-* **discover** adds every text model the account can call in this region that the registry does
-  not have yet, `enabled: false`, and prices it.
-* **reprice** looks up every token-priced model's price again and writes the ones that changed.
+* **discover** (Tuesdays) adds every model, from every provider, that the account can call in this
+  region and the registry does not have yet, `enabled: false`, and prices it.
+* **reprice** (Wednesdays) looks up the price of every token-priced model in the registry again and
+  writes the ones that changed.
 
 A changed price is applied at once and recorded in a **pricing run** (a `pricing-run#<id>` row in
-the config table, with the old price). Later heartbeats run the run's **reviews**: each looks the
-price up again, on its own, and checks it. A model that fails goes back to its old price and a
+the config table, with the old price). The run schedules its own **reviews**: one-shot schedules
+(1 and 2 hours later by default) that delete themselves once they have fired. Each review looks
+the price up again, on its own, and checks it. A model that fails goes back to its old price and a
 pricing failure is written to FailedExecutions (`kind: "model_pricing"`), which the operator's
 assistant reports. When the last review is done, the old prices of the models that kept their
 new one are written to the content bucket as `pricing/<date>-<run id>.json`.
 
-Settings live in the `model-catalog` config row (SETTINGS below, all optional); what the job last
-did, and the run under review, in `model-catalog-state`. Only one run is under review at a time:
-it is claimed in the state row before any price is written, so two runs never hold different
-"old" prices for one model.
+Settings (the two pause flags and how reviews judge) live in the `model-catalog` config row
+(SETTINGS below, all optional); what each job last did, and the run under review, in
+`model-catalog-state`. A paused job skips its scheduled run; the admin CLI's runs it anyway. Only
+one run is under review at a time: it is claimed in the state row before any price is written, so
+two runs never hold different "old" prices for one model.
 
 Prices come from the AWS Price List API first (no model call), then from the AgentCore web search
 read by a model, which is skipped when the search results are the same as last time (the
@@ -33,13 +37,13 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import UTC, datetime, timedelta
 
 import boto3
 
 from common import dynamo
 from common.model_routing import resolve_model
+from common.naming import environment_prefix
 
 CONFIG_ID = "model-catalog"
 STATE_ID = "model-catalog-state"
@@ -48,17 +52,13 @@ ACTIVE_RUN_FIELD = "active_run_id"
 FAILURE_KIND = "model_pricing"
 SNAPSHOT_PREFIX = "pricing/"
 JOBS = ("discover", "reprice")
-WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+REVIEW_JOB = "review"
 
 # Every setting and its default. A setting that is unset, or holds something invalid, takes this.
 SETTINGS: dict[str, object] = {
     "discover_enabled": True,
-    "discover_weekday": "TUE",
     "reprice_enabled": True,
-    "reprice_weekday": "WED",
-    "run_hour": 3,
-    "timezone": "Australia/Sydney",
-    "review_after_hours": [2, 24],
+    "review_after_hours": [1, 2],
     "review_tolerance_pct": 5,
     "max_change_factor": 10,
     "max_web_lookups": 10,
@@ -91,10 +91,6 @@ def validate_setting(name: str, value) -> str | None:
         return f"unknown setting '{name}'"
     if name.endswith("_enabled"):
         return None if isinstance(value, bool) else f"'{name}' must be true or false"
-    if name.endswith("_weekday"):
-        return None if value in WEEKDAYS else f"'{name}' must be one of {', '.join(WEEKDAYS)}"
-    if name == "timezone":
-        return None if _zone(value) is not None else "'timezone' must be an IANA time zone"
     if name == "review_after_hours":
         if (
             isinstance(value, list)
@@ -107,7 +103,6 @@ def validate_setting(name: str, value) -> str | None:
             f"each 1 to {MAX_REVIEW_DELAY_HOURS}"
         )
     limits = {
-        "run_hour": (0, 23),
         "review_tolerance_pct": (0, 100),
         "max_change_factor": (2, 1000),
         "max_web_lookups": (0, 100),
@@ -133,39 +128,6 @@ def effective_settings(row: dict | None) -> dict:
 
 def _whole(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _zone(name) -> ZoneInfo | None:
-    if not isinstance(name, str) or not name:
-        return None
-    try:
-        return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError, OSError):
-        return None
-
-
-# --- when a job is due ----------------------------------------------------------------------------
-
-
-def last_scheduled_moment(weekday: str, hour: int, timezone: str, now: datetime) -> datetime:
-    """The most recent `weekday` at `hour`:00 in `timezone`, at or before `now` (in UTC)."""
-    zone = _zone(timezone) or ZoneInfo(str(SETTINGS["timezone"]))
-    local = now.astimezone(zone)
-    day = local.date() - timedelta(days=(local.weekday() - WEEKDAYS.index(weekday)) % 7)
-    moment = datetime.combine(day, time(hour), tzinfo=zone)
-    if moment > local:
-        moment -= timedelta(days=7)
-    return moment.astimezone(UTC)
-
-
-def is_due(job: str, settings: dict, state: dict, now: datetime) -> bool:
-    """Whether `job` has not run since its most recent scheduled moment. A job that never ran is
-    due; a heartbeat missed for any reason is caught up on the next one."""
-    last = _parse(state.get(f"last_{job}_at"))
-    moment = last_scheduled_moment(
-        settings[f"{job}_weekday"], settings["run_hour"], settings["timezone"], now
-    )
-    return last is None or last < moment
 
 
 def _parse(value) -> datetime | None:
@@ -454,19 +416,25 @@ def _base_id_from_arn(arn: str) -> str | None:
     return match.group(1) if match else None
 
 
+def pricing_unit(output_modalities: list[str]) -> str:
+    """How a model is billed, as far as the registry is concerned: `tokens` (per 1K input and
+    output tokens, the only kind the cost code and the reprice handle) for a model that writes
+    text, `other` (images, video, speech, embeddings) for the rest, which are listed but never
+    priced automatically."""
+    return "tokens" if "TEXT" in (output_modalities or []) else "other"
+
+
 def account_models(region: str, client=None) -> list[dict]:
-    """The text models this account can call in `region`, registry-shaped: the on-demand
-    foundation models, and the system-defined inference profiles (au., apac., global., ...) of
-    text models, which is how most models are called from outside us-east-1."""
+    """Every model this account can call in `region`, from every provider, registry-shaped: the
+    on-demand foundation models, and the system-defined inference profiles (au., apac., global.,
+    ...), which is how most models are called from outside us-east-1."""
     client = client or boto3.client("bedrock", region_name=region)
-    text_models = {}
+    active_models = {}
     candidates = {}
     for summary in client.list_foundation_models().get("modelSummaries") or []:
-        if "TEXT" not in (summary.get("outputModalities") or []):
-            continue
         if (summary.get("modelLifecycle") or {}).get("status", "ACTIVE") != "ACTIVE":
             continue
-        text_models[summary["modelId"]] = summary
+        active_models[summary["modelId"]] = summary
         if "ON_DEMAND" in (summary.get("inferenceTypesSupported") or []):
             candidates[summary["modelId"]] = summary
 
@@ -478,7 +446,7 @@ def account_models(region: str, client=None) -> list[dict]:
             if profile.get("status", "ACTIVE") != "ACTIVE":
                 continue
             bases = {_base_id_from_arn(m.get("modelArn")) for m in profile.get("models") or []}
-            base = next((text_models[b] for b in bases if b in text_models), None)
+            base = next((active_models[b] for b in bases if b in active_models), None)
             if base is not None:
                 profiles[profile["inferenceProfileId"]] = base
         if not page.get("nextToken"):
@@ -492,6 +460,7 @@ def account_models(region: str, client=None) -> list[dict]:
                 "model_id": model_id,
                 "display_name": summary.get("modelName") or model_id,
                 "provider": (summary.get("providerName") or "unknown").lower(),
+                "pricing_unit": pricing_unit(summary.get("outputModalities") or []),
             }
         )
     return found
@@ -574,7 +543,7 @@ def price_models(models: list[dict], lookup: PriceLookup, now: datetime) -> dict
 def _run_job_pricing(models: list[dict], trigger: str, settings: dict, now: datetime, lookup=None) -> dict:
     """Claim the one run slot, price `models`, and open a run for any change (releasing the slot
     when nothing changed). {"status": "review_pending"} when another run holds the slot."""
-    run_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
+    run_id = f"{now.astimezone(UTC).strftime(RUN_ID_TIME)}-{uuid.uuid4().hex[:6]}"
     if not dynamo.claim_config_field(STATE_ID, ACTIVE_RUN_FIELD, run_id):
         return {"status": "review_pending", "run_id": get_state().get(ACTIVE_RUN_FIELD)}
     try:
@@ -591,6 +560,7 @@ def _run_job_pricing(models: list[dict], trigger: str, settings: dict, now: date
     if not priced["changes"]:
         dynamo.release_config_field(STATE_ID, ACTIVE_RUN_FIELD, run_id)
         return {"status": "no_change", **result}
+    reviews_due = [_now_iso(now + timedelta(hours=h)) for h in settings["review_after_hours"]]
     dynamo.put_config_row(
         {
             "config_id": f"{RUN_PREFIX}{run_id}",
@@ -599,13 +569,58 @@ def _run_job_pricing(models: list[dict], trigger: str, settings: dict, now: date
             "status": "reviewing",
             "applied_at": _now_iso(now),
             "changes": priced["changes"],
-            "reviews_due": [_now_iso(now + timedelta(hours=h)) for h in settings["review_after_hours"]],
+            "reviews_due": reviews_due,
             "reviews_done": [],
             "reverted": [],
             "dropped": [],
         }
     )
+    try:
+        schedule_reviews(run_id, reviews_due)
+    except Exception as exc:  # noqa: BLE001 - the next job runs an overdue review itself
+        print(f"model_catalog: could not schedule the reviews of run {run_id}: {exc!r}")
     return {"status": "reviewing", "run_id": run_id, **result}
+
+
+# A run id: when it started (UTC) and six random hex digits, short enough that a review's schedule
+# name fits EventBridge Scheduler's 64 characters with the longest prefix Terraform accepts.
+RUN_ID_TIME = "%y%m%d%H%M%S"
+
+_scheduler_client = None
+
+
+def _get_scheduler():
+    global _scheduler_client
+    if _scheduler_client is None:
+        _scheduler_client = boto3.client("scheduler")
+    return _scheduler_client
+
+
+def review_schedule_name(run_id: str, number: int) -> str:
+    """<prefix>-<env>-price-review-<run id>-<n>: inside the `<prefix>-<env>-*` names the Lambda
+    role may create schedules under (aws_iam_role_policy.scheduler_manage)."""
+    return f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}price-review-{run_id}-{number}"
+
+
+def schedule_reviews(run_id: str, reviews_due: list[str]) -> None:
+    """One one-shot schedule per review, at its time, invoking this Lambda with
+    {"job": "review", "run_id": ...}. Each deletes itself once it has fired."""
+    client = _get_scheduler()
+    for number, when in enumerate(reviews_due, 1):
+        at = _parse(when).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+        client.create_schedule(
+            Name=review_schedule_name(run_id, number),
+            GroupName="default",
+            ScheduleExpression=f"at({at})",
+            ScheduleExpressionTimezone="UTC",
+            FlexibleTimeWindow={"Mode": "OFF"},
+            ActionAfterCompletion="DELETE",
+            Target={
+                "Arn": os.environ["MODEL_CATALOG_FUNCTION_ARN"],
+                "RoleArn": os.environ["SCHEDULER_INVOKE_ROLE_ARN"],
+                "Input": json.dumps({"job": REVIEW_JOB, "run_id": run_id}),
+            },
+        )
 
 
 def reprice(trigger: str, settings: dict, now: datetime, lookup=None) -> dict:
@@ -614,8 +629,8 @@ def reprice(trigger: str, settings: dict, now: datetime, lookup=None) -> dict:
 
 
 def discover(trigger: str, settings: dict, now: datetime, *, bedrock=None, lookup=None) -> dict:
-    """The discover job: add the account's text models the registry lacks, disabled, then price
-    them (unless another run is under review: then the next reprice prices them)."""
+    """The discover job: add the account's models the registry lacks, disabled, then price the
+    token-priced ones (unless another run is under review: then the next reprice prices them)."""
     region = _region()
     added = []
     for found in account_models(region, bedrock):
@@ -624,7 +639,6 @@ def discover(trigger: str, settings: dict, now: datetime, *, bedrock=None, looku
             "enabled": False,
             "region": region,
             "discovered_at": _now_iso(now),
-            "pricing_unit": "tokens",
         }
         if dynamo.add_model_if_missing(item):
             added.append(item)
@@ -666,11 +680,26 @@ def _revert(change: dict) -> bool:
     return dynamo.set_model_fields(change["model_id"], updates, expected=expected)
 
 
-def review_is_due(run: dict, now: datetime) -> bool:
+def next_review_at(run: dict) -> datetime | None:
     due = run.get("reviews_due") or []
     done = len(run.get("reviews_done") or [])
-    when = _parse(due[done]) if done < len(due) else None
+    return _parse(due[done]) if done < len(due) else None
+
+
+def review_is_due(run: dict, now: datetime) -> bool:
+    when = next_review_at(run)
     return when is not None and now >= when
+
+
+# A review's schedule fires at its time; this much early still counts (clocks differ by seconds).
+REVIEW_EARLY_GRACE = timedelta(minutes=5)
+# A review this far past its time has lost its schedule (or its run): the next job runs it first.
+OVERDUE_AFTER = timedelta(minutes=30)
+
+
+def is_overdue(run: dict | None, now: datetime) -> bool:
+    when = next_review_at(run) if run else None
+    return when is not None and now - when > OVERDUE_AFTER
 
 
 def review(run: dict, settings: dict, now: datetime, lookup=None) -> dict:
@@ -783,18 +812,17 @@ def write_snapshot(run: dict, kept: list[dict], now: datetime, client=None) -> s
     return key
 
 
-# --- the heartbeat --------------------------------------------------------------------------------
+# --- invocations -----------------------------------------------------------------------------------
 
 
 def run_job(job: str, trigger: str, settings: dict, now: datetime) -> dict:
     """Run one job now and record it on the state row. A reprice that could not start because a
-    run is under review is not recorded, so it is still due and catches up later."""
+    run is under review is recorded as such: it runs again on its next schedule, or from the CLI."""
     result = discover(trigger, settings, now) if job == "discover" else reprice(trigger, settings, now)
-    if result.get("status") != "review_pending":
-        dynamo.update_config_row(
-            STATE_ID,
-            {f"last_{job}_at": _now_iso(now), f"last_{job}_result": {"trigger": trigger, **result}},
-        )
+    dynamo.update_config_row(
+        STATE_ID,
+        {f"last_{job}_at": _now_iso(now), f"last_{job}_result": {"trigger": trigger, **result}},
+    )
     return result
 
 
@@ -809,7 +837,7 @@ def _release_orphaned_slot(now: datetime) -> None:
     if not run_id:
         return
     try:
-        started = datetime.strptime(str(run_id)[:16], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+        started = datetime.strptime(str(run_id).split("-")[0], RUN_ID_TIME).replace(tzinfo=UTC)
     except ValueError:
         started = None
     if started is None or now - started > ORPHAN_AFTER:
@@ -817,29 +845,55 @@ def _release_orphaned_slot(now: datetime) -> None:
         dynamo.release_config_field(STATE_ID, ACTIVE_RUN_FIELD, run_id)
 
 
-def heartbeat(event: dict, now: datetime | None = None) -> dict:
-    """One beat. `{"job": "discover"|"reprice"}` (the admin API) runs that job now, whatever its
-    day and even when paused. Anything else is the hourly beat: a due review first, then each
-    enabled job that is due."""
-    now = now or datetime.now(UTC)
-    settings = get_settings()
-    job = (event or {}).get("job")
-    if job in JOBS:
-        return {"status": "ran", job: run_job(job, "admin", settings, now)}
-
-    results: dict = {}
+def settle_overdue(settings: dict, now: datetime) -> list[dict]:
+    """Before a job: run the reviews of a run whose schedules were lost (each overdue one, in
+    turn), and free a slot a dead run left, so neither can hold repricing up for good."""
     run = active_run()
     if run is None:
         _release_orphaned_slot(now)
-    elif review_is_due(run, now):
-        results["review"] = review(run, settings, now)
-    state = get_state()
-    for name in JOBS:
-        if not settings[f"{name}_enabled"]:
-            results[name] = {"status": "paused"}
-        elif is_due(name, settings, state, now):
-            results[name] = run_job(name, "schedule", settings, now)
-    return {"status": "ok", **results}
+        return []
+    results = []
+    while run is not None and is_overdue(run, now):
+        results.append(review(run, settings, now))
+        run = active_run()
+    return results
+
+
+def run_review(run_id, settings: dict, now: datetime) -> dict:
+    """A review's schedule fired: run that run's next review, if it is still the run under review
+    and the review is due."""
+    run = active_run()
+    if run is None or run.get("run_id") != run_id:
+        return {"status": "stale", "run_id": run_id}
+    if not review_is_due(run, now + REVIEW_EARLY_GRACE):
+        return {"status": "not_due", "run_id": run_id}
+    return review(run, settings, now)
+
+
+def handle(event: dict, now: datetime | None = None) -> dict:
+    """One invocation:
+
+    * `{"job": "discover"|"reprice", "trigger": "schedule"}`: its weekly schedule; skipped while
+      the job is paused.
+    * `{"job": "discover"|"reprice"}`: the admin API (`models discover|reprice`); runs even when
+      paused.
+    * `{"job": "review", "run_id": ...}`: one of a run's review schedules.
+    """
+    now = now or datetime.now(UTC)
+    settings = get_settings()
+    job = (event or {}).get("job")
+    if job == REVIEW_JOB:
+        return {"status": "ok", "review": run_review(event.get("run_id"), settings, now)}
+    if job not in JOBS:
+        return {"status": "ignored", "reason": f"unknown job {job!r}"}
+    trigger = "schedule" if event.get("trigger") == "schedule" else "admin"
+    if trigger == "schedule" and not settings[f"{job}_enabled"]:
+        return {"status": "paused", "job": job}
+    caught_up = settle_overdue(settings, now)
+    result = {"status": "ran", job: run_job(job, trigger, settings, now)}
+    if caught_up:
+        result["overdue_reviews"] = caught_up
+    return result
 
 
 def summary() -> dict:

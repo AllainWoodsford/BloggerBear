@@ -10,12 +10,12 @@ Two weekly jobs look after the **Models** table (`<prefix>-<env>-models`):
 
 | Job | Default | What it does |
 |---|---|---|
-| **discover** | Tuesdays, 03:00 Australia/Sydney | Lists the text models this account can call in the deployment's region (Bedrock `ListFoundationModels` and `ListInferenceProfiles`). Every model that is not in the registry yet is added with **`enabled: false`**, then priced like any other. |
-| **reprice** | Wednesdays, 03:00 Australia/Sydney | Looks up the current price of every token-priced model in the registry and writes the prices that changed. |
+| **discover** | Tuesdays, 03:00 Australia/Sydney | Lists every model this account can call in the deployment's region, **from every provider** (Amazon, Anthropic, Meta, Mistral, Cohere, AI21, DeepSeek, Stability, ...), with Bedrock `ListFoundationModels` and `ListInferenceProfiles`. Every model that is not in the registry yet is added with **`enabled: false`**. The ones that write text are priced like any other; image, video, speech and embedding models are listed with `pricing_unit: other` and left unpriced (the cost code only prices tokens). |
+| **reprice** | Wednesdays, 03:00 Australia/Sydney | Looks up the current price of **every** token-priced model in the registry, enabled or not, and writes the prices that changed. |
 
-A price that changed is applied **straight away**, but stays on probation. Two **review
-heartbeats** run later (by default 2 hours and 24 hours after the run). Each one looks the
-price up again, on its own, and checks it:
+A price that changed is applied **straight away**, but stays on probation. Two **reviews** run
+later, **1 hour and 2 hours** after the run by default, each on a one-shot schedule the run
+creates. Each one looks the price up again, on its own, and checks it:
 
 - **Both pass:** the new price stays. A snapshot of the *old* prices, with the date, is written to
   the content bucket at `pricing/<date>-<run id>.json`.
@@ -24,7 +24,8 @@ price up again, on its own, and checks it:
   in `pipeline_health`, and `admin_cli.py failed-executions list` shows it.
 - **Nothing changed:** there is nothing to review, and no run or snapshot is created.
 
-Both jobs can be paused, and their days, hour and review delays changed, without a deploy.
+Both jobs can be paused, and the review delays and checks changed, without a deploy. The days and
+time are the two schedules' cron expressions, in Terraform.
 
 ## Where things live
 
@@ -38,13 +39,9 @@ All of it sits in tables and a bucket that already exist. No new tables are need
 
   | Setting | Default | Meaning |
   |---|---|---|
-  | `discover_enabled` | `true` | `false` pauses the discover job |
-  | `discover_weekday` | `TUE` | `MON` … `SUN` |
-  | `reprice_enabled` | `true` | `false` pauses the reprice job |
-  | `reprice_weekday` | `WED` | `MON` … `SUN` |
-  | `run_hour` | `3` | local hour (0–23) from which the job is due that day |
-  | `timezone` | `Australia/Sydney` | what `run_hour` and the weekdays are read in |
-  | `review_after_hours` | `[2, 24]` | one review per entry, that many hours after the run (1 to 4 entries, each 1–168) |
+  | `discover_enabled` | `true` | `false` pauses discover's weekly schedule |
+  | `reprice_enabled` | `true` | `false` pauses reprice's weekly schedule |
+  | `review_after_hours` | `[1, 2]` | one review per entry, that many hours after the run (1 to 4 entries, each 1–168) |
   | `review_tolerance_pct` | `5` | how far a review's price may be from the applied one |
   | `max_change_factor` | `10` | a new price more than this many times the old (or less than 1/this) fails review |
   | `max_web_lookups` | `10` | web searches one run may make (each is a paid AgentCore query) |
@@ -78,44 +75,52 @@ All of it sits in tables and a bucket that already exist. No new tables are need
 `raw_message`. There is one per review that put a price back. It has the table's usual 7-day TTL
 (`CLEANUP_TTL_DAYS`).
 
-## How it runs: one hourly heartbeat
+## How it runs: two weekly schedules, and reviews that schedule themselves
 
-One new Lambda, **`model-catalog`** (`lambdas/model_catalog_handler.py`), has one static
-EventBridge schedule, `cron(50 * * * ? *)`. That is hourly at :50, after every topic's research
-heartbeat for the hour, since stagger slots start at :05. This is the same "heartbeat that
-decides whether it is due" shape as the research tick. Changing a day, an hour or a delay is a
-DynamoDB edit, never a Scheduler change. Each beat:
+One new Lambda, **`model-catalog`** (`lambdas/model_catalog_handler.py`), is invoked three ways:
 
-1. **Reviews first.** If a run is under review and its next review is due, that review runs.
-   When the last one is done, the run is finalised: snapshot or revert.
-2. **Then the jobs.** A job is due when its most recent scheduled moment (weekday at `run_hour`,
-   in `timezone`) is later than its last run. A beat missed for any reason is caught up on the
-   next one.
-   - **discover** runs whenever it is due. New models are priced in the same run.
-   - **reprice** waits while another run is still under review, so that two runs never hold
-     different "old" prices for one model. It catches up once that run ends.
+| What invokes it | Event | Does |
+|---|---|---|
+| `aws_scheduler_schedule.model_catalog_discover`, `cron(0 3 ? * TUE *)` Australia/Sydney | `{"job": "discover", "trigger": "schedule"}` | discover, unless `discover_enabled` is `false` |
+| `aws_scheduler_schedule.model_catalog_reprice`, `cron(0 3 ? * WED *)` Australia/Sydney | `{"job": "reprice", "trigger": "schedule"}` | reprice, unless `reprice_enabled` is `false` |
+| `admin_cli.py models discover` / `models reprice` (`POST /models/discover`, `/models/reprice`) | `{"job": ...}` | that job now, **even when it is paused** (an asynchronous invoke; the API answers `202`) |
+| a run's review schedules | `{"job": "review", "run_id": ...}` | that run's next review |
 
-   A job that has never run is due at once, so the first heartbeat after a deploy discovers.
-   A paused job (`*_enabled: false`) is skipped. Reviews of a run that has already started still
-   finish, so pausing never strands an applied-but-unchecked price.
+03:00 Sydney is quiet: no topic's daily cycle runs then, and a job makes a few API calls.
 
-**SQS was considered and not used.** The jobs make a few API calls a week and can't contend with
-research ticks at :50. If the dispatcher work queue
-([dispatcher-sqs-enhancement.md](dispatcher-sqs-enhancement.md)) is built, the heartbeat can
-enqueue `{"job": "model-discover"}` instead of running the job itself. Nothing here would change.
+**Reviews.** A run that changed a price creates one EventBridge Scheduler schedule per review:
+`at(<time>)` in UTC, named `<prefix>-<env>-price-review-<run id>-<n>`, with
+`ActionAfterCompletion: DELETE`, so it removes itself once it has fired. A rerun from the CLI
+creates its own two, so it is checked exactly like a scheduled one. A review whose schedule
+fires for a run that is no longer under review, or before its time, does nothing.
 
-**On demand:** `admin_cli.py models reprice` and `admin_cli.py models discover`
-(`POST /models/reprice`, `POST /models/discover`). Each starts the job now, whatever its day and
-even when it is paused, by invoking the Lambda asynchronously; the API answers `202`.
-- The run creates its own two review heartbeats, so a re-run is checked exactly like a scheduled one.
-- `models reprice` is refused (`409`) while a run is under review, because the run under review
-  holds the prices a revert would go back to.
-- `admin_cli.py model-catalog get` shows the run under review and when its next review is due.
+**Nothing can hold repricing up for good.** Before a job runs:
+- a review more than 30 minutes overdue (its schedule was lost, or could not be created) is run
+  then and there, in turn, until the run is closed;
+- a slot claimed by a run that died before writing its row is freed after an hour.
+
+**One run under review at a time.** `reprice` does not start while another run is under review,
+so two runs never hold different "old" prices for one model. On its schedule it records
+`review_pending` and runs again the next week; `models reprice` is refused (`409`) unless the run's
+review is overdue, in which case the job runs that review first. `discover` always adds new
+models; it prices them only when no run is under review, and otherwise leaves them to the next
+reprice.
+
+**Pausing** stops a job's weekly schedule only. The reviews of a run that has started still
+finish, so pausing never strands an applied-but-unchecked price.
+
+**SQS was considered and not used.** The jobs run twice a week and make a few API calls. If the
+dispatcher work queue ([dispatcher-sqs-enhancement.md](dispatcher-sqs-enhancement.md)) is built,
+the schedules can enqueue `{"job": "model-discover"}` instead of invoking the Lambda. Nothing here
+would change.
+
+`admin_cli.py model-catalog get` shows the run under review and when its next review is due.
 
 ## Where a price comes from
 
-Prices are only looked up for `pricing_unit: tokens` models without `price_locked`. Sources are
-tried in order:
+Prices are looked up for every model in the registry (enabled or not, discovered or added by hand)
+that is `pricing_unit: tokens` (a row without one counts as tokens) and has no `price_locked`.
+Sources are tried in order:
 
 1. **The AWS Price List API** (`pricing:GetProducts` through its us-east-1 endpoint, filtered to the
    deployment's region). Bedrock prices have been reported under more than one service code, so
@@ -181,14 +186,20 @@ The shared Lambda role gains:
 - The `lambda_invoke_pipeline` policy gains the model-catalog function, so the Admin API can
   start it.
 
-The scheduler role gains `InvokeModelCatalog`. The new Lambda joins the observability function
-list. Writing the snapshot needs nothing new, because the role can already `PutObject` to the
-content bucket.
+The scheduler role gains `InvokeModelCatalog`, for the two weekly schedules and every review
+schedule. The new Lambda joins the observability function list. Nothing else is new:
+- the role already creates and deletes schedules named `<prefix>-<env>-*` and passes the scheduler
+  role (`scheduler_manage`, for the topics' schedules), which covers the review schedules;
+- it can already `PutObject` to the content bucket, for the snapshot.
+
+The Lambda reads `MODEL_CATALOG_FUNCTION_ARN` (the review schedules' target) and the Admin API
+reads `MODEL_CATALOG_FUNCTION_NAME`.
 
 ## Not done here
 
-- **Non-token models** (images, embeddings) are not discovered. The pipeline only calls text models
-  through Converse.
+- **Non-token models** (images, video, speech, embeddings) are discovered and listed but never
+  priced automatically: they are billed per image, second or request, which the registry's two
+  per-1K-token prices cannot hold, and the pipeline only calls text models through Converse.
 - **Prompt-cache prices** are not stored. The cost code never prices cache tokens separately.
 - **Geo-profile premiums:** a price is the region's price for the model. A geo profile billed at
   a premium needs its price set by hand with `price_locked: true`.

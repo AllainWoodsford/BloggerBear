@@ -2560,7 +2560,8 @@ def _put_model_catalog_config_route(event: dict) -> dict:
 
 def _start_model_catalog_job(job: str) -> dict:
     run = model_catalog.active_run()
-    if job == "reprice" and run is not None:
+    # A run whose review is overdue lost its schedule: the job runs that review first, so it may go.
+    if job == "reprice" and run is not None and not model_catalog.is_overdue(run, datetime.now(UTC)):
         return _error(
             409,
             f"pricing run {run.get('run_id')} is still under review; a reprice waits for it "

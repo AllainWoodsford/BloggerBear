@@ -24,26 +24,16 @@ def cli(*argv):
 
 def test_the_cli_sends_each_setting_as_the_api_takes_it():
     [(method, path, body)] = cli(
-        "model-catalog",
-        "set",
-        "--reprice",
-        "off",
-        "--discover-day",
-        "MON",
-        "--run-hour",
-        "4",
-        "--review-after-hours",
-        "1, 12",
-        "--timezone",
-        "",
+        "model-catalog", "set", "--reprice", "off", "--discover", "", "--review-after-hours", "1, 3",
+        "--max-web-lookups", "", "--review-tolerance-pct", "2",
     )
     assert (method, path) == ("PUT", "/model-catalog-config")
     assert body == {
         "reprice_enabled": False,
-        "discover_weekday": "MON",
-        "timezone": None,
-        "run_hour": 4,
-        "review_after_hours": [1, 12],
+        "discover_enabled": None,
+        "review_tolerance_pct": 2,
+        "max_web_lookups": None,
+        "review_after_hours": [1, 3],
     }
 
 
@@ -57,4 +47,4 @@ def test_the_cli_refuses_a_set_with_nothing_in_it_or_a_bad_number():
     with pytest.raises(admin_cli.CliError):
         cli("model-catalog", "set")
     with pytest.raises(admin_cli.CliError):
-        cli("model-catalog", "set", "--run-hour", "three")
+        cli("model-catalog", "set", "--max-change-factor", "three")

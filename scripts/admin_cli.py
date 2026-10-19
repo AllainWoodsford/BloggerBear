@@ -919,7 +919,7 @@ def _cmd_models_reprice(args: argparse.Namespace) -> None:
     _do_request(args, "POST", "/models/reprice")
     print(
         "Repricing in the background. A changed price applies now and is reviewed twice later "
-        "(by default 2 and 24 hours on); `model-catalog get` shows the run and its next review.",
+        "(by default 1 and 2 hours on); `model-catalog get` shows the run and its next review.",
         file=sys.stderr,
     )
 
@@ -934,9 +934,6 @@ def _cmd_models_discover(args: argparse.Namespace) -> None:
 
 
 # --- model-catalog subcommands ----------------------------------------------
-
-_WEEKDAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
-
 
 def _cmd_model_catalog_get(args: argparse.Namespace) -> None:
     _do_request(args, "GET", "/model-catalog-config")
@@ -957,12 +954,7 @@ def _cmd_model_catalog_set(args: argparse.Namespace) -> None:
     for name, value in (("discover_enabled", args.discover), ("reprice_enabled", args.reprice)):
         if value is not None:
             body[name] = {"on": True, "off": False}.get(value)  # '' clears it (back to on)
-    for name, value in (("discover_weekday", args.discover_day), ("reprice_weekday", args.reprice_day)):
-        if value is not None:
-            body[name] = value or None
-    if args.timezone is not None:
-        body["timezone"] = args.timezone or None
-    for name in ("run_hour", "review_tolerance_pct", "max_change_factor", "max_web_lookups"):
+    for name in ("review_tolerance_pct", "max_change_factor", "max_web_lookups"):
         raw = getattr(args, name)
         if raw is not None:
             body[name] = _whole_or_clear("--" + name.replace("_", "-"), raw)
@@ -2029,17 +2021,17 @@ def build_parser() -> argparse.ArgumentParser:
         "reprice",
         help=(
             "Look up every model's price now, as the weekly reprice does: changed prices apply "
-            "at once and are reviewed twice later, and put back if a review is not confident"
+            "at once and are reviewed 1 and 2 hours later, and put back if a review is not confident"
         ),
     ).set_defaults(func=_cmd_models_reprice)
     models_sub.add_parser(
         "discover",
-        help="Add the account's text models the registry lacks now (disabled), and price them",
+        help="Add every model the account can call that the registry lacks now (disabled), and price them",
     ).set_defaults(func=_cmd_models_discover)
 
     model_catalog_parser = subparsers.add_parser(
         "model-catalog",
-        help="The weekly model discover and reprice jobs: their days, pause flags and reviews",
+        help="The weekly model discover and reprice jobs: their pause flags and price reviews",
     )
     model_catalog_sub = model_catalog_parser.add_subparsers(dest="action", required=True)
     model_catalog_sub.add_parser(
@@ -2049,29 +2041,16 @@ def build_parser() -> argparse.ArgumentParser:
         "set", help="Change settings (send any of them; a setting not sent is unchanged; '' clears one)"
     )
     model_catalog_set.add_argument(
-        "--discover", choices=["on", "off", ""], default=None, help="Run (on) or pause (off) discover"
+        "--discover", choices=["on", "off", ""], default=None,
+        help="Run (on) or pause (off) discover's weekly schedule (Tuesdays)",
     )
     model_catalog_set.add_argument(
-        "--reprice", choices=["on", "off", ""], default=None, help="Run (on) or pause (off) reprice"
-    )
-    model_catalog_set.add_argument(
-        "--discover-day", dest="discover_day", choices=[*_WEEKDAYS, ""], default=None,
-        help="Discover's weekday (default TUE)",
-    )
-    model_catalog_set.add_argument(
-        "--reprice-day", dest="reprice_day", choices=[*_WEEKDAYS, ""], default=None,
-        help="Reprice's weekday (default WED)",
-    )
-    model_catalog_set.add_argument(
-        "--run-hour", dest="run_hour", default=None,
-        help="Local hour (0-23) the jobs are due from (default 3)",
-    )
-    model_catalog_set.add_argument(
-        "--timezone", default=None, help="IANA time zone the days and hour are in (default Australia/Sydney)"
+        "--reprice", choices=["on", "off", ""], default=None,
+        help="Run (on) or pause (off) reprice's weekly schedule (Wednesdays)",
     )
     model_catalog_set.add_argument(
         "--review-after-hours", dest="review_after_hours", default=None,
-        help="Hours after a run each review runs, comma-separated (default 2,24; 1 to 4 reviews)",
+        help="Hours after a run each review runs, comma-separated (default 1,2; 1 to 4 reviews)",
     )
     model_catalog_set.add_argument(
         "--review-tolerance-pct", dest="review_tolerance_pct", default=None,
