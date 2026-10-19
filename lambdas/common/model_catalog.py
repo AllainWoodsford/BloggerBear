@@ -596,6 +596,27 @@ def _get_scheduler():
     return _scheduler_client
 
 
+def function_name() -> str:
+    """The model-catalog Lambda's name, for the admin API to start it: MODEL_CATALOG_FUNCTION_NAME
+    when set (Terraform sets it), else `<prefix>-<env>-model-catalog`, the name Terraform gives it."""
+    return os.environ.get("MODEL_CATALOG_FUNCTION_NAME") or (
+        f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}model-catalog"
+    )
+
+
+# The ARN the review schedules invoke: this Lambda's own, which the handler passes in from its
+# context on every invocation (handle's `own_arn`). MODEL_CATALOG_FUNCTION_ARN overrides it, for
+# pointing the reviews somewhere else; nothing sets it by default.
+_own_arn: str | None = None
+
+
+def _review_target_arn() -> str:
+    arn = os.environ.get("MODEL_CATALOG_FUNCTION_ARN") or _own_arn
+    if not arn:
+        raise RuntimeError("no function ARN for the review schedules (not running in the Lambda?)")
+    return arn
+
+
 def review_schedule_name(run_id: str, number: int) -> str:
     """<prefix>-<env>-price-review-<run id>-<n>: inside the `<prefix>-<env>-*` names the Lambda
     role may create schedules under (aws_iam_role_policy.scheduler_manage)."""
@@ -616,7 +637,7 @@ def schedule_reviews(run_id: str, reviews_due: list[str]) -> None:
             FlexibleTimeWindow={"Mode": "OFF"},
             ActionAfterCompletion="DELETE",
             Target={
-                "Arn": os.environ["MODEL_CATALOG_FUNCTION_ARN"],
+                "Arn": _review_target_arn(),
                 "RoleArn": os.environ["SCHEDULER_INVOKE_ROLE_ARN"],
                 "Input": json.dumps({"job": REVIEW_JOB, "run_id": run_id}),
             },
@@ -870,7 +891,7 @@ def run_review(run_id, settings: dict, now: datetime) -> dict:
     return review(run, settings, now)
 
 
-def handle(event: dict, now: datetime | None = None) -> dict:
+def handle(event: dict, now: datetime | None = None, own_arn: str | None = None) -> dict:
     """One invocation:
 
     * `{"job": "discover"|"reprice", "trigger": "schedule"}`: its weekly schedule; skipped while
@@ -878,7 +899,11 @@ def handle(event: dict, now: datetime | None = None) -> dict:
     * `{"job": "discover"|"reprice"}`: the admin API (`models discover|reprice`); runs even when
       paused.
     * `{"job": "review", "run_id": ...}`: one of a run's review schedules.
+
+    `own_arn` is this Lambda's ARN (from its context), which a new run's review schedules invoke.
     """
+    global _own_arn
+    _own_arn = own_arn or _own_arn
     now = now or datetime.now(UTC)
     settings = get_settings()
     job = (event or {}).get("job")

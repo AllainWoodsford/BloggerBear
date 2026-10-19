@@ -13,6 +13,7 @@ Settings live in six places:
 | [Environment Terraform variables](#environment-terraform-variables) | The domain, the model, a few switches | `infra/environments/<env>/terraform.tfvars`, by pull request |
 | [SSM Parameter Store](#ssm-parameter-store) | API keys for the data sources | `aws ssm put-parameter`, or the console |
 | [DynamoDB](#dynamodb-settings-changed-with-no-deploy) | Models, pipeline behaviour, topics | `python scripts/admin_cli.py`, or the console |
+| [The model catalog's environment variables](#the-model-catalogs-environment-variables) | Which Lambda `models reprice` and `models discover` start (not on/off switches; nothing to set) | Terraform, with a default in the code |
 | [Your own machine](#your-own-machine) | Where the admin CLI points | Environment variables |
 
 Two more are set in a console and nowhere else: [AWS account settings](#aws-account-settings) and
@@ -226,6 +227,26 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 
 Seeding the model tables, with a sample item, is in
 [The model registry](deployment-runsheet.md#the-model-registry-seeding-and-rotation).
+
+## The model catalog's environment variables
+
+Neither is a switch, and neither needs setting: Terraform sets the first, and the code falls back
+to the same value without it. The on/off switches are in DynamoDB, not here: `discover_enabled`
+and `reprice_enabled` on the `model-catalog` row of `<prefix>-<env>-model-config`, **on unless set
+to `false`** (an absent row or setting is on), changed with `admin_cli.py model-catalog set
+--discover off|on --reprice off|on` ([DynamoDB: settings changed with no
+deploy](#dynamodb-settings-changed-with-no-deploy)).
+
+| Variable | Set on | Meaning | Default |
+|---|---|---|---|
+| `MODEL_CATALOG_FUNCTION_NAME` | every Lambda (read by the admin API) | Which Lambda `models reprice` and `models discover` start. Terraform sets it to the model-catalog function's name. | `<prefix>-<env>-model-catalog`, from `NAME_PREFIX` and `ENVIRONMENT_NAME`: the name Terraform gives the function |
+| `MODEL_CATALOG_FUNCTION_ARN` | nothing, by default | What a pricing run's two review schedules invoke. Only to point them at another function. | The model-catalog Lambda's own ARN, which it reads from its invocation context |
+
+The two weekly schedules (`<prefix>-<env>-model-discover`, Tuesdays 03:00 Sydney, and
+`<prefix>-<env>-model-reprice`, Wednesdays 03:00 Sydney) are Terraform's: change their days or
+time there (`aws_scheduler_schedule.model_catalog_discover` / `_reprice` in each environment's
+`main.tf`). Each run's review schedules (`<prefix>-<env>-price-review-<run>-<n>`) are made by the
+Lambda and delete themselves once fired ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md)).
 
 ## Your own machine
 

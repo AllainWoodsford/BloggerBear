@@ -200,8 +200,12 @@ schedule. The new Lambda joins the observability function list. Nothing else is 
   role (`scheduler_manage`, for the topics' schedules), which covers the review schedules;
 - it can already `PutObject` to the content bucket, for the snapshot.
 
-The Lambda reads `MODEL_CATALOG_FUNCTION_ARN` (the review schedules' target) and the Admin API
-reads `MODEL_CATALOG_FUNCTION_NAME`.
+Two environment variables, neither a switch and neither needing to be set
+([configuration.md](../configuration.md#the-model-catalogs-environment-variables)):
+`MODEL_CATALOG_FUNCTION_NAME` tells the Admin API which Lambda to start (Terraform sets it; unset,
+it is `<prefix>-<env>-model-catalog`), and `MODEL_CATALOG_FUNCTION_ARN` would point the review
+schedules elsewhere (unset, they invoke the Lambda's own ARN, from its context). The switches are
+the DynamoDB settings `discover_enabled` and `reprice_enabled`: on unless set to `false`.
 
 ## Not done here
 
