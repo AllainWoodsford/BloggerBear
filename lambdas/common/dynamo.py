@@ -1547,8 +1547,12 @@ def put_failed_execution(
     error: dict | str | None,
     raw_message: str,
     created_at: str,
+    kind: str | None = None,
 ) -> dict:
     """Write a FailedExecutions item and return it.
+
+    `kind` says what failed when it is not a daily_cycle run: "model_pricing" is a price the
+    model catalog's review put back (common/model_catalog.py). A DLQ record has none.
 
     `topic_id` and `error` may be None/malformed if the DLQ message body
     didn't parse as expected -- `raw_message` (the untouched SQS message
@@ -1566,6 +1570,8 @@ def put_failed_execution(
         "created_at": created_at,
         "expires_at": _expires_in(CLEANUP_TTL_DAYS),
     }
+    if kind is not None:
+        item["kind"] = kind
     table.put_item(Item=item)
     return item
 
@@ -1861,6 +1867,142 @@ def put_model_rotation_candidates(candidates: list[str]) -> None:
     """Set (or, with [], clear) the pool of model ids rotation may pick from."""
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])
     table.put_item(Item={"config_id": _MODEL_ROTATION_CONFIG_ID, "candidates": candidates})
+
+
+# --- Model catalog (common/model_catalog.py, docs/enhancements/model-catalog-refresh.md) ----------
+#
+# More rows in the same config table: `model-catalog` (the settings, edited by hand or from the
+# admin API/CLI), `model-catalog-state` (written only by the job, kept apart so saving the settings
+# never wipes it) and one `pricing-run#<id>` per run that changed a price, holding the old prices
+# until its reviews are done; the table's TTL prunes it after. The Models rows the catalog writes
+# go through set_model_fields, with a condition, so a price someone set by hand in the meantime
+# is never overwritten or "reverted".
+
+
+def _plain_numbers(value):
+    """DynamoDB's Decimals as plain numbers, all the way down: int when whole, else float."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {key: _plain_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_numbers(item) for item in value]
+    return value
+
+
+def _set_remove(updates: dict) -> tuple[str, dict]:
+    """An UpdateExpression for `updates` (a value sets it, None removes it) and its values."""
+    sets, removes, values = [], [], {}
+    for index, (name, value) in enumerate(updates.items()):
+        if value is None:
+            removes.append(name)
+        else:
+            sets.append(f"{name} = :v{index}")
+            values[f":v{index}"] = _floats_to_decimal(value)
+    expression = ""
+    if sets:
+        expression += "SET " + ", ".join(sets)
+    if removes:
+        expression += (" " if expression else "") + "REMOVE " + ", ".join(removes)
+    return expression, values
+
+
+def get_config_row(config_id: str) -> dict | None:
+    """One row of the config table by id, numbers as plain numbers, or None."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = table.get_item(Key={"config_id": config_id}, ConsistentRead=True).get("Item")
+    return _plain_numbers(item) if item is not None else None
+
+
+def update_config_row(config_id: str, updates: dict) -> dict:
+    """Set (a value) or remove (None) the given attributes of one config row and return the row.
+    Attributes not in `updates` are left as they are."""
+    expression, values = _set_remove(updates)
+    if expression:
+        kwargs = {"ExpressionAttributeValues": values} if values else {}
+        table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+        table.update_item(Key={"config_id": config_id}, UpdateExpression=expression, **kwargs)
+    return get_config_row(config_id) or {"config_id": config_id}
+
+
+def put_config_row(item: dict) -> None:
+    """Write (create or overwrite) one config row."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    table.put_item(Item=_floats_to_decimal(item))
+
+
+def claim_config_field(config_id: str, field: str, value: str) -> bool:
+    """Set `field` on a config row only if it is not set yet. False when it already is: someone
+    else holds it."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.update_item(
+            Key={"config_id": config_id},
+            UpdateExpression="SET #f = :v",
+            ConditionExpression="attribute_not_exists(#f)",
+            ExpressionAttributeNames={"#f": field},
+            ExpressionAttributeValues={":v": value},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def release_config_field(config_id: str, field: str, value: str) -> None:
+    """Remove `field` from a config row if it still holds `value` (anything else is left)."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.update_item(
+            Key={"config_id": config_id},
+            UpdateExpression="REMOVE #f",
+            ConditionExpression="#f = :v",
+            ExpressionAttributeNames={"#f": field},
+            ExpressionAttributeValues={":v": value},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        pass
+
+
+def add_model_if_missing(item: dict) -> bool:
+    """Write a Models row only if none has its model_id. True if it was added."""
+    table = get_table(os.environ["MODELS_TABLE"])
+    try:
+        table.put_item(
+            Item=_floats_to_decimal(item), ConditionExpression="attribute_not_exists(model_id)"
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def set_model_fields(model_id: str, updates: dict, *, expected: dict) -> bool:
+    """Set (a value) or remove (None) fields of an existing Models row, but only while each field
+    in `expected` still holds its value there (None: is not set). False, and nothing written, when
+    the row is gone or one of them has changed since it was read."""
+    expression, values = _set_remove(updates)
+    names = {}
+    conditions = ["attribute_exists(model_id)"]
+    for index, (name, value) in enumerate(expected.items()):
+        names[f"#e{index}"] = name
+        if value is None:
+            conditions.append(f"attribute_not_exists(#e{index})")
+        else:
+            conditions.append(f"#e{index} = :e{index}")
+            values[f":e{index}"] = _floats_to_decimal(value)
+    kwargs = {"ExpressionAttributeValues": values} if values else {}
+    if names:
+        kwargs["ExpressionAttributeNames"] = names
+    table = get_table(os.environ["MODELS_TABLE"])
+    try:
+        table.update_item(
+            Key={"model_id": model_id},
+            UpdateExpression=expression,
+            ConditionExpression=" AND ".join(conditions),
+            **kwargs,
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
 
 
 # --- Feedback limits (see common/feedback_limits.py) ---------------------------------------

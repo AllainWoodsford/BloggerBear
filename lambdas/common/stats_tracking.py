@@ -84,6 +84,8 @@ BEDROCK_CATEGORIES = (
     # The vision agent's triage of a measured change (common/vision_triage.py): several Converse
     # calls per decision, with images and tools, tallied per decision by record_model_usage.
     "vision_triage",
+    # The model catalog reading a model's price out of web search results (common/model_catalog.py).
+    "model_pricing",
 )
 
 # The operator's assistant (lambdas/ops_agent): every question it answers, on the page or started
