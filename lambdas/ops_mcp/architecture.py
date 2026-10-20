@@ -519,11 +519,13 @@ CATALOGUE: tuple[Component, ...] = (
     ),
     _lambda(
         "model-catalog",
-        "Keeps the models table's list and prices up to date: adds every provider's new models "
-        "(disabled) on Tuesdays, reprices on Wednesdays, and reviews each changed price 1 and 2 "
-        "hours later, putting it back if it cannot be confirmed.",
-        "Tuesdays and Wednesdays 03:00 Sydney time (EventBridge Scheduler), each review on a "
-        "one-shot schedule of its own, and on demand (models discover, models reprice)",
+        "Keeps the models table's list and prices up to date: adds up to 5 new models (disabled), "
+        "or at 50 prunes the ones its prune mode values least (never a default, fallback or "
+        "rotation model); reprices up to 50, 5 every 5 minutes, reviewing each changed price 1 "
+        "and 2 hours later; and weekly refreshes every topic's model rotation.",
+        "every second day, discover at 02:00 and reprice at 03:00 Sydney time, the rotation cycle "
+        "Fridays 04:00 Sydney time (EventBridge Scheduler), each tick and review on a one-shot "
+        "schedule of its own, and on demand (models discover, models reprice)",
     ),
     _lambda(
         "trending-digest",

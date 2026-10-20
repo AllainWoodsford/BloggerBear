@@ -1,26 +1,37 @@
 """The model catalog: keeps the Models registry's list of models and their prices up to date by
 itself (docs/enhancements/model-catalog-refresh.md).
 
-Two weekly jobs, each on its own EventBridge Scheduler cron (model_catalog_handler.py), and on
-demand from the admin CLI:
+Two jobs, each on its own EventBridge Scheduler cron every second day (model_catalog_handler.py),
+discover first and reprice three hours later, and on demand from the admin CLI:
 
-* **discover** (Tuesdays) adds every model, from every provider, that the account can call in this
-  region and the registry does not have yet, `enabled: false`, and prices it.
-* **reprice** (Wednesdays) looks up the price of every token-priced model in the registry again and
-  writes the ones that changed.
+* **discover** adds up to `discover_max_added` (5) of the models, from every provider, that the
+  account can call in this region and the registry does not have yet, `enabled: false` and
+  unpriced, text models first. Once the registry holds `max_models` (50) it prunes instead.
+  Finding nothing new is a normal result.
+* **reprice** queues up to `reprice_max_queued` (50) token-priced models, the ones looked up
+  longest ago first (so new, unpriced ones lead), and checks them a few at a time.
+* **cycle** (weekly, Fridays) refreshes the topics' model rotations (common/model_fleet.py), and
+  discover prunes the registry once it is full (model_fleet.prune).
+
+A queue is worked through by **ticks**: each checks CHECKS_PER_TICK models, then schedules the
+next one TICK_MINUTES later (one-shot schedules that delete themselves once they have fired), so
+the web searches and model calls are spread out instead of fired in a burst.
 
 A changed price is applied at once and recorded in a **pricing run** (a `pricing-run#<id>` row in
-the config table, with the old price). The run schedules its own **reviews**: one-shot schedules
-(1 and 2 hours later by default) that delete themselves once they have fired. Each review looks
-the price up again, on its own, and checks it. A model that fails goes back to its old price and a
-pricing failure is written to FailedExecutions (`kind: "model_pricing"`), which the operator's
-assistant reports. When the last review is done, the old prices of the models that kept their
-new one are written to the content bucket as `pricing/<date>-<run id>.json`.
+the config table, with the old price). Once its queue is done the run schedules its own
+**reviews** (1 and 2 hours later by default); each review queues the models still on probation
+and works through them by ticks too, looking each price up again, on its own. A model that fails
+goes back to its old price and a pricing failure is written to FailedExecutions
+(`kind: "model_pricing"`), which the operator's assistant reports. A lookup that errored (Bedrock
+or the search unavailable) is not a failure: the model stays on probation, and one that no review
+could look up at all goes back to its old price quietly, for the next reprice to try again. When
+the last review is done, the old prices of the models that kept their new one are written to the
+content bucket as `pricing/<date>-<run id>.json`.
 
-Settings (the two pause flags and how reviews judge) live in the `model-catalog` config row
-(SETTINGS below, all optional); what each job last did, and the run under review, in
+Settings (the two pause flags, the job sizes and how reviews judge) live in the `model-catalog`
+config row (SETTINGS below, all optional); what each job last did, and the run under way, in
 `model-catalog-state`. A paused job skips its scheduled run; the admin CLI's runs it anyway. Only
-one run is under review at a time: it is claimed in the state row before any price is written, so
+one run is under way at a time: it is claimed in the state row before any price is written, so
 two runs never hold different "old" prices for one model.
 
 Prices come from the AWS Price List API first (no model call), then from the AgentCore web search
@@ -41,7 +52,7 @@ from datetime import UTC, datetime, timedelta
 
 import boto3
 
-from common import dynamo
+from common import dynamo, model_fleet
 from common.model_routing import resolve_model
 from common.naming import environment_prefix
 
@@ -51,18 +62,31 @@ RUN_PREFIX = "pricing-run#"
 ACTIVE_RUN_FIELD = "active_run_id"
 FAILURE_KIND = "model_pricing"
 SNAPSHOT_PREFIX = "pricing/"
-JOBS = ("discover", "reprice")
+JOBS = ("discover", "reprice", "cycle")
 REVIEW_JOB = "review"
+TICK_JOB = "tick"
 
 # Every setting and its default. A setting that is unset, or holds something invalid, takes this.
 SETTINGS: dict[str, object] = {
     "discover_enabled": True,
     "reprice_enabled": True,
+    "cycle_enabled": True,
+    "max_models": 50,
+    "prune_mode": "value_for_money",
+    "prune_max_per_run": 20,
+    "rotation_max": 10,
+    "access_checks_per_run": 10,
+    "discover_max_added": 5,
+    "reprice_max_queued": 50,
     "review_after_hours": [1, 2],
     "review_tolerance_pct": 5,
     "max_change_factor": 10,
     "max_web_lookups": 10,
 }
+# How many models one tick checks, and how long until the next tick. Five lookups, each at most a
+# web search and a model call, fit well inside the Lambda's timeout.
+CHECKS_PER_TICK = 5
+TICK_MINUTES = 5
 MAX_REVIEWS = 4
 MAX_REVIEW_DELAY_HOURS = 168
 
@@ -91,6 +115,9 @@ def validate_setting(name: str, value) -> str | None:
         return f"unknown setting '{name}'"
     if name.endswith("_enabled"):
         return None if isinstance(value, bool) else f"'{name}' must be true or false"
+    if name == "prune_mode":
+        modes = model_fleet.PRUNE_MODES
+        return None if value in modes else f"'prune_mode' must be one of: {', '.join(modes)}"
     if name == "review_after_hours":
         if (
             isinstance(value, list)
@@ -103,6 +130,12 @@ def validate_setting(name: str, value) -> str | None:
             f"each 1 to {MAX_REVIEW_DELAY_HOURS}"
         )
     limits = {
+        "max_models": (1, 500),
+        "discover_max_added": (1, 5),
+        "reprice_max_queued": (1, 50),
+        "prune_max_per_run": (1, 100),
+        "rotation_max": (1, 50),
+        "access_checks_per_run": (0, 50),
         "review_tolerance_pct": (0, 100),
         "max_change_factor": (2, 1000),
         "max_web_lookups": (0, 100),
@@ -155,6 +188,9 @@ class Price:
 
 # A web lookup whose search results are the same as when the price was last read: nothing to do.
 UNCHANGED = "unchanged"
+# A web lookup that errored (the search or the model unavailable, throttled, timed out): it says
+# nothing about the price, so it is never held against one.
+LOOKUP_FAILED = "lookup_failed"
 
 
 def price_of(model: dict | None) -> dict | None:
@@ -345,7 +381,8 @@ def parse_web_answer(text: str) -> tuple[float, float] | None:
 class WebPrices:
     """A model's price from the AgentCore web search, read by a model. `budget` caps the searches
     (None: no cap). With `diff_first`, results that hash the same as the row's
-    `price_evidence_hash` give UNCHANGED, and the model is not asked."""
+    `price_evidence_hash` give UNCHANGED, and the model is not asked. A search or model call that
+    raises gives LOOKUP_FAILED."""
 
     def __init__(self, region: str, *, budget: int | None, diff_first: bool, search=None, ask=None):
         self._region = region
@@ -364,7 +401,7 @@ class WebPrices:
             results = self._search(f"Amazon Bedrock pricing {name} per million input output tokens")
         except Exception as exc:  # noqa: BLE001 - a failed search prices nothing
             print(f"model_catalog: web search for {model['model_id']} failed: {exc!r}")
-            return None
+            return LOOKUP_FAILED
         results = [r for r in results if r.get("snippet") or r.get("title")]
         if not results:
             return None
@@ -386,7 +423,7 @@ class WebPrices:
             parsed = parse_web_answer(self._ask(prompt))
         except Exception as exc:  # noqa: BLE001 - a failed read prices nothing
             print(f"model_catalog: reading the price of {model['model_id']} failed: {exc!r}")
-            return None
+            return LOOKUP_FAILED
         if parsed is None:
             return None
         return Price(parsed[0], parsed[1], "web-search", digest)
@@ -394,18 +431,32 @@ class WebPrices:
 
 class PriceLookup:
     """The sources in order: the Price List, then the web. A review's lookup (`review=True`) never
-    answers UNCHANGED and has no search cap: it must confirm the price itself."""
+    answers UNCHANGED and has no search cap: it must confirm the price itself. A pricing tick's
+    lookup has the searches its run has not made yet (`web_used` is how many it has)."""
 
-    def __init__(self, region: str, settings: dict, *, review: bool = False, price_list=None, web=None):
+    def __init__(
+        self,
+        region: str,
+        settings: dict,
+        *,
+        review: bool = False,
+        web_used: int = 0,
+        price_list=None,
+        web=None,
+    ):
         self.price_list = price_list or PriceList(region)
         self.web = web or WebPrices(
             region,
-            budget=None if review else settings["max_web_lookups"],
+            budget=None if review else max(0, settings["max_web_lookups"] - web_used),
             diff_first=not review,
         )
 
     def lookup(self, model: dict):
         return self.price_list.price(model) or self.web.price(model)
+
+    @property
+    def web_searches(self) -> int:
+        return self.web.searches
 
 
 # --- discovery ------------------------------------------------------------------------------------
@@ -493,20 +544,37 @@ def _region() -> str:
     return os.environ.get("AWS_REGION") or boto3.session.Session().region_name
 
 
+def _token_priced(model: dict) -> bool:
+    return (model.get("pricing_unit") or "tokens") == "tokens" and not model.get("price_locked")
+
+
+def queue_order(models: list[dict]) -> list[dict]:
+    """The models a reprice may check, in the order it checks them: token-priced and unlocked, the
+    one looked up longest ago first (one never looked up, like a newly discovered one, before any
+    other), so runs that each check only some of them still reach every one in turn."""
+    return sorted(
+        (m for m in models if _token_priced(m)),
+        key=lambda m: (m.get("price_attempted_at") or m.get("price_checked_at") or "", m["model_id"]),
+    )
+
+
 def price_models(models: list[dict], lookup: PriceLookup, now: datetime) -> dict:
-    """Look up each token-priced, unlocked model's price and apply the ones that changed.
-    Returns {"changes": [...], "confirmed": n, "unpriced": [ids]}; each change holds the model's
-    `old` price and its fields (None when it had none) and the `new` one."""
-    changes, unpriced, confirmed = [], [], 0
+    """Look up each token-priced, unlocked model's price and apply the ones that changed. Every
+    model looked up gets `price_attempted_at`, whatever the lookup found. Returns {"changes": [...],
+    "confirmed": n, "unpriced": [ids], "lookup_errors": n}; each change holds the model's `old`
+    price and its fields (None when it had none) and the `new` one."""
+    changes, unpriced, confirmed, errors = [], [], 0, 0
     checked_at = _now_iso(now)
     for model in models:
-        if (model.get("pricing_unit") or "tokens") != "tokens" or model.get("price_locked"):
+        if not _token_priced(model):
             continue
         model_id = model["model_id"]
         found = lookup.lookup(model)
-        if found is None or found == UNCHANGED:
+        if not isinstance(found, Price):
+            errors += found == LOOKUP_FAILED
             if price_of(model) is None:
                 unpriced.append(model_id)
+            dynamo.set_model_fields(model_id, {"price_attempted_at": checked_at}, expected={})
             continue
         old = price_of(model)
         new = {"input": found.input_per_1k, "output": found.output_per_1k}
@@ -515,7 +583,11 @@ def price_models(models: list[dict], lookup: PriceLookup, now: datetime) -> dict
             # Confirmed, not changed: only when and how it was last checked move on.
             dynamo.set_model_fields(
                 model_id,
-                {"price_checked_at": checked_at, "price_evidence_hash": found.evidence_hash},
+                {
+                    "price_checked_at": checked_at,
+                    "price_attempted_at": checked_at,
+                    "price_evidence_hash": found.evidence_hash,
+                },
                 expected=expected,
             )
             confirmed += 1
@@ -525,6 +597,7 @@ def price_models(models: list[dict], lookup: PriceLookup, now: datetime) -> dict
             PRICE_FIELDS[1]: new["output"],
             "price_source": found.source,
             "price_checked_at": checked_at,
+            "price_attempted_at": checked_at,
             "price_evidence_hash": found.evidence_hash,
         }
         if dynamo.set_model_fields(model_id, updates, expected=expected):
@@ -537,53 +610,11 @@ def price_models(models: list[dict], lookup: PriceLookup, now: datetime) -> dict
                     "source": found.source,
                 }
             )
-    return {"changes": changes, "confirmed": confirmed, "unpriced": unpriced}
+    return {"changes": changes, "confirmed": confirmed, "unpriced": unpriced, "lookup_errors": errors}
 
 
-def _run_job_pricing(models: list[dict], trigger: str, settings: dict, now: datetime, lookup=None) -> dict:
-    """Claim the one run slot, price `models`, and open a run for any change (releasing the slot
-    when nothing changed). {"status": "review_pending"} when another run holds the slot."""
-    run_id = f"{now.astimezone(UTC).strftime(RUN_ID_TIME)}-{uuid.uuid4().hex[:6]}"
-    if not dynamo.claim_config_field(STATE_ID, ACTIVE_RUN_FIELD, run_id):
-        return {"status": "review_pending", "run_id": get_state().get(ACTIVE_RUN_FIELD)}
-    try:
-        priced = price_models(models, lookup or PriceLookup(_region(), settings), now)
-    except Exception:
-        dynamo.release_config_field(STATE_ID, ACTIVE_RUN_FIELD, run_id)
-        raise
-    result = {
-        "changed": len(priced["changes"]),
-        "confirmed": priced["confirmed"],
-        "unpriced": priced["unpriced"][:RESULT_IDS_MAX],
-        "unpriced_count": len(priced["unpriced"]),
-    }
-    if not priced["changes"]:
-        dynamo.release_config_field(STATE_ID, ACTIVE_RUN_FIELD, run_id)
-        return {"status": "no_change", **result}
-    reviews_due = [_now_iso(now + timedelta(hours=h)) for h in settings["review_after_hours"]]
-    dynamo.put_config_row(
-        {
-            "config_id": f"{RUN_PREFIX}{run_id}",
-            "run_id": run_id,
-            "trigger": trigger,
-            "status": "reviewing",
-            "applied_at": _now_iso(now),
-            "changes": priced["changes"],
-            "reviews_due": reviews_due,
-            "reviews_done": [],
-            "reverted": [],
-            "dropped": [],
-        }
-    )
-    try:
-        schedule_reviews(run_id, reviews_due)
-    except Exception as exc:  # noqa: BLE001 - the next job runs an overdue review itself
-        print(f"model_catalog: could not schedule the reviews of run {run_id}: {exc!r}")
-    return {"status": "reviewing", "run_id": run_id, **result}
-
-
-# A run id: when it started (UTC) and six random hex digits, short enough that a review's schedule
-# name fits EventBridge Scheduler's 64 characters with the longest prefix Terraform accepts.
+# A run id: when it started (UTC) and six random hex digits, short enough that a schedule name
+# fits EventBridge Scheduler's 64 characters with the longest prefix Terraform accepts.
 RUN_ID_TIME = "%y%m%d%H%M%S"
 
 _scheduler_client = None
@@ -602,54 +633,175 @@ def review_schedule_name(run_id: str, number: int) -> str:
     return f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}price-review-{run_id}-{number}"
 
 
+def tick_schedule_name(run_id: str, pass_label: str, tick: int) -> str:
+    """<prefix>-<env>-price-tick-<run id>-<pass>-<n>, where the pass is `p` (pricing) or `r<n>`
+    (a review): every tick of a run has its own name."""
+    return f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}price-tick-{run_id}-{pass_label}-{tick}"
+
+
+def _schedule_once(name: str, when: str, payload: dict) -> None:
+    """A one-shot schedule invoking this Lambda with `payload` at `when`, deleting itself once it
+    has fired."""
+    at = _parse(when).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    _get_scheduler().create_schedule(
+        Name=name,
+        GroupName="default",
+        ScheduleExpression=f"at({at})",
+        ScheduleExpressionTimezone="UTC",
+        FlexibleTimeWindow={"Mode": "OFF"},
+        ActionAfterCompletion="DELETE",
+        Target={
+            "Arn": os.environ["MODEL_CATALOG_FUNCTION_ARN"],
+            "RoleArn": os.environ["SCHEDULER_INVOKE_ROLE_ARN"],
+            "Input": json.dumps(payload),
+        },
+    )
+
+
 def schedule_reviews(run_id: str, reviews_due: list[str]) -> None:
     """One one-shot schedule per review, at its time, invoking this Lambda with
-    {"job": "review", "run_id": ...}. Each deletes itself once it has fired."""
-    client = _get_scheduler()
+    {"job": "review", "run_id": ...}."""
     for number, when in enumerate(reviews_due, 1):
-        at = _parse(when).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S")
-        client.create_schedule(
-            Name=review_schedule_name(run_id, number),
-            GroupName="default",
-            ScheduleExpression=f"at({at})",
-            ScheduleExpressionTimezone="UTC",
-            FlexibleTimeWindow={"Mode": "OFF"},
-            ActionAfterCompletion="DELETE",
-            Target={
-                "Arn": os.environ["MODEL_CATALOG_FUNCTION_ARN"],
-                "RoleArn": os.environ["SCHEDULER_INVOKE_ROLE_ARN"],
-                "Input": json.dumps({"job": REVIEW_JOB, "run_id": run_id}),
-            },
-        )
+        _schedule_once(review_schedule_name(run_id, number), when, {"job": REVIEW_JOB, "run_id": run_id})
+
+
+def pass_label(work: dict) -> str:
+    return "p" if work["kind"] == "price" else f"r{work['number']}"
+
+
+def schedule_tick(run: dict) -> None:
+    """The one-shot schedule of the run's pass's next tick, invoking this Lambda with
+    {"job": "tick", "run_id": ..., "pass": ..., "tick": n}."""
+    work = run["pass"]
+    label = pass_label(work)
+    _schedule_once(
+        tick_schedule_name(run["run_id"], label, work["tick"]),
+        work["next_tick_at"],
+        {"job": TICK_JOB, "run_id": run["run_id"], "pass": label, "tick": work["tick"]},
+    )
+
+
+def _new_pass(kind: str, queue: list[str], due: datetime, number: int | None = None) -> dict:
+    work = {"kind": kind, "queue": queue, "tick": 1, "next_tick_at": _now_iso(due)}
+    if kind == "review":
+        work.update(number=number, passed=0, deferred=[], reverted=[], dropped=[])
+    return work
 
 
 def reprice(trigger: str, settings: dict, now: datetime, lookup=None) -> dict:
-    """The reprice job: every model in the registry."""
-    return _run_job_pricing(dynamo.list_models(), trigger, settings, now, lookup)
+    """The reprice job: claim the one run slot, queue up to `reprice_max_queued` models
+    (queue_order) on a new run, and run its first tick now; the rest follow by ticks.
+    {"status": "review_pending"} when another run holds the slot."""
+    queue = [m["model_id"] for m in queue_order(dynamo.list_models())][: settings["reprice_max_queued"]]
+    if not queue:
+        return {"status": "nothing_to_price"}
+    run_id = f"{now.astimezone(UTC).strftime(RUN_ID_TIME)}-{uuid.uuid4().hex[:6]}"
+    if not dynamo.claim_config_field(STATE_ID, ACTIVE_RUN_FIELD, run_id):
+        return {"status": "review_pending", "run_id": get_state().get(ACTIVE_RUN_FIELD)}
+    run = {
+        "config_id": f"{RUN_PREFIX}{run_id}",
+        "run_id": run_id,
+        "trigger": trigger,
+        "status": "pricing",
+        "started_at": _now_iso(now),
+        "queued": len(queue),
+        "changes": [],
+        "confirmed": 0,
+        "unpriced": [],
+        "lookup_errors": 0,
+        "web_lookups": 0,
+        "reviews_due": [],
+        "reviews_done": [],
+        "reverted": [],
+        "dropped": [],
+        "unconfirmed": [],
+        "pass": _new_pass("price", queue, now),
+    }
+    try:
+        dynamo.put_config_row(run)
+        return {"queued": len(queue), **advance(run, settings, now, lookup)}
+    except Exception:
+        dynamo.update_config_row(
+            run["config_id"],
+            {"status": "failed", "expires_at": int((now + timedelta(days=RUN_ROW_DAYS)).timestamp())},
+        )
+        dynamo.release_config_field(STATE_ID, ACTIVE_RUN_FIELD, run_id)
+        raise
 
 
-def discover(trigger: str, settings: dict, now: datetime, *, bedrock=None, lookup=None) -> dict:
-    """The discover job: add the account's models the registry lacks, disabled, then price the
-    token-priced ones (unless another run is under review: then the next reprice prices them)."""
-    region = _region()
-    added = []
-    for found in account_models(region, bedrock):
-        item = {
-            **found,
-            "enabled": False,
-            "region": region,
-            "discovered_at": _now_iso(now),
+def advance(run: dict, settings: dict, now: datetime, lookup=None) -> dict:
+    """One tick of the run's pass: check the next CHECKS_PER_TICK models in its queue, then
+    schedule the next tick, or end the pass once the queue is empty. Returns what it did."""
+    work = run["pass"]
+    batch, rest = work["queue"][:CHECKS_PER_TICK], work["queue"][CHECKS_PER_TICK:]
+    if work["kind"] == "price":
+        _price_tick(run, batch, settings, now, lookup)
+    else:
+        _review_tick(run, batch, settings, now, lookup)
+    work["queue"] = rest
+    if rest:
+        work["tick"] += 1
+        work["next_tick_at"] = _now_iso(now + timedelta(minutes=TICK_MINUTES))
+        dynamo.put_config_row(run)
+        try:
+            schedule_tick(run)
+        except Exception as exc:  # noqa: BLE001 - the next job runs an overdue tick itself
+            print(f"model_catalog: could not schedule the next tick of run {run['run_id']}: {exc!r}")
+    else:
+        run = _end_pass(run, settings, now)
+    return _progress(run, work, len(batch))
+
+
+def _progress(run: dict, work: dict, checked: int) -> dict:
+    result = {
+        "status": run["status"],
+        "run_id": run["run_id"],
+        "checked": checked,
+        "left": len(work["queue"]),
+    }
+    if work["kind"] == "price":
+        return {
+            **result,
+            "changed": len(run["changes"]),
+            "confirmed": run["confirmed"],
+            "unpriced": run["unpriced"][:RESULT_IDS_MAX],
+            "unpriced_count": len(run["unpriced"]),
+            "lookup_errors": run["lookup_errors"],
         }
-        if dynamo.add_model_if_missing(item):
-            added.append(item)
-    result = {"added": len(added), "added_ids": [m["model_id"] for m in added][:RESULT_IDS_MAX]}
-    if added:
-        result["pricing"] = _run_job_pricing(added, trigger, settings, now, lookup)
-    return {"status": "done", **result}
+    return {
+        **result,
+        "review": work["number"],
+        "passed": work["passed"],
+        "deferred": [d["model_id"] for d in work["deferred"]],
+        "reverted": [r["model_id"] for r in work["reverted"]],
+        "dropped": [d["model_id"] for d in work["dropped"]],
+    }
+
+
+def _price_tick(run: dict, batch: list[str], settings: dict, now: datetime, lookup) -> None:
+    lookup = lookup or PriceLookup(_region(), settings, web_used=run["web_lookups"])
+    searched = getattr(lookup, "web_searches", 0)
+    models = [m for m in (dynamo.get_model(model_id) for model_id in batch) if m is not None]
+    priced = price_models(models, lookup, now)
+    run["web_lookups"] += getattr(lookup, "web_searches", 0) - searched
+    run["changes"] += priced["changes"]
+    run["confirmed"] += priced["confirmed"]
+    run["unpriced"] += priced["unpriced"]
+    run["lookup_errors"] += priced["lookup_errors"]
+
+
+def _change(run: dict, model_id: str) -> dict | None:
+    return next((c for c in run.get("changes") or [] if c["model_id"] == model_id), None)
+
+
+def _settled(run: dict) -> set[str]:
+    """The models no longer on probation: put back, dropped, or put back unconfirmed."""
+    return {c["model_id"] for c in run["reverted"] + run["dropped"] + (run.get("unconfirmed") or [])}
 
 
 def _check(change: dict, fresh, settings: dict) -> str | None:
-    """Why a review fails a change, or None when it passes."""
+    """Why a review fails a change, or None when it passes. LOOKUP_FAILED when the change is in
+    bounds but the fresh lookup errored: neither, so it stays on probation."""
     new, old = change["new"], change.get("old")
     for side in ("input", "output"):
         if not 0 < new[side] <= PRICE_CEILING_PER_1K:
@@ -659,6 +811,8 @@ def _check(change: dict, fresh, settings: dict) -> str | None:
         for side in ("input", "output"):
             if old[side] > 0 and not 1 / factor <= new[side] / old[side] <= factor:
                 return f"the {side} price moved more than {factor}x (from {old[side]} to {new[side]})"
+    if fresh == LOOKUP_FAILED:
+        return LOOKUP_FAILED
     if not isinstance(fresh, Price):
         return "a fresh lookup could not confirm the price"
     tolerance = settings["review_tolerance_pct"] / 100
@@ -680,6 +834,90 @@ def _revert(change: dict) -> bool:
     return dynamo.set_model_fields(change["model_id"], updates, expected=expected)
 
 
+CHANGED_SINCE = "changed by someone else since"
+
+
+def _review_tick(run: dict, batch: list[str], settings: dict, now: datetime, lookup) -> None:
+    """Check each model in `batch` again: pass it, put it back (a failure), or, when the lookup
+    errored, defer it to the next review."""
+    lookup = lookup or PriceLookup(_region(), settings, review=True)
+    work = run["pass"]
+    number = work["number"]
+    for model_id in batch:
+        change = _change(run, model_id)
+        model = dynamo.get_model(model_id)
+        if change is None or model is None or not same_price(price_of(model), change["new"]):
+            work["dropped"].append({"model_id": model_id, "why": CHANGED_SINCE, "review": number})
+            continue
+        reason = _check(change, lookup.lookup(model), settings)
+        if reason is None:
+            work["passed"] += 1
+            change["confirmations"] = change.get("confirmations", 0) + 1
+        elif reason == LOOKUP_FAILED:
+            work["deferred"].append({"model_id": model_id, "review": number})
+        elif _revert(change):
+            work["reverted"].append({"model_id": model_id, "why": reason, "review": number})
+        else:
+            work["dropped"].append({"model_id": model_id, "why": CHANGED_SINCE, "review": number})
+
+
+def _end_pass(run: dict, settings: dict, now: datetime) -> dict:
+    """A pass's queue is done. After pricing: schedule the reviews, or close a run that changed
+    nothing. After a review: record it, and close the run after its last review or once nothing
+    is left on probation."""
+    work = run.pop("pass")
+    if work["kind"] == "price":
+        if not run["changes"]:
+            return _finalise(run, now)
+        run["status"] = "reviewing"
+        run["reviews_due"] = [_now_iso(now + timedelta(hours=h)) for h in settings["review_after_hours"]]
+        dynamo.put_config_row(run)
+        try:
+            schedule_reviews(run["run_id"], run["reviews_due"])
+        except Exception as exc:  # noqa: BLE001 - the next job runs an overdue review itself
+            print(f"model_catalog: could not schedule the reviews of run {run['run_id']}: {exc!r}")
+        return run
+
+    number = work["number"]
+    run["reviews_done"] = [
+        *run["reviews_done"],
+        {"at": _now_iso(now), "passed": work["passed"], "deferred": len(work["deferred"])},
+    ]
+    run["reverted"] = [*run["reverted"], *work["reverted"]]
+    run["dropped"] = [*run["dropped"], *work["dropped"]]
+    if work["reverted"]:
+        _record_failure(run, work["reverted"], now)
+    last = len(run["reviews_done"]) >= len(run["reviews_due"])
+    if last:
+        # Deferred at the last review: kept if an earlier review confirmed it, else put back
+        # quietly (an outage is not a wrong price), for the next reprice to try again.
+        for deferred in work["deferred"]:
+            change = _change(run, deferred["model_id"])
+            if change.get("confirmations"):
+                continue
+            if _revert(change):
+                why = "no review could look the price up"
+                run["unconfirmed"] = [*run.get("unconfirmed", []), {**deferred, "why": why}]
+                print(f"model_catalog: run {run['run_id']} put back {deferred['model_id']}: {why}")
+            else:
+                run["dropped"] = [*run["dropped"], {**deferred, "why": CHANGED_SINCE}]
+    if last or work["passed"] + len(work["deferred"]) == 0:
+        return _finalise(run, now)
+    while review_is_due(run, now) and _skip_if_saturated(run, settings, now):
+        pass  # a saturated review that fell due meanwhile is skipped (never the last)
+    if review_is_due(run, now):
+        # The next review fell due while this one was being worked through: start it next tick.
+        _open_review(run, now + timedelta(minutes=TICK_MINUTES))
+        dynamo.put_config_row(run)
+        try:
+            schedule_tick(run)
+        except Exception as exc:  # noqa: BLE001 - the next job runs an overdue tick itself
+            print(f"model_catalog: could not schedule review {number + 1} of run {run['run_id']}: {exc!r}")
+        return run
+    dynamo.put_config_row(run)
+    return run
+
+
 def next_review_at(run: dict) -> datetime | None:
     due = run.get("reviews_due") or []
     done = len(run.get("reviews_done") or [])
@@ -691,62 +929,62 @@ def review_is_due(run: dict, now: datetime) -> bool:
     return when is not None and now >= when
 
 
-# A review's schedule fires at its time; this much early still counts (clocks differ by seconds).
+def next_step_at(run: dict) -> datetime | None:
+    """When the run's next step is due: its pass's next tick, else its next review."""
+    work = run.get("pass")
+    return _parse(work.get("next_tick_at")) if work else next_review_at(run)
+
+
+# A schedule fires at its time; this much early still counts (clocks differ by seconds).
 REVIEW_EARLY_GRACE = timedelta(minutes=5)
-# A review this far past its time has lost its schedule (or its run): the next job runs it first.
+TICK_EARLY_GRACE = timedelta(minutes=1)
+# A step this far past its time has lost its schedule (or its run): the next job runs it first.
 OVERDUE_AFTER = timedelta(minutes=30)
 
 
 def is_overdue(run: dict | None, now: datetime) -> bool:
-    when = next_review_at(run) if run else None
+    when = next_step_at(run) if run else None
     return when is not None and now - when > OVERDUE_AFTER
 
 
-def review(run: dict, settings: dict, now: datetime, lookup=None) -> dict:
-    """Run a run's next review: check every model still on probation, put back the ones that fail
-    (and record a pricing failure for them), and finalise the run after its last review or once
-    nothing is left on it."""
-    lookup = lookup or PriceLookup(_region(), settings, review=True)
-    number = len(run.get("reviews_done") or []) + 1
-    settled = {c["model_id"] for c in (run.get("reverted") or []) + (run.get("dropped") or [])}
-    reverted, dropped, passed = [], [], 0
-    for change in run.get("changes") or []:
-        model_id = change["model_id"]
-        if model_id in settled:
-            continue
-        model = dynamo.get_model(model_id)
-        if model is None or not same_price(price_of(model), change["new"]):
-            dropped.append({"model_id": model_id, "why": "changed by someone else since", "review": number})
-            continue
-        reason = _check(change, lookup.lookup(model), settings)
-        if reason is None:
-            passed += 1
-        elif _revert(change):
-            reverted.append({"model_id": model_id, "why": reason, "review": number})
-        else:
-            dropped.append({"model_id": model_id, "why": "changed by someone else since", "review": number})
+def _open_review(run: dict, due: datetime) -> None:
+    queue = [c["model_id"] for c in run["changes"] if c["model_id"] not in _settled(run)]
+    run["pass"] = _new_pass("review", queue, due, number=len(run["reviews_done"]) + 1)
 
-    run = {
-        **run,
-        "reviews_done": [*(run.get("reviews_done") or []), {"at": _now_iso(now), "passed": passed}],
-        "reverted": [*(run.get("reverted") or []), *reverted],
-        "dropped": [*(run.get("dropped") or []), *dropped],
-    }
-    if reverted:
-        _record_failure(run, reverted, now)
-    last = len(run["reviews_done"]) >= len(run.get("reviews_due") or [])
-    if last or passed == 0:
-        run = _finalise(run, now)
-    else:
+
+def review_skip_at(settings: dict) -> int:
+    """A review that would queue this many models or more is skipped (half of what a reprice may
+    queue), unless it is the run's last."""
+    return max(1, settings["reprice_max_queued"] // 2)
+
+
+def _skip_if_saturated(run: dict, settings: dict, now: datetime) -> bool:
+    """Before a review queues anything: count what it would queue, and skip it when that is
+    review_skip_at or more and it is not the last review, so a saturated run is checked once
+    rather than at every review. True when it was skipped (recorded on `run`, not saved)."""
+    on_probation = [c for c in run["changes"] if c["model_id"] not in _settled(run)]
+    number = len(run["reviews_done"]) + 1
+    if number >= len(run["reviews_due"]) or len(on_probation) < review_skip_at(settings):
+        return False
+    run["reviews_done"] = [
+        *run["reviews_done"],
+        {"at": _now_iso(now), "passed": 0, "deferred": 0, "skipped": len(on_probation)},
+    ]
+    print(f"model_catalog: run {run['run_id']} skipped review {number}: {len(on_probation)} models queued")
+    return True
+
+
+def review(run: dict, settings: dict, now: datetime, lookup=None) -> dict:
+    """Start a run's next review: queue every model still on probation and run the first tick. A
+    saturated review (_skip_if_saturated) is skipped instead; the next one runs when it is due."""
+    number = len(run["reviews_done"]) + 1
+    if _skip_if_saturated(run, settings, now):
+        if review_is_due(run, now):
+            return review(run, settings, now, lookup)
         dynamo.put_config_row(run)
-    return {
-        "status": run["status"],
-        "run_id": run["run_id"],
-        "review": number,
-        "passed": passed,
-        "reverted": [r["model_id"] for r in reverted],
-        "dropped": [d["model_id"] for d in dropped],
-    }
+        return {"status": run["status"], "run_id": run["run_id"], "review": number, "skipped": True}
+    _open_review(run, now)
+    return advance(run, settings, now, lookup)
 
 
 def _record_failure(run: dict, reverted: list[dict], now: datetime) -> None:
@@ -770,19 +1008,22 @@ def _record_failure(run: dict, reverted: list[dict], now: datetime) -> None:
 
 def _finalise(run: dict, now: datetime) -> dict:
     """Write the snapshot of the old prices the run kept replacing, close the run, free the slot."""
-    settled = {c["model_id"] for c in run["reverted"] + run["dropped"]}
+    settled = _settled(run)
     kept = [c for c in run.get("changes") or [] if c["model_id"] not in settled]
     snapshot_key = write_snapshot(run, kept, now) if kept else None
-    if kept and run["reverted"]:
+    put_back = run["reverted"] or run.get("unconfirmed")
+    if not run.get("changes"):
+        status = "no_change"
+    elif kept and put_back:
         status = "partly_reverted"
     elif kept:
         status = "passed"
-    elif run["reverted"]:
+    elif put_back:
         status = "reverted"
     else:
         status = "dropped"
     run = {
-        **run,
+        **{k: v for k, v in run.items() if k != "pass"},
         "status": status,
         "finished_at": _now_iso(now),
         "snapshot_key": snapshot_key,
@@ -800,7 +1041,7 @@ def write_snapshot(run: dict, kept: list[dict], now: datetime, client=None) -> s
     body = {
         "written_at": _now_iso(now),
         "run_id": run["run_id"],
-        "applied_at": run.get("applied_at"),
+        "applied_at": run.get("started_at"),
         "models": [{"model_id": c["model_id"], "old": c.get("old"), "new": c["new"]} for c in kept],
     }
     (client or boto3.client("s3")).put_object(
@@ -812,13 +1053,146 @@ def write_snapshot(run: dict, kept: list[dict], now: datetime, client=None) -> s
     return key
 
 
+# --- access ---------------------------------------------------------------------------------------
+
+# Listing a model does not mean the account can call it (model access never granted, a provider's
+# agreement or use-case form not accepted, no Marketplace subscription). A probe is one Converse
+# call of one output token: the pipeline calls every text model through Converse, so a model that
+# answers it is usable. Its tokens are tallied with the rest of the catalog's (model_pricing).
+GRANTED, DENIED, UNKNOWN = "granted", "denied", "unknown"
+ACCESS_FIELDS = ("access", "access_checked_at", "access_error")
+# These say the account cannot call the model (or not through Converse on demand). Anything else
+# (throttling, an outage, a timeout) says nothing about access: UNKNOWN, checked again later.
+DENIED_CODES = frozenset({"AccessDeniedException", "ResourceNotFoundException", "ValidationException"})
+DENIED_ID = "model-access-denied"
+# A model a probe found denied is not probed (nor added) again for this long.
+DENIED_RECHECK = timedelta(days=30)
+
+
+def probe_access(model_id: str, client=None) -> tuple[str, str | None]:
+    """(access, why) for one model: GRANTED when a 1-token Converse call answers, DENIED or
+    UNKNOWN (with the error) when it fails."""
+    from botocore.exceptions import ClientError
+
+    from common.bedrock import _get_client
+    from common.stats_tracking import record_model_usage
+
+    try:
+        response = (client or _get_client()).converse(
+            modelId=model_id,
+            messages=[{"role": "user", "content": [{"text": "Hi"}]}],
+            inferenceConfig={"maxTokens": 1},
+        )
+    except ClientError as exc:
+        error = exc.response.get("Error") or {}
+        code = error.get("Code") or "ClientError"
+        why = f"{code}: {error.get('Message') or ''}"[:300]
+        return (DENIED if code in DENIED_CODES else UNKNOWN), why
+    except Exception as exc:  # noqa: BLE001 - a probe that cannot run says nothing about access
+        return UNKNOWN, repr(exc)[:300]
+    usage = response.get("usage") or {}
+    record_model_usage(STATS_CATEGORY, model_id, usage.get("inputTokens", 0), usage.get("outputTokens", 0), 1)
+    return GRANTED, None
+
+
+def _access_fields(access: str, why: str | None, now: datetime) -> dict:
+    return {"access": access, "access_checked_at": _now_iso(now), "access_error": why}
+
+
+def recently_denied(now: datetime) -> dict:
+    """{model_id: {checked_at, error}} for the models a probe found denied within DENIED_RECHECK."""
+    denied = (dynamo.get_config_row(DENIED_ID) or {}).get("models") or {}
+    return {
+        model_id: entry
+        for model_id, entry in denied.items()
+        if (checked := _parse(entry.get("checked_at"))) and now - checked < DENIED_RECHECK
+    }
+
+
+def recheck_access(budget: int, now: datetime, probe) -> dict:
+    """Probe up to `budget` registry text models whose access is not known to be granted: never
+    checked first, then unknown, then denied, the longest ago first within each."""
+    rank = {None: 0, UNKNOWN: 1, DENIED: 2}
+    pool = sorted(
+        (
+            m
+            for m in dynamo.list_models()
+            if (m.get("pricing_unit") or "tokens") == "tokens" and m.get("access") != GRANTED
+        ),
+        key=lambda m: (rank.get(m.get("access"), 0), m.get("access_checked_at") or "", m["model_id"]),
+    )
+    found = {GRANTED: [], DENIED: [], UNKNOWN: []}
+    for model in pool[: max(0, budget)]:
+        access, why = probe(model["model_id"])
+        dynamo.set_model_fields(model["model_id"], _access_fields(access, why, now), expected={})
+        found[access].append(model["model_id"])
+    return {"checked": sum(map(len, found.values())), **{k: v[:RESULT_IDS_MAX] for k, v in found.items()}}
+
+
+# --- discovery job ---------------------------------------------------------------------------------
+
+
+def discover(trigger: str, settings: dict, now: datetime, *, bedrock=None, probe=None) -> dict:
+    """The discover job: add up to `discover_max_added` of the account's models the registry
+    lacks, disabled and unpriced (the reprice that follows prices them first), text models first,
+    never one the fleet pruned. Each text model is probed first (probe_access): one the account
+    cannot call is not added, and not probed again for DENIED_RECHECK. Once the registry holds
+    `max_models` it prunes instead (model_fleet.prune). The probes left over (of
+    `access_checks_per_run`) check registry models whose access is not known yet. Finding nothing
+    new is a normal result."""
+    probe = probe or probe_access
+    budget = settings["access_checks_per_run"]
+    have = dynamo.list_models()
+    room = settings["max_models"] - len(have)
+    if room <= 0:
+        result = {"status": "full", "prune": model_fleet.prune(settings, now)}
+    else:
+        denied_before = recently_denied(now)
+        known = {m["model_id"] for m in have} | set(dynamo.get_model_archive()) | set(denied_before)
+        region = _region()
+        new = [found for found in account_models(region, bedrock) if found["model_id"] not in known]
+        new.sort(key=lambda found: (found["pricing_unit"] != "tokens", found["model_id"]))
+        added, denied = [], {}
+        for found in new:
+            if len(added) >= min(room, settings["discover_max_added"]):
+                break
+            item = {**found, "enabled": False, "region": region, "discovered_at": _now_iso(now)}
+            if found["pricing_unit"] == "tokens":
+                if budget <= 0:
+                    break  # an unchecked text model waits for a run with probes to spare
+                budget -= 1
+                access, why = probe(found["model_id"])
+                if access == DENIED:
+                    denied[found["model_id"]] = {"checked_at": _now_iso(now), "error": why}
+                    continue
+                item.update({k: v for k, v in _access_fields(access, why, now).items() if v is not None})
+            if dynamo.add_model_if_missing(item):
+                added.append(item)
+        if denied:
+            dynamo.put_config_row({"config_id": DENIED_ID, "models": {**denied_before, **denied}})
+        result = {
+            "status": "done",
+            "added": len(added),
+            "added_ids": [m["model_id"] for m in added],
+            "denied_ids": list(denied)[:RESULT_IDS_MAX],
+            "not_added": len(new) - len(added) - len(denied),
+        }
+    result["access_checks"] = recheck_access(budget, now, probe)
+    return result
+
+
 # --- invocations -----------------------------------------------------------------------------------
 
 
 def run_job(job: str, trigger: str, settings: dict, now: datetime) -> dict:
     """Run one job now and record it on the state row. A reprice that could not start because a
-    run is under review is recorded as such: it runs again on its next schedule, or from the CLI."""
-    result = discover(trigger, settings, now) if job == "discover" else reprice(trigger, settings, now)
+    run is under way is recorded as such: it runs again on its next schedule, or from the CLI."""
+    if job == "discover":
+        result = discover(trigger, settings, now)
+    elif job == "cycle":
+        result = model_fleet.cycle(settings, now)
+    else:
+        result = reprice(trigger, settings, now)
     dynamo.update_config_row(
         STATE_ID,
         {f"last_{job}_at": _now_iso(now), f"last_{job}_result": {"trigger": trigger, **result}},
@@ -826,9 +1200,8 @@ def run_job(job: str, trigger: str, settings: dict, now: datetime) -> dict:
     return result
 
 
-# A run's slot is claimed before its row is written (the row is written once its prices are), so
-# for the minutes a run is pricing, the state names a run with no row. Past this, a slot naming a
-# run with no row is left over from a run that died midway, and is freed so repricing can go on.
+# A run's slot is claimed just before its row is written. Past this, a slot naming a run with no
+# row is left over from a run that died in between, and is freed so repricing can go on.
 ORPHAN_AFTER = timedelta(hours=1)
 
 
@@ -845,45 +1218,69 @@ def _release_orphaned_slot(now: datetime) -> None:
         dynamo.release_config_field(STATE_ID, ACTIVE_RUN_FIELD, run_id)
 
 
+def step(run: dict, settings: dict, now: datetime) -> dict:
+    """The run's next step: its pass's next tick, else its next review."""
+    return advance(run, settings, now) if run.get("pass") else review(run, settings, now)
+
+
 def settle_overdue(settings: dict, now: datetime) -> list[dict]:
-    """Before a job: run the reviews of a run whose schedules were lost (each overdue one, in
-    turn), and free a slot a dead run left, so neither can hold repricing up for good."""
+    """Before a job: run the steps of a run whose schedules were lost (each overdue one, in turn),
+    and free a slot a dead run left, so neither can hold repricing up for good."""
     run = active_run()
     if run is None:
         _release_orphaned_slot(now)
         return []
     results = []
     while run is not None and is_overdue(run, now):
-        results.append(review(run, settings, now))
+        results.append(step(run, settings, now))
         run = active_run()
     return results
 
 
 def run_review(run_id, settings: dict, now: datetime) -> dict:
-    """A review's schedule fired: run that run's next review, if it is still the run under review
-    and the review is due."""
+    """A review's schedule fired: start that run's next review, if it is still the run under way,
+    is not in the middle of a pass, and the review is due."""
     run = active_run()
     if run is None or run.get("run_id") != run_id:
         return {"status": "stale", "run_id": run_id}
+    if run.get("pass"):
+        # Still working through a pass; the review starts when that pass ends.
+        return {"status": "busy", "run_id": run_id}
     if not review_is_due(run, now + REVIEW_EARLY_GRACE):
         return {"status": "not_due", "run_id": run_id}
     return review(run, settings, now)
 
 
+def run_tick(event: dict, settings: dict, now: datetime) -> dict:
+    """A tick's schedule fired: run that pass's next tick, if it is still the one the run waits for
+    and it is due."""
+    run_id = event.get("run_id")
+    run = active_run()
+    work = run.get("pass") if run and run.get("run_id") == run_id else None
+    if work is None or pass_label(work) != event.get("pass") or work["tick"] != event.get("tick"):
+        return {"status": "stale", "run_id": run_id}
+    if now + TICK_EARLY_GRACE < _parse(work["next_tick_at"]):
+        return {"status": "not_due", "run_id": run_id}
+    return advance(run, settings, now)
+
+
 def handle(event: dict, now: datetime | None = None) -> dict:
     """One invocation:
 
-    * `{"job": "discover"|"reprice", "trigger": "schedule"}`: its weekly schedule; skipped while
-      the job is paused.
+    * `{"job": "discover"|"reprice", "trigger": "schedule"}`: its schedule (every second day);
+      skipped while the job is paused.
     * `{"job": "discover"|"reprice"}`: the admin API (`models discover|reprice`); runs even when
       paused.
     * `{"job": "review", "run_id": ...}`: one of a run's review schedules.
+    * `{"job": "tick", "run_id": ..., "pass": ..., "tick": n}`: the next tick of a run's pass.
     """
     now = now or datetime.now(UTC)
     settings = get_settings()
     job = (event or {}).get("job")
     if job == REVIEW_JOB:
         return {"status": "ok", "review": run_review(event.get("run_id"), settings, now)}
+    if job == TICK_JOB:
+        return {"status": "ok", "tick": run_tick(event, settings, now)}
     if job not in JOBS:
         return {"status": "ignored", "reason": f"unknown job {job!r}"}
     trigger = "schedule" if event.get("trigger") == "schedule" else "admin"
@@ -892,13 +1289,13 @@ def handle(event: dict, now: datetime | None = None) -> dict:
     caught_up = settle_overdue(settings, now)
     result = {"status": "ran", job: run_job(job, trigger, settings, now)}
     if caught_up:
-        result["overdue_reviews"] = caught_up
+        result["overdue_steps"] = caught_up
     return result
 
 
 def summary() -> dict:
-    """The settings, their effective values, the state and the run under review, for the admin
-    API's GET /model-catalog-config."""
+    """The settings, their effective values, the state and the run under way, for the admin API's
+    GET /model-catalog-config."""
     row = dynamo.get_config_row(CONFIG_ID) or {}
     state = get_state()
     run = get_run(state.get(ACTIVE_RUN_FIELD))
@@ -906,14 +1303,22 @@ def summary() -> dict:
     if run is not None:
         done = len(run.get("reviews_done") or [])
         due = run.get("reviews_due") or []
+        work = run.get("pass")
         under_review = {
             "run_id": run.get("run_id"),
             "trigger": run.get("trigger"),
-            "applied_at": run.get("applied_at"),
+            "status": run.get("status"),
+            "started_at": run.get("started_at"),
+            "queued": run.get("queued"),
             "models": [c["model_id"] for c in run.get("changes") or []],
             "reviews_done": done,
             "reviews": len(due),
             "next_review_at": due[done] if done < len(due) else None,
+            "pass": (
+                {"pass": pass_label(work), "left": len(work["queue"]), "next_tick_at": work["next_tick_at"]}
+                if work
+                else None
+            ),
             "reverted": run.get("reverted") or [],
         }
     return {

@@ -902,6 +902,24 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   content bucket. The pause flags and review settings are the `model-catalog` row of the
   ModelConfig table (`admin_cli.py model-catalog get|set`). `models reprice` and `models discover`
   run a job now, with its own reviews. `models add --lock-price` keeps the reprice off a price
+- [x] The model catalog is throttled, after its first dev run added 84 models and its review's
+  burst of model calls all failed with `ServiceUnavailableException` (the reverts the assistant
+  reported): both jobs run every second day (discover 02:00, reprice 03:00 Sydney); discover adds
+  at most 5 models and none once the registry holds 50, and no longer prices; reprice queues at
+  most 50 models, oldest looked up first, and checks them 5 every 5 minutes on one-shot tick
+  schedules, reviews too; a lookup that errors defers a model instead of failing it
+  ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md#throttling-2026-10-20))
+- [x] The model fleet ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md#pruning-and-cycling-2026-10-20)):
+  once the registry holds `max_models` (50), discover prunes instead, inactive and unpriced models
+  first, then by `prune_mode` (`value_for_money` keeps the cheaper models, `frontier` the high-end
+  ones), never a default, fallback, topic or rotation model; pruned prices are archived for the
+  Stats page and never rediscovered. A topic whose rotation model is inactive routes to its
+  fallback, the default, or a random active model that takes its slot. A weekly cycle (Fridays)
+  drops inactive models from rotations and adds one new model each up to 10. Disabling a model
+  (`models disable`) updates every topic's rotation, and asks "are you sure?" for the
+  application's default or fallback. Discover probes each text model with a 1-token Converse call
+  before adding it: one the account cannot call is not added (nor tried again for 30 days), and
+  its spare probes re-check the registry; denied models are pruned first and never routed to
 
 ## Backlog / not yet scheduled
 

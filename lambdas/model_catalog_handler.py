@@ -1,14 +1,16 @@
 """Model catalog Lambda handler: keeps the Models registry's list of models and their prices up to
 date (common/model_catalog.py, docs/enhancements/model-catalog-refresh.md).
 
-Invoked three ways (common/model_catalog.handle):
+Invoked four ways (common/model_catalog.handle):
 
-* by two static EventBridge Scheduler crons, discover on Tuesdays and reprice on Wednesdays, with
-  `{"job": ..., "trigger": "schedule"}` -- skipped while that job is paused;
+* by two static EventBridge Scheduler crons, every second day, discover at 03:00 Sydney and
+  reprice at 06:00, with `{"job": ..., "trigger": "schedule"}` -- skipped while that job is paused;
 * by the admin API's POST /models/discover and POST /models/reprice, with `{"job": ...}`, which run
   the job now even when it is paused;
 * by the one-shot review schedules a pricing run creates (1 and 2 hours later by default), with
-  `{"job": "review", "run_id": ...}`.
+  `{"job": "review", "run_id": ...}`;
+* by the one-shot tick schedules a run's queue creates, a few models at a time, with
+  `{"job": "tick", "run_id": ..., "pass": ..., "tick": n}`.
 
 The pause flags and review settings are the `model-catalog` row of the ModelConfig table, read on
 every invocation, so changing them needs no deploy.

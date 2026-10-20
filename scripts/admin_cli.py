@@ -912,14 +912,71 @@ def _cmd_models_add(args: argparse.Namespace) -> None:
     }
     if args.price_locked is not None:
         body["price_locked"] = args.price_locked
-    _do_request(args, "POST", "/models", body=body)
+    _post_model(args, body, assume_yes=args.yes)
+
+
+def _post_model(args: argparse.Namespace, body: dict, *, assume_yes: bool) -> None:
+    """POST /models. Disabling the application's default or fallback model is refused (409,
+    `confirm_required`) until confirmed: this asks "are you sure?" (or takes --yes) and resends
+    with `confirm: true`."""
+    api_url = _resolve_api_url(args)
+    region = _resolve_region(args)
+    response = signed_request("POST", api_url, "/models", region, body=body)
+    if response.status_code == 409:
+        try:
+            refusal = response.json()
+        except ValueError:
+            refusal = {}
+        if refusal.get("confirm_required"):
+            roles = " and ".join(refusal.get("roles") or [])
+            question = (
+                f"{body['model_id']} is the application's {roles} model. Topics and rotations "
+                "will stop using it. Are you sure you want to disable it? [y/N] "
+            )
+            try:
+                sure = assume_yes or input(question).strip().lower() in ("y", "yes")
+            except EOFError:
+                sure = False
+            if not sure:
+                print("Not disabled.", file=sys.stderr)
+                raise SystemExit(1)
+            response = signed_request("POST", api_url, "/models", region, body={**body, "confirm": True})
+    _print_response_and_exit_on_error(response)
+
+
+def _cmd_models_disable(args: argparse.Namespace) -> None:
+    response = signed_request("GET", _resolve_api_url(args), "/models", _resolve_region(args))
+    if not 200 <= response.status_code < 300:
+        _print_response_and_exit_on_error(response)
+    listed = response.json()
+    rows = listed.get("models", listed) if isinstance(listed, dict) else listed
+    row = next((m for m in rows if m.get("model_id") == args.model_id), None)
+    if row is None:
+        raise CliError(f"'{args.model_id}' is not in the registry (see `models list`)")
+    if row.get("enabled") is False:
+        print(f"'{args.model_id}' is already disabled.", file=sys.stderr)
+        return
+    if row.get("input_price_usd_per_1k_tokens") is None:
+        raise CliError(f"'{args.model_id}' has no price; disable it with `models add ... --disabled`")
+    body = {
+        "model_id": row["model_id"],
+        "display_name": row.get("display_name") or row["model_id"],
+        "provider": row.get("provider") or "unknown",
+        "input_price_usd_per_1k_tokens": row["input_price_usd_per_1k_tokens"],
+        "output_price_usd_per_1k_tokens": row.get("output_price_usd_per_1k_tokens") or 0.0,
+        "enabled": False,
+    }
+    if row.get("price_locked") is not None:
+        body["price_locked"] = row["price_locked"]
+    _post_model(args, body, assume_yes=args.yes)
 
 
 def _cmd_models_reprice(args: argparse.Namespace) -> None:
     _do_request(args, "POST", "/models/reprice")
     print(
-        "Repricing in the background. A changed price applies now and is reviewed twice later "
-        "(by default 1 and 2 hours on); `model-catalog get` shows the run and its next review.",
+        "Repricing in the background, a few models every 5 minutes. A changed price applies now "
+        "and is reviewed twice later (by default 1 and 2 hours on); `model-catalog get` shows the "
+        "run and its next review.",
         file=sys.stderr,
     )
 
@@ -927,8 +984,8 @@ def _cmd_models_reprice(args: argparse.Namespace) -> None:
 def _cmd_models_discover(args: argparse.Namespace) -> None:
     _do_request(args, "POST", "/models/discover")
     print(
-        "Discovering in the background. New models are added disabled, priced, and their prices "
-        "reviewed like a reprice's; `models list` shows them.",
+        "Discovering in the background. New models are added disabled and unpriced (at most 5, "
+        "none once the registry is full); the next reprice prices them. `models list` shows them.",
         file=sys.stderr,
     )
 
@@ -951,13 +1008,29 @@ def _whole_or_clear(name: str, raw: str):
 
 def _cmd_model_catalog_set(args: argparse.Namespace) -> None:
     body: dict = {}
-    for name, value in (("discover_enabled", args.discover), ("reprice_enabled", args.reprice)):
+    for name, value in (
+        ("discover_enabled", args.discover),
+        ("reprice_enabled", args.reprice),
+        ("cycle_enabled", args.cycle),
+    ):
         if value is not None:
             body[name] = {"on": True, "off": False}.get(value)  # '' clears it (back to on)
-    for name in ("review_tolerance_pct", "max_change_factor", "max_web_lookups"):
+    for name in (
+        "max_models",
+        "discover_max_added",
+        "reprice_max_queued",
+        "prune_max_per_run",
+        "rotation_max",
+        "access_checks_per_run",
+        "review_tolerance_pct",
+        "max_change_factor",
+        "max_web_lookups",
+    ):
         raw = getattr(args, name)
         if raw is not None:
             body[name] = _whole_or_clear("--" + name.replace("_", "-"), raw)
+    if args.prune_mode is not None:
+        body["prune_mode"] = args.prune_mode or None
     if args.review_after_hours is not None:
         if args.review_after_hours == "":
             body["review_after_hours"] = None
@@ -2015,23 +2088,44 @@ def build_parser() -> argparse.ArgumentParser:
             "a geo-profile premium you set on purpose); --no-lock-price lets it again"
         ),
     )
+    models_add_parser.add_argument(
+        "--yes", action="store_true", default=False,
+        help="With --disabled: do not ask before disabling the application's default or fallback model",
+    )
     models_add_parser.set_defaults(func=_cmd_models_add)
+
+    models_disable_parser = models_sub.add_parser(
+        "disable",
+        help=(
+            "Disable a model: every topic's rotation, model and fallback, and the shared rotation "
+            "pool, stop using it (asks first if it is the application's default or fallback)"
+        ),
+    )
+    models_disable_parser.add_argument("--model-id", required=True, dest="model_id")
+    models_disable_parser.add_argument(
+        "--yes", action="store_true", default=False, help="do not ask, even for the default or fallback",
+    )
+    models_disable_parser.set_defaults(func=_cmd_models_disable)
 
     models_sub.add_parser(
         "reprice",
         help=(
-            "Look up every model's price now, as the weekly reprice does: changed prices apply "
-            "at once and are reviewed 1 and 2 hours later, and put back if a review is not confident"
+            "Look up model prices now, as the scheduled reprice does: up to 50, longest unchecked "
+            "first, a few every 5 minutes; changed prices apply at once and are reviewed 1 and 2 "
+            "hours later, and put back if a review is not confident"
         ),
     ).set_defaults(func=_cmd_models_reprice)
     models_sub.add_parser(
         "discover",
-        help="Add every model the account can call that the registry lacks now (disabled), and price them",
+        help=(
+            "Add up to 5 models the account can call that the registry lacks now (disabled, "
+            "unpriced: the next reprice prices them); none once the registry holds 50"
+        ),
     ).set_defaults(func=_cmd_models_discover)
 
     model_catalog_parser = subparsers.add_parser(
         "model-catalog",
-        help="The weekly model discover and reprice jobs: their pause flags and price reviews",
+        help="The model discover and reprice jobs (every second day): pause flags, sizes, reviews",
     )
     model_catalog_sub = model_catalog_parser.add_subparsers(dest="action", required=True)
     model_catalog_sub.add_parser(
@@ -2042,11 +2136,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     model_catalog_set.add_argument(
         "--discover", choices=["on", "off", ""], default=None,
-        help="Run (on) or pause (off) discover's weekly schedule (Tuesdays)",
+        help="Run (on) or pause (off) discover's schedule (every second day, 02:00 Sydney)",
     )
     model_catalog_set.add_argument(
         "--reprice", choices=["on", "off", ""], default=None,
-        help="Run (on) or pause (off) reprice's weekly schedule (Wednesdays)",
+        help="Run (on) or pause (off) reprice's schedule (every second day, 03:00 Sydney)",
+    )
+    model_catalog_set.add_argument(
+        "--cycle", choices=["on", "off", ""], default=None,
+        help="Run (on) or pause (off) the weekly rotation cycle (Fridays, 04:00 Sydney)",
+    )
+    model_catalog_set.add_argument(
+        "--max-models", dest="max_models", default=None,
+        help="Once the registry holds this many models, discover prunes instead of adding (default 50)",
+    )
+    model_catalog_set.add_argument(
+        "--prune-mode", dest="prune_mode", choices=["value_for_money", "frontier", ""], default=None,
+        help=(
+            "What pruning keeps and the cycle adds: value_for_money (cheaper models, the default) "
+            "or frontier (high-end models)"
+        ),
+    )
+    model_catalog_set.add_argument(
+        "--prune-max-per-run", dest="prune_max_per_run", default=None,
+        help="Models one pruning run may remove, 1 to 100 (default 20)",
+    )
+    model_catalog_set.add_argument(
+        "--access-checks-per-run", dest="access_checks_per_run", default=None,
+        help=(
+            "1-token Converse probes one discover may make to see which models the account can "
+            "call (default 10)"
+        ),
+    )
+    model_catalog_set.add_argument(
+        "--rotation-max", dest="rotation_max", default=None,
+        help="The cycle adds models to a topic's rotation until it holds this many (default 10)",
+    )
+    model_catalog_set.add_argument(
+        "--discover-max-added", dest="discover_max_added", default=None,
+        help="Models one discover may add, 1 to 5 (default 5)",
+    )
+    model_catalog_set.add_argument(
+        "--reprice-max-queued", dest="reprice_max_queued", default=None,
+        help="Models one reprice may queue for a price check, 1 to 50 (default 50)",
     )
     model_catalog_set.add_argument(
         "--review-after-hours", dest="review_after_hours", default=None,

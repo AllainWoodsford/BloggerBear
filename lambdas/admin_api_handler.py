@@ -38,7 +38,16 @@ from decimal import Decimal
 
 import boto3
 
-from common import equipment, evidence, feedback_limits, gear, model_catalog, security_events, sign_ins
+from common import (
+    equipment,
+    evidence,
+    feedback_limits,
+    gear,
+    model_catalog,
+    model_fleet,
+    security_events,
+    sign_ins,
+)
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY, MANUAL_REVIEW_ADAPTERS
 from common.adapters.base import SUBJECT_KEY
 from common.assistant_access import assistant_access_error, effective_assistant_access
@@ -2509,9 +2518,31 @@ def _put_model(event: dict) -> dict:
     if price_locked is not None and not isinstance(price_locked, bool):
         return _error(400, "'price_locked' must be a boolean if provided")
 
+    confirm = body.get("confirm", False)
+    if not isinstance(confirm, bool):
+        return _error(400, "'confirm' must be a boolean if provided")
+
     # What the model catalog recorded about a model it discovered stays; its price fields go, as
     # the price is now the one given here (common/model_catalog.py, PRICE_META_FIELDS).
     existing = get_model(model_id) or {}
+    # Disabling a model that is in use (common/model_fleet.py): the application's default or
+    # fallback needs `confirm: true` (the CLI asks "are you sure?"); every topic's rotation, model
+    # and fallback, and the shared rotation pool, are then updated to do without it.
+    deactivating = not enabled and bool(existing) and existing.get("enabled") is not False
+    if deactivating and not confirm:
+        roles = model_fleet.application_roles(model_id)
+        if roles:
+            return _response(
+                409,
+                {
+                    "error": (
+                        f"'{model_id}' is the application's {' and '.join(roles)} model; "
+                        "send confirm: true to disable it anyway"
+                    ),
+                    "confirm_required": True,
+                    "roles": roles,
+                },
+            )
     item = {
         **{field: existing[field] for field in _CATALOG_MODEL_FIELDS if existing.get(field) is not None},
         "model_id": model_id,
@@ -2523,11 +2554,27 @@ def _put_model(event: dict) -> dict:
     }
     if price_locked is not None:
         item["price_locked"] = price_locked
+    # Enabling a model the account may not be able to call: probe it now (one 1-token Converse
+    # call, common/model_catalog.probe_access), so a denied model is said at once, not found out
+    # when a topic's run falls back. It is enabled either way; the fleet never routes to it.
+    warning = None
+    if enabled and existing.get("access") != model_catalog.GRANTED:
+        access, why = model_catalog.probe_access(model_id)
+        item.update(access=access, access_checked_at=datetime.now(UTC).isoformat(), access_error=why)
+        if why is None:
+            item.pop("access_error")
+        if access == model_catalog.DENIED:
+            warning = f"the account cannot call '{model_id}' ({why}); rotations and routing will skip it"
     put_model(item)
+    if warning:
+        return _response(200, {**item, "warning": warning})
+    if deactivating:
+        rotations = model_fleet.deactivated(model_id, model_catalog.get_settings())
+        return _response(200, {**item, "rotations": rotations})
     return _response(200, item)
 
 
-_CATALOG_MODEL_FIELDS = ("region", "discovered_at", "pricing_unit")
+_CATALOG_MODEL_FIELDS = ("region", "discovered_at", "pricing_unit", *model_catalog.ACCESS_FIELDS)
 
 
 # --- Model catalog (common/model_catalog.py, docs/enhancements/model-catalog-refresh.md) ---------
@@ -2560,12 +2607,13 @@ def _put_model_catalog_config_route(event: dict) -> dict:
 
 def _start_model_catalog_job(job: str) -> dict:
     run = model_catalog.active_run()
-    # A run whose review is overdue lost its schedule: the job runs that review first, so it may go.
+    # A run whose next tick or review is overdue lost its schedule: the job runs that step first,
+    # so it may go.
     if job == "reprice" and run is not None and not model_catalog.is_overdue(run, datetime.now(UTC)):
         return _error(
             409,
-            f"pricing run {run.get('run_id')} is still under review; a reprice waits for it "
-            "(model-catalog get shows when its next review is due)",
+            f"pricing run {run.get('run_id')} is still under way; a reprice waits for it "
+            "(model-catalog get shows its queue and when its next review is due)",
         )
     _get_lambda_client().invoke(
         FunctionName=os.environ["MODEL_CATALOG_FUNCTION_NAME"],
