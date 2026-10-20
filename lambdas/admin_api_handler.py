@@ -2583,7 +2583,7 @@ def _start_model_catalog_job(job: str) -> dict:
             "(model-catalog get shows when its next review is due)",
         )
     _get_lambda_client().invoke(
-        FunctionName=os.environ["MODEL_CATALOG_FUNCTION_NAME"],
+        FunctionName=model_catalog.function_name(),
         InvocationType="Event",
         Payload=json.dumps({"job": job}).encode("utf-8"),
     )
