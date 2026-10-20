@@ -189,6 +189,8 @@ python scripts/admin_cli.py moderation list
 python scripts/admin_cli.py moderation approve <queue_id>
 python scripts/admin_cli.py moderation reject <queue_id>
 
+python scripts/admin_cli.py articles get <article_id>       # any status, with its full text
+python scripts/admin_cli.py articles checked <article_id>   # you checked a financial article the reviewer bear approved
 python scripts/admin_cli.py articles publish <article_id>
 python scripts/admin_cli.py articles unpublish <article_id>
 python scripts/admin_cli.py articles rewrite <article_id> --instructions "the second section confuses staking with lending"
@@ -250,6 +252,9 @@ python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-hai
 # (one picked at random per daily run). '' clears a value.
 python scripts/admin_cli.py topics update github-trending     --model-candidates "model-id-a,model-id-b" --fallback-model-id "model-id-a"
 python scripts/admin_cli.py topics update github-trending --model-candidates ""
+# Whether Professor Grizzlewick, the reviewer bear, may approve this topic's held articles himself
+# ('' falls back to the project's REVIEWER_MAY_APPROVE, on by default):
+python scripts/admin_cli.py topics update finance-crypto-investing --reviewer-may-approve off
 ```
 
 **The Rail Access Monitor's topic.** One `rail_access` topic, `rail-cities`, over the four

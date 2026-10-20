@@ -368,3 +368,25 @@ variable "backup_export_buckets" {
     (GetObject/PutObject on its objects); the bucket itself is made and kept outside Terraform.
   EOT
 }
+
+variable "reviewer_enabled" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Whether to deploy Professor Grizzlewick, the reviewer bear (lambdas/reviewer_handler.py): every
+    second day he reviews held and newly published articles, fixes content findings, and writes to
+    the musings feed. On by default; false deploys neither his function nor his schedule. Set from
+    the REVIEWER_ENABLED GitHub variable. Design: docs/enhancements/reviewer-bear.md.
+  EOT
+}
+
+variable "reviewer_may_approve" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    The project's default for whether Professor Grizzlewick may approve a held article himself
+    (financial topics included: each one he approves is flagged for a person to check). A topic's
+    own reviewer_may_approve overrides it; a topic with force_manual_review always waits for a
+    person. Set from the REVIEWER_MAY_APPROVE GitHub variable.
+  EOT
+}

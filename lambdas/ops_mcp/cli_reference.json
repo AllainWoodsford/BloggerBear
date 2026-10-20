@@ -668,10 +668,30 @@
           "nargs": null,
           "metavar": null,
           "destructive": false
+        },
+        {
+          "name": "--reviewer-may-approve",
+          "dest": "reviewer_may_approve",
+          "kind": "option",
+          "flags": [
+            "--reviewer-may-approve"
+          ],
+          "help": "May the reviewer bear approve this topic's held articles; '' = project default",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON]\n                                  [--goal-rotation-json GOAL_ROTATION_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--stagger-slot STAGGER_SLOT]\n                                  [--model-id MODEL_ID] [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --goal-rotation-json GOAL_ROTATION_JSON\n                        2 to 7 editorial goals taken in turn: '[{\"name\": \"access\",\n                        \"primary_focus\": \"...\"}, ...]'. With nothing new, the last findings are\n                        revisited under a goal not yet used on them. Replaces the whole list; '[]'\n                        clears it\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336, for a topic that does not\n                        write every day; '' clears it (back to 24)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --stagger-slot STAGGER_SLOT\n                        Move this topic to another turn in the stagger (a whole number no other\n                        topic holds); '' gives it the next free slot. Its two schedules are\n                        rewritten at once\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
+      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON]\n                                  [--goal-rotation-json GOAL_ROTATION_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--stagger-slot STAGGER_SLOT]\n                                  [--model-id MODEL_ID] [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  [--reviewer-may-approve {on,off,}]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --goal-rotation-json GOAL_ROTATION_JSON\n                        2 to 7 editorial goals taken in turn: '[{\"name\": \"access\",\n                        \"primary_focus\": \"...\"}, ...]'. With nothing new, the last findings are\n                        revisited under a goal not yet used on them. Replaces the whole list; '[]'\n                        clears it\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336, for a topic that does not\n                        write every day; '' clears it (back to 24)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --stagger-slot STAGGER_SLOT\n                        Move this topic to another turn in the stagger (a whole number no other\n                        topic holds); '' gives it the next free slot. Its two schedules are\n                        rewritten at once\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n  --reviewer-may-approve {on,off,}\n                        May the reviewer bear approve this topic's held articles; '' = project\n                        default\n"
     },
     "topics delete": {
       "help": "Delete a topic",
@@ -1041,13 +1061,59 @@
       "help": "Manage articles",
       "group": true,
       "subcommands": [
+        "get",
+        "checked",
         "publish",
         "unpublish",
         "rewrite",
         "feedback-lock",
         "feedback-unlock"
       ],
-      "help_text": "usage: admin_cli.py articles [-h] {publish,unpublish,rewrite,feedback-lock,feedback-unlock} ...\n\npositional arguments:\n  {publish,unpublish,rewrite,feedback-lock,feedback-unlock}\n    publish             Force-publish an article regardless of its current status\n    unpublish           Take a published article down: delete its page, mark it rejected, remove\n                        its musings and clear the CDN cache\n    rewrite             Rewrite an article to fix what you say is wrong with it. A published\n                        article stays up until its rewrite is ready, then comes down; the rewrite\n                        goes through the reviews again and waits in the inbox\n    feedback-lock       Stop taking feedback on one article (its feedback_locked flag, set to\n                        true)\n    feedback-unlock     Take feedback on one article again (feedback_locked false). An article\n                        locked because it reached its limit also needs --reset-count, or it stays\n                        at the limit\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py articles [-h] <action> ...\n\npositional arguments:\n  <action>\n    get              Show one article in any status: its title, topic, status, who published it,\n                     what it cost, its sources and its full text. Nothing changes\n    checked          Mark a financial article the reviewer bear approved as checked by you: clears\n                     his flag, so he stops watching it for downvotes and the assistant stops\n                     reporting it\n    publish          Force-publish an article regardless of its current status\n    unpublish        Take a published article down: delete its page, mark it rejected, remove its\n                     musings and clear the CDN cache\n    rewrite          Rewrite an article to fix what you say is wrong with it. A published article\n                     stays up until its rewrite is ready, then comes down; the rewrite goes\n                     through the reviews again and waits in the inbox\n    feedback-lock    Stop taking feedback on one article (its feedback_locked flag, set to true)\n    feedback-unlock  Take feedback on one article again (feedback_locked false). An article locked\n                     because it reached its limit also needs --reset-count, or it stays at the\n                     limit\n\noptions:\n  -h, --help         show this help message and exit\n"
+    },
+    "articles get": {
+      "help": "Show one article in any status: its title, topic, status, who published it, what it cost, its sources and its full text. Nothing changes",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py articles get [-h] article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "articles checked": {
+      "help": "Mark a financial article the reviewer bear approved as checked by you: clears his flag, so he stops watching it for downvotes and the assistant stops reporting it",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py articles checked [-h] article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "articles publish": {
       "help": "Force-publish an article regardless of its current status",

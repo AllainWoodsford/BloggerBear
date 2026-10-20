@@ -1390,6 +1390,55 @@ def list_feedback_since(since_iso: str) -> list[dict]:
     return _paginated_scan(table, filter_expression)
 
 
+
+# --- Professor Grizzlewick, the reviewer bear (common/reviewer.py) --------------------------------
+
+
+def list_feedback_for_article(article_id: str) -> list[dict]:
+    """Every Feedback item on one article (the table's hash key is article_id)."""
+    table = get_table(os.environ["FEEDBACK_TABLE"])
+    kwargs = {"KeyConditionExpression": Key("article_id").eq(article_id)}
+    items = []
+    while True:
+        response = table.query(**kwargs)
+        items.extend(response.get("Items", []))
+        if "LastEvaluatedKey" not in response:
+            return items
+        kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+
+def set_article_fields(article_id: str, updates: dict) -> None:
+    """Set (a value) or remove (None) fields of an existing Articles item, leaving the rest: the
+    reviewer's tag and flag. Fails rather than creating an article that no longer exists."""
+    if not updates:
+        return
+    names, values, sets, removes = {}, {}, [], []
+    for index, (name, value) in enumerate(updates.items()):
+        names[f"#f{index}"] = name
+        if value is None:
+            removes.append(f"#f{index}")
+        else:
+            sets.append(f"#f{index} = :v{index}")
+            values[f":v{index}"] = _floats_to_decimal(value)
+    clauses = []
+    if sets:
+        clauses.append("SET " + ", ".join(sets))
+    if removes:
+        clauses.append("REMOVE " + ", ".join(removes))
+    get_table(os.environ["ARTICLES_TABLE"]).update_item(
+        Key={"article_id": article_id},
+        UpdateExpression=" ".join(clauses),
+        ConditionExpression="attribute_exists(article_id)",
+        ExpressionAttributeNames=names,
+        **({"ExpressionAttributeValues": values} if values else {}),
+    )
+
+
+def list_reviewer_flagged_articles(flag_field: str) -> list[dict]:
+    """Every article carrying the reviewer's flag (a scan with a filter: there are few)."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    return _paginated_scan(table, Attr(flag_field).exists())
+
 # --- Feedback (Phase 5) ------------------------------------------------------
 #
 # Owned by the public-api worker. Table name comes from the FEEDBACK_TABLE
@@ -1601,10 +1650,13 @@ def put_musing(
     article_id: str | None = None,
     topic_id: str | None = None,
     gear: dict | None = None,
+    character: str | None = None,
 ) -> dict:
     """Write a Musings item and return it. `kind` is "article", "feedback", "loot" or "rejection" (a
-    draft turned away at moderation: topic only, never an article_id). A loot musing carries `gear`,
-    a public snapshot of the piece it announces."""
+    draft turned away at moderation: topic only, never an article_id), or one of Professor
+    Grizzlewick's (common/musings.py's REVIEWER_KINDS). A loot musing carries `gear`, a public
+    snapshot of the piece it announces. `character` is stored only for a musing that is not
+    BloggerBear's ("grizzlewick"), so every existing musing keeps its shape."""
     table = get_table(os.environ["MUSINGS_TABLE"])
     item = {
         "musing_id": musing_id,
@@ -1617,6 +1669,8 @@ def put_musing(
     }
     if gear is not None:
         item["gear"] = gear
+    if character is not None:
+        item["character"] = character
     table.put_item(Item=item)
     return item
 

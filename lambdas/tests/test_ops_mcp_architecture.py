@@ -215,6 +215,16 @@ def test_the_fixed_schedules_are_the_ones_the_catalogue_gives():
         assert said in dict(_of_kind("function")[function.replace("_", "-")].details)["Runs"]
 
 
+
+def test_the_reviewer_bears_schedule_is_the_one_the_catalogue_gives():
+    dev = _read("environments", "dev", "main.tf")
+    block = _blocks(dev, "aws_scheduler_schedule")["reviewer"]
+    assert 'schedule_expression          = "cron(0 5 1/2 * ? *)"' in block
+    assert 'schedule_expression_timezone = "Australia/Sydney"' in block
+    assert "count                        = var.reviewer_enabled ? 1 : 0" in block
+    runs = dict(_of_kind("function")["reviewer"].details)["Runs"]
+    assert "every second day at 05:00 Sydney time" in runs
+
 def test_every_component_is_well_formed():
     keys = set()
     for component in CATALOGUE:

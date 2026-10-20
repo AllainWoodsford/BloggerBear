@@ -589,6 +589,29 @@ Then list your own personal strings (a name, a home IP, a personal address), one
 the same list in the `PII_DENYLIST` repository secret. Neither check ever prints what it found, so
 the logs stay safe to publish.
 
+### The reviewer bear (on by default)
+
+Professor Grizzlewick (`<prefix>-<env>-reviewer`, [reviewer-bear.md](enhancements/reviewer-bear.md))
+is deployed with everything else: every second day at 05:00 Sydney he reviews what the admins have
+not, and writes to the Musings page as himself.
+
+**On his first run he works through the backlog as it stands.** Every article that has waited in the
+inbox two days or more is his to decide: he may **approve** it (financial ones too, each flagged for
+you to check), **send it back for a rewrite**, or **reject** one already rewritten three times. If
+you want to decide some yourself first, do so before his first run (he skips anything no longer
+waiting), or set a topic to `--reviewer-may-approve off`.
+
+- **Turn him off:** set the `REVIEWER_ENABLED` variable to `false` (repository, or one environment)
+  and deploy: his Lambda and schedule are removed.
+- **Let him review but never approve:** `REVIEWER_MAY_APPROVE` = `false` for the whole project, or
+  per topic: `python scripts/admin_cli.py topics update <topic_id> --reviewer-may-approve off`.
+- **His financial approvals:** the assistant lists each one (`reviewer_financial_check`). Read it
+  (`articles get <article_id>`), then `articles checked <article_id>` if it is fine, or
+  `articles unpublish <article_id>` if not. Until you do, he takes it back down himself if readers
+  downvote it with comments.
+- **What he did:** his report on the Musings page; `moderation_decision` evidence lines with
+  `by: reviewer`; the `reviewer-state` row in `<prefix>-<env>-model-config`.
+
 ### Vision (optional)
 
 The vision worker, for the `satellite_vision` and `rail_access` topics

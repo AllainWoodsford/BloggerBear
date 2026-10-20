@@ -160,6 +160,9 @@ def _apply_model_flags(body: dict, args: argparse.Namespace) -> None:
         body["model_id_candidates"] = [
             candidate.strip() for candidate in args.model_candidates.split(",") if candidate.strip()
         ]
+    if getattr(args, "reviewer_may_approve", None) is not None:  # topics update only
+        # '' clears it (sent as null): back to the project's REVIEWER_MAY_APPROVE.
+        body["reviewer_may_approve"] = {"on": True, "off": False}.get(args.reviewer_may_approve)
 
 
 def _add_model_flags(parser: argparse.ArgumentParser) -> None:
@@ -570,6 +573,14 @@ def _cmd_findings_list(args: argparse.Namespace) -> None:
 
 
 # --- articles subcommands ------------------------------------------------
+
+
+def _cmd_articles_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", f"/articles/{urllib.parse.quote(args.article_id, safe='')}")
+
+
+def _cmd_articles_checked(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", f"/articles/{urllib.parse.quote(args.article_id, safe='')}/checked")
 
 
 def _cmd_articles_publish(args: argparse.Namespace) -> None:
@@ -1495,6 +1506,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_model_flags(update_parser)
+    update_parser.add_argument(
+        "--reviewer-may-approve",
+        dest="reviewer_may_approve",
+        choices=["on", "off", ""],
+        default=None,
+        help="May the reviewer bear approve this topic's held articles; '' = project default",
+    )
     update_parser.set_defaults(func=_cmd_topics_update)
 
     delete_parser = topics_sub.add_parser("delete", help="Delete a topic")
@@ -1646,7 +1664,27 @@ def build_parser() -> argparse.ArgumentParser:
     findings_list_parser.set_defaults(func=_cmd_findings_list)
 
     articles_parser = subparsers.add_parser("articles", help="Manage articles")
-    articles_sub = articles_parser.add_subparsers(dest="action", required=True)
+    articles_sub = articles_parser.add_subparsers(dest="action", required=True, metavar="<action>")
+
+    get_article_parser = articles_sub.add_parser(
+        "get",
+        help=(
+            "Show one article in any status: its title, topic, status, who published it, what it "
+            "cost, its sources and its full text. Nothing changes"
+        ),
+    )
+    get_article_parser.add_argument("article_id")
+    get_article_parser.set_defaults(func=_cmd_articles_get)
+
+    checked_parser = articles_sub.add_parser(
+        "checked",
+        help=(
+            "Mark a financial article the reviewer bear approved as checked by you: clears his "
+            "flag, so he stops watching it for downvotes and the assistant stops reporting it"
+        ),
+    )
+    checked_parser.add_argument("article_id")
+    checked_parser.set_defaults(func=_cmd_articles_checked)
 
     publish_parser = articles_sub.add_parser(
         "publish",

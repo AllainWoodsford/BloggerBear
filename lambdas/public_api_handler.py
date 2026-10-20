@@ -730,6 +730,8 @@ def _list_musings(event: dict) -> dict:
             "topic_name": topic_names.get(m.get("topic_id")),
             "text": m.get("text"),
             "mood": m.get("mood"),
+            # Who wrote it: absent for BloggerBear, "grizzlewick" for the reviewer bear.
+            **({"character": m["character"]} if m.get("character") else {}),
             "created_at": m.get("created_at"),
             # A loot drop carries a snapshot of the gear it announces (already the public view).
             **({"gear": m["gear"]} if m.get("gear") else {}),

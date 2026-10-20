@@ -227,6 +227,10 @@ NOT_ASKED = {
     # to "true" by hand, after the bootstrap step the runsheet describes; a first deploy never
     # wants it, so this script does not ask.
     "VISION_ENABLED",
+    # Professor Grizzlewick, the reviewer bear, and whether he may approve (docs/configuration.md).
+    # Both on unless set to "false": a first deploy wants the defaults, so this script does not ask.
+    "REVIEWER_ENABLED",
+    "REVIEWER_MAY_APPROVE",
 }
 
 # Secrets the workflows still read as `secrets.X || vars.X`, left over from when they were

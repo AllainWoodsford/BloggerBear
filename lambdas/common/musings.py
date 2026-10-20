@@ -19,6 +19,11 @@ public site's reverse-chronological Musings feed:
 - Pauses and resumes: written when the operator pauses a topic or starts it again (the Admin API's
   pause and resume routes). The bear says, in a line, that it is putting that topic's research to
   one side for a while, or that it is back on it; never why, and never anything about what was found.
+- Professor Grizzlewick's: a second character, the old reviewer bear (common/reviewer.py), with
+  glasses and a mustache, woken when the admins fall behind on reviews. He reports what he did on
+  each run, says so when he turns a draft away ("it did not make the pub test", and a bear joke),
+  and is shocked when readers downvote an article he approved. His musings carry
+  `character: "grizzlewick"`; the Musings page shows his own picture and name.
 
 Mood is derived from real signal, not random, in both cases -- see each
 function's docstring below for exactly what drives it.
@@ -308,6 +313,158 @@ def generate_and_store_pause_musing(
         text=text,
         mood=_PAUSE_MUSING_MOOD if paused else _RESUME_MUSING_MOOD,
         created_at=datetime.now(UTC).isoformat(),
+        topic_id=topic_id,
+    )
+
+
+# --- Professor Grizzlewick, the reviewer bear (common/reviewer.py) ---------------------------------
+
+REVIEWER_CHARACTER = "grizzlewick"
+REVIEWER_NAME = "Professor Grizzlewick"
+# His kinds of musing, and the mood each is written in (shown as "Professor Grizzlewick was
+# feeling <mood>"). He has one picture whatever his mood: frontend/bears/grizzlewick.svg.
+REVIEWER_KINDS = {
+    "reviewer_report": "roused",
+    "reviewer_rejection": "stern",
+    "reviewer_hold": "shocked",
+}
+
+_REVIEWER_VOICE = (
+    "You are Professor Grizzlewick, an old, bespectacled, mustachioed bear who reviews the blog's "
+    "articles for BloggerBear, a younger bear who writes them. You are woken from your slumber "
+    "only when the human admins fall behind on their reviews, and you are a little grumpy about "
+    "it, but fair, dry and kindly underneath. Write ONE short, first-person musing in your own "
+    "voice for the blog's musings feed -- never breaking character, never mentioning being an AI, "
+    "a language model or any technology. Reply with ONLY the musing text, no quotation marks, no "
+    "preamble, no hashtags. About 200 characters."
+)
+
+_REVIEWER_REPORT_PROMPT = """{voice}
+
+You have just finished your rounds. What you did:
+{facts}
+{woken}
+Tell the feed what you did, briefly, like a little report, with the numbers as given. Say \
+nothing about what any article said or what it was titled. Write your musing now.
+"""
+
+_REVIEWER_REJECTION_PROMPT = """{voice}
+
+You have just turned away one of BloggerBear's drafts for the topic "{topic_name}": it did not \
+make the pub test. Say so, name the topic "{topic_name}" exactly as written, and end with a \
+short bear joke or pun. Say nothing about what the draft said. Write your musing now.
+"""
+
+_REVIEWER_HOLD_PROMPT = """{voice}
+
+An article for the topic "{topic_name}" that you approved has been downvoted by readers, with \
+comments. You are shocked -- spectacles askew, mustache bristling -- and you have taken it down \
+so a human can give it a final look. Name the topic "{topic_name}" exactly as written. Say \
+nothing about what the article said or what the readers wrote. Write your musing now.
+"""
+
+_REVIEWER_WOKEN_LINE = "I've been woken up from slumber, the admins are falling behind on their reviews!"
+_BEAR_JOKES = (
+    "Some drafts are simply un-bear-able.",
+    "Back to the den with it -- no hard fur-lings.",
+    "I'd call it grizzly work, but that's an insult to grizzlies.",
+    "Even a cub knows you check your facts before you eat the honey.",
+)
+
+
+def _reviewer_report_fallback(facts: list[str], woken: bool) -> str:
+    opening = _REVIEWER_WOKEN_LINE + " " if woken else "Rounds done. "
+    return _truncate(opening + "; ".join(facts) + ". Now, back to my nap.")
+
+
+def _reviewer_rejection_fallback(topic_name: str, joke_index: int = 0) -> str:
+    joke = _BEAR_JOKES[joke_index % len(_BEAR_JOKES)]
+    return _truncate(
+        f"I rejected a {topic_name} draft: it unfortunately did not make the pub test. {joke}"
+    )
+
+
+def _reviewer_hold_fallback(topic_name: str) -> str:
+    return _truncate(
+        f"Good heavens! Readers have downvoted a {topic_name} article I approved. I've taken it down "
+        "so a human can give it a final look."
+    )
+
+
+def _store_reviewer_musing(
+    kind: str,
+    prompt: str,
+    fallback: str,
+    *,
+    model_id: str,
+    must_name: str | None = None,
+    topic_id: str | None = None,
+    created_at: str | None = None,
+) -> dict:
+    """Write one of his musings: the model's words when they are usable (they name `must_name`,
+    when given, and pass the comment screen), else `fallback`. Storing is the only thing that can
+    raise. `created_at` lets a musing sit just before the action it is about (a rejection is posted
+    a moment before BloggerBear's shocked reply, so the feed reads as a conversation)."""
+    try:
+        text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
+    except Exception as exc:  # noqa: BLE001 - the post must not depend on the model
+        print(f"musings: could not write a {kind} musing, using the plain one: {exc!r}")
+        text = ""
+    usable = bool(text) and rule_drop_reason(text) is None
+    if usable and must_name is not None:
+        usable = must_name.lower() in text.lower()
+    return put_musing(
+        musing_id=str(uuid.uuid4()),
+        kind=kind,
+        text=text if usable else fallback,
+        mood=REVIEWER_KINDS[kind],
+        created_at=created_at or datetime.now(UTC).isoformat(),
+        topic_id=topic_id,
+        character=REVIEWER_CHARACTER,
+    )
+
+
+def generate_and_store_reviewer_report(*, facts: list[str], woken: bool, model_id: str) -> dict:
+    """His report on a run: `facts` are plain counts in fixed words ("approved 2 articles"), so
+    nothing a model or a reader wrote reaches the prompt. `woken` when articles had waited two days
+    or more: he opens with being woken from his slumber."""
+    prompt = _REVIEWER_REPORT_PROMPT.format(
+        voice=_REVIEWER_VOICE,
+        facts="\n".join(f"- {fact}" for fact in facts) or "- nothing needed doing",
+        woken=f"Open with this, word for word: {_REVIEWER_WOKEN_LINE}\n" if woken else "",
+    )
+    fallback = _reviewer_report_fallback(facts or ["nothing needed doing"], woken)
+    musing = _store_reviewer_musing(
+        "reviewer_report", prompt, fallback, model_id=model_id, must_name="slumber" if woken else None
+    )
+    return musing
+
+
+def generate_and_store_reviewer_rejection(
+    *, topic_id: str, topic_name: str, model_id: str, created_at: str | None = None, joke_index: int = 0
+) -> dict:
+    """He turned a draft away: the topic only, never the article (like BloggerBear's rejection)."""
+    prompt = _REVIEWER_REJECTION_PROMPT.format(voice=_REVIEWER_VOICE, topic_name=topic_name)
+    return _store_reviewer_musing(
+        "reviewer_rejection",
+        prompt,
+        _reviewer_rejection_fallback(topic_name, joke_index),
+        model_id=model_id,
+        must_name=topic_name,
+        topic_id=topic_id,
+        created_at=created_at,
+    )
+
+
+def generate_and_store_reviewer_hold(*, topic_id: str, topic_name: str, model_id: str) -> dict:
+    """He took down an article he approved, after readers downvoted it with comments."""
+    prompt = _REVIEWER_HOLD_PROMPT.format(voice=_REVIEWER_VOICE, topic_name=topic_name)
+    return _store_reviewer_musing(
+        "reviewer_hold",
+        prompt,
+        _reviewer_hold_fallback(topic_name),
+        model_id=model_id,
+        must_name=topic_name,
         topic_id=topic_id,
     )
 

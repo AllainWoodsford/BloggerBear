@@ -538,6 +538,15 @@ CATALOGUE: tuple[Component, ...] = (
         "schedule of its own, and on demand (models discover, models reprice)",
     ),
     _lambda(
+        "reviewer",
+        "Professor Grizzlewick, the reviewer bear: fixes content findings, reviews articles held "
+        "two days or more (approves, rewrites or rejects after three rewrites), reviews the newest "
+        "published articles, takes down financial ones he approved that readers downvoted, and "
+        "writes to the musings feed. Deployed only when reviewer_enabled.",
+        "every second day at 05:00 Sydney time (EventBridge Scheduler), each tick on a one-shot "
+        "schedule of its own",
+    ),
+    _lambda(
         "musing-feedback",
         "Writes a musing reflecting on the last four days of reader feedback.",
         "every 4 days (EventBridge Scheduler)",

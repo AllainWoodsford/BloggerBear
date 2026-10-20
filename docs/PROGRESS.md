@@ -955,6 +955,15 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   Stats, the review inbox and `admin_cli` all keep working through the generic paths)
   ([project-plan.md](project-plan.md#removed-the-trending-everywhere-digest-2026-10-20))
 
+- [x] Professor Grizzlewick, the reviewer bear ([reviewer-bear.md](enhancements/reviewer-bear.md)):
+  a new character (his own picture, `frontend/bears/grizzlewick.svg`, and musings) and Lambda,
+  every second day, tasks a few at a time on one-shot ticks: fixes content findings, decides
+  articles held two days or more (approves, rewrites, or rejects after three rewrites), reviews the
+  newest published articles, and takes down financial articles he approved that readers downvoted
+  with comments. `REVIEWER_ENABLED` and `REVIEWER_MAY_APPROVE` (both on by default) and a topic's
+  `reviewer_may_approve`; `articles get` and `articles checked`; the assistant's
+  `reviewer_financial_check`; the Terms, Privacy Policy and About page say what he does
+
 ## Backlog / not yet scheduled
 
 *(Freeform — drop ideas here as they occur to you; promote them into a
