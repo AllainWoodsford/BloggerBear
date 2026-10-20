@@ -11,6 +11,7 @@
     "purge",
     "reject",
     "remove",
+    "restore",
     "unpublish",
     "wipe"
   ],
@@ -52,7 +53,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-catalog,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-catalog,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,model-catalog,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,model-catalog,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -1902,6 +1903,292 @@
       "arguments": [],
       "destructive": false,
       "help_text": "usage: admin_cli.py moderation stats [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "backup": {
+      "help": "Snapshot this deployment's content and configuration to one file, restore one, or copy every article to another bucket",
+      "group": true,
+      "subcommands": [
+        "list",
+        "snapshot",
+        "restore",
+        "export",
+        "status",
+        "resume"
+      ],
+      "help_text": "usage: admin_cli.py backup [-h] {list,snapshot,restore,export,status,resume} ...\n\npositional arguments:\n  {list,snapshot,restore,export,status,resume}\n    list                List this deployment's snapshot files and its most recent backup jobs\n    snapshot            Write a snapshot now: articles (final text and figures), costs and stats,\n                        gear and refinements, musings, topics, models and settings, as one file in\n                        the backup bucket\n    restore             Load a snapshot file into this deployment (rows and article text written\n                        back under their own keys), then rewrite topic schedules and published\n                        pages\n    export              Copy every article (its row as JSON, its final text and figures) to a\n                        bucket, with a manifest.json\n    status              Show a backup job's progress\n    resume              Restart a stalled backup job from where it got to\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "backup list": {
+      "help": "List this deployment's snapshot files and its most recent backup jobs",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py backup list [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "backup snapshot": {
+      "help": "Write a snapshot now: articles (final text and figures), costs and stats, gear and refinements, musings, topics, models and settings, as one file in the backup bucket",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--no-wait",
+          "dest": "no_wait",
+          "kind": "flag",
+          "flags": [
+            "--no-wait"
+          ],
+          "help": "Print the started job and return instead of following its progress",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py backup snapshot [-h] [--no-wait]\n\noptions:\n  -h, --help  show this help message and exit\n  --no-wait   Print the started job and return instead of following its progress\n"
+    },
+    "backup restore": {
+      "help": "Load a snapshot file into this deployment (rows and article text written back under their own keys), then rewrite topic schedules and published pages",
+      "group": false,
+      "arguments": [
+        {
+          "name": "key",
+          "dest": "key",
+          "kind": "positional",
+          "flags": [],
+          "help": "The snapshot's key, as `backup list` shows it (backup/<prefix>-<env>/snapshots/...)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--bucket",
+          "dest": "bucket",
+          "kind": "option",
+          "flags": [
+            "--bucket"
+          ],
+          "help": "Read it from this bucket instead of the backup bucket (one of backup_export_buckets)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--no-pages",
+          "dest": "no_pages",
+          "kind": "flag",
+          "flags": [
+            "--no-pages"
+          ],
+          "help": "Do not re-render the published articles' pages",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--no-schedules",
+          "dest": "no_schedules",
+          "kind": "flag",
+          "flags": [
+            "--no-schedules"
+          ],
+          "help": "Do not write the restored topics' schedules",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--yes",
+          "dest": "yes",
+          "kind": "flag",
+          "flags": [
+            "--yes"
+          ],
+          "help": "Do not ask for confirmation",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--no-wait",
+          "dest": "no_wait",
+          "kind": "flag",
+          "flags": [
+            "--no-wait"
+          ],
+          "help": "Print the started job and return instead of following its progress",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py backup restore [-h] [--bucket BUCKET] [--no-pages] [--no-schedules] [--yes]\n                                   [--no-wait]\n                                   key\n\npositional arguments:\n  key              The snapshot's key, as `backup list` shows it\n                   (backup/<prefix>-<env>/snapshots/...)\n\noptions:\n  -h, --help       show this help message and exit\n  --bucket BUCKET  Read it from this bucket instead of the backup bucket (one of\n                   backup_export_buckets)\n  --no-pages       Do not re-render the published articles' pages\n  --no-schedules   Do not write the restored topics' schedules\n  --yes            Do not ask for confirmation\n  --no-wait        Print the started job and return instead of following its progress\n"
+    },
+    "backup export": {
+      "help": "Copy every article (its row as JSON, its final text and figures) to a bucket, with a manifest.json",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--bucket",
+          "dest": "bucket",
+          "kind": "option",
+          "flags": [
+            "--bucket"
+          ],
+          "help": "Target bucket (one of backup_export_buckets); default: the backup bucket's exports/",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--prefix",
+          "dest": "prefix",
+          "kind": "option",
+          "flags": [
+            "--prefix"
+          ],
+          "help": "Key prefix in the target bucket (default: the UTC time)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--no-wait",
+          "dest": "no_wait",
+          "kind": "flag",
+          "flags": [
+            "--no-wait"
+          ],
+          "help": "Print the started job and return instead of following its progress",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py backup export [-h] [--bucket BUCKET] [--prefix PREFIX] [--no-wait]\n\noptions:\n  -h, --help       show this help message and exit\n  --bucket BUCKET  Target bucket (one of backup_export_buckets); default: the backup bucket's\n                   exports/\n  --prefix PREFIX  Key prefix in the target bucket (default: the UTC time)\n  --no-wait        Print the started job and return instead of following its progress\n"
+    },
+    "backup status": {
+      "help": "Show a backup job's progress",
+      "group": false,
+      "arguments": [
+        {
+          "name": "job_id",
+          "dest": "job_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--wait",
+          "dest": "wait",
+          "kind": "flag",
+          "flags": [
+            "--wait"
+          ],
+          "help": "Follow it until it finishes",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py backup status [-h] [--wait] job_id\n\npositional arguments:\n  job_id\n\noptions:\n  -h, --help  show this help message and exit\n  --wait      Follow it until it finishes\n"
+    },
+    "backup resume": {
+      "help": "Restart a stalled backup job from where it got to",
+      "group": false,
+      "arguments": [
+        {
+          "name": "job_id",
+          "dest": "job_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--no-wait",
+          "dest": "no_wait",
+          "kind": "flag",
+          "flags": [
+            "--no-wait"
+          ],
+          "help": "Print the started job and return instead of following its progress",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py backup resume [-h] [--no-wait] job_id\n\npositional arguments:\n  job_id\n\noptions:\n  -h, --help  show this help message and exit\n  --no-wait   Print the started job and return instead of following its progress\n"
     },
     "failed-executions": {
       "help": "View daily_cycle executions that exhausted their retries",

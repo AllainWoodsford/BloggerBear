@@ -920,6 +920,15 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   application's default or fallback. Discover probes each text model with a 1-token Converse call
   before adding it: one the account cannot call is not added (nor tried again for 30 days), and
   its spare probes re-check the registry; denied models are pruned first and never routed to
+- [x] Backups: `admin_cli backup snapshot` writes one file of a deployment's content and
+  configuration (articles with their final text and figures, costs and stats, gear and refinements,
+  musings, feedback, the moderation queue, topics, models and settings; never findings, candidate
+  ideas or failed runs) into the bootstrap state bucket, weekly on its own; `backup restore` loads
+  one into a deployment (another environment's or region's too), then writes the topics' schedules
+  and renders the published pages through the Admin API's own functions; `backup export` copies
+  every article to a bucket. Each runs as a job of ~20-second steps of the admin-api Lambda, with
+  progress the CLI follows: no new function, queue or table (`lambdas/common/backup.py`,
+  `scripts/README.md`, the deployment runsheet's "Keeping dev's content across a teardown")
 
 ## Backlog / not yet scheduled
 
