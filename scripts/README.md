@@ -577,6 +577,51 @@ python scripts/admin_cli.py musings edit <musing_id> --text "Fresh from the den:
 - Only the text changes. The mood, the date and the link stay, and the item gets an `edited_at`.
 - The public feed is cached for a short while, so the change takes a moment to show on the site.
 
+## Backups, restores and article exports: `backup`
+
+Terraform builds the skeleton; a **snapshot** is the data loaded into it. It is one file,
+`backup/<prefix>-<env>/snapshots/<UTC time>-<manual|schedule>.jsonl.gz`, in the bootstrap state
+bucket (outside Terraform state, and kept when an environment is destroyed). It holds:
+
+- **articles**: every row, with its metadata (lineage and cost, sources, review, figures, rewrite
+  history) and its **final** text, plus the figure PNGs a page shows. Not the research snapshots,
+  the pre-review `.original.md` or the texts a rewrite replaced; the row's pointers to those are
+  dropped, so nothing restored points at a missing object;
+- **costing**: StatsCurrent, StatsHistory and ViewCounts;
+- **gear and refinements** (PromptRefinements), **musings**, reader feedback and the moderation queue;
+- **configuration**: Topics, Models and ModelConfig (default model, pipeline and feedback settings).
+
+Not Findings, candidate ideas, failed executions, security events or sign-ins, nor rows already set
+to expire, nor the feedback-signing key (a new deployment makes its own).
+
+A snapshot runs **every Sunday at 3am Sydney** (the newest 8 scheduled ones are kept; ones you
+take by hand are never pruned). Every job runs inside the Admin API's Lambda in ~20-second steps,
+saving where it got to after each, so closing the terminal does not stop it. The command follows
+it, printing progress, unless `--no-wait`:
+
+```bash
+python scripts/admin_cli.py backup snapshot                 # take one now; prints its key at the end
+python scripts/admin_cli.py backup list                     # snapshot files and recent jobs
+python scripts/admin_cli.py backup status <job_id> --wait   # follow a job again
+python scripts/admin_cli.py backup resume <job_id>          # restart one shown as stalled
+
+# Load a snapshot into this deployment: every row and article written back under its own key
+# (so it can be run again safely), then each topic's schedules written as `topics create` writes
+# them and every published page rendered again. No model is called. Asks first unless --yes.
+python scripts/admin_cli.py backup restore backup/bloggerbear-dev/snapshots/20261019T030000Z-schedule.jsonl.gz
+#   --no-pages / --no-schedules skip those steps; --bucket reads it from another allowed bucket.
+
+# Copy every article (its row as JSON, its final text and figures) to a bucket, with manifest.json.
+python scripts/admin_cli.py backup export                                   # into the backup bucket's exports/
+python scripts/admin_cli.py backup export --bucket my-archive --prefix dev-2026-10
+```
+
+A restore can take another environment's snapshot (production's into dev), or one copied into this
+deployment's state bucket from another region or account: copy the file to the same key under
+`backup/`, and restore it. `--bucket` and `export --bucket` only work with a bucket named in the
+Terraform variable `backup_export_buckets` (the Lambda role is granted exactly those). Tearing down
+and rebuilding dev with a snapshot: [the deployment runsheet](../docs/deployment-runsheet.md#keeping-devs-content-across-a-teardown).
+
 ## A week the stats rollover missed: `repair_stats_week.py`
 
 Rarely needed. If the weekly stats rollover does not run one Monday, the next one files two weeks

@@ -41,6 +41,7 @@ another ([Deploying to another region](#deploying-to-another-region)).
   - [The evidence export, the trace and the labels (O9)](#the-evidence-export-the-trace-and-the-labels-o9)
 - [Deploying to another region](#deploying-to-another-region)
 - [Tearing down and cost control](#tearing-down-and-cost-control)
+  - [Keeping dev's content across a teardown](#keeping-devs-content-across-a-teardown)
 - [Local development](#local-development)
 - [What is still tied to the original deployment](#what-is-still-tied-to-the-original-deployment)
 
@@ -1442,6 +1443,23 @@ at list price), and four switches can trim it for a deployment that only tries t
 [docs/cost-saving.md](cost-saving.md). Every switch is on by default, and the admin API's address
 allowlist stays on whatever you switch off. A fork that stores real people's data should leave
 them alone.
+
+### Keeping dev's content across a teardown
+
+Destroying dev deletes its tables and buckets, and with them every article. The bootstrap state
+bucket is not part of dev, so a snapshot kept there survives
+([`admin_cli backup`](../scripts/README.md#backups-restores-and-article-exports-backup)):
+
+1. **Before:** `python scripts/admin_cli.py backup snapshot`, and note the key it prints. If you
+   want the articles as plain files too, `backup export` (or `--bucket` one of yours).
+2. Run the `destroy-dev` workflow.
+3. **After the rebuild** (the next merge to `dev` applies it), point the CLI at the new Admin API
+   URL and run `python scripts/admin_cli.py backup restore <key>`. Topics, gear, settings, costs,
+   musings and articles come back; the topics' schedules are written and the published pages
+   rendered again.
+
+The same file restores into another region or account: copy it into that deployment's state
+bucket under `backup/`, then restore it there. Snapshots are also taken weekly on their own.
 
 ## Local development
 
