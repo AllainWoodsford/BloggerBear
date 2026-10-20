@@ -1144,7 +1144,7 @@ def _render_article_page(article: dict, *, published_at: str, published_by: str 
         # The source credit stored when the article was drafted; for an article from before
         # that was stored, its topic's adapter's sources as declared today. See
         # common/attribution.py.
-        attribution=sources_for_article(article, get_topic=get_topic),
+        attribution=sources_for_article(article, get_topic=get_topic, list_topics=list_topics),
         # The figures stored when it was drafted (common/figures.py): copied onto the site again
         # on every render, so an article that was taken down and approved gets them back.
         figures=article.get("figures"),

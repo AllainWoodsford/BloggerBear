@@ -95,8 +95,6 @@ def test_a_topic_carries_its_adapters_sources_and_an_unknown_adapter_carries_non
         assert attribution.sources_for_topic(topic) == []
 
 
-
-
 def test_sources_returned_are_copies_so_a_caller_cannot_edit_the_declaration():
     attribution.sources_for_adapter("crypto_feed")[0]["text"] = "changed"
     assert attribution.sources_for_adapter("crypto_feed")[0]["text"] == "Powered by CoinGecko API"
@@ -109,21 +107,39 @@ def _no_lookup(*_args):
 def test_an_article_keeps_the_credit_stored_on_it():
     stored = [{"text": "Data from X", "label": "X", "url": "https://x.example/"}]
     article = {"topic_id": "crypto", "attribution": stored}
-    assert attribution.sources_for_article(article, get_topic=_no_lookup) == stored
+    assert attribution.sources_for_article(article, get_topic=_no_lookup, list_topics=_no_lookup) == stored
     # "Nothing to credit" was stored: that is the answer.
     article = {"topic_id": "crypto", "attribution": []}
-    assert attribution.sources_for_article(article, get_topic=_no_lookup) == []
+    assert attribution.sources_for_article(article, get_topic=_no_lookup, list_topics=_no_lookup) == []
 
 
 def test_an_older_article_falls_back_to_its_topics_adapter():
     topics = {"crypto": {"topic_id": "crypto", "adapter": "crypto_feed"}}
-    found = attribution.sources_for_article({"topic_id": "crypto"}, get_topic=topics.get)
+    found = attribution.sources_for_article(
+        {"topic_id": "crypto"}, get_topic=topics.get, list_topics=_no_lookup
+    )
     assert found == attribution.sources_for_adapter("crypto_feed")
     # Its topic has since been deleted: nothing to credit, and no error.
-    gone = attribution.sources_for_article({"topic_id": "gone"}, get_topic=topics.get)
+    gone = attribution.sources_for_article({"topic_id": "gone"}, get_topic=topics.get, list_topics=_no_lookup)
     assert gone == []
 
 
+def test_a_legacy_digest_with_nothing_stored_credits_every_current_topics_sources_once():
+    """The digest is removed, but its published articles remain; some sources' terms require the
+    credit, so one from before attribution was stored credits too many rather than none."""
+    topics = [
+        {"topic_id": "a", "adapter": "github_trending"},
+        {"topic_id": "b", "adapter": "hacker_news"},
+        {"topic_id": "c", "adapter": "github_trending"},
+    ]
+    found = attribution.sources_for_article(
+        {"topic_id": attribution.LEGACY_CROSS_TOPIC_ID}, get_topic=_no_lookup, list_topics=lambda: topics
+    )
+    assert [source["label"] for source in found] == ["GitHub Trending", "Hacker News"]
+    # A legacy digest that stored its credit keeps it, like any article.
+    stored = [{"text": "Data from X", "label": "X", "url": "https://x.example/"}]
+    article = {"topic_id": "digest", "attribution": stored}
+    assert attribution.sources_for_article(article, get_topic=_no_lookup, list_topics=_no_lookup) == stored
 
 
 @pytest.mark.parametrize(

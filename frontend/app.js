@@ -114,9 +114,9 @@
     return withArticles.slice(0, NAV_TOPIC_LIMIT).concat(researchingOnly);
   }
 
-  // Only the topics are built here. The site's own sections (Trending
-  // Everywhere, Musings, Stats) are plain links in index.html's #nav-site and
-  // footer, so they are there without any JS or API call.
+  // Only the topics are built here. The site's own sections (About, Musings,
+  // Stats) are plain links in index.html's #nav-site and footer, so they are
+  // there without any JS or API call.
   function renderNav(topics) {
     clearChildren(navEl);
     var navTopics = selectNavTopics(topics);

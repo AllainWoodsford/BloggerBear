@@ -2110,7 +2110,9 @@ below it. The frontend caps at three as well, so an older API response cannot fl
 
 **Status: removed.** The daily cross-topic "Trending Everywhere" digest (`trending_digest_handler.py`,
 `common/digest.py`, its Lambda and its 07:00 UTC schedule) is gone, and the header's "Trending
-Everywhere" link is now **About**.
+Everywhere" link is now **About**: on the site at once, and on a static article page the next time
+that page is rendered (publish, approve, force-publish or a restore). Pages already in the site
+bucket keep the old link until then; it still opens the `digest` topic page.
 
 **Why.** It did not earn its place. An article a person rejected could still be summarised into
 that day's digest, the RSS feed already gives a reader everything across topics, and the musings
@@ -2121,12 +2123,12 @@ other three (the daily cycle, approve and force-publish), which it fell out of m
 `digest`) are ordinary articles now. They keep their static pages, stay in the RSS feed and on the
 Stats page (under the topic id `digest`, as any article whose topic is gone), and a held one can
 still be approved or rejected from the review inbox and `admin_cli`, through the same generic paths
-every article uses. An old digest with no stored source credit now credits nothing, as an article
-of a deleted topic does. Removing those rows is a separate decision.
+every article uses. An old digest with no stored source credit still credits every topic's sources
+(`common/attribution.py`'s `LEGACY_CROSS_TOPIC_ID`), as some sources' terms require; that is the one
+place the `digest` id is still named. Removing those rows is a separate decision.
 
 **Also gone.** The digest-only special cases: its display name in the admin API and on the Stats
-page, its "every topic's sources" credit (`sources_for_topics`, and `sources_for_article`'s
-`list_topics`), its heading in the frontend, its IAM statement, alarms and log group, and the
+page, its heading in the frontend, its IAM statement, alarms and log group, and the
 assistant's catalogue entry. The §7 exception it had is withdrawn.
 
 ### Staggered schedules by slot, pausing a topic, and the digest's steering
@@ -2184,7 +2186,7 @@ for a while" on a pause, an excited "back on it" on a resume (`common/musings.py
 and `resume`, reusing moods that already have their bear).
 
 **The digest's steering.** *(Removed with the digest on 2026-10-20: see "Removed: the Trending
-Everywhere digest" below.)* Trending Everywhere was a survey for readers who follow none of the
+Everywhere digest" above.)* Trending Everywhere was a survey for readers who follow none of the
 topics closely, so it is told to stay general (what kind of thing is moving and in which
 direction, no particulars) and to carry **no figures**: no prices, amounts, percentages, counts,
 rankings, dates or version numbers. The rule is held to in code (`common/digest.py`'s

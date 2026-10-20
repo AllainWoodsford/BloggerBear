@@ -42,9 +42,11 @@ import boto3
 
 from common import equipment, feedback_limits, feedback_verification, gear, security_events, wear
 from common.attribution import (
+    LEGACY_CROSS_TOPIC_ID,
     clean_sources,
     sources_for_article,
     sources_for_topic,
+    sources_for_topics,
 )
 from common.comment_screening import (
     INJECTION,
@@ -357,14 +359,17 @@ def _topic_activity(event: dict) -> dict:
 
 
 def _topic_attribution(topic_id: str) -> list[dict]:
-    """The source credit shown under a topic's title: its adapter's declared sources."""
+    """The source credit shown under a topic's title: its adapter's declared sources. A legacy
+    digest's page (common/attribution.py's LEGACY_CROSS_TOPIC_ID) credits every topic's."""
+    if topic_id == LEGACY_CROSS_TOPIC_ID:
+        return sources_for_topics(list_topics())
     return sources_for_topic(get_topic(topic_id))
 
 
 def _article_attribution(article: dict) -> list[dict]:
     """The source credit an article was published with (or, for one from before that was stored,
     its topic's adapter's sources today). See common/attribution.py's sources_for_article."""
-    return sources_for_article(article, get_topic=get_topic)
+    return sources_for_article(article, get_topic=get_topic, list_topics=list_topics)
 
 
 # Articles per page of GET /articles?topic_id= (a topic page shows one page at a time, newest first).
@@ -859,7 +864,7 @@ def _rss_feed(event: dict) -> dict:
 
     items_xml = []
     for article in articles:
-        attribution = sources_for_article(article, get_topic=topics_by_id.get)
+        attribution = sources_for_article(article, get_topic=topics_by_id.get, list_topics=lambda: topics)
         body = ""
         body_s3_key = article.get("body_s3_key")
         if body_s3_key:

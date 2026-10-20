@@ -2108,6 +2108,16 @@ def test_topic_page_listing_returns_the_topics_credit(aws_resources):
     assert json.loads(public_api_handler.handler(event, None)["body"])["attribution"] == []
 
 
+def test_a_legacy_digest_topic_page_credits_every_topics_sources_once(aws_resources):
+    _put_topic()
+    _put_topic(_CRYPTO_TOPIC)
+    _put_topic({**TOPIC, "topic_id": "web", "name": "Web", "adapter": "web_search"})
+    event = _event("GET /articles", query_params={"topic_id": "digest"})
+    body = json.loads(public_api_handler.handler(event, None)["body"])
+    urls = [source["url"] for source in body["attribution"]]
+    assert sorted(urls) == sorted(
+        ["https://github.com/trending", "https://www.coingecko.com/en/api", "https://www.gdeltproject.org/"]
+    )
 
 
 def test_article_detail_falls_back_to_the_topics_adapter_when_nothing_was_stored(aws_resources):
@@ -2156,6 +2166,18 @@ def test_rss_item_description_ends_with_the_credit_even_when_the_body_is_cut(aws
     excerpt, _, credit = description.partition("\n\n")
     assert excerpt == "y" * 300
     assert credit == (
+        "Powered by CoinGecko API (https://www.coingecko.com/en/api)"
+        " · News search by the GDELT Project (https://www.gdeltproject.org/)"
+    )
+
+
+def test_a_legacy_digest_in_the_rss_feed_still_credits_its_sources(aws_resources):
+    """The removed digest's published articles stay in the feed with their credit."""
+    _put_topic(_CRYPTO_TOPIC)
+    _put_article(article_id="old-digest", topic_id="digest", body_text="A survey.")
+    result = public_api_handler.handler(_event("GET /rss.xml"), None)
+    description = ET.fromstring(result["body"]).find("channel").find("item").find("description").text
+    assert description.endswith(
         "Powered by CoinGecko API (https://www.coingecko.com/en/api)"
         " · News search by the GDELT Project (https://www.gdeltproject.org/)"
     )

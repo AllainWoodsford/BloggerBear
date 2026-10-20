@@ -22,6 +22,11 @@ item (`attribution`) when the article is drafted, so a later change to an adapte
 or to which adapter a topic uses, does not rewrite history. An article from before this existed
 has no such field and falls back to its topic's adapter as it is today (`sources_for_article`).
 
+**Legacy: articles of the removed cross-topic digest** (topic id `LEGACY_CROSS_TOPIC_ID`, never a
+Topics row) are still published. One drafted before attribution was stored drew on every topic,
+so it credits every current topic's sources (`sources_for_topics`): too many rather than too few,
+because some sources' terms require the credit.
+
 Where it shows: under the title on each static article page (common/static_pages.py), under the
 open article's title and the topic's title in the single-page frontend (through
 public_api_handler.py), and in the "Data sources" list on frontend/about.html.
@@ -29,7 +34,7 @@ public_api_handler.py), and in the "Data sources" list on frontend/about.html.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from .adapters.registry import ADAPTER_REGISTRY
 
@@ -94,6 +99,19 @@ def sources_for_topic(topic: dict | None) -> list[dict]:
     return sources_for_adapter(topic.get("adapter"))
 
 
+# The topic id of the removed Trending Everywhere digest, whose published articles remain.
+LEGACY_CROSS_TOPIC_ID = "digest"
+
+
+def sources_for_topics(topics: Iterable[dict]) -> list[dict]:
+    """The union of several topics' sources, each once, in the order first met: what a legacy
+    digest article (or its topic page) credits."""
+    merged: list[dict] = []
+    for topic in topics:
+        merged.extend(sources_for_topic(topic))
+    return clean_sources(merged)
+
+
 def all_declared_sources() -> list[dict]:
     """Every source any registered adapter declares (the About page's "Data sources" list)."""
     merged: list[dict] = []
@@ -106,19 +124,22 @@ def sources_for_article(
     article: dict,
     *,
     get_topic: Callable[[str], dict | None],
+    list_topics: Callable[[], list[dict]],
 ) -> list[dict]:
     """The credit to show for `article`: what was stored on it when it was drafted, else (an
     article from before attribution was stored) what its topic's adapter declares today.
 
     A stored empty list is an answer, not a gap: the article was drafted with nothing to credit.
-    An article whose topic is gone (or was never a Topics row) and has nothing stored credits
-    nothing.
+    A legacy digest article with nothing stored credits every current topic's sources (see the
+    module docstring). An article whose topic is gone and has nothing stored credits nothing.
 
-    The lookup is passed in by the caller (each handler's own imports of common/dynamo.py) so
-    this module reads nothing by itself and a handler's tests keep control of the reads.
+    The two lookups are passed in by the caller (each handler's own imports of common/dynamo.py)
+    so this module reads nothing by itself and a handler's tests keep control of the reads.
     """
     stored = article.get("attribution")
     if stored is not None:
         return clean_sources(stored)
     topic_id = article.get("topic_id")
+    if topic_id == LEGACY_CROSS_TOPIC_ID:
+        return sources_for_topics(list_topics())
     return sources_for_topic(get_topic(topic_id)) if topic_id else []
