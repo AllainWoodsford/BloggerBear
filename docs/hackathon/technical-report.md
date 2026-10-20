@@ -41,7 +41,7 @@ here is typed from memory.
 |---|---|---|
 | **Live** | measured and decided by the deployed system on dev, read back from its logs and state | Dev was deployed with the vision worker on 15 October, and again on 16 October with the rotating topic (#331). The first rail topic's first ticks found three defects, now fixed (§6, "Failures observed in the deployment"). The rotating topic, `rail-cities`, has been seeded and switched to a city a week (#338) with three goals in turn (#335); no live triage has run yet. [R2: the live run's dates and counts, from the evidence export] |
 | **Replayed** | the real adapter and worker code driven over pinned real scenes, tick by tick, with the real model or its recorded answers | Built (`vision_eval.py replay`, #336), not yet run on real data. [R2: the replay's run files] |
-| **Benchmarked** | a script's run on pinned inputs, written to a run file with its code, machine, build and inputs | One run file: the coverage of all 46 pinned Sydney scenes (§6). The Graviton session, stock against COOL, is the owner's (Appendix A). |
+| **Benchmarked** | a script's run on pinned inputs, written to a run file with its code, machine, build and inputs | The coverage of all 46 pinned Sydney scenes (§6), and the Graviton session's 20 run files of 20 October: stock OpenCV 5.0 and 4.14 against COOL on one Graviton4 instance (E9, E10, Appendix A). |
 | **Constructed** | inputs built to exercise one path: a failure case, a labelled agent case | The unit tests (§6, "Tests"); the agent's 13 labelled cases are built (`scripts/vision_eval_cases/`, #337), not yet run against the model. [R2: the case set's run file] |
 
 ---
@@ -324,10 +324,11 @@ fingerprint guard above means a result can never claim a build it did not run on
 4.x too. The evidence README records that `opencv-python-headless==4.14.0.94` imports and runs the
 benchmark's kernels, `analyse_rail_access` among them (x86, 16 October; it shows the code runs on
 4.x, not a timing). What OpenCV 5 changes for this workload is measured, not assumed: the
-Graviton session times stock 4.14 against stock 5.0 on the same instance, scenes and network.
-[R2: the 4.x-against-5.0 speed-up on the compute stages with its interval, and the parity result,
-from the `bench-compare` run file `...-scenes-opencv-4x-1t-vs-opencv-1t.json`; or, if that run was
-cut, the sentence that no 5.x-specific call is used and the comparison was not measured]
+Graviton session times stock 4.14 against stock 5.0 on the same instance, scenes and network: 5.0
+over 4.14 is 1.007 on the compute stages, one core (95 % interval 0.998 to 1.009), with the rail
+metrics' parity passing (`2026-10-20-bench-compare-…-scenes-opencv-4x-1t-vs-opencv-1t.json`). So
+OpenCV 5 changes nothing measurable for this workload; it is the version the worker was built and
+tested on, not a source of speed.
 
 ## 5. AWS deployment
 
@@ -475,9 +476,13 @@ code, worker refusals, worker runs that ended without a reply, tick attempts not
 failures, and triage stops other than `answered`]
 
 **E9 and E10: timing, memory, and COOL against stock** (benchmarked). See
-[Appendix A](#appendix-a-best-use-of-cool). The only timings so far are indicative x86 rows from a
-shared build container, where two runs differed by up to 40 %
-([vision.md §7](../enhancements/archive/vision.md#7-measured)); none is a COOL ratio.
+[Appendix A](#appendix-a-best-use-of-cool) for the ratios. On Graviton4 (Neoverse V2), one core, each
+scene in a fresh interpreter, five repeats, stock OpenCV 5.0: the Sydney rail scene of 26 August
+2024 takes 5.40 s from its range reads to its figure, at a peak of 998 MB resident; the ships scene
+80 ms and 103 MB. Four threads bring the rail scene to 5.04 s. Under COOL, one core: 5.29 s and
+1,051 MB (`2026-10-20-bench-scenes-neoverse-v2-graviton4-*.json`). The earlier x86 rows from a shared
+build container, where two runs differed by up to 40 %
+([vision.md §7](../enhancements/archive/vision.md#7-measured)), are indicative only.
 
 **The agent** (constructed cases, the live model). [R2: from the `agent` run file: the case set
 (four `real` cases, three to five `artefact` cases, each labelled by how it was built and which
@@ -562,8 +567,9 @@ REPRODUCE.md]
   floor when its week starts gets its weekly reading, and its articles, only once a clear scene is
   measured, so the angles start later in its week.
 - **The demo topic.** Its thresholds of 0 make the agent run on a known day; it is disclosed in §8.
-- **COOL is benchmarked, not deployed.** The deployed worker runs stock OpenCV 5 on Lambda arm64;
-  whether COOL runs on Lambda's CPUs is open ([vision.md §10](../enhancements/archive/vision.md#10-still-open)).
+- **COOL is benchmarked, not deployed.** The deployed worker runs stock OpenCV 5 on Lambda arm64.
+  COOL was not measurably faster on this workload, aborts with more than one OpenCV thread, and needs
+  a Graviton4 host; whether it runs on Lambda's CPUs is open ([vision.md §10](../enhancements/archive/vision.md#10-still-open)).
 - **The x86 timings are indicative.** A shared container, runs differing by up to 40 %; the arm64
   factor of 1.3 behind the window cap is an assumption until the Graviton rows replace it.
 - **Overpass.** Two public endpoints, rate-limited and sometimes slow: a stored network serves for
@@ -671,10 +677,15 @@ everywhere. [R2: whether the procedure ran, its dates, and that its articles wer
 
 ## Appendix A. Best use of COOL
 
-**Version, delivery and configuration (C1).** [R2: from `evidence/cool/recon.md` and the run files'
-`environment.cool` and `environment.host`: the Marketplace product and version, its delivery type
-(AMI or container) and image digest or AMI id, the instance type (`c8g.xlarge`), the Region, the
-Python version, the COOL fingerprint (`build_sha256`), threads, and the price]
+**Version, delivery and configuration (C1).** COOL 3.1, *Cloud Optimized OpenCV for AWS
+Graviton4* on AWS Marketplace (product code `aajkmdd4qo3r7yhqg61a7aah9`), delivered as an AMI,
+`ami-08dacb72c289c8261`, run on one `c8g.xlarge` (4 vCPU, Neoverse V2) in us-west-2 on 20 October
+for about 1.6 hours. Its `cv2` is 5.1.0-dev, built with `-mcpu=neoverse-v2` and KleidiCV 0.7.0 in
+its HAL, in the vendor's Python 3.12.3 environment with numpy 2.5.1; its fingerprint, the SHA-256 of
+`cv2.getBuildInformation()`, is `12740978…8ec4`. Every run file records these from the process
+itself (`environment.opencv`, `environment.cool`, `environment.host`), with its thread count and CPU
+affinity. The software fee was listed at USD 0.01 to 0.02 an hour, EC2 on top
+([the reconnaissance](evidence/cool/recon.md), [the session](evidence/cool/session.md)).
 
 **Method, inputs and baselines (C2).** One Graviton4 instance, one session, the backends
 interleaved so a slow minute does not land on one side:
@@ -693,9 +704,33 @@ interleaved so a slow minute does not land on one side:
   two runs from different machines or inputs;
 - `controls`: the COOL guard's three negative controls.
 
-**Results.** [R2: from the `bench-compare` run files: the headline speed-up of COOL over stock on
-the pinned one-core scenes pair, on the compute stages, with its 95 % interval and `parity: pass`;
-per stage; the four-thread pair; and the kernel pair]
+**Results.** From the `bench-compare` run files ([RESULTS.md](evidence/RESULTS.md)); a speed-up
+is stock's median over COOL's, so above 1 is COOL faster:
+
+| Pair | Speed-up | 95 % interval | Parity |
+|---|---:|---|---|
+| **COOL over stock 5.0.0, the three scenes, one core, compute stages** | **1.028** | 0.964 to 1.037 | pass; no pixel of the figures differs |
+| the rail scenes' `analyse` stage; within it, the graph | 1.027 to 1.038; 1.064 to 1.069 | | |
+| the ships scene's `analyse` stage | 0.981 | | |
+| the kernels, one core | 1.054 | 1.053 to 1.056 | pass |
+| the scenes, four threads | not measured: COOL aborts on the rail scenes (below) | | fail |
+| stock 5.0.0 over stock 4.14.0, the scenes, one core | 1.007 | 0.998 to 1.009 | pass |
+
+On this workload COOL 3.1 is not measurably faster than stock OpenCV 5.0.0: about 3 %, with an
+interval that includes no change. Per kernel it is faster on `GaussianBlur` (1.21), `findContours`
+(1.16), `distanceTransform` (1.12) and `connectedComponentsWithStats` (1.09), and slower on
+`adaptiveThreshold` (0.67), which the built-up mask runs on every scene. And OpenCV is a small part
+of the worker's time: `perf` puts about 11 % of the samples in `libopencv_imgproc`, against the
+interpreter's 33 %, zlib's 20 % (decompressing the COG tiles) and numpy's 14 %
+([perf-dso.txt](evidence/cool/perf-dso.txt)). OpenCV 5.0.0 against 4.14.0 is no change either.
+
+**A fault, found and isolated.** With two or more OpenCV threads, COOL aborts on both real rail
+scenes with glibc's `double free or corruption`; at one thread, and under stock at four, it does
+not. Bisecting the 16 OpenCV functions the rail path calls, holding only
+`connectedComponentsWithStats` to one thread removes it, and that configuration passes parity
+against stock. Its inputs replayed alone do not reproduce it, so the fault needs the run's state
+around the call. The diagnosis is in [the session's record](evidence/cool/session.md), and a report
+to the vendor is drafted ([vendor-report.md](evidence/cool/vendor-report.md)).
 
 **The proof that COOL executed the claimed core workload (C3).** The core workload is
 `lambda_handler` on a real city: the range reads, `analyse_rail_access` and `annotate_rail`. The
@@ -714,12 +749,20 @@ evidence, each a committed file:
 8. the speed-up on the compute stages, per stage, with intervals;
 9. optionally, the agent's replay run with COOL executing `look_again` inside the loop.
 
-[R2: each item ticked with its file, or said not shown and why]
+Shown: 1 (the one-core `scenes --backend cool` run, every scene `ok`; the four-thread run's rail
+scenes aborted, above), 2 (`environment.libraries` lists COOL's `libopencv_*.so.5.1.0` from
+`/opt/cool/cpp_sdk/lib`; KleidiCV is linked into them, not a library of its own), 3, 4 and 5 (in
+every run file), 6 (both `bench-controls` runs, 3 of 3 as expected), 7 (`parity: pass`, the one-core
+pairs) and 8 (above). Not shown: 9, as the agent session was not run.
 
-**The claim's scope**, exactly: the same worker handler, run on Graviton4 with COOL, on real Sydney
-scenes and its real OpenStreetMap network, and [R2: keep "and inside the agent's loop" only if the
-agent session ran]; the deployed worker runs stock OpenCV 5 on Lambda arm64 (its CPU named in its
-logs). Not "COOL is deployed": a deployed COOL worker is out of scope until after the deadline.
+**The claim's scope**, exactly: the same worker handler, run on Graviton4 with COOL on one thread,
+on real Sydney scenes and its real OpenStreetMap network; the deployed worker runs stock OpenCV 5 on
+Lambda arm64 (its CPU named in its logs). Not "COOL is deployed", and that is a decision, not a gap:
+the worker already takes a `cool` backend per topic (`common/vision_client.py` sends it to its own
+worker, and the handler refuses with `not_cool` unless the pinned build is the one loaded), and
+COOL proved a correct drop-in. But for a serverless pipeline that measures a few scenes a day, a
+build that is not measurably faster here, needs one thread, and needs an always-on Graviton4 host
+does not pay for itself, so the switch stays off.
 
 ## Appendix B. Agentic Vision
 
