@@ -3120,10 +3120,42 @@
           "nargs": null,
           "metavar": null,
           "destructive": false
+        },
+        {
+          "name": "--chat-chance-pct",
+          "dest": "chat_chance_pct",
+          "kind": "option",
+          "flags": [
+            "--chat-chance-pct"
+          ],
+          "help": "Chance BloggerBear replies to his report, 0-100 (default 25)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--reply-chance-pct",
+          "dest": "reply_chance_pct",
+          "kind": "option",
+          "flags": [
+            "--reply-chance-pct"
+          ],
+          "help": "Chance he answers that reply, 0-100 (default 10)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py reviewer set [-h] [--enabled {on,off,}] [--may-approve {on,off,}]\n                                 [--fix-content {on,off,}] [--review-held {on,off,}]\n                                 [--review-published {on,off,}] [--watch-flags {on,off,}]\n                                 [--defang-held {on,off,}] [--stale-after-hours STALE_AFTER_HOURS]\n                                 [--published-per-run PUBLISHED_PER_RUN]\n                                 [--published-lookback PUBLISHED_LOOKBACK]\n                                 [--max-rewrites MAX_REWRITES] [--content-days CONTENT_DAYS]\n                                 [--tasks-per-tick TASKS_PER_TICK] [--tick-minutes TICK_MINUTES]\n                                 [--defang-after-days DEFANG_AFTER_DAYS]\n\noptions:\n  -h, --help            show this help message and exit\n  --enabled {on,off,}   Run (on) or pause (off) his scheduled runs (default on)\n  --may-approve {on,off,}\n                        May he approve held articles himself (a topic's own setting wins) (default\n                        on)\n  --fix-content {on,off,}\n                        Task 1: fix the assistant's content findings (default on)\n  --review-held {on,off,}\n                        Task 2: review articles held --stale-after-hours or more (default on)\n  --review-published {on,off,}\n                        Task 3: review the newest published articles (default on)\n  --watch-flags {on,off,}\n                        Task 4: watch his financial approvals for downvotes (default on)\n  --defang-held {on,off,}\n                        Task 5: publish long-waiting articles with flagged parts cut, or reject\n                        (default on)\n  --stale-after-hours STALE_AFTER_HOURS\n                        Hours a held article waits before he reviews it, 1-720 (default 48)\n  --published-per-run PUBLISHED_PER_RUN\n                        Published articles he reviews a run, 1-25 (default 5)\n  --published-lookback PUBLISHED_LOOKBACK\n                        How many newest published he looks through, 1-200 (default 25)\n  --max-rewrites MAX_REWRITES\n                        Rewrites before he rejects a held article, 1-10 (default 3)\n  --content-days CONTENT_DAYS\n                        Days of content findings he fixes, 1-30 (default 7)\n  --tasks-per-tick TASKS_PER_TICK\n                        Tasks he does a tick, 1-5 (default 2)\n  --tick-minutes TICK_MINUTES\n                        Minutes between his ticks, 1-60 (default 5)\n  --defang-after-days DEFANG_AFTER_DAYS\n                        Days a held article waits before task 5, 3-90 (default 10)\n"
+      "help_text": "usage: admin_cli.py reviewer set [-h] [--enabled {on,off,}] [--may-approve {on,off,}]\n                                 [--fix-content {on,off,}] [--review-held {on,off,}]\n                                 [--review-published {on,off,}] [--watch-flags {on,off,}]\n                                 [--defang-held {on,off,}] [--stale-after-hours STALE_AFTER_HOURS]\n                                 [--published-per-run PUBLISHED_PER_RUN]\n                                 [--published-lookback PUBLISHED_LOOKBACK]\n                                 [--max-rewrites MAX_REWRITES] [--content-days CONTENT_DAYS]\n                                 [--tasks-per-tick TASKS_PER_TICK] [--tick-minutes TICK_MINUTES]\n                                 [--defang-after-days DEFANG_AFTER_DAYS]\n                                 [--chat-chance-pct CHAT_CHANCE_PCT]\n                                 [--reply-chance-pct REPLY_CHANCE_PCT]\n\noptions:\n  -h, --help            show this help message and exit\n  --enabled {on,off,}   Run (on) or pause (off) his scheduled runs (default on)\n  --may-approve {on,off,}\n                        May he approve held articles himself (a topic's own setting wins) (default\n                        on)\n  --fix-content {on,off,}\n                        Task 1: fix the assistant's content findings (default on)\n  --review-held {on,off,}\n                        Task 2: review articles held --stale-after-hours or more (default on)\n  --review-published {on,off,}\n                        Task 3: review the newest published articles (default on)\n  --watch-flags {on,off,}\n                        Task 4: watch his financial approvals for downvotes (default on)\n  --defang-held {on,off,}\n                        Task 5: publish long-waiting articles with flagged parts cut, or reject\n                        (default on)\n  --stale-after-hours STALE_AFTER_HOURS\n                        Hours a held article waits before he reviews it, 1-720 (default 48)\n  --published-per-run PUBLISHED_PER_RUN\n                        Published articles he reviews a run, 1-25 (default 5)\n  --published-lookback PUBLISHED_LOOKBACK\n                        How many newest published he looks through, 1-200 (default 25)\n  --max-rewrites MAX_REWRITES\n                        Rewrites before he rejects a held article, 1-10 (default 3)\n  --content-days CONTENT_DAYS\n                        Days of content findings he fixes, 1-30 (default 7)\n  --tasks-per-tick TASKS_PER_TICK\n                        Tasks he does a tick, 1-5 (default 2)\n  --tick-minutes TICK_MINUTES\n                        Minutes between his ticks, 1-60 (default 5)\n  --defang-after-days DEFANG_AFTER_DAYS\n                        Days a held article waits before task 5, 3-90 (default 10)\n  --chat-chance-pct CHAT_CHANCE_PCT\n                        Chance BloggerBear replies to his report, 0-100 (default 25)\n  --reply-chance-pct REPLY_CHANCE_PCT\n                        Chance he answers that reply, 0-100 (default 10)\n"
     },
     "model-catalog": {
       "help": "The model discover and reprice jobs (every second day): pause flags, sizes, reviews",

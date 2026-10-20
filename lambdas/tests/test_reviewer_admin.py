@@ -314,3 +314,41 @@ def test_a_hold_that_cannot_take_the_article_down_voids_its_item_and_leaves_it_u
     removed.assert_not_called()
     assert _article()["status"] == "published"
     assert all(item["status"] != "pending" for item in _queue_items())
+
+
+def test_each_bloggerbear_tone_has_a_professor_answer_and_plain_fallbacks(stored, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(musings, "tracked_claude", boom)
+    for situation in ("scolded", "praised", "grateful"):
+        for tone in musings.bloggerbear_tones(situation):
+            musings.generate_and_store_bloggerbear_reply(
+                situation=situation, tone=tone, reply_to="r", model_id="m", created_at="t1"
+            )
+            musings.generate_and_store_reviewer_answer(tone=tone, reply_to="b", model_id="m", created_at="t2")
+    replies = [m for m in stored if m["kind"] == "reply"]
+    answers = [m for m in stored if m["kind"] == "reviewer_answer"]
+    assert len(replies) == len(answers) == 4
+    assert all(m.get("character") is None and m["replying_to"] == "grizzlewick" for m in replies)
+    assert all(m["character"] == "grizzlewick" and m["replying_to"] == "bloggerbear" for m in answers)
+    # BloggerBear's moods all have their picture.
+    assert {m["mood"] for m in replies} <= set(musings.MOODS)
+    texts = " ".join(m["text"] for m in answers)
+    assert "tough because I want you to do well" in texts and "stay vigilant" in texts
+
+
+ANSWER = "Chin up, cub, I am hard on you for a reason."
+
+
+def test_the_professor_takes_the_models_words_when_usable(stored, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        musings,
+        "tracked_claude",
+        lambda category, prompt, model_id, max_tokens: seen.append(prompt) or ANSWER,
+    )
+    musings.generate_and_store_reviewer_answer(tone="sulky", reply_to="b", model_id="m", created_at="t")
+    assert "tough because you want him to do well" in seen[0]
+    assert stored[0]["text"] == ANSWER
+    assert stored[0]["mood"] == "warm"

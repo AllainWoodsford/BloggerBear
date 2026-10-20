@@ -106,6 +106,8 @@ SETTINGS: dict[str, object] = {
     "tasks_per_tick": 2,
     "tick_minutes": 5,
     "defang_after_days": 10,
+    "chat_chance_pct": 25,  # BloggerBear replies to his report
+    "reply_chance_pct": 10,  # he answers BloggerBear's reply
 }
 _RANGES = {
     "stale_after_hours": (1, 720),
@@ -116,6 +118,8 @@ _RANGES = {
     "tasks_per_tick": (1, 5),
     "tick_minutes": (1, 60),
     "defang_after_days": (3, 90),
+    "chat_chance_pct": (0, 100),
+    "reply_chance_pct": (0, 100),
 }
 DEFANGED_FIELD = "reviewer_defanged"
 # A cut must leave at least this much of the article: past it, it is not the same article.
@@ -875,6 +879,24 @@ OUTCOMES = {
     "defang_rejected": "rejected {n} long-waiting article{s} that could not stand without the flagged parts",
     "flag_resolved": "closed {n} check{s} on articles that are no longer up",
 }
+
+
+# How his report reads to BloggerBear (common/musings.py's back-and-forth).
+_STERN = ("rejected", "defang_rejected", "held_downvoted", "rewrite", "content_rewrite")
+_KIND = ("approved", "approved_flagged", "reviewed_ok", "defanged")
+
+
+def conversation_situation(counts: dict) -> str:
+    """"scolded" when he turned work away, took it down, or sent more back than he passed;
+    "praised" when he passed work and sent nothing back; else "grateful" (a mixed report)."""
+    stern = sum(int(counts.get(k) or 0) for k in _STERN)
+    kind = sum(int(counts.get(k) or 0) for k in _KIND)
+    hard = int(counts.get("rejected") or 0) + int(counts.get("defang_rejected") or 0)
+    if hard or int(counts.get("held_downvoted") or 0) or stern > kind:
+        return "scolded"
+    if kind and not stern:
+        return "praised"
+    return "grateful"
 
 
 def report_facts(counts: dict) -> list[str]:

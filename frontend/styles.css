@@ -902,6 +902,14 @@ a {
   margin: 0 0 6px;
 }
 
+/* A reply in the bears' back-and-forth: whom it answers, above its text. */
+.musing-reply-to {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
 .musing-mood {
   margin: 0 0 6px;
   color: var(--muted);
