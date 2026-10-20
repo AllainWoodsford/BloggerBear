@@ -940,7 +940,7 @@ def test_failures_refuses_a_network_file_that_is_not_there_when_one_is_named(tmp
 def test_index_lists_a_summary_value_that_is_null(tmp_path):
     # vision_benchmark.compare_summary writes None for an interval it could not compute.
     evidence = evidence_copy(tmp_path)
-    path = next((evidence / "runs").glob("*.json"))
+    path = next((evidence / "runs").glob("*-eval-coverage-*.json"))
     run = json.loads(path.read_text(encoding="utf-8"))
     run["summary"] = {**run["summary"], "scenes": None}
     path.write_text(json.dumps(run), encoding="utf-8")
