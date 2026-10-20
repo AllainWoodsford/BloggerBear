@@ -28,7 +28,10 @@ from common.lambda_timing import track_lambda_duration
 @track_lambda_duration("model_catalog")
 def handler(event, context) -> dict:
     try:
-        return model_catalog.handle(event if isinstance(event, dict) else {})
+        return model_catalog.handle(
+            event if isinstance(event, dict) else {},
+            own_arn=getattr(context, "invoked_function_arn", None),
+        )
     except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
         print(f"model_catalog_handler: unhandled exception: {exc!r}")
         return {"status": "error", "error": str(exc)}

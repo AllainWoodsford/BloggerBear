@@ -19,6 +19,7 @@ REGION = "ap-southeast-2"
 BUCKET = "bloggerbear-content-test"
 # A Wednesday, 05:00 in Sydney (AEDT, UTC+11).
 NOW = datetime(2026, 10, 20, 18, 0, tzinfo=UTC)
+OWN_ARN = "arn:aws:lambda:ap-southeast-2:123456789012:function:bloggerbear-dev-model-catalog"
 
 
 @pytest.fixture
@@ -33,10 +34,11 @@ def aws(monkeypatch):
         "FAILED_EXECUTIONS_TABLE": "FailedExecutions",
         "CONTENT_BUCKET": BUCKET,
         "ENVIRONMENT_NAME": "dev",
-        "MODEL_CATALOG_FUNCTION_ARN": "arn:aws:lambda:ap-southeast-2:123456789012:function:mc",
         "SCHEDULER_INVOKE_ROLE_ARN": "arn:aws:iam::123456789012:role/scheduler-invoke",
     }.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.delenv("MODEL_CATALOG_FUNCTION_ARN", raising=False)
+    monkeypatch.setattr(catalog, "_own_arn", OWN_ARN)
     monkeypatch.setattr(catalog, "_get_scheduler", lambda: SCHEDULER)
     SCHEDULER.created.clear()
     import common.dynamo as dynamo_module
@@ -341,11 +343,30 @@ def test_a_run_schedules_its_own_reviews_which_delete_themselves(aws):
     assert first["ScheduleExpression"] == "at(2026-10-20T19:00:00)"
     assert first["ScheduleExpressionTimezone"] == "UTC"
     assert first["ActionAfterCompletion"] == "DELETE"
-    assert first["Target"]["Arn"].endswith(":function:mc")
+    assert first["Target"]["Arn"] == OWN_ARN  # the Lambda's own, from its context
     assert json.loads(first["Target"]["Input"]) == {"job": "review", "run_id": run_id}
     # The longest prefix Terraform accepts (14) and the longer environment still fit in 64.
     longest = f"{'x' * 14}-production-price-review-{run_id}-4"
     assert len(longest) <= 64
+
+
+def test_the_review_target_is_the_lambdas_own_arn_unless_overridden(aws, monkeypatch):
+    catalog.handle({}, NOW, own_arn="arn:aws:lambda:ap-southeast-2:1:function:passed-in")
+    assert catalog._review_target_arn() == "arn:aws:lambda:ap-southeast-2:1:function:passed-in"
+    monkeypatch.setenv("MODEL_CATALOG_FUNCTION_ARN", "arn:aws:lambda:ap-southeast-2:1:function:other")
+    assert catalog._review_target_arn().endswith(":function:other")
+    monkeypatch.delenv("MODEL_CATALOG_FUNCTION_ARN")
+    monkeypatch.setattr(catalog, "_own_arn", None)
+    with pytest.raises(RuntimeError):
+        catalog._review_target_arn()
+
+
+def test_the_function_name_defaults_to_the_one_terraform_gives_it(monkeypatch):
+    monkeypatch.delenv("MODEL_CATALOG_FUNCTION_NAME", raising=False)
+    monkeypatch.setenv("ENVIRONMENT_NAME", "production")
+    assert catalog.function_name() == "bloggerbear-production-model-catalog"
+    monkeypatch.setenv("MODEL_CATALOG_FUNCTION_NAME", "elsewhere")
+    assert catalog.function_name() == "elsewhere"
 
 
 def test_a_run_whose_reviews_could_not_be_scheduled_still_opens(aws, monkeypatch):
@@ -944,7 +965,7 @@ def test_the_summary_shows_the_run_under_review(aws):
 
 
 def test_the_handler_never_raises(monkeypatch):
-    def boom(event):
+    def boom(event, own_arn=None):
         raise RuntimeError("nope")
 
     monkeypatch.setattr(catalog, "handle", boom)

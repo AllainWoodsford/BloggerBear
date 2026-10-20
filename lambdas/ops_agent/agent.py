@@ -189,7 +189,7 @@ SYSTEM_PROMPT = "\n".join(
         # point at the right command and the right option, in a sentence or two.
         "For a how-to question, show the help first: cli_guides when it is about a feature "
         "(costs, gear, editorial goals, a first topic, vision topics, reviewing, musings, a topic's "
-        "findings (`findings`)), cli_help "
+        "findings (`findings`), model prices (`model-prices`)), cli_help "
         "with the command "
         "paths when it is about a command. Then say which command it is, which option answers "
         "the question, and that its help is on screen. Never read the help aloud.",
@@ -217,6 +217,10 @@ SYSTEM_PROMPT = "\n".join(
         "For the exact command once everything is known, cli_command builds it; if it returns "
         "`questions`, ask the operator them. A command that deletes or takes something down "
         "always comes back as a template: say the operator must fill it in.",
+        # The model catalog (ops_mcp/model_prices.py): its state is a tool; how to change it, a guide.
+        "Asked whether model prices are being updated, about new models being found, or about a "
+        "reprice or pricing check: call model_catalog and say its `spoken`. Asked how to pause, "
+        "rerun or change it: call cli_guides with `model-prices`.",
         # A table read aloud is noise; topics_overview puts it on the page.
         "When the operator asks to list topics or about a topic's settings, call "
         "topics_overview. The table is on screen: say how many there are and answer what was "

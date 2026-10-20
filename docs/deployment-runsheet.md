@@ -480,8 +480,9 @@ straight in the DynamoDB console instead:
 }
 ```
 
-The same table holds a second item, `config_id` = `pipeline`, for the pipeline-wide settings
-(`pipeline-config set`). Leave it alone here; the two never overwrite each other.
+The same table holds other items: `config_id` = `pipeline` for the pipeline-wide settings
+(`pipeline-config set`), and the model catalog's `model-catalog`, `model-catalog-state` and
+`pricing-run#<id>` (step 4). Leave them alone here; none overwrites another.
 
 **3. Rotate between models on a topic (optional).** Useful for comparing models on the same
 topic: each article records which model wrote it.
@@ -504,6 +505,30 @@ Before you add a model anywhere:
   shows up as a failed run (and a fallback, if you set one).
 - Any provider's model works. Every call goes through Bedrock's Converse API.
 - The registry is per environment. Do it again for production.
+
+**4. Let the model catalog keep the registry current (on by default).** Nothing to set up: once
+deployed, the `model-catalog` Lambda adds every model the account can call in this region, from
+every provider, to the registry **switched off** (Tuesdays 03:00 Sydney), and reprices every model
+(Wednesdays 03:00 Sydney). A changed price is used at once and checked 1 and 2 hours later; one a
+check cannot confirm goes back to the old price, shows in `failed-executions list` and in the
+assistant's pipeline health. A model you registered by hand above is repriced too: add
+`--lock-price` to `models add` to keep a price you chose. To fill the registry now rather than
+waiting for Tuesday, and to check it:
+
+```bash
+python scripts/admin_cli.py models discover          # starts in the background; a minute or two
+python scripts/admin_cli.py model-catalog get        # what it added and priced, any run being checked
+python scripts/admin_cli.py models list
+python scripts/admin_cli.py models add --model-id "<a discovered id>" --display-name "<name>" \
+    --provider <provider> --input-price <usd per 1k> --output-price <usd per 1k>   # switch one on
+python scripts/admin_cli.py model-catalog set --reprice off   # pause a job ('' or on resumes it)
+```
+
+The pause flags are the only settings: `discover_enabled` and `reprice_enabled` on the
+`model-catalog` item of the same table, on unless set to `false`. `MODEL_CATALOG_FUNCTION_NAME`
+is not one of them: it only tells the admin API which Lambda to start, and Terraform sets it
+([configuration.md](configuration.md#the-model-catalogs-environment-variables)). Details:
+[model-catalog-refresh.md](enhancements/model-catalog-refresh.md).
 
 ### DynamoDB tag-based access control (ABAC)
 

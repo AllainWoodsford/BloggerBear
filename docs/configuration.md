@@ -13,6 +13,7 @@ Settings live in six places:
 | [Environment Terraform variables](#environment-terraform-variables) | The domain, the model, a few switches | `infra/environments/<env>/terraform.tfvars`, by pull request |
 | [SSM Parameter Store](#ssm-parameter-store) | API keys for the data sources | `aws ssm put-parameter`, or the console |
 | [DynamoDB](#dynamodb-settings-changed-with-no-deploy) | Models, pipeline behaviour, topics | `python scripts/admin_cli.py`, or the console |
+| [The model catalog's environment variables](#the-model-catalogs-environment-variables) | Which Lambda `models reprice` and `models discover` start (not on/off switches; nothing to set) | Terraform, with a default in the code |
 | [Your own machine](#your-own-machine) | Where the admin CLI points | Environment variables |
 
 Two more are set in a console and nowhere else: [AWS account settings](#aws-account-settings) and
@@ -205,7 +206,10 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 
 | Setting | Table and item | Command | Default |
 |---|---|---|---|
-| The model registry: each model's name, provider and price | `<prefix>-<env>-models`, one item per `model_id` | `models add`, `models list` | Empty. Claude Haiku 4.5 has a built-in price; any other model is unpriced until registered. |
+| The model registry: each model's name, provider and price, whether it is switched on (`enabled`), and whether the reprice may change its price (`price_locked`). The model catalog adds every model the account can call (`enabled: false`, with `region`, `discovered_at`, `pricing_unit`) and keeps its price current (`price_source`, `price_checked_at`, `price_evidence_hash`) | `<prefix>-<env>-models`, one item per `model_id` | `models add` (also switches a discovered model on; `--lock-price`), `models list`, `models discover`, `models reprice` | Empty until the first Tuesday's discover. Claude Haiku 4.5 has a built-in price |
+| The model catalog: pause the weekly discover (Tuesdays 03:00 Sydney) or reprice (Wednesdays 03:00 Sydney), and how a changed price is checked (`discover_enabled`, `reprice_enabled`, `review_after_hours`, `review_tolerance_pct`, `max_change_factor`, `max_web_lookups`; [model-catalog-refresh.md](enhancements/model-catalog-refresh.md)) | `<prefix>-<env>-model-config`, item `config_id` = `model-catalog` | `model-catalog get`, `model-catalog set --discover on\|off --reprice on\|off --review-after-hours 1,2 ...` | Both on; checked 1 and 2 hours later, within 5%, at most 10x from the old price, 10 web searches a run. The days are the schedules' crons, in Terraform |
+| What the model catalog last did (`last_discover_at`, `last_reprice_at` and their results) and the pricing run under review (`active_run_id`). Written by the job only | `<prefix>-<env>-model-config`, item `config_id` = `model-catalog-state` | `model-catalog get` | No item until a job runs |
+| A pricing run: each changed model's old and new price, its check times and what each check found. Pruned by TTL 14 days after it closes | `<prefix>-<env>-model-config`, items `config_id` = `pricing-run#<run id>` | `model-catalog get` (the run under review) | None |
 | The global default and fallback model | `<prefix>-<env>-model-config`, item `config_id` = `default` | `model-config set --model-id … --fallback-model-id …` | No item: the model Terraform set (`BEDROCK_MODEL_ID`), no fallback. |
 | How often research really runs, for every topic | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --research-interval-hours N` | 1 hour |
 | The stagger: the minutes between one topic's schedules and the next (`stagger_minutes`; 0 turns it off), then `topics reschedule` to apply it | same item | `pipeline-config set --stagger-minutes N`, `topics schedule`, `topics reschedule` | 5 minutes: slot 1 researches at :05 past, slot 2 at :10, ...; the daily cycles start one slot past the hour's last heartbeat (topics × 5 minutes), then one slot apart |
@@ -223,6 +227,26 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 
 Seeding the model tables, with a sample item, is in
 [The model registry](deployment-runsheet.md#the-model-registry-seeding-and-rotation).
+
+## The model catalog's environment variables
+
+Neither is a switch, and neither needs setting: Terraform sets the first, and the code falls back
+to the same value without it. The on/off switches are in DynamoDB, not here: `discover_enabled`
+and `reprice_enabled` on the `model-catalog` row of `<prefix>-<env>-model-config`, **on unless set
+to `false`** (an absent row or setting is on), changed with `admin_cli.py model-catalog set
+--discover off|on --reprice off|on` ([DynamoDB: settings changed with no
+deploy](#dynamodb-settings-changed-with-no-deploy)).
+
+| Variable | Set on | Meaning | Default |
+|---|---|---|---|
+| `MODEL_CATALOG_FUNCTION_NAME` | every Lambda (read by the admin API) | Which Lambda `models reprice` and `models discover` start. Terraform sets it to the model-catalog function's name. | `<prefix>-<env>-model-catalog`, from `NAME_PREFIX` and `ENVIRONMENT_NAME`: the name Terraform gives the function |
+| `MODEL_CATALOG_FUNCTION_ARN` | nothing, by default | What a pricing run's two review schedules invoke. Only to point them at another function. | The model-catalog Lambda's own ARN, which it reads from its invocation context |
+
+The two weekly schedules (`<prefix>-<env>-model-discover`, Tuesdays 03:00 Sydney, and
+`<prefix>-<env>-model-reprice`, Wednesdays 03:00 Sydney) are Terraform's: change their days or
+time there (`aws_scheduler_schedule.model_catalog_discover` / `_reprice` in each environment's
+`main.tf`). Each run's review schedules (`<prefix>-<env>-price-review-<run>-<n>`) are made by the
+Lambda and delete themselves once fired ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md)).
 
 ## Your own machine
 

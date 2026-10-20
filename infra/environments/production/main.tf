@@ -796,12 +796,13 @@ locals {
     AGENTCORE_WEB_SEARCH_REGION = module.web_search.region
     AGENTCORE_WEB_SEARCH_TOOL   = module.web_search.tool_name
 
-    # The model catalog (aws_lambda_function.model_catalog below): the Admin API invokes it by name
-    # for `models reprice` / `models discover`, and a pricing run's one-shot review schedules target
-    # it by ARN (common/model_catalog.py's schedule_reviews). Literals, like the research tick's
-    # above, for the same dependency-cycle reason; keep them in sync with that function_name.
+    # Not a switch: which Lambda the Admin API starts for `models reprice` / `models discover`
+    # (aws_lambda_function.model_catalog below). Optional -- unset, the code uses this same name,
+    # <prefix>-<env>-model-catalog (common/model_catalog.py's function_name). A literal, like
+    # RESEARCH_TICK_FUNCTION_NAME above, for the same dependency-cycle reason. The review schedules
+    # need no variable: the Lambda passes them its own ARN. The on/off switches are DynamoDB's
+    # (`model-catalog` row, discover_enabled / reprice_enabled, on unless set to false).
     MODEL_CATALOG_FUNCTION_NAME = "${var.unique_name_prefix}-production-model-catalog"
-    MODEL_CATALOG_FUNCTION_ARN  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.unique_name_prefix}-production-model-catalog"
   }
 }
 
