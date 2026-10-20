@@ -41,6 +41,7 @@ another ([Deploying to another region](#deploying-to-another-region)).
   - [The evidence export, the trace and the labels (O9)](#the-evidence-export-the-trace-and-the-labels-o9)
 - [Deploying to another region](#deploying-to-another-region)
 - [Tearing down and cost control](#tearing-down-and-cost-control)
+  - [Keeping dev's content across a teardown](#keeping-devs-content-across-a-teardown)
 - [Local development](#local-development)
 - [What is still tied to the original deployment](#what-is-still-tied-to-the-original-deployment)
 
@@ -479,8 +480,9 @@ straight in the DynamoDB console instead:
 }
 ```
 
-The same table holds a second item, `config_id` = `pipeline`, for the pipeline-wide settings
-(`pipeline-config set`). Leave it alone here; the two never overwrite each other.
+The same table holds other items: `config_id` = `pipeline` for the pipeline-wide settings
+(`pipeline-config set`), and the model catalog's `model-catalog`, `model-catalog-state` and
+`pricing-run#<id>` (step 4). Leave them alone here; none overwrites another.
 
 **3. Rotate between models on a topic (optional).** Useful for comparing models on the same
 topic: each article records which model wrote it.
@@ -503,6 +505,30 @@ Before you add a model anywhere:
   shows up as a failed run (and a fallback, if you set one).
 - Any provider's model works. Every call goes through Bedrock's Converse API.
 - The registry is per environment. Do it again for production.
+
+**4. Let the model catalog keep the registry current (on by default).** Nothing to set up: once
+deployed, the `model-catalog` Lambda adds every model the account can call in this region, from
+every provider, to the registry **switched off** (Tuesdays 03:00 Sydney), and reprices every model
+(Wednesdays 03:00 Sydney). A changed price is used at once and checked 1 and 2 hours later; one a
+check cannot confirm goes back to the old price, shows in `failed-executions list` and in the
+assistant's pipeline health. A model you registered by hand above is repriced too: add
+`--lock-price` to `models add` to keep a price you chose. To fill the registry now rather than
+waiting for Tuesday, and to check it:
+
+```bash
+python scripts/admin_cli.py models discover          # starts in the background; a minute or two
+python scripts/admin_cli.py model-catalog get        # what it added and priced, any run being checked
+python scripts/admin_cli.py models list
+python scripts/admin_cli.py models add --model-id "<a discovered id>" --display-name "<name>" \
+    --provider <provider> --input-price <usd per 1k> --output-price <usd per 1k>   # switch one on
+python scripts/admin_cli.py model-catalog set --reprice off   # pause a job ('' or on resumes it)
+```
+
+The pause flags are the only settings: `discover_enabled` and `reprice_enabled` on the
+`model-catalog` item of the same table, on unless set to `false`. `MODEL_CATALOG_FUNCTION_NAME`
+is not one of them: it only tells the admin API which Lambda to start, and Terraform sets it
+([configuration.md](configuration.md#the-model-catalogs-environment-variables)). Details:
+[model-catalog-refresh.md](enhancements/model-catalog-refresh.md).
 
 ### DynamoDB tag-based access control (ABAC)
 
@@ -1480,6 +1506,23 @@ at list price), and four switches can trim it for a deployment that only tries t
 [docs/cost-saving.md](cost-saving.md). Every switch is on by default, and the admin API's address
 allowlist stays on whatever you switch off. A fork that stores real people's data should leave
 them alone.
+
+### Keeping dev's content across a teardown
+
+Destroying dev deletes its tables and buckets, and with them every article. The bootstrap state
+bucket is not part of dev, so a snapshot kept there survives
+([`admin_cli backup`](../scripts/README.md#backups-restores-and-article-exports-backup)):
+
+1. **Before:** `python scripts/admin_cli.py backup snapshot`, and note the key it prints. If you
+   want the articles as plain files too, `backup export` (or `--bucket` one of yours).
+2. Run the `destroy-dev` workflow.
+3. **After the rebuild** (the next merge to `dev` applies it), point the CLI at the new Admin API
+   URL and run `python scripts/admin_cli.py backup restore <key>`. Topics, gear, settings, costs,
+   musings and articles come back; the topics' schedules are written and the published pages
+   rendered again.
+
+The same file restores into another region or account: copy it into that deployment's state
+bucket under `backup/`, then restore it there. Snapshots are also taken weekly on their own.
 
 ## Local development
 

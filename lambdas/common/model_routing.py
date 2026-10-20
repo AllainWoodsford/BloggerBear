@@ -18,7 +18,8 @@ Each step is optional -- a topic with no override, or a ModelConfig table
 with no "default" row yet (fresh deploy, or nobody's configured it),
 falls through to the next step rather than failing. `os.environ[
 "BEDROCK_MODEL_ID"]` (Terraform-set, today's only source of truth) is the
-final safety net and always works.
+final safety net and always works. It is also the fallback whenever none is
+configured and the picked model is a different one.
 """
 
 from __future__ import annotations
@@ -58,5 +59,14 @@ def resolve_model(topic: dict | None = None) -> tuple[str, str | None]:
 
     if model_id is None:
         model_id = os.environ["BEDROCK_MODEL_ID"]
+
+    # Nobody configured a fallback: retry with the Terraform default rather than have no
+    # fallback at all, so a model Bedrock retires (or never enabled for the account) that a
+    # topic or ModelConfig still names costs that run its first model, not the day's article.
+    # No fallback when the default *is* the model: retrying the same call buys nothing.
+    if fallback_model_id is None:
+        env_default = os.environ.get("BEDROCK_MODEL_ID") or None
+        if env_default != model_id:
+            fallback_model_id = env_default
 
     return model_id, fallback_model_id

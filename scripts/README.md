@@ -227,6 +227,22 @@ python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5
     --input-price 0.001 --output-price 0.005
 # (USD per 1K tokens. Confirm against the Bedrock price page for your region -- a
 # geographic inference profile can cost more than the provider's list price.)
+# The model catalog keeps this list and its prices current by itself
+# (docs/enhancements/model-catalog-refresh.md): every Tuesday 03:00 Sydney it adds every model the
+# account can call, from every provider, switched off; every Wednesday it reprices every model.
+# A changed price is used at once and checked 1 and 2 hours later; one a check cannot confirm
+# goes back to the old price (a failed-executions row). `models add` with the same id switches a
+# discovered model on; --lock-price keeps the reprice off a price you set on purpose.
+python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0" \
+    --display-name "Claude Haiku 4.5" --provider anthropic \
+    --input-price 0.0011 --output-price 0.0055 --lock-price
+python scripts/admin_cli.py models reprice     # now, even when paused, with its own two checks
+python scripts/admin_cli.py models discover    # now, even when paused
+python scripts/admin_cli.py model-catalog get  # paused or not, what each job last did, any run under review
+python scripts/admin_cli.py model-catalog set --reprice off   # pause the weekly reprice ('' or on resumes)
+python scripts/admin_cli.py model-catalog set --discover off  # pause the weekly discover
+python scripts/admin_cli.py model-catalog set --review-after-hours "1,2" --review-tolerance-pct 5 \
+    --max-change-factor 10 --max-web-lookups 10   # the defaults; '' clears one
 python scripts/admin_cli.py model-config get
 python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -577,6 +593,51 @@ python scripts/admin_cli.py musings edit <musing_id> --text "Fresh from the den:
   cannot be regenerated: what they were written from (a vote count, a piece of gear) is gone.
 - Only the text changes. The mood, the date and the link stay, and the item gets an `edited_at`.
 - The public feed is cached for a short while, so the change takes a moment to show on the site.
+
+## Backups, restores and article exports: `backup`
+
+Terraform builds the skeleton; a **snapshot** is the data loaded into it. It is one file,
+`backup/<prefix>-<env>/snapshots/<UTC time>-<manual|schedule>.jsonl.gz`, in the bootstrap state
+bucket (outside Terraform state, and kept when an environment is destroyed). It holds:
+
+- **articles**: every row, with its metadata (lineage and cost, sources, review, figures, rewrite
+  history) and its **final** text, plus the figure PNGs a page shows. Not the research snapshots,
+  the pre-review `.original.md` or the texts a rewrite replaced; the row's pointers to those are
+  dropped, so nothing restored points at a missing object;
+- **costing**: StatsCurrent, StatsHistory and ViewCounts;
+- **gear and refinements** (PromptRefinements), **musings**, reader feedback and the moderation queue;
+- **configuration**: Topics, Models and ModelConfig (default model, pipeline and feedback settings).
+
+Not Findings, candidate ideas, failed executions, security events or sign-ins, nor rows already set
+to expire, nor the feedback-signing key (a new deployment makes its own).
+
+A snapshot runs **every Sunday at 3am Sydney** (the newest 8 scheduled ones are kept; ones you
+take by hand are never pruned). Every job runs inside the Admin API's Lambda in ~20-second steps,
+saving where it got to after each, so closing the terminal does not stop it. The command follows
+it, printing progress, unless `--no-wait`:
+
+```bash
+python scripts/admin_cli.py backup snapshot                 # take one now; prints its key at the end
+python scripts/admin_cli.py backup list                     # snapshot files and recent jobs
+python scripts/admin_cli.py backup status <job_id> --wait   # follow a job again
+python scripts/admin_cli.py backup resume <job_id>          # restart one shown as stalled
+
+# Load a snapshot into this deployment: every row and article written back under its own key
+# (so it can be run again safely), then each topic's schedules written as `topics create` writes
+# them and every published page rendered again. No model is called. Asks first unless --yes.
+python scripts/admin_cli.py backup restore backup/bloggerbear-dev/snapshots/20261019T030000Z-schedule.jsonl.gz
+#   --no-pages / --no-schedules skip those steps; --bucket reads it from another allowed bucket.
+
+# Copy every article (its row as JSON, its final text and figures) to a bucket, with manifest.json.
+python scripts/admin_cli.py backup export                                   # into the backup bucket's exports/
+python scripts/admin_cli.py backup export --bucket my-archive --prefix dev-2026-10
+```
+
+A restore can take another environment's snapshot (production's into dev), or one copied into this
+deployment's state bucket from another region or account: copy the file to the same key under
+`backup/`, and restore it. `--bucket` and `export --bucket` only work with a bucket named in the
+Terraform variable `backup_export_buckets` (the Lambda role is granted exactly those). Tearing down
+and rebuilding dev with a snapshot: [the deployment runsheet](../docs/deployment-runsheet.md#keeping-devs-content-across-a-teardown).
 
 ## A week the stats rollover missed: `repair_stats_week.py`
 

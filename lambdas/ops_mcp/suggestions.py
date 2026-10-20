@@ -86,6 +86,16 @@ CATALOGUE: dict[str, Suggestion] = {
         arguments="failed-executions list",
         what_it_does="Lists the failed daily runs and their errors. It changes nothing.",
     ),
+    # The model catalog put a price back that its review could not confirm
+    # (common/model_catalog.py): the old price is in use again, so nothing is wrong now.
+    "model_pricing_reverted": Suggestion(
+        action="Check the model prices in use (models list), then reprice again",
+        arguments="models reprice",
+        what_it_does=(
+            "Looks up every model's price again in the background. A changed price applies at "
+            "once and is reviewed twice more, and is put back again if a review is not confident."
+        ),
+    ),
     # A blank musing is fixed where it is: the article is fine, so it is not rewritten.
     "musing_no_text": Suggestion(
         action="Have the article's blank musing written again",

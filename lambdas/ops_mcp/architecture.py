@@ -297,11 +297,15 @@ CATALOGUE: tuple[Component, ...] = (
     _table(
         "failed-executions",
         "One row per daily-cycle run that ran out of retries and landed on the dead-letter "
-        "queue: the topic and the error.",
+        "queue (the topic and the error), and one per model price check that put a price back "
+        '(kind "model_pricing").',
         ("failure_id",),
         ttl="expires_at",
         details=(
-            ("Written by", "dlq-handler, one row per dead-letter message"),
+            (
+                "Written by",
+                "dlq-handler, one row per dead-letter message; model-catalog, per failed price check",
+            ),
             ("Read by", "the Admin API (admin_cli failed-executions list), the assistant"),
         ),
         aliases=("failures", "failed-runs", "dlq-records"),
@@ -323,10 +327,15 @@ CATALOGUE: tuple[Component, ...] = (
     _table(
         "models",
         "The registry of Bedrock models the pipeline may use, with their pricing, so a model "
-        "can be added or switched without a Terraform apply.",
+        "can be added or switched without a Terraform apply. Every model the account can call is "
+        "added here by the model catalog, switched off, and its price kept current.",
         ("model_id",),
         details=(
-            ("Written by", "the Admin API (admin_cli models ...)"),
+            (
+                "Written by",
+                "the Admin API (admin_cli models ...); model-catalog (discover adds rows, reprice "
+                "and its checks change prices)",
+            ),
             ("Read by", "every function that calls Bedrock, the public API"),
         ),
         aliases=("model-registry",),
@@ -334,18 +343,20 @@ CATALOGUE: tuple[Component, ...] = (
     _table(
         "model-config",
         'Settings rows: the default model ("default"), the pipeline\'s settings including the '
-        'assistant_access switch ("pipeline"), feedback limits ("feedback"), and the '
-        "feedback rate limiter's short-lived counters.",
+        'assistant_access switch ("pipeline"), feedback limits ("feedback"), the model '
+        'catalog\'s pause flags and checks ("model-catalog"), what it last did '
+        '("model-catalog-state"), one row per pricing run while it is checked '
+        '("pricing-run#<id>"), and the feedback rate limiter\'s short-lived counters.',
         ("config_id",),
         ttl="expires_at",
         details=(
             (
                 "Written by",
-                "the Admin API (model-config, pipeline-config, feedback-config set); "
-                "the public API (rate-limit counters)",
+                "the Admin API (model-config, pipeline-config, feedback-config, model-catalog set); "
+                "the public API (rate-limit counters); model-catalog (its state and pricing runs)",
             ),
-            ("Read by", "every pipeline function, the assistant (its access switch)"),
-            ("Expires", "only the rate-limit counters, by TTL"),
+            ("Read by", "every pipeline function, the assistant (its access switch, model_catalog)"),
+            ("Expires", "the rate-limit counters, and a pricing run 14 days after it closes, by TTL"),
         ),
         aliases=("config", "pipeline-config", "settings"),
         assistant_reads=True,
@@ -516,6 +527,14 @@ CATALOGUE: tuple[Component, ...] = (
         "Reads the AWS bill from Cost Explorer (API Gateway, web search, WAF, every service) "
         "into the stats tables.",
         "daily at 10:00 UTC (EventBridge Scheduler)",
+    ),
+    _lambda(
+        "model-catalog",
+        "Keeps the models table's list and prices up to date: adds every provider's new models "
+        "(disabled) on Tuesdays, reprices on Wednesdays, and reviews each changed price 1 and 2 "
+        "hours later, putting it back if it cannot be confirmed.",
+        "Tuesdays and Wednesdays 03:00 Sydney time (EventBridge Scheduler), each review on a "
+        "one-shot schedule of its own, and on demand (models discover, models reprice)",
     ),
     _lambda(
         "trending-digest",
@@ -794,7 +813,10 @@ CATALOGUE: tuple[Component, ...] = (
             "(vision/<topic>/<site>/<scene>.png) and each rail city's network "
             "(vision/<topic>/<site>/network.json)."
         ),
-        details=(("Name", "unique across all of AWS, which is why each deployment has its own prefix"),),
+        details=(
+            ("Name", "unique across all of AWS, which is why each deployment has its own prefix"),
+            ("Also", "pricing/<date>-<run>.json: old model prices a reprice replaced, once checked"),
+        ),
         aliases=("content-bucket", "s3"),
     ),
     Component(

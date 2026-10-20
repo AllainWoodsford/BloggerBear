@@ -23,6 +23,7 @@ and the two hours over a day allow for a daily run that starts a little later th
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -42,6 +43,10 @@ from ops_mcp.redact import looks_like_instructions, personal_data_kinds
 from ops_mcp.suggestions import ID_PATTERN, finding
 
 DAY_WINDOW = timedelta(hours=26)
+# The model catalog's price reviews run weekly, so a price it put back is reported for a week.
+PRICING_WINDOW = timedelta(days=7)
+# FailedExecutions' kind for a price the model catalog put back (common/model_catalog.FAILURE_KIND).
+PRICING_FAILURE_KIND = "model_pricing"
 # Research is late once two of its intervals have passed with no check: one missed heartbeat is
 # jitter, two is a schedule that isn't running.
 RESEARCH_LATE_INTERVALS = 2
@@ -267,6 +272,8 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None, si
         row, found = _topic_check(item, config, failures, now, detail=topic is not None)
         rows.append(row)
         findings.extend(found)
+    if topic is None:
+        findings.extend(_pricing_findings(failures, now))
 
     spoken = _health_spoken(rows)
     if sites:
@@ -294,6 +301,31 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None, si
         result["matched_topic"] = matched
         result["spoken"] = topic_match.took(matched) + result["spoken"]
     return result
+
+
+def _pricing_findings(failures: list[dict], now: datetime) -> list[dict]:
+    """A finding for each time in the last PRICING_WINDOW the model catalog put model prices back.
+    Only the count and when are said: model ids come from Bedrock, so they stay in the record
+    (`failed-executions list`). No id: read fresh each time, never remembered (memory.py)."""
+    since = now - PRICING_WINDOW
+    found = []
+    for failure in failures:
+        when = _parse(failure.get("created_at"))
+        if failure.get("kind") != PRICING_FAILURE_KIND or when is None or when < since:
+            continue
+        try:
+            reverted = json.loads(failure.get("raw_message") or "{}").get("reverted")
+        except (ValueError, AttributeError):
+            reverted = None
+        count = len(reverted) if isinstance(reverted, list) and reverted else 1
+        prices = "a model's price" if count == 1 else f"{count} models' prices"
+        found.append(
+            finding(
+                "model_pricing_reverted",
+                f"The model catalog put back {prices} it could not confirm, {_age(when, now)} ago",
+            )
+        )
+    return found
 
 
 def _health_spoken(rows: list[dict]) -> str:

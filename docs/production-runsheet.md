@@ -225,6 +225,9 @@ Then, in order:
    `<prefix>-production-model-config`) the same way as dev's (`<prefix>` is your
    `UNIQUE_NAME_PREFIX`, `bloggerbear` by default):
    [deployment-runsheet.md, "Optional, but recommended"](deployment-runsheet.md#optional-but-recommended).
+   The model catalog fills and reprices production's registry by itself from the first Tuesday
+   (on by default); `models discover` does it now, and `model-catalog get` shows what it did
+   ([the model registry, step 4](deployment-runsheet.md#the-model-registry-seeding-and-rotation)).
 5. **Smoke-test in a browser**: the home page, an article, the Stats page, `/rss.xml`, a thumbs-up
    on an article (this exercises the feedback token), and `https://www.<your domain>` (should land
    on the bare domain).

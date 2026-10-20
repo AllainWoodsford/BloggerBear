@@ -910,7 +910,65 @@ def _cmd_models_add(args: argparse.Namespace) -> None:
         "output_price_usd_per_1k_tokens": args.output_price,
         "enabled": args.enabled,
     }
+    if args.price_locked is not None:
+        body["price_locked"] = args.price_locked
     _do_request(args, "POST", "/models", body=body)
+
+
+def _cmd_models_reprice(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", "/models/reprice")
+    print(
+        "Repricing in the background. A changed price applies now and is reviewed twice later "
+        "(by default 1 and 2 hours on); `model-catalog get` shows the run and its next review.",
+        file=sys.stderr,
+    )
+
+
+def _cmd_models_discover(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", "/models/discover")
+    print(
+        "Discovering in the background. New models are added disabled, priced, and their prices "
+        "reviewed like a reprice's; `models list` shows them.",
+        file=sys.stderr,
+    )
+
+
+# --- model-catalog subcommands ----------------------------------------------
+
+def _cmd_model_catalog_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/model-catalog-config")
+
+
+def _whole_or_clear(name: str, raw: str):
+    """A whole-number setting from the command line, or None for '' (clears it)."""
+    if raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise CliError(f"{name} must be a whole number, or '' to clear it") from exc
+
+
+def _cmd_model_catalog_set(args: argparse.Namespace) -> None:
+    body: dict = {}
+    for name, value in (("discover_enabled", args.discover), ("reprice_enabled", args.reprice)):
+        if value is not None:
+            body[name] = {"on": True, "off": False}.get(value)  # '' clears it (back to on)
+    for name in ("review_tolerance_pct", "max_change_factor", "max_web_lookups"):
+        raw = getattr(args, name)
+        if raw is not None:
+            body[name] = _whole_or_clear("--" + name.replace("_", "-"), raw)
+    if args.review_after_hours is not None:
+        if args.review_after_hours == "":
+            body["review_after_hours"] = None
+        else:
+            body["review_after_hours"] = [
+                _whole_or_clear("--review-after-hours", part.strip())
+                for part in args.review_after_hours.split(",")
+            ]
+    if not body:
+        raise CliError("model-catalog set needs at least one setting (see --help)")
+    _do_request(args, "PUT", "/model-catalog-config", body=body)
 
 
 def _cmd_model_config_get(args: argparse.Namespace) -> None:
@@ -1072,6 +1130,107 @@ def _cmd_equipment_unequip(args: argparse.Namespace) -> None:
 
 
 # --- argument parsing -----------------------------------------------------
+
+
+# --- backup subcommands --------------------------------------------------
+#
+# A snapshot, restore or export runs as a job in the Admin API's Lambda (lambdas/common/backup.py),
+# not here: closing this terminal does not stop it. Without --no-wait the command follows the job,
+# printing a line each time its progress changes; `backup status JOB_ID --wait` picks it up again.
+
+# How often a followed job's status is read.
+_BACKUP_POLL_SECONDS = 5
+
+
+def _backup_progress_line(job: dict) -> str:
+    progress = job.get("progress") or {}
+    estimates = job.get("estimates") or {}
+    parts = []
+    for name, count in progress.items():
+        estimate = estimates.get(name)
+        parts.append(f"{name} {count}/~{estimate}" if estimate else f"{name} {count}")
+    stalled = "  [STALLED: run `backup resume`]" if job.get("stalled") else ""
+    return f"[{job.get('status')}] {job.get('phase')}: {', '.join(parts) or '-'}{stalled}"
+
+
+def _follow_backup_job(args: argparse.Namespace, job: dict) -> None:
+    """Print the job's progress until it finishes, then the finished job. Ctrl-C stops following,
+    never the job."""
+    job_id = job["job_id"]
+    print(f"Job {job_id} started; follow it again with `backup status {job_id} --wait`.", file=sys.stderr)
+    last = None
+    try:
+        while job.get("status") == "running":
+            line = _backup_progress_line(job)
+            if line != last:
+                print(line, file=sys.stderr)
+                last = line
+            time.sleep(_BACKUP_POLL_SECONDS)
+            job = _fetch_json(args, "GET", f"/backups/jobs/{job_id}")["job"]
+    except KeyboardInterrupt:
+        print(f"\nStopped following; the job carries on. `backup status {job_id}`", file=sys.stderr)
+        return
+    print(json.dumps(job, indent=2))
+    if job.get("status") != "succeeded":
+        sys.exit(1)
+
+
+def _start_backup(args: argparse.Namespace, path: str, body: dict | None = None) -> None:
+    job = _fetch_json(args, "POST", path, body=body)["job"]
+    if args.no_wait:
+        print(json.dumps(job, indent=2))
+        return
+    _follow_backup_job(args, job)
+
+
+def _cmd_backup_list(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/backups")
+
+
+def _cmd_backup_snapshot(args: argparse.Namespace) -> None:
+    _start_backup(args, "/backups/snapshot")
+
+
+def _cmd_backup_restore(args: argparse.Namespace) -> None:
+    if not args.yes:
+        where = f"s3://{args.bucket}/{args.key}" if args.bucket else args.key
+        print(
+            f"This writes every row and article in {where} into this deployment "
+            f"({_resolve_api_url(args)}), over any with the same keys, and rewrites its topic "
+            "schedules and published pages.",
+            file=sys.stderr,
+        )
+        if input("Type 'restore' to continue: ").strip() != "restore":
+            raise CliError("restore cancelled")
+    body: dict = {"key": args.key, "pages": not args.no_pages, "schedules": not args.no_schedules}
+    if args.bucket:
+        body["bucket"] = args.bucket
+    _start_backup(args, "/backups/restore", body)
+
+
+def _cmd_backup_export(args: argparse.Namespace) -> None:
+    body: dict = {}
+    if args.bucket:
+        body["bucket"] = args.bucket
+    if args.prefix is not None:
+        body["prefix"] = args.prefix
+    _start_backup(args, "/backups/export", body)
+
+
+def _cmd_backup_status(args: argparse.Namespace) -> None:
+    job = _fetch_json(args, "GET", f"/backups/jobs/{args.job_id}")["job"]
+    if args.wait:
+        _follow_backup_job(args, job)
+    else:
+        print(json.dumps(job, indent=2))
+
+
+def _cmd_backup_resume(args: argparse.Namespace) -> None:
+    job = _fetch_json(args, "POST", f"/backups/jobs/{args.job_id}/resume")["job"]
+    if args.no_wait:
+        print(json.dumps(job, indent=2))
+        return
+    _follow_backup_job(args, job)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1797,6 +1956,101 @@ def build_parser() -> argparse.ArgumentParser:
         "stats", help="Summarize what compliance review has flagged, across all history"
     ).set_defaults(func=_cmd_moderation_stats)
 
+    backup_parser = subparsers.add_parser(
+        "backup",
+        help=(
+            "Snapshot this deployment's content and configuration to one file, restore one, "
+            "or copy every article to another bucket"
+        ),
+    )
+    backup_sub = backup_parser.add_subparsers(dest="action", required=True)
+    backup_sub.add_parser(
+        "list", help="List this deployment's snapshot files and its most recent backup jobs"
+    ).set_defaults(func=_cmd_backup_list)
+
+    def _no_wait(command: argparse.ArgumentParser) -> None:
+        command.add_argument(
+            "--no-wait",
+            action="store_true",
+            default=False,
+            help="Print the started job and return instead of following its progress",
+        )
+
+    backup_snapshot_parser = backup_sub.add_parser(
+        "snapshot",
+        help=(
+            "Write a snapshot now: articles (final text and figures), costs and stats, gear and "
+            "refinements, musings, topics, models and settings, as one file in the backup bucket"
+        ),
+    )
+    _no_wait(backup_snapshot_parser)
+    backup_snapshot_parser.set_defaults(func=_cmd_backup_snapshot)
+
+    backup_restore_parser = backup_sub.add_parser(
+        "restore",
+        help=(
+            "Load a snapshot file into this deployment (rows and article text written back under "
+            "their own keys), then rewrite topic schedules and published pages"
+        ),
+    )
+    backup_restore_parser.add_argument(
+        "key", help="The snapshot's key, as `backup list` shows it (backup/<prefix>-<env>/snapshots/...)"
+    )
+    backup_restore_parser.add_argument(
+        "--bucket",
+        default=None,
+        help="Read it from this bucket instead of the backup bucket (one of backup_export_buckets)",
+    )
+    backup_restore_parser.add_argument(
+        "--no-pages",
+        action="store_true",
+        default=False,
+        help="Do not re-render the published articles' pages",
+    )
+    backup_restore_parser.add_argument(
+        "--no-schedules",
+        action="store_true",
+        default=False,
+        help="Do not write the restored topics' schedules",
+    )
+    backup_restore_parser.add_argument(
+        "--yes", action="store_true", default=False, help="Do not ask for confirmation"
+    )
+    _no_wait(backup_restore_parser)
+    backup_restore_parser.set_defaults(func=_cmd_backup_restore)
+
+    backup_export_parser = backup_sub.add_parser(
+        "export",
+        help=(
+            "Copy every article (its row as JSON, its final text and figures) to a bucket, "
+            "with a manifest.json"
+        ),
+    )
+    backup_export_parser.add_argument(
+        "--bucket",
+        default=None,
+        help="Target bucket (one of backup_export_buckets); default: the backup bucket's exports/",
+    )
+    backup_export_parser.add_argument(
+        "--prefix", default=None, help="Key prefix in the target bucket (default: the UTC time)"
+    )
+    _no_wait(backup_export_parser)
+    backup_export_parser.set_defaults(func=_cmd_backup_export)
+
+    backup_status_parser = backup_sub.add_parser("status", help="Show a backup job's progress")
+    backup_status_parser.add_argument("job_id")
+    backup_status_parser.add_argument(
+        "--wait", action="store_true", default=False, help="Follow it until it finishes"
+    )
+    backup_status_parser.set_defaults(func=_cmd_backup_status)
+
+    backup_resume_parser = backup_sub.add_parser(
+        "resume", help="Restart a stalled backup job from where it got to"
+    )
+    backup_resume_parser.add_argument("job_id")
+    _no_wait(backup_resume_parser)
+    backup_resume_parser.set_defaults(func=_cmd_backup_resume)
+
     failed_executions_parser = subparsers.add_parser(
         "failed-executions", help="View daily_cycle executions that exhausted their retries"
     )
@@ -1950,7 +2204,63 @@ def build_parser() -> argparse.ArgumentParser:
         "--disabled", dest="enabled", action="store_false", default=True,
         help="Register the model as disabled (default: enabled)",
     )
+    models_add_parser.add_argument(
+        "--lock-price", dest="price_locked", action=argparse.BooleanOptionalAction, default=None,
+        help=(
+            "--lock-price keeps the model catalog's reprice from ever changing this price (e.g. "
+            "a geo-profile premium you set on purpose); --no-lock-price lets it again"
+        ),
+    )
     models_add_parser.set_defaults(func=_cmd_models_add)
+
+    models_sub.add_parser(
+        "reprice",
+        help=(
+            "Look up every model's price now, as the weekly reprice does: changed prices apply "
+            "at once and are reviewed 1 and 2 hours later, and put back if a review is not confident"
+        ),
+    ).set_defaults(func=_cmd_models_reprice)
+    models_sub.add_parser(
+        "discover",
+        help="Add every model the account can call that the registry lacks now (disabled), and price them",
+    ).set_defaults(func=_cmd_models_discover)
+
+    model_catalog_parser = subparsers.add_parser(
+        "model-catalog",
+        help="The weekly model discover and reprice jobs: their pause flags and price reviews",
+    )
+    model_catalog_sub = model_catalog_parser.add_subparsers(dest="action", required=True)
+    model_catalog_sub.add_parser(
+        "get", help="Show the settings, what each job last did, and the pricing run under review"
+    ).set_defaults(func=_cmd_model_catalog_get)
+    model_catalog_set = model_catalog_sub.add_parser(
+        "set", help="Change settings (send any of them; a setting not sent is unchanged; '' clears one)"
+    )
+    model_catalog_set.add_argument(
+        "--discover", choices=["on", "off", ""], default=None,
+        help="Run (on) or pause (off) discover's weekly schedule (Tuesdays)",
+    )
+    model_catalog_set.add_argument(
+        "--reprice", choices=["on", "off", ""], default=None,
+        help="Run (on) or pause (off) reprice's weekly schedule (Wednesdays)",
+    )
+    model_catalog_set.add_argument(
+        "--review-after-hours", dest="review_after_hours", default=None,
+        help="Hours after a run each review runs, comma-separated (default 1,2; 1 to 4 reviews)",
+    )
+    model_catalog_set.add_argument(
+        "--review-tolerance-pct", dest="review_tolerance_pct", default=None,
+        help="How far, in percent, a review's fresh price may be from the applied one (default 5)",
+    )
+    model_catalog_set.add_argument(
+        "--max-change-factor", dest="max_change_factor", default=None,
+        help="A price moving more than this many times either way fails review (default 10)",
+    )
+    model_catalog_set.add_argument(
+        "--max-web-lookups", dest="max_web_lookups", default=None,
+        help="Paid web searches one run may make (default 10)",
+    )
+    model_catalog_set.set_defaults(func=_cmd_model_catalog_set)
 
     model_config_parser = subparsers.add_parser(
         "model-config", help="Manage the global default/fallback model"

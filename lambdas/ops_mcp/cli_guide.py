@@ -120,7 +120,7 @@ DOUBLE_CHECK_WARNING = (
 # CliError before any request). argparse cannot say so, so it is said here; the test runs each
 # one's handler with no options and expects that refusal, and expects no other command to have it.
 AT_LEAST_ONE_OPTION = frozenset(
-    {"topics update", "pipeline-config set", "feedback-config set", "model-config set"}
+    {"topics update", "pipeline-config set", "feedback-config set", "model-config set", "model-catalog set"}
 )
 
 # A line break or any other control character in a value. Quoting would keep it inside one word,
@@ -1454,6 +1454,61 @@ GUIDES: dict[str, dict] = {
                 "options": {},
                 "ask": ["musing_id", "text"],
             },
+        ],
+    },
+    "model-prices": {
+        "title": "Model prices: discovering models and keeping their prices current",
+        "keywords": (
+            "price",
+            "pricing",
+            "reprice",
+            "discover",
+            "catalog",
+            "catalogue",
+            "registry",
+            "new model",
+            "model list",
+        ),
+        "explanation": [
+            # common/model_catalog.py's module docstring; infra's model_catalog_* schedules.
+            "The model catalog runs twice a week at 3 am Sydney time. On Tuesdays discover adds "
+            "every model the account can call, from every provider, switched off; on Wednesdays "
+            "reprice looks up the price of every model in the registry. Prices come from the AWS "
+            "Price List first, then a web search read by a model.",
+            # model_catalog.review, _revert, write_snapshot; FAILURE_KIND.
+            "A changed price is used at once and checked again 1 and 2 hours later. If a check "
+            "cannot confirm it, the old price goes back and the failure shows in failed-executions "
+            "and the assistant's pipeline health; if both pass, the old prices are kept in the "
+            "content bucket under pricing/.",
+            # model_catalog.SETTINGS; admin_api_handler's model catalog routes.
+            "model-catalog set pauses either job (it stops its weekly run only) and changes the "
+            "checks; models reprice and models discover run a job now, even when paused, with "
+            "its own two checks. models add switches a discovered model on; --lock-price keeps "
+            "the reprice off a price you set on purpose.",
+        ],
+        "commands": [
+            "model-catalog get",
+            "model-catalog set",
+            "models reprice",
+            "models discover",
+            "models add",
+        ],
+        "steps": [
+            {
+                "say": "See whether the jobs are paused and any run under review",
+                "command": "model-catalog get",
+                "options": {},
+                "ask": [],
+            },
+            {
+                "say": "Pause or resume the weekly reprice",
+                "command": "model-catalog set",
+                "options": {},
+                "ask": ["reprice"],
+            },
+            {"say": "Reprice every model now", "command": "models reprice", "options": {}, "ask": []},
+            {"say": "Look for new models now", "command": "models discover", "options": {}, "ask": []},
+            {"say": "See the models and their prices", "command": "models list", "options": {}, "ask": []},
         ],
     },
 }
