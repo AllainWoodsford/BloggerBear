@@ -81,6 +81,7 @@ jobs:
       TF_VAR_aws_account_id: ${{ secrets.AWS_PROD_ACCOUNT_ID }}
       TF_VAR_unique_name_prefix: ${{ vars.UNIQUE_NAME_PREFIX || 'bloggerbear' }}
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_PROD }}
+      TF_VAR_backup_bucket_name: ${{ secrets.TF_STATE_BUCKET_PROD }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
       TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}

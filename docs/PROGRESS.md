@@ -901,10 +901,16 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   passes both reviews leaves a snapshot of the old prices at `pricing/<date>-<run>.json` in the
   content bucket. The pause flags and review settings are the `model-catalog` row of the
   ModelConfig table (`admin_cli.py model-catalog get|set`). `models reprice` and `models discover`
-  run a job now, with its own reviews. `models add --lock-price` keeps the reprice off a price.
-  The assistant (page and Alexa+) answers about it with a new `model_catalog` tool, a
-  `model-prices` guide, and the architecture's table entries; configuration.md, admin-cli.md,
-  ops-mcp-agent.md, scripts/README.md and alexa/README.md list the new rows, commands and phrases
+  run a job now, with its own reviews. `models add --lock-price` keeps the reprice off a price
+- [x] Backups: `admin_cli backup snapshot` writes one file of a deployment's content and
+  configuration (articles with their final text and figures, costs and stats, gear and refinements,
+  musings, feedback, the moderation queue, topics, models and settings; never findings, candidate
+  ideas or failed runs) into the bootstrap state bucket, weekly on its own; `backup restore` loads
+  one into a deployment (another environment's or region's too), then writes the topics' schedules
+  and renders the published pages through the Admin API's own functions; `backup export` copies
+  every article to a bucket. Each runs as a job of ~20-second steps of the admin-api Lambda, with
+  progress the CLI follows: no new function, queue or table (`lambdas/common/backup.py`,
+  `scripts/README.md`, the deployment runsheet's "Keeping dev's content across a teardown")
 
 ## Backlog / not yet scheduled
 

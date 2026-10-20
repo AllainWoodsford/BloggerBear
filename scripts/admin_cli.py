@@ -1132,6 +1132,107 @@ def _cmd_equipment_unequip(args: argparse.Namespace) -> None:
 # --- argument parsing -----------------------------------------------------
 
 
+# --- backup subcommands --------------------------------------------------
+#
+# A snapshot, restore or export runs as a job in the Admin API's Lambda (lambdas/common/backup.py),
+# not here: closing this terminal does not stop it. Without --no-wait the command follows the job,
+# printing a line each time its progress changes; `backup status JOB_ID --wait` picks it up again.
+
+# How often a followed job's status is read.
+_BACKUP_POLL_SECONDS = 5
+
+
+def _backup_progress_line(job: dict) -> str:
+    progress = job.get("progress") or {}
+    estimates = job.get("estimates") or {}
+    parts = []
+    for name, count in progress.items():
+        estimate = estimates.get(name)
+        parts.append(f"{name} {count}/~{estimate}" if estimate else f"{name} {count}")
+    stalled = "  [STALLED: run `backup resume`]" if job.get("stalled") else ""
+    return f"[{job.get('status')}] {job.get('phase')}: {', '.join(parts) or '-'}{stalled}"
+
+
+def _follow_backup_job(args: argparse.Namespace, job: dict) -> None:
+    """Print the job's progress until it finishes, then the finished job. Ctrl-C stops following,
+    never the job."""
+    job_id = job["job_id"]
+    print(f"Job {job_id} started; follow it again with `backup status {job_id} --wait`.", file=sys.stderr)
+    last = None
+    try:
+        while job.get("status") == "running":
+            line = _backup_progress_line(job)
+            if line != last:
+                print(line, file=sys.stderr)
+                last = line
+            time.sleep(_BACKUP_POLL_SECONDS)
+            job = _fetch_json(args, "GET", f"/backups/jobs/{job_id}")["job"]
+    except KeyboardInterrupt:
+        print(f"\nStopped following; the job carries on. `backup status {job_id}`", file=sys.stderr)
+        return
+    print(json.dumps(job, indent=2))
+    if job.get("status") != "succeeded":
+        sys.exit(1)
+
+
+def _start_backup(args: argparse.Namespace, path: str, body: dict | None = None) -> None:
+    job = _fetch_json(args, "POST", path, body=body)["job"]
+    if args.no_wait:
+        print(json.dumps(job, indent=2))
+        return
+    _follow_backup_job(args, job)
+
+
+def _cmd_backup_list(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/backups")
+
+
+def _cmd_backup_snapshot(args: argparse.Namespace) -> None:
+    _start_backup(args, "/backups/snapshot")
+
+
+def _cmd_backup_restore(args: argparse.Namespace) -> None:
+    if not args.yes:
+        where = f"s3://{args.bucket}/{args.key}" if args.bucket else args.key
+        print(
+            f"This writes every row and article in {where} into this deployment "
+            f"({_resolve_api_url(args)}), over any with the same keys, and rewrites its topic "
+            "schedules and published pages.",
+            file=sys.stderr,
+        )
+        if input("Type 'restore' to continue: ").strip() != "restore":
+            raise CliError("restore cancelled")
+    body: dict = {"key": args.key, "pages": not args.no_pages, "schedules": not args.no_schedules}
+    if args.bucket:
+        body["bucket"] = args.bucket
+    _start_backup(args, "/backups/restore", body)
+
+
+def _cmd_backup_export(args: argparse.Namespace) -> None:
+    body: dict = {}
+    if args.bucket:
+        body["bucket"] = args.bucket
+    if args.prefix is not None:
+        body["prefix"] = args.prefix
+    _start_backup(args, "/backups/export", body)
+
+
+def _cmd_backup_status(args: argparse.Namespace) -> None:
+    job = _fetch_json(args, "GET", f"/backups/jobs/{args.job_id}")["job"]
+    if args.wait:
+        _follow_backup_job(args, job)
+    else:
+        print(json.dumps(job, indent=2))
+
+
+def _cmd_backup_resume(args: argparse.Namespace) -> None:
+    job = _fetch_json(args, "POST", f"/backups/jobs/{args.job_id}/resume")["job"]
+    if args.no_wait:
+        print(json.dumps(job, indent=2))
+        return
+    _follow_backup_job(args, job)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="admin_cli.py", description="BloggerBear admin operator CLI"
@@ -1854,6 +1955,101 @@ def build_parser() -> argparse.ArgumentParser:
     moderation_sub.add_parser(
         "stats", help="Summarize what compliance review has flagged, across all history"
     ).set_defaults(func=_cmd_moderation_stats)
+
+    backup_parser = subparsers.add_parser(
+        "backup",
+        help=(
+            "Snapshot this deployment's content and configuration to one file, restore one, "
+            "or copy every article to another bucket"
+        ),
+    )
+    backup_sub = backup_parser.add_subparsers(dest="action", required=True)
+    backup_sub.add_parser(
+        "list", help="List this deployment's snapshot files and its most recent backup jobs"
+    ).set_defaults(func=_cmd_backup_list)
+
+    def _no_wait(command: argparse.ArgumentParser) -> None:
+        command.add_argument(
+            "--no-wait",
+            action="store_true",
+            default=False,
+            help="Print the started job and return instead of following its progress",
+        )
+
+    backup_snapshot_parser = backup_sub.add_parser(
+        "snapshot",
+        help=(
+            "Write a snapshot now: articles (final text and figures), costs and stats, gear and "
+            "refinements, musings, topics, models and settings, as one file in the backup bucket"
+        ),
+    )
+    _no_wait(backup_snapshot_parser)
+    backup_snapshot_parser.set_defaults(func=_cmd_backup_snapshot)
+
+    backup_restore_parser = backup_sub.add_parser(
+        "restore",
+        help=(
+            "Load a snapshot file into this deployment (rows and article text written back under "
+            "their own keys), then rewrite topic schedules and published pages"
+        ),
+    )
+    backup_restore_parser.add_argument(
+        "key", help="The snapshot's key, as `backup list` shows it (backup/<prefix>-<env>/snapshots/...)"
+    )
+    backup_restore_parser.add_argument(
+        "--bucket",
+        default=None,
+        help="Read it from this bucket instead of the backup bucket (one of backup_export_buckets)",
+    )
+    backup_restore_parser.add_argument(
+        "--no-pages",
+        action="store_true",
+        default=False,
+        help="Do not re-render the published articles' pages",
+    )
+    backup_restore_parser.add_argument(
+        "--no-schedules",
+        action="store_true",
+        default=False,
+        help="Do not write the restored topics' schedules",
+    )
+    backup_restore_parser.add_argument(
+        "--yes", action="store_true", default=False, help="Do not ask for confirmation"
+    )
+    _no_wait(backup_restore_parser)
+    backup_restore_parser.set_defaults(func=_cmd_backup_restore)
+
+    backup_export_parser = backup_sub.add_parser(
+        "export",
+        help=(
+            "Copy every article (its row as JSON, its final text and figures) to a bucket, "
+            "with a manifest.json"
+        ),
+    )
+    backup_export_parser.add_argument(
+        "--bucket",
+        default=None,
+        help="Target bucket (one of backup_export_buckets); default: the backup bucket's exports/",
+    )
+    backup_export_parser.add_argument(
+        "--prefix", default=None, help="Key prefix in the target bucket (default: the UTC time)"
+    )
+    _no_wait(backup_export_parser)
+    backup_export_parser.set_defaults(func=_cmd_backup_export)
+
+    backup_status_parser = backup_sub.add_parser("status", help="Show a backup job's progress")
+    backup_status_parser.add_argument("job_id")
+    backup_status_parser.add_argument(
+        "--wait", action="store_true", default=False, help="Follow it until it finishes"
+    )
+    backup_status_parser.set_defaults(func=_cmd_backup_status)
+
+    backup_resume_parser = backup_sub.add_parser(
+        "resume", help="Restart a stalled backup job from where it got to"
+    )
+    backup_resume_parser.add_argument("job_id")
+    _no_wait(backup_resume_parser)
+    backup_resume_parser.set_defaults(func=_cmd_backup_resume)
 
     failed_executions_parser = subparsers.add_parser(
         "failed-executions", help="View daily_cycle executions that exhausted their retries"
