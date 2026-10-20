@@ -6,7 +6,8 @@ The scenes are synthetic tiled GeoTIFFs in memory (tests/vision_fakes.py), posit
 10 m NIR and green band and a 128 x 128 20 m SCL band, with ships planted inside the box. For the
 rail access task: 512 x 512 10 m red and nir bands written with a 20 m overview, 256 x 256 20 m
 swir16 and scl bands, a built district with a lake in it, and a rail network drawn in pixels and
-turned into lon/lat with the UTM inverse.
+turned into lon/lat with the UTM inverse, its stops layer (bus stops along a street beyond station
+reach and a tram stop) the same way.
 """
 
 from __future__ import annotations
@@ -84,6 +85,11 @@ LAKE = (slice(100, 120), slice(70, 90))
 RAIL_STATIONS = {"n1": ("West", 45, 130), "n2": ("Central", 105, 130), "n3": ("East", 165, 130),
                  "n4": ("North", 105, 45), "n5": ("South", 105, 175)}  # fmt: skip
 RAIL_WAYS = {"w1": ((30, 130), (170, 130)), "w2": ((105, 30), (105, 180))}
+# The stops layer: the bus stop beside Central again (it stays in pois too, as a network fetched
+# before the layer carries it, and is counted once), three bus stops along a street in the
+# district's north-west and a tram stop in its east, every one beyond the request's 500 m station
+# reach (25 px) and within the default 400 m stop reach of built-up ground.
+RAIL_STOPS = {"bus": ((108, 132), (65, 70), (75, 70), (85, 70)), "tram": ((140, 95),)}
 
 
 def rail_city(overviews=(2,)):
@@ -127,7 +133,8 @@ def rail_network(transform):
         for sid, (name, x, y) in RAIL_STATIONS.items()
     ]
     pois = [{"id": "n9", "kind": "bus_stop", "lon": lonlat(108, 132)[0], "lat": lonlat(108, 132)[1]}]
-    return {"ways": ways, "stations": stations, "pois": pois, "fetched_at": FETCHED_AT}
+    stops = {mode: [list(lonlat(x, y)) for x, y in points] for mode, points in RAIL_STOPS.items()}
+    return {"ways": ways, "stations": stations, "pois": pois, "stops": stops, "fetched_at": FETCHED_AT}
 
 
 @pytest.fixture
@@ -197,6 +204,7 @@ def test_measures_the_site(files):
     assert 3 <= reply["io"]["requests"] <= 3 + 3 * 4
     png = base64.b64decode(reply["image_png_b64"])
     assert png.startswith(vision_client.PNG_SIGNATURE)
+    assert "figures_png_b64" not in reply  # only the rail task has a second figure
     json.dumps(reply)  # a Lambda reply must be JSON
 
 
@@ -608,11 +616,18 @@ def test_a_range_reply_is_read_to_its_end_so_its_connection_can_be_reused(monkey
 
 # --- the rail access task ------------------------------------------------------------------------
 
+# The stop measures the stops layer adds: every one None, under the quality flag no_stops_layer,
+# when the network has no layer (not measured is never nothing there).
+STOP_METRIC_KEYS = {
+    "stops", "stop_served_share", "stop_served_km2", "stop_served_share_by_mode", "any_mode_served_share",
+    "any_mode_served_km2", "any_mode_desert_km2", "stops_only_km2", "stop_coverage_km2_per_100",
+    "stop_overlap_share",
+}  # fmt: skip
 RAIL_METRIC_KEYS = {
     "task", "coverage", "built_up_km2", "served_km2", "desert_km2", "served_share", "station_count",
     "snapped_station_count", "node_count", "edge_count", "components", "hubs", "interchanges", "flags",
     "suggestions", "stations", "deserts", "edges", "truncated", "quality_flags", "warnings", "network",
-    "params",
+    "params", *STOP_METRIC_KEYS,
 }  # fmt: skip
 FETCHED_AT = "2026-10-10T03:00:00+00:00"
 
@@ -627,9 +642,27 @@ def test_the_rail_task_measures_the_city(rail_files):
     assert m["coverage"] == 1.0 and m["quality_flags"] == []
     assert 0 < m["served_share"] < 1 and m["desert_km2"] > 0
     assert m["params"]["pixel_size_m"] == 20.0 and m["params"]["reach_m"] == 500
-    assert m["network"] == {"ways": 2, "stations": 5, "pois": 1, "points": 4, "fetched_at": FETCHED_AT}
+    assert (m["params"]["stop_reach_m"], m["params"]["feeder_reach_m"]) == (400.0, 2000.0)
+    assert m["network"] == {
+        "ways": 2, "stations": 5, "pois": 1, "points": 4, "stops": 5, "fetched_at": FETCHED_AT,
+    }  # fmt: skip
+    # The stops layer: the street's bus stops and the tram stop serve built-up ground beyond the
+    # stations' reach, so any mode reaches more than rail alone and some of it is stops only.
+    assert m["stops"] == {"bus": 4, "tram": 1, "ferry": 0}
+    assert m["served_share"] < m["any_mode_served_share"] <= 1 and m["stops_only_km2"] > 0
+    assert 0 < m["stop_served_share"] < 1 and m["stop_served_km2"] > 0 and m["any_mode_desert_km2"] > 0
+    by_mode = m["stop_served_share_by_mode"]
+    assert by_mode["bus"] > 0 and by_mode["tram"] > 0 and by_mode["ferry"] == 0
+    assert m["stop_coverage_km2_per_100"] > 0 and 0 < m["stop_overlap_share"] < 1
+    assert all(0 <= d["stop_covered_share"] <= 1 for d in m["deserts"]) and m["deserts"]
     central = next(s for s in m["stations"] if s["id"] == "s:n2")
+    # The pois bus stop and the layer's stop beside Central are one stop, counted once.
     assert central["degree"] == 4 and central["intermodal"]["bus_stop_near"] == 1
+    west = next(s for s in m["stations"] if s["id"] == "s:n1")
+    assert 0 < west["feeder_coverage"] < 1 and west["isolation_weight"] > 0
+    assert west["multimodal_isolation_weight"] == pytest.approx(
+        west["isolation_weight"] * (1 - west["feeder_coverage"]), abs=1e-3
+    )
     assert reply["epsg"] == 32756
     assert set(reply["timings_ms"]) == {"read", "analyse", "graph", "annotate", "total"}
     assert reply["io"]["levels_used"] == {"swir16": 0, "red": 1, "nir": 1, "scl": 0}
@@ -643,6 +676,17 @@ def test_the_rail_task_measures_the_city(rail_files):
     map_height = image.shape[0] - strip.shape[0]
     assert 0 < map_height and max(map_height, image.shape[1]) <= 1024
     assert np.array_equal(image[map_height:], strip) and image[map_height + 2, 2].tolist() == [0, 0, 0]
+    # The second figure, the transit reach map, under its name alone: a PNG within its own
+    # budget, the same map size, with its own legend under the same caption.
+    assert set(reply["figures_png_b64"]) == {"modes"}
+    modes = base64.b64decode(reply["figures_png_b64"]["modes"])
+    assert modes.startswith(vision_client.PNG_SIGNATURE) and modes != png
+    assert len(modes) <= rail_annotate.MODES_FIGURE_BYTE_BUDGET
+    figure = cv2.imdecode(np.frombuffer(modes, np.uint8), cv2.IMREAD_COLOR)
+    entries = rail_annotate.modes_legend_entries(m["params"])
+    modes_strip = rail_annotate.figure_strip(figure[:1], caption, entries)
+    assert figure.shape[0] - modes_strip.shape[0] == map_height and figure.shape[1] == image.shape[1]
+    assert np.array_equal(figure[map_height:], modes_strip)
     json.dumps(reply, allow_nan=False)  # no NaN or infinity anywhere in a Lambda reply
     assert contract.validate_reply(json.loads(json.dumps(reply))) == reply
 
@@ -692,6 +736,81 @@ def test_the_rail_reply_has_no_image_when_not_asked(rail_files):
     req = rail_request(rail_files, image=False)
     reply = worker.lambda_handler(req, None, fetch=fetch_from(rail_files["blobs"]))
     assert reply["ok"] and reply["image_png_b64"] is None
+    assert "figures_png_b64" not in reply  # the second figure is drawn only when the map is
+
+
+@pytest.mark.parametrize("without", [lambda n: n.pop("stops"), lambda n: n.update(stops=None)])
+def test_a_rail_request_without_a_stops_layer_measures_nothing_of_the_stops_and_says_so(rail_files, without):
+    """A network cached or prefetched before the stops layer existed: the rail measures as before,
+    every stop measure None under no_stops_layer (never zero: not measured is not nothing there),
+    the pois bus stop still counted, no second figure and no key for one."""
+    layered = worker.lambda_handler(rail_request(rail_files), None, fetch=fetch_from(rail_files["blobs"]))
+    req = rail_request(rail_files)
+    without(req["network"])
+    reply = worker.lambda_handler(req, None, fetch=fetch_from(rail_files["blobs"]))
+    assert reply["ok"], reply
+    assert "figures_png_b64" not in reply and reply["image_png_b64"] is not None
+    m = reply["metrics"]
+    assert set(m) == RAIL_METRIC_KEYS and m["quality_flags"] == ["no_stops_layer"]
+    assert {key: m[key] for key in STOP_METRIC_KEYS} == dict.fromkeys(STOP_METRIC_KEYS)
+    assert m["network"] == {**layered["metrics"]["network"], "stops": None}
+    for station in m["stations"]:
+        assert station["feeder_coverage"] is None and station["multimodal_isolation_weight"] is None
+    assert all(d["stop_covered_share"] is None for d in m["deserts"]) and m["deserts"]
+    assert worker.MODES_FIGURE_DROPPED not in m["warnings"]
+    central = next(s for s in m["stations"] if s["id"] == "s:n2")
+    assert central["intermodal"]["bus_stop_near"] == 1  # from pois, as before the layer
+    for key in ("served_share", "desert_km2", "station_count", "node_count", "edge_count", "hubs"):
+        assert m[key] == layered["metrics"][key], key
+    assert set(reply["timings_ms"]) == {"read", "analyse", "graph", "annotate", "total"}
+    assert contract.validate_reply(json.loads(json.dumps(reply, allow_nan=False))) == reply
+
+
+def test_a_reply_over_the_budget_loses_the_transit_reach_figure_and_says_so(rail_files, monkeypatch):
+    """Lambda returns at most 6 MB: over REPLY_BYTES_BUDGET the second figure goes, with the warning
+    modes_figure_dropped last in the warnings, and the map and every measure stay. At the budget
+    the reply is untouched; a reply without the figure is never touched."""
+    assert worker.REPLY_BYTES_BUDGET == 5 * 1024 * 1024 < 6 * 1000 * 1000
+    assert worker.MODES_FIGURE_DROPPED == "modes_figure_dropped"
+    reply = worker.lambda_handler(rail_request(rail_files), None, fetch=fetch_from(rail_files["blobs"]))
+    assert "modes" in reply["figures_png_b64"]
+    size = len(json.dumps(reply))  # what Lambda's runtime serialises: one byte a character
+    assert json.dumps(reply).isascii()
+    at_budget = json.loads(json.dumps(reply))
+    monkeypatch.setattr(worker, "REPLY_BYTES_BUDGET", size)
+    assert worker._within_budget(at_budget) == reply
+    monkeypatch.setattr(worker, "REPLY_BYTES_BUDGET", size - 1)
+    dropped = worker._within_budget(json.loads(json.dumps(reply)))
+    expected = {key: value for key, value in reply.items() if key != "figures_png_b64"}
+    warnings = [*reply["metrics"]["warnings"], "modes_figure_dropped"]
+    expected["metrics"] = {**reply["metrics"], "warnings": warnings}
+    assert dropped == expected and dropped["image_png_b64"] == reply["image_png_b64"]
+    assert contract.validate_reply(json.loads(json.dumps(dropped, allow_nan=False))) == dropped
+    # Through the handler, with a budget nothing fits: the figure is dropped, the map is not (it
+    # has its own budget), and the warning is said once.
+    monkeypatch.setattr(worker, "REPLY_BYTES_BUDGET", 1)
+    reply = worker.lambda_handler(rail_request(rail_files), None, fetch=fetch_from(rail_files["blobs"]))
+    assert reply["ok"] and "figures_png_b64" not in reply
+    assert base64.b64decode(reply["image_png_b64"]).startswith(vision_client.PNG_SIGNATURE)
+    assert reply["metrics"]["warnings"] == ["modes_figure_dropped"]
+    assert reply["metrics"]["quality_flags"] == []
+    assert reply["metrics"]["stops"] == {"bus": 4, "tram": 1, "ferry": 0}
+    # A reply without the figure has nothing to drop: no warning, whatever the budget.
+    req = rail_request(rail_files)
+    del req["network"]["stops"]
+    bare = worker.lambda_handler(req, None, fetch=fetch_from(rail_files["blobs"]))
+    assert bare["ok"] and "figures_png_b64" not in bare and bare["metrics"]["warnings"] == []
+
+
+def test_the_ships_reply_carries_no_figures_and_is_never_measured_against_the_budget(files, monkeypatch):
+    monkeypatch.setattr(worker, "REPLY_BYTES_BUDGET", 1)
+    reply = worker.lambda_handler(request(), None, fetch=fetch_from(files["blobs"]))
+    assert reply["ok"] and reply["metrics"]["count"] == 3
+    assert set(reply) == {
+        "version", "ok", "task", "backend", "site_id", "scene_id", "captured_at", "metrics", "epsg", "window",
+        "image_png_b64", "build", "io", "timings_ms",
+    }  # fmt: skip
+    assert "modes_figure_dropped" not in json.dumps(reply)
 
 
 def _far_too_many_points(r):
@@ -727,6 +846,12 @@ def _far_too_many_points(r):
         lambda r: r["params"].update(block_size=31),  # a ships parameter
         lambda r: r["params"].update(intermodal_near_m=900),  # above the default far radius
         lambda r: r["params"].update(intermodal_near_m=400, intermodal_far_m=300),
+        lambda r: r["params"].update(reach_m=2500),  # over the default feeder reach
+        lambda r: r["params"].update(reach_m=1500, feeder_reach_m=1200),  # a feeder reach under the station's
+        lambda r: r["params"].update(stop_reach_m=50),
+        lambda r: r["network"].update(stops=[]),  # the stops layer is an object by mode
+        lambda r: r["network"].update(stops={"ferry": []}),  # ferry terminals come through pois
+        lambda r: r["network"]["stops"].update(bus=[[151.2, 95.0]]),
     ],
 )
 def test_bad_rail_requests_are_refused_before_any_read(rail_files, spoil):
@@ -808,6 +933,10 @@ def test_the_contracts_rail_limits_and_defaults_are_the_cores():
     assert contract.TASKS["rail_access"].whole_params == rail_analyse.WHOLE_NUMBER_PARAMS
     defaults = rail_analyse.RailParams()
     assert contract.DEFAULT_INTERMODAL_M == (defaults.intermodal_near_m, defaults.intermodal_far_m)
+    assert contract.DEFAULT_FEEDER_M == (defaults.reach_m, defaults.feeder_reach_m)
+    # The stops layer's parameters are rail parameters the adapter keeps out of its baseline key.
+    assert contract.STOP_PARAMS == ("stop_reach_m", "feeder_reach_m")
+    assert set(contract.STOP_PARAMS) <= set(contract.RAIL_PARAM_LIMITS)
     assert contract.TASKS["ships"].param_limits is contract.PARAM_LIMITS
     assert contract.TASKS["ships"].whole_params == contract.WHOLE_NUMBER_PARAMS
     # A network element id is at most what a graph node id carries.
@@ -815,7 +944,7 @@ def test_the_contracts_rail_limits_and_defaults_are_the_cores():
     # And the network caps are the OSM client's, so a fetched network always fits the contract.
     assert contract.NETWORK_LIMITS == {
         "points": osm.MAX_POINTS, "ways": osm.MAX_WAYS, "stations": osm.MAX_STATIONS,
-        "pois": osm.MAX_POIS, "name_chars": osm.MAX_NAME_CHARS,
+        "pois": osm.MAX_POIS, "stops": osm.MAX_STOPS, "name_chars": osm.MAX_NAME_CHARS,
     }  # fmt: skip
 
 
@@ -837,11 +966,16 @@ def test_validate_network_accepts_what_the_osm_client_returns_and_keeps_only_the
         "query_url": "https://overpass-api.de/api/interpreter?data=...",
         **osm.cap_network(osm.parse_elements(elements)),
     }  # fmt: skip
-    assert fetched["counts"] == {"ways": 2, "stations": 2, "pois": 1, "points": 4}
+    # The bus stop is in the stops layer now, not in pois; the layer always has both modes.
+    assert fetched["counts"] == {
+        "ways": 2, "stations": 2, "pois": 0, "points": 4, "stops": 1, "stops_by_mode": {"bus": 1, "tram": 0},
+    }  # fmt: skip
+    assert fetched["stops"] == {"bus": [[151.199, -33.893]], "tram": []}
     network = contract.validate_network(fetched)
-    assert set(network) == {"ways", "stations", "pois", "fetched_at"}
+    assert set(network) == {"ways", "stations", "pois", "stops", "fetched_at"}
     assert network["ways"] == fetched["ways"] and network["stations"] == fetched["stations"]
     assert network["pois"] == fetched["pois"] and network["fetched_at"] == fetched["fetched_at"]
+    assert network["stops"] == fetched["stops"]
     assert network["ways"][1]["name"] is None and network["stations"][1]["name"] == "Unnamed station (n11)"
 
 
@@ -880,6 +1014,83 @@ def test_validate_network_takes_ids_and_fetched_at_up_to_their_caps_and_keeps_th
     assert contract._KEPT_JOINERS == {"\u200c", "\u200d"}
 
 
+def bare_network(**overrides):
+    """The smallest network the contract takes, with `overrides` on top (a `stops` layer, say)."""
+    network = {"ways": [], "stations": [], "pois": [], "fetched_at": FETCHED_AT}
+    network.update(overrides)
+    return network
+
+
+def test_validate_network_takes_a_stops_layer_per_mode_and_echoes_it():
+    stops = {"bus": [[151.2, -33.9], [151.21, -33.91]], "tram": [[151.19, -33.88]]}
+    network = contract.validate_network(bare_network(stops=stops))
+    assert set(network) == {"ways", "stations", "pois", "fetched_at", "stops"}
+    assert network["stops"] == stops and list(network["stops"]) == ["bus", "tram"]
+    # Points come back as floats whatever they were sent as; a mode may be absent and none is added.
+    bus_only = contract.validate_network(bare_network(stops={"bus": [[151, -33]]}))
+    assert bus_only["stops"] == {"bus": [[151.0, -33.0]]}
+    assert all(isinstance(v, float) for v in bus_only["stops"]["bus"][0])
+    # An empty layer is a layer (no stops anywhere), unlike no layer at all.
+    assert contract.validate_network(bare_network(stops={}))["stops"] == {}
+    # The cap counts every mode together, and a layer exactly at it passes.
+    half = [[151.2, -33.9]] * (contract.NETWORK_LIMITS["stops"] // 2)
+    at_cap = contract.validate_network(bare_network(stops={"bus": half, "tram": half}))
+    assert sum(len(points) for points in at_cap["stops"].values()) == contract.NETWORK_LIMITS["stops"]
+    assert contract.STOP_MODES == ("bus", "tram")
+
+
+def test_a_network_without_a_stops_layer_normalises_as_before():
+    """A network cached, prefetched or fixtured before the stops layer existed has no `stops` key
+    and validates unchanged: the key stays absent (never an empty layer, which would measure as no
+    stops anywhere), and so does one that carries it as None."""
+    before = {"ways": [], "stations": [], "pois": [], "fetched_at": FETCHED_AT}
+    assert contract.validate_network(bare_network()) == before
+    assert contract.validate_network(bare_network(stops=None)) == before
+
+
+@pytest.mark.parametrize(
+    "stops",
+    [
+        [],  # a list, not an object by mode
+        [[151.2, -33.9]],
+        "bus",
+        {"bus": [[151.2, -33.9]], "ferry": []},  # ferry terminals come through pois
+        {"bus": [[151.2, -33.9]], "train": [[151.2, -33.9]]},
+        {"bus": {"n1": [151.2, -33.9]}},  # a mode that is not a list
+        {"tram": None},
+        {"bus": [[151.2, -33.9], [151.2]]},  # a bad point
+        {"bus": [[151.2, 95.0]]},
+        {"tram": [[151.2, -33.9, 0.0]]},
+        {"bus": [{"lon": 151.2, "lat": -33.9}]},
+        {"bus": [[151.2, -33.9]] * 20_001, "tram": [[151.2, -33.9]] * 20_000},  # one over the cap
+    ],
+)
+def test_bad_stops_layers_are_refused(stops):
+    with pytest.raises(contract.ContractError, match="stops"):
+        contract.validate_network(bare_network(stops=stops))
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"feeder_reach_m": 900},  # under the default station reach
+        {"reach_m": 2500},  # over the default feeder reach
+        {"reach_m": 1500, "feeder_reach_m": 1200},
+        {"stop_reach_m": 50},  # under its bound
+        {"stop_reach_m": 2500},
+        {"feeder_reach_m": 20_000},
+    ],
+)
+def test_a_feeder_reach_under_the_station_reach_is_refused_at_the_contract(rail_files, params):
+    """The pair is ordered as the intermodal radii are, each read against the other's default, so
+    the worker never builds a RailParams it would reject (an "internal" error for a "bad_request")."""
+    with pytest.raises(contract.ContractError, match="reach"):
+        contract.validate_request(rail_request(rail_files, params=params))
+    for ok in ({"feeder_reach_m": 1000}, {"reach_m": 2000}, {"reach_m": 400, "feeder_reach_m": 500}):
+        assert contract.validate_request(rail_request(rail_files, params=ok))["params"] == ok
+    assert contract.DEFAULT_FEEDER_M == (1000.0, 2000.0)
+
+
 def rail_reply(**overrides):
     reply = {
         "version": 1, "ok": True, "task": "rail_access", "backend": "opencv", "site_id": "s", "scene_id": "x",
@@ -907,6 +1118,29 @@ def test_replies_are_checked_per_task():
     for reply in bad:
         with pytest.raises(contract.ContractError):
             contract.validate_reply(reply)
+
+
+def test_a_reply_may_carry_named_figures_under_figures_png_b64_and_nothing_else():
+    """The second figure ships as {name: base64 string} under the names the contract knows; the
+    bytes are the client's to check. Absent, None or empty is a reply without one."""
+    figures = {"modes": base64.b64encode(vision_client.PNG_SIGNATURE).decode()}
+    assert contract.validate_reply(rail_reply(figures_png_b64=figures)) == rail_reply(figures_png_b64=figures)
+    for none in ({}, None):
+        assert contract.validate_reply(rail_reply(figures_png_b64=none)) == rail_reply(figures_png_b64=none)
+    assert contract.FIGURE_NAMES == ("modes",)
+    bad = [
+        [],
+        [figures["modes"]],
+        figures["modes"],
+        {"map": figures["modes"]},  # the map has its own field
+        {"modes": figures["modes"], "other": figures["modes"]},
+        {"modes": None},
+        {"modes": 1},
+        {"modes": [figures["modes"]]},
+    ]
+    for value in bad:
+        with pytest.raises(contract.ContractError, match="figures_png_b64"):
+            contract.validate_reply(rail_reply(figures_png_b64=value))
 
 
 # --- the client ----------------------------------------------------------------------------------
@@ -1094,6 +1328,45 @@ def test_client_refuses_an_oversized_image(configured, monkeypatch):
         vision_client.measure(SITE, SCENE, client=FakeLambda(reply=good_reply(image_png_b64=png)))
 
 
+def test_client_decodes_the_replys_figures_by_name(configured):
+    png = vision_client.PNG_SIGNATURE + b"\x00" * 8
+    reply = good_reply(figures_png_b64={"modes": base64.b64encode(png).decode()})
+    result = vision_client.measure(SITE, SCENE, client=FakeLambda(reply=reply))
+    assert result.figures == {"modes": png} and result.image_png is None
+    assert result.request_id == REQUEST_ID
+    # No figure from an older worker, a reply whose size guard dropped it, or a fake: an empty
+    # dict, never an error, so `figures.get("modes")` is all an adapter reads.
+    for figures in (None, {}):
+        reply = good_reply(figures_png_b64=figures)
+        assert vision_client.measure(SITE, SCENE, client=FakeLambda(reply=reply)).figures == {}
+    assert vision_client.measure(SITE, SCENE, client=FakeLambda(reply=good_reply())).figures == {}
+    assert vision_client.VisionResult(reply={}, image_png=None).figures == {}
+
+
+@pytest.mark.parametrize(
+    ("figure", "detail"),
+    [
+        (base64.b64encode(vision_client.PNG_SIGNATURE + b"\x00" * 64).decode(), "too large"),
+        (base64.b64encode(b"GIF89a....").decode(), "not a PNG"),
+        ("***", "not base64"),
+    ],
+)
+def test_client_refuses_a_bad_figure_naming_it_with_the_request_id(configured, monkeypatch, figure, detail):
+    """Each figure is held to MAX_IMAGE_BYTES and the PNG signature as the map is, and a failure
+    carries the worker invocation's request id, so it still joins the worker's log line."""
+    monkeypatch.setattr(vision_client, "MAX_IMAGE_BYTES", 16)
+    reply = good_reply(figures_png_b64={"modes": figure})
+    with pytest.raises(vision_client.VisionError, match=detail) as err:
+        vision_client.measure(SITE, SCENE, client=FakeLambda(reply=reply))
+    assert err.value.code == "reply" and err.value.request_id == REQUEST_ID
+    assert "'modes'" in err.value.detail
+    # A good map beside a bad figure is still a refused reply: the figure is not quietly dropped.
+    good_map = base64.b64encode(vision_client.PNG_SIGNATURE).decode()
+    reply = good_reply(image_png_b64=good_map, figures_png_b64={"modes": figure})
+    with pytest.raises(vision_client.VisionError, match=detail):
+        vision_client.measure(SITE, SCENE, client=FakeLambda(reply=reply))
+
+
 def test_client_cool_backend_uses_its_own_arn(files, configured, monkeypatch):
     with pytest.raises(vision_client.VisionError):
         vision_client.measure(SITE, SCENE, backend="cool", client=FakeLambda(blobs=files["blobs"]))
@@ -1117,9 +1390,12 @@ def test_client_sends_the_task_and_the_network_and_checks_the_task_in_the_reply(
     )  # fmt: skip
     assert result.metrics["station_count"] == 5 and result.reply["task"] == "rail_access"
     assert result.image_png.startswith(vision_client.PNG_SIGNATURE)
+    assert set(result.figures) == {"modes"}
+    assert result.figures["modes"].startswith(vision_client.PNG_SIGNATURE)
     payload = fake.calls[0][1]
     assert payload["task"] == "rail_access" and payload["params"] == {"reach_m": 500}
-    assert set(payload["network"]) == {"ways", "stations", "pois", "fetched_at"}
+    assert set(payload["network"]) == {"ways", "stations", "pois", "fetched_at", "stops"}
+    assert payload["network"]["stops"] == rail_files["network"]["stops"]
     assert [s["id"] for s in payload["network"]["stations"]] == list(RAIL_STATIONS)
     # A bad network fails at home, before any cross-region call.
     fake = FakeLambda(blobs=rail_files["blobs"])
@@ -1261,16 +1537,35 @@ def test_a_measured_request_leaves_one_line_of_its_ids_build_cpu_timings_and_cou
     assert "detail" not in line
 
 
+# The rail task's line as evidence.parse reads it (the three null ids dropped).
+RAIL_LINE_KEYS = {
+    "evidence", "event", "request_id", "task", "backend", "ok", "site_id", "scene_id", "build", "opencv",
+    "kleidicv", "cpu", "cpu_count", "arch", "window_px", "io_requests", "io_bytes", "levels", "read_ms",
+    "analyse_ms", "graph_ms", "annotate_ms", "total_ms", "coverage", "quality_flags", "stations", "snapped",
+    "nodes", "edges", "components", "rss_peak_mb",
+}  # fmt: skip
+
+
 def test_the_rail_task_leaves_its_graph_stage_and_the_graphs_counts(rail_files, capsys):
     reply = worker.lambda_handler(rail_request(rail_files), Context(), fetch=fetch_from(rail_files["blobs"]))
     assert reply["ok"]
-    line, _ = measure_line(capsys)
+    line, raw = measure_line(capsys)
     m = reply["metrics"]
     assert line["task"] == "rail_access" and line["graph_ms"] == int(round(reply["timings_ms"]["graph"]))
     assert (line["stations"], line["snapped"]) == (m["station_count"], m["snapped_station_count"])
     assert (line["nodes"], line["edges"]) == (m["node_count"], m["edge_count"])
     assert line["components"] == m["components"]
     assert "count" not in line and line["levels"] == {"swir16": 0, "red": 1, "nir": 1, "scl": 0}
+    # The stops layer and the second figure change nothing on the line: the same fields, the
+    # annotate stage covering both figures, no stop measure and no figure on it.
+    assert set(line) == RAIL_LINE_KEYS and line["quality_flags"] == []
+    assert line["annotate_ms"] == int(round(reply["timings_ms"]["annotate"]))
+    assert "figures" not in raw and "modes" not in raw and "stop_" not in raw
+    req = rail_request(rail_files)
+    del req["network"]["stops"]
+    assert worker.lambda_handler(req, Context(), fetch=fetch_from(rail_files["blobs"]))["ok"]
+    bare, _ = measure_line(capsys)
+    assert set(bare) == RAIL_LINE_KEYS and bare["quality_flags"] == ["no_stops_layer"]
 
 
 def refusals(files, monkeypatch):
@@ -1432,3 +1727,22 @@ def test_cpuinfo_is_read_once_and_a_missing_procfs_falls_back_to_the_machine(mon
     monkeypatch.setattr(contract, "_cpuinfo_cache", None)
     assert contract.cpu_identity() == "Neoverse V1 (Graviton3)"
     assert contract.cpu_identity("CPU part : 0xabc\n", "aarch64") == "Arm core 0xabc"
+
+
+def test_with_feeder_reach_lifts_the_feeder_reach_to_a_station_reach_past_the_default_only():
+    """The lift the rail adapter's worker_params and the triage agent's look_again share: a reach
+    past the default feeder reach (2 km) gets a feeder reach of its own size unless one was given;
+    anything else is copied as it is, and the contract then takes what comes out."""
+    assert contract.with_feeder_reach({"reach_m": 3000}) == {"reach_m": 3000, "feeder_reach_m": 3000.0}
+    given = {"reach_m": 3000, "feeder_reach_m": 4000}
+    assert contract.with_feeder_reach(given) == given and contract.with_feeder_reach(given) is not given
+    assert contract.with_feeder_reach({"reach_m": 2000}) == {"reach_m": 2000}
+    assert contract.with_feeder_reach({"hub_count": 3}) == {"hub_count": 3}
+    assert contract.with_feeder_reach({}) == {}
+    spec = contract.TASKS["rail_access"]
+    lifted = contract.with_feeder_reach({"reach_m": 2500})
+    assert contract._validate_params(lifted, "rail_access", spec) == {
+        "reach_m": 2500, "feeder_reach_m": 2500.0,
+    }  # fmt: skip
+    with pytest.raises(contract.ContractError, match="reach"):
+        contract._validate_params({"reach_m": 2500}, "rail_access", spec)

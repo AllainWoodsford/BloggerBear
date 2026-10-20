@@ -12,16 +12,26 @@ A request names a `task` (`TASKS`; "ships" when absent, so older callers are unc
      "site": {"id": str, "polygon": [[lon, lat], ...]},
      "scene": {"id": str, "captured_at": iso str, "assets": {name: url, ...}},
      "params": {per-task overrides}, "coverage_floor": float, "image": bool,
-     "network": {...}}                       # rail_access only: the OpenStreetMap network
+     "network": {"ways": [...], "stations": [...], "pois": [...], "fetched_at": str,
+                 "stops": {"bus": [[lon, lat], ...], "tram": [...]}}}   # rail_access only
 
 Each task says which assets it needs and may take, the bounds of its parameters, what else it
 requires (`extras`) and which metrics its reply must carry. The ships task reads nir and green
 (scl optional) and counts vessels; the rail task reads red, nir, swir16 and scl and is sent the
 rail network (`validate_network`: the shape common/osm.py's `fetch_network` returns, under
-`NETWORK_LIMITS`).
+`NETWORK_LIMITS`). The network's `stops` layer (bus and tram stops as bare points, `STOP_MODES`)
+is optional: a network cached before the layer existed has none, and the worker then reports the
+stop measures as not measured rather than as no stops anywhere.
 
 A reply is either {"version": 1, "ok": true, "task": ..., ...measurement} or
-{"version": 1, "ok": false, "error": <one of ERROR_CODES>, "detail": str}.
+{"version": 1, "ok": false, "error": <one of ERROR_CODES>, "detail": str}. A measurement may carry
+its map as `image_png_b64` and further figures under `figures_png_b64` ({name: base64 PNG}, the
+names in `FIGURE_NAMES`: the rail task's "modes", the transit-reach map).
+
+`WALK_M_PER_MIN` is the walking pace behind every minutes figure the figures and the summaries
+print: a straight-line reach restated as minutes, never a journey time. It lives here because
+the worker's figure strip and the adapter's text must quote the same pace, and this is the one
+module both packages ship.
 
 Asset URLs must start with an allowed prefix (by default the public `sentinel-cogs` bucket): the
 worker fetches whatever URL it is given, so the list is what stops it being pointed anywhere else.
@@ -131,10 +141,27 @@ RAIL_PARAM_LIMITS = {
     "min_desert_km2": (0.01, 100.0),
     "visibility_ndvi_max": (0.0, 1.0),
     "max_orbital_km": (1.0, 20.0),
+    # Walking reach of a bus, tram or ferry stop, and how far beyond a station's own reach its
+    # hinterland is read for feeder coverage (both straight-line metres).
+    "stop_reach_m": (100.0, 2000.0),
+    "feeder_reach_m": (500.0, 10000.0),
 }
 # RailParams' default intermodal radii, for the same reason as DEFAULT_LENGTH_M: the far radius
 # must not be under the near one, and a request may set only one of them.
 DEFAULT_INTERMODAL_M = (300.0, 500.0)
+# RailParams' default station reach and feeder reach, the same way: the feeder reach must not be
+# under the station reach (the hinterland starts where the station's own reach ends), and a
+# request may set only one of the pair.
+DEFAULT_FEEDER_M = (1000.0, 2000.0)
+# The parameters of the stops layer. The rail adapter leaves them out of its baseline key
+# (rail_access._param_values): the stop measures are reported, never material, so an edited stop
+# or feeder reach starts no new baseline, and entries from before the layer stay comparable.
+STOP_PARAMS = ("stop_reach_m", "feeder_reach_m")
+# The walking pace behind every minutes figure a figure's legend or a summary prints: 80 m a
+# minute (4.8 km/h, the pace the usual "400 m is five minutes" stop-reach rule assumes), applied
+# to a straight-line reach. A minutes figure is that distance restated, not a journey time: the
+# investigation gives no rail or bus travel times.
+WALK_M_PER_MIN = 80.0
 
 TASKS = {
     "ships": TaskSpec(
@@ -156,9 +183,24 @@ TASKS = {
 }
 
 # The most a rail network may hold (common/osm.py caps what it fetches to the same figures, so a
-# fetched network always passes): with these the request stays near 1.5 MB, well under Lambda's
-# 6 MB synchronous payload. `name_chars` is where a way or station name is cut.
-NETWORK_LIMITS = {"points": 60_000, "ways": 5_000, "stations": 2_000, "pois": 5_000, "name_chars": 80}
+# fetched network always passes): with these the request stays near 1.5 MB, plus about 1 MB for a
+# full `stops` layer (a bare [lon, lat] is some 25 bytes; the cap counts every mode together),
+# well under Lambda's 6 MB synchronous payload. `name_chars` is where a way or station name is cut.
+NETWORK_LIMITS = {
+    "points": 60_000,
+    "ways": 5_000,
+    "stations": 2_000,
+    "pois": 5_000,
+    "stops": 40_000,
+    "name_chars": 80,
+}
+# The modes a network's `stops` layer may carry, each a list of bare [lon, lat] points (no ids or
+# names: nothing in the layer is shown or stored per stop). Ferry terminals stay points of
+# interest in `pois`, as before the layer.
+STOP_MODES = ("bus", "tram")
+# The figures a reply may carry beside its map, under `figures_png_b64`: "modes" is the rail
+# task's transit-reach map (vision/rail_annotate.py's annotate_modes).
+FIGURE_NAMES = ("modes",)
 # A station or point-of-interest kind is a short OpenStreetMap tag value ("station", "bus_stop").
 MAX_KIND_CHARS = 32
 # The longest network element id (vision/network.py's MAX_ID_CHARS, which bounds graph node ids; a
@@ -280,7 +322,27 @@ def _validate_params(params: object, task: str, spec: TaskSpec) -> dict:
         far = params.get("intermodal_far_m", DEFAULT_INTERMODAL_M[1])
         if far < near:
             raise ContractError("param 'intermodal_far_m' must be at least 'intermodal_near_m'")
+        reach = params.get("reach_m", DEFAULT_FEEDER_M[0])
+        feeder = params.get("feeder_reach_m", DEFAULT_FEEDER_M[1])
+        if feeder < reach:
+            raise ContractError("param 'feeder_reach_m' must be at least 'reach_m'")
     return dict(params)
+
+
+def with_feeder_reach(params: dict) -> dict:
+    """`params` with `feeder_reach_m` set to `reach_m` when the reach is past the default feeder
+    reach (DEFAULT_FEEDER_M[1]) and no feeder reach was given; otherwise a copy of `params`.
+    `_validate_params` refuses a feeder reach under the station reach, each read against the
+    other's default, so a request that raises the reach past 2 km without saying where the
+    hinterland ends would be refused as a bad request: the rail adapter's `worker_params` and the
+    triage agent's `look_again` (common/vision_triage.py) both complete it here, so a re-measure
+    at a wider reach is taken the same way a tick's measurement is. With the two equal the
+    hinterland is empty and the station's feeder coverage is not measured (None)."""
+    params = dict(params)
+    reach = params.get("reach_m", DEFAULT_FEEDER_M[0])
+    if "feeder_reach_m" not in params and _is_number(reach) and reach > DEFAULT_FEEDER_M[1]:
+        params["feeder_reach_m"] = float(reach)
+    return params
 
 
 def validate_network(network: object) -> dict:
@@ -288,9 +350,14 @@ def validate_network(network: object) -> dict:
     strings, names sanitised (control and formatting characters out, whitespace collapsed, cut at
     NETWORK_LIMITS["name_chars"]; a nameless station is "Unnamed station (<id>)"), every lon/lat
     checked as a site polygon's points are, ids at most MAX_NETWORK_ID_CHARS, `tunnel` a bool,
-    `fetched_at` a string of at most MAX_FETCHED_AT_CHARS or None. Only
-    `ways`, `stations`, `pois` and `fetched_at` are kept (the fetch's `source`, `counts` and the
-    like are the adapter's). ContractError on anything else, and on a list over NETWORK_LIMITS."""
+    `fetched_at` a string of at most MAX_FETCHED_AT_CHARS or None. Only `ways`, `stations`, `pois`,
+    `fetched_at` and `stops` are kept (the fetch's `source`, `counts` and the like are the
+    adapter's). `stops` is optional: an object whose keys are among STOP_MODES, each a list of
+    [lon, lat] points, at most NETWORK_LIMITS["stops"] across modes, and it is in the result only
+    when the input had it. A network without it (one cached, prefetched or fixtured before the
+    layer existed, or one that carries it as None) normalises with the key absent, never as an
+    empty layer: no layer is "not measured", an empty one "no stops anywhere". ContractError on
+    anything else, and on a list over NETWORK_LIMITS."""
     if not isinstance(network, dict):
         raise ContractError("network must be an object with ways, stations and pois")
     lists = {}
@@ -357,7 +424,32 @@ def validate_network(network: object) -> dict:
     fetched_at = network.get("fetched_at")
     if fetched_at is not None and (not isinstance(fetched_at, str) or len(fetched_at) > MAX_FETCHED_AT_CHARS):
         raise ContractError(f"network.fetched_at must be a string of at most {MAX_FETCHED_AT_CHARS} chars")
-    return {"ways": ways, "stations": stations, "pois": pois, "fetched_at": fetched_at}
+    normalised = {"ways": ways, "stations": stations, "pois": pois, "fetched_at": fetched_at}
+    if network.get("stops") is not None:
+        normalised["stops"] = _validate_stops(network["stops"])
+    return normalised
+
+
+def _validate_stops(stops: object) -> dict[str, list[list[float]]]:
+    """A network's `stops` layer normalised: the modes given (in their order, none added), each
+    mode's points as [lon, lat] floats checked as a site polygon's are; ContractError on a mode
+    outside STOP_MODES, a mode that is not a list, a bad point, or more than
+    NETWORK_LIMITS["stops"] points across modes."""
+    if not isinstance(stops, dict):
+        raise ContractError(
+            f"network.stops must be an object with a list of points per mode ({_listed(STOP_MODES)})"
+        )
+    normalised, total = {}, 0
+    for mode, points in stops.items():
+        if mode not in STOP_MODES:
+            raise ContractError(f"network.stops has an unknown mode {mode!r}: it takes {_listed(STOP_MODES)}")
+        if not isinstance(points, list):
+            raise ContractError(f"network.stops.{mode} must be a list of [lon, lat] points")
+        total += len(points)
+        if total > NETWORK_LIMITS["stops"]:
+            raise ContractError(f"network.stops has more than {NETWORK_LIMITS['stops']} points across modes")
+        normalised[mode] = [_lonlat(point, f"a network.stops {mode} point") for point in points]
+    return normalised
 
 
 def error(code: str, detail: str = "") -> dict:
@@ -436,6 +528,21 @@ def validate_reply(reply: object) -> dict:
     image = reply.get("image_png_b64")
     if image is not None and not isinstance(image, str):
         raise ContractError("image_png_b64 must be a string")
+    figures = reply.get("figures_png_b64")
+    if figures is not None:
+        # Optional, as the map is (None reads as absent, so a worker whose reply-size guard
+        # dropped a figure may say so either way); when given, only named figures, each a string.
+        if not isinstance(figures, dict):
+            raise ContractError(
+                f"figures_png_b64 must be an object with a figure per name ({_listed(FIGURE_NAMES)})"
+            )
+        for name, value in figures.items():
+            if name not in FIGURE_NAMES:
+                raise ContractError(
+                    f"figures_png_b64 has an unknown figure {name!r}: it takes {_listed(FIGURE_NAMES)}"
+                )
+            if not isinstance(value, str):
+                raise ContractError(f"figures_png_b64[{name!r}] must be a string")
     return reply
 
 

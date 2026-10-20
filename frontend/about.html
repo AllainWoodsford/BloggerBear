@@ -34,7 +34,7 @@
       BloggerBear
     </a>
     <nav id="nav-site" aria-label="Site sections">
-      <a href="/#/topic/digest">Trending Everywhere</a>
+      <a href="/about.html">About</a>
       <a href="/#/musings">Musings</a>
       <a href="/#/stats">Stats</a>
     </nav>
@@ -49,14 +49,13 @@
       two cadences: a research check every few hours for anything new worth
       writing about, and a daily cycle that turns fresh findings into a
       fact-checked, reviewed article. No one drafts these articles by hand. A
-      person only gets involved when an article needs a decision: every
-      financial-topic article, and anything the automated reviews hold back.
+      decision is only needed for every financial-topic article and anything
+      the automated reviews hold back: a person makes it, or, when the admins
+      fall behind, Professor Grizzlewick, the site's AI reviewer bear.
     </p>
     <p>
       It's live today with four topics — trending GitHub projects, crypto,
-      tech market news and World of Warcraft — plus a daily
-      <a href="/#/topic/digest">Trending Everywhere</a> digest that draws on
-      all of them.
+      tech market news and World of Warcraft.
     </p>
 
     <h2>The idea</h2>
@@ -98,18 +97,33 @@
       </li>
       <li>
         <strong>Compliance is a hard gate, not a suggestion:</strong>
-        financial/investment-adjacent topics are routed to manual moderation
+        financial/investment-adjacent topics are routed to moderation
         unconditionally — that's a deterministic rule, not something an LLM
         call could talk its way around — and carry a standing "not financial
         advice" disclaimer appended to the draft itself, not just requested
-        of the model.
+        of the model. If the AI reviewer approves one, it is flagged for a
+        person to check after it goes up.
       </li>
       <li>
         <strong>A held article can be sent back for a rewrite:</strong> the
         operator can ask a chosen model to fix exactly what a review flagged.
         The rewrite is checked in plain code (it may not introduce a figure or
         link that isn't in the sources), reviewed again, and always comes back
-        to a person. It never publishes on its own.
+        for review. It never publishes on its own.
+      </li>
+      <li>
+        <strong>An old bear minds the inbox:</strong> every second day,
+        Professor Grizzlewick — spectacles, mustache, a little grumpy at being
+        woken — reviews whatever the admins have left waiting for two days or
+        more, reads the newest published articles, and fixes the broken ones
+        the operator's assistant has spotted. He weighs each serious flag as a
+        skeptic (a product's beta date is not personal data), approves,
+        sends back for a rewrite, or rejects a draft still wrong after three
+        rewrites; nothing he approves goes out without being read whole;
+        one that has waited ten days he publishes with the flagged sentences
+        cut out (deleted, never reworded), or rejects if it can't stand
+        without them. He reports it all on the Musings page. Every article page says
+        whether a person or he approved it.
       </li>
       <li>
         <strong>Anonymous feedback loop:</strong> readers can upvote/downvote
@@ -245,7 +259,6 @@
 
   <footer class="site-footer">
     <nav class="footer-nav" aria-label="Explore">
-      <span class="footer-item"><a href="/#/topic/digest">Trending Everywhere</a><span class="paw" aria-hidden="true">&#128062;</span></span>
       <span class="footer-item"><a href="/#/musings">Musings</a><span class="paw" aria-hidden="true">&#128062;</span></span>
       <a href="/#/stats">Stats</a>
     </nav>

@@ -246,6 +246,29 @@ def test_the_figure_store_round_trips_through_the_content_bucket(monkeypatch):
         stored = s3.get_object(Bucket="content-test", Key=key)
         assert stored["ContentType"] == "image/png"
         assert vs.load_image(key) == b"\x89PNG\r\n\x1a\nfigure"
+        # A scene's second figure sits beside its map, under the suffix the adapter names.
+        scene, modes = "S2A_56HLH_20260915_0_L2A", b"\x89PNG\r\n\x1a\nmodes"
+        second = vs.store_image("rail", "sydney", scene, modes, suffix="-modes")
+        assert second == "vision/rail/sydney/S2A_56HLH_20260915_0_L2A-modes.png"
+        assert vs.load_image(second) == b"\x89PNG\r\n\x1a\nmodes"
+        assert vs.load_image(key) == b"\x89PNG\r\n\x1a\nfigure"  # the map is not written over
+        # Both keys are figure keys an article can carry.
+        for stored_key in (key, second):
+            assert clean_figure({"key": stored_key, "caption": "c"})["key"] == stored_key
+
+
+@pytest.mark.parametrize(
+    "suffix", ["/modes", "modes/", "..", "a..b", ".", "v2.", "a b", "x" * 17, "\n", "-modes.png\n", 1, None]
+)
+def test_a_figure_key_suffix_is_plain_short_and_never_a_path_segment(suffix, monkeypatch):
+    """Only the characters a figure key takes, no "/" and at most 16, checked whole, and nothing
+    that puts ".." in the key (".png" follows the suffix): anything else is refused before any
+    write (the content bucket is never reached)."""
+    monkeypatch.setattr(vs, "_s3", lambda: pytest.fail("the suffix was refused before any write"))
+    with pytest.raises(ValueError, match="suffix"):
+        vs.store_image("rail", "sydney", "scene", b"\x89PNG\r\n\x1a\n", suffix=suffix)
+    for good in ("-modes", "", "x" * 16, "_v2.b"):
+        assert vs.IMAGE_SUFFIX.fullmatch(good), good
 
 
 def test_the_content_buckets_calls_are_bounded_so_a_stalled_read_ends_inside_the_tick():

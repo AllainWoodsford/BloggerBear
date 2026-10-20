@@ -613,13 +613,14 @@ def test_every_schedule_using_the_invoke_role_may_invoke_its_target(env):
     invoke their Lambdas, so neither ever ran. Every target must be in the role's policy."""
     text = _read("environments", env, "main.tf")
     policy = re.search(r'data "aws_iam_policy_document" "scheduler_invoke" \{(.*?)\n\}', text, re.S).group(1)
-    allowed = set(re.findall(r"resources\s*=\s*\[([a-z_.]+)\.arn\]", policy))
+    # A target deployed only on a switch (count) is named with [0]: the reviewer bear.
+    allowed = set(re.findall(r"resources\s*=\s*\[([a-z_.]+)(?:\[0\])?\.arn\]", policy))
 
     targets = []
     for match in re.finditer(r'^resource "aws_scheduler_schedule" "[a-z_]+" \{\n(.*?)^\}', text, re.S | re.M):
         body = match.group(1)
         if re.search(r"role_arn\s*=\s*aws_iam_role\.scheduler_invoke\.arn", body):
-            targets.append(re.search(r"\barn\s*=\s*([a-z_.]+)\.arn", body).group(1))
+            targets.append(re.search(r"\barn\s*=\s*([a-z_.]+)(?:\[0\])?\.arn", body).group(1))
 
     assert len(targets) >= 5  # research ticks are per topic, created at runtime, not here
     assert set(targets) <= allowed, set(targets) - allowed
@@ -3178,7 +3179,7 @@ _REGION_SCANNED_SUFFIXES = {
 # Why a us-east-1 written in code is allowed to be there: a comment beside it has to give one of
 # these reasons. CloudFront (its certificate, its web ACL with that ACL's logs and metrics, its own
 # metrics) and Cost Explorer's only endpoint are the things AWS serves from that region alone.
-_US_EAST_1_REASON = re.compile(r"cloudfront|cost explorer", re.I)
+_US_EAST_1_REASON = re.compile(r"cloudfront|cost explorer|price list", re.I)
 _US_EAST_1_COMMENT_REACH = 6  # lines above the literal in which the comment must sit
 
 
@@ -3231,8 +3232,9 @@ def test_every_us_east_1_left_in_code_sits_beside_a_comment_saying_why():
     assert not unexplained, "say why this must be us-east-1, in a comment just above:\n" + "\n".join(
         unexplained
     )
-    # Production's provider alias, the dashboards' CloudFront region, two log group ARN pairs and
-    # the Cost Explorer client: if this drops to nothing the scan has stopped finding them.
+    # Production's provider alias, the dashboards' CloudFront region, two log group ARN pairs, the
+    # Cost Explorer client and the Price List endpoint: if this drops to nothing the scan has
+    # stopped finding them.
     assert values >= 5
 
 

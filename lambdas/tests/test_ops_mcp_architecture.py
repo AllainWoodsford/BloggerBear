@@ -186,19 +186,44 @@ def test_the_apis_and_log_groups_are_named_as_the_terraform_names_them():
     )
 
 
+def test_the_model_catalogs_two_schedules_are_the_ones_the_catalogue_gives():
+    dev = _read("environments", "dev", "main.tf")
+    runs = dict(_of_kind("function")["model-catalog"].details)["Runs"]
+    assert "every second day, discover at 02:00 and reprice at 03:00 Sydney time" in runs
+    assert "the rotation cycle Fridays 04:00 Sydney time" in runs
+    for job, expression in (
+        ("discover", "cron(0 2 1/2 * ? *)"),
+        ("reprice", "cron(0 3 1/2 * ? *)"),
+        ("cycle", "cron(0 4 ? * FRI *)"),
+    ):
+        block = _blocks(dev, "aws_scheduler_schedule")[f"model_catalog_{job}"]
+        assert f'schedule_expression          = "{expression}"' in block
+        assert 'schedule_expression_timezone = "Australia/Sydney"' in block
+        assert f'jsonencode({{ job = "{job}", trigger = "schedule" }})' in block
+
+
 def test_the_fixed_schedules_are_the_ones_the_catalogue_gives():
     dev = _read("environments", "dev", "main.tf")
     for function, expression, said in (
         ("weekly_reflection", "cron(0 13 ? * MON *)", "Mondays 13:00 Sydney time"),
         ("stats_rollover", "cron(15 13 ? * MON *)", "Mondays 13:15 Sydney time"),
         ("cost_explorer_poll", "cron(0 10 * * ? *)", "daily at 10:00 UTC"),
-        ("trending_digest", "cron(0 7 * * ? *)", "daily at 07:00 UTC"),
         ("musing_feedback", "rate(4 days)", "every 4 days"),
     ):
         block = _blocks(dev, "aws_scheduler_schedule")[function]
         assert f'schedule_expression = "{expression}"' in block
         assert said in dict(_of_kind("function")[function.replace("_", "-")].details)["Runs"]
 
+
+
+def test_the_reviewer_bears_schedule_is_the_one_the_catalogue_gives():
+    dev = _read("environments", "dev", "main.tf")
+    block = _blocks(dev, "aws_scheduler_schedule")["reviewer"]
+    assert 'schedule_expression          = "cron(0 5 1/2 * ? *)"' in block
+    assert 'schedule_expression_timezone = "Australia/Sydney"' in block
+    assert "count                        = var.reviewer_enabled ? 1 : 0" in block
+    runs = dict(_of_kind("function")["reviewer"].details)["Runs"]
+    assert "every second day at 05:00 Sydney time" in runs
 
 def test_every_component_is_well_formed():
     keys = set()

@@ -69,7 +69,7 @@ flowchart TB
         research["Lambda<br/>research tick"]
         sfn["Step Functions"]
         daily["Lambda<br/>daily cycle"]
-        jobs["Lambda<br/>digest, weekly reflection,<br/>Stats rollover, cost poll"]
+        jobs["Lambda<br/>weekly reflection,<br/>Stats rollover, cost poll"]
         dlq["SQS dead-letter queue<br/>+ Lambda handler"]
     end
 

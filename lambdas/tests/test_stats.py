@@ -172,12 +172,6 @@ def test_articles_outside_the_daily_window_count_in_totals_but_not_daily():
     assert sum(day["articles"] for day in stats["daily"]) == 0
 
 
-def test_digest_topic_gets_its_friendly_name():
-    stats = _build([_article("digest", [_call("model-a", 1000, 0)])])
-
-    assert stats["by_topic"][0]["name"] == "Trending Everywhere"
-
-
 def test_output_contains_only_aggregates_no_article_identifiers():
     article = _article("github-trending", [_call("model-a", 1000, 0)])
     article["article_id"] = "secret-article-id"

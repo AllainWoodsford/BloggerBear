@@ -29,7 +29,6 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 from common.costing import USD_TO_AUD_RATE, call_cost_usd
-from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.model_pricing import canonical_model_id, default_model_entry, model_label
 
 DEFAULT_DAILY_WINDOW_DAYS = 30
@@ -94,7 +93,6 @@ def build_stats(
                 return entry
         return default_model_entry(model_id)
     topic_names = {topic["topic_id"]: topic.get("name") or topic["topic_id"] for topic in topics}
-    topic_names[DIGEST_TOPIC_ID] = DIGEST_TOPIC_NAME
 
     days = [today - timedelta(days=offset) for offset in range(window_days - 1, -1, -1)]
     daily: dict[date, dict] = {day: {"articles": 0, **_zero_bucket()} for day in days}

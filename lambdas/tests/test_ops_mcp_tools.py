@@ -634,3 +634,121 @@ def test_a_paused_vision_topic_s_sites_are_not_asked_about(tables, vision):
     assert [card for card in result["findings"] if card["kind"].startswith("vision_")] == []
     assert "sites" not in result["topics"][0]
     assert "wasn't measured" not in result["spoken"]
+
+
+def test_a_price_the_model_catalog_put_back_is_reported_for_a_week_without_its_ids(tables):
+    put_topic(tables, "a-published", "Alpha", researched=ago(minutes=10))
+    put_article(tables, "a1", "a-published", "published", ago(hours=2))
+    failures = tables.Table("FailedExecutions")
+    for failure_id, created, reverted in (
+        ("p1", ago(days=2), [{"model_id": HOSTILE, "why": "x"}, {"model_id": "b", "why": "y"}]),
+        ("p2", ago(days=8), [{"model_id": "c", "why": "z"}]),  # older than a week
+    ):
+        failures.put_item(
+            Item={
+                "failure_id": failure_id,
+                "topic_id": None,
+                "kind": "model_pricing",
+                "created_at": created,
+                "error": {"Error": "ModelPricingReverted", "Cause": f"{HOSTILE}: x"},
+                "raw_message": json.dumps({"reverted": reverted}),
+            }
+        )
+
+    result = tools.pipeline_health(now=NOW)
+
+    assert kinds(result) == [("model_pricing_reverted", None)]
+    [found] = result["findings"]
+    assert found["noticed"] == "The model catalog put back 2 models' prices it could not confirm, 2 days ago"
+    assert found["suggestion"]["command"].endswith("models reprice")
+    assert "Ignore" not in json.dumps(result)
+    # Asked about one topic, it is not that topic's business.
+    assert tools.pipeline_health("a-published", now=NOW)["findings"] == []
+
+
+# --- model_catalog (ops_mcp/model_prices.py) -----------------------------------------------------
+
+
+def test_the_model_catalog_says_what_is_paused_what_ran_and_what_is_under_review(tables):
+    from ops_mcp import model_prices
+
+    config = tables.Table("ModelConfig")
+    config.put_item(Item={"config_id": "model-catalog", "reprice_enabled": False})
+    config.put_item(
+        Item={
+            "config_id": "model-catalog-state",
+            "last_discover_at": ago(days=1),
+            "last_discover_result": {"trigger": "schedule", "status": "done", "added": 3},
+            "active_run_id": "r1",
+        }
+    )
+    config.put_item(
+        Item={
+            "config_id": "pricing-run#r1",
+            "run_id": "r1",
+            "applied_at": ago(minutes=30),
+            "changes": [{"model_id": HOSTILE}, {"model_id": "b"}],
+            "reviews_due": [(NOW + timedelta(minutes=m)).isoformat() for m in (30, 90)],
+            "reviews_done": [],
+            "reverted": [],
+        }
+    )
+
+    result = model_prices.model_catalog_status(now=NOW)
+
+    assert result["spoken"] == (
+        "Models are discovered every second day at 2 am and repriced at 3 am Sydney time, and "
+        "topics' model rotations are refreshed on Fridays at 4 am. "
+        "Reprice is paused. Discover last ran 24 hours ago and added 3 models. Reprice has not run "
+        "yet. The rotation cycle has not run yet. "
+        "2 model prices are under review: check 1 of 2, and its next check is in 30 minutes."
+    )
+    assert "Ignore" not in result["spoken"]  # model ids are on screen only
+    assert result["jobs"]["reprice"] == {
+        "runs": "every second day 03:00 Sydney time",
+        "paused": True,
+        "last": None,
+    }
+    assert result["under_review"]["models"] == [HOSTILE, "b"]
+    assert result["reviews"]["after_hours"] == [1, 2]
+    assert result["findings"] == []
+
+
+def test_the_model_catalog_says_when_discover_pruned_and_a_run_is_still_pricing(tables):
+    from ops_mcp import model_prices
+
+    config = tables.Table("ModelConfig")
+    config.put_item(
+        Item={
+            "config_id": "model-catalog-state",
+            "last_discover_at": ago(days=1),
+            "last_discover_result": {"status": "full", "prune": {"pruned": 4}},
+            "active_run_id": "r2",
+        }
+    )
+    config.put_item(
+        Item={
+            "config_id": "pricing-run#r2",
+            "run_id": "r2",
+            "status": "pricing",
+            "changes": [],
+            "reviews_due": [],
+            "reviews_done": [],
+            "reverted": [],
+            "pass": {"kind": "price", "queue": ["a", "b", "c"], "tick": 2, "next_tick_at": NOW.isoformat()},
+        }
+    )
+    spoken = model_prices.model_catalog_status(now=NOW)["spoken"]
+    assert "the registry was full, so it pruned 4 models." in spoken
+    assert spoken.endswith("A pricing run is checking prices, 3 models to go.")
+
+
+def test_with_nothing_set_the_model_catalog_says_so(tables):
+    from ops_mcp import model_prices
+
+    result = model_prices.model_catalog_status(now=NOW)
+    assert result["spoken"].endswith(
+        "Discover has not run yet. Reprice has not run yet. The rotation cycle has not run yet. "
+        "No pricing run is under review."
+    )
+    assert result["under_review"] is None

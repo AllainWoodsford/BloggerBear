@@ -15,14 +15,16 @@ from __future__ import annotations
 CHECKED_CLEAN = "Checked against current data: no problems found"
 CHECKED_CORRECTED = "Checked against current data: corrected before publishing"
 CHECKED_BY_PERSON = "Checked against current data: reviewed by a person before publishing"
+# Held, then approved by Professor Grizzlewick, the AI reviewer (common/reviewer.py): never "a person".
+CHECKED_BY_REVIEWER = "Checked against current data: reviewed by our AI reviewer before publishing"
 NOT_CHECKED = "Not checked against current data (the check was unavailable)"
 
 
 def fact_check_label(record: dict | None, published_by: str | None) -> str | None:
     """The line for an article, or None when there is nothing honest to say.
 
-    `record` is the article's stored `review`; `published_by` is "ai_only" or "humans"
-    (a person approved it), which matters only for an article whose review could not run.
+    `record` is the article's stored `review`; `published_by` is "ai_only", "humans" (a person
+    approved it) or "reviewer" (Professor Grizzlewick, the AI reviewer, approved it).
     """
     if not isinstance(record, dict) or record.get("mode") != "enforce":
         return None
@@ -34,5 +36,6 @@ def fact_check_label(record: dict | None, published_by: str | None) -> str | Non
     if record.get("revised"):
         return CHECKED_CORRECTED
     if record.get("held"):
-        return CHECKED_BY_PERSON  # it could only have been published after a person approved it
+        # It was published only once someone approved it: a person, or the AI reviewer.
+        return CHECKED_BY_REVIEWER if published_by == "reviewer" else CHECKED_BY_PERSON
     return CHECKED_CLEAN

@@ -247,6 +247,11 @@ class TaskProfile:
     web_query: Callable[[str], str] | None
     history_keys: tuple[str, ...] = ()
     min_look_again_seconds: float = MIN_LOOK_AGAIN_READ_SECONDS
+    # What completes `look_again`'s settings before they go to the worker: the rail task lifts
+    # the feeder reach to a station reach past the default (contract.with_feeder_reach), as the
+    # rail adapter's own measurements do, so a re-measure at a wider reach is not refused as a bad
+    # request. The default copies the settings as they are.
+    complete_params: Callable[[dict], dict] = dict
 
 
 def rail_web_query(site_name: str) -> str:
@@ -273,6 +278,7 @@ PROFILES = {
         web_query=rail_web_query,
         history_keys=RAIL_HISTORY_KEYS,
         min_look_again_seconds=RAIL_MIN_LOOK_AGAIN_SECONDS,
+        complete_params=contract.with_feeder_reach,
     ),
 }
 
@@ -639,16 +645,17 @@ def _run_tool(
                 extra["network"] = network
             if wait is not None:
                 extra["read_timeout"] = wait
+            settings = profile.complete_params({**params, **given})
             result = measure(
                 {"id": site["id"], "polygon": site["polygon"]},
                 scene,
                 backend=backend,
-                params={**params, **given},
+                params=settings,
                 coverage_floor=0.0,
                 **extra,
             )
             metrics = summarise_metrics({**result.metrics, "scene_id": scene.get("id")}, profile.metric_keys)
-            body = [{"json": {"settings": {**params, **given}, **metrics}}]
+            body = [{"json": {"settings": settings, **metrics}}]
             if result.image_png:
                 body.append({"image": {"format": "png", "source": {"bytes": result.image_png}}})
             return body, "success"

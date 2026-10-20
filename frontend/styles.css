@@ -179,7 +179,7 @@ header {
   text-decoration: underline;
 }
 
-/* The site's own sections (Trending Everywhere, Musings, Stats) are
+/* The site's own sections (About, Musings, Stats) are
    outlined pills, so they read as "places on the site" next to the plain
    topic links below them. */
 #nav-site {
@@ -900,6 +900,14 @@ a {
 
 .musing-text {
   margin: 0 0 6px;
+}
+
+/* A reply in the bears' back-and-forth: whom it answers, above its text. */
+.musing-reply-to {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-style: italic;
 }
 
 .musing-mood {

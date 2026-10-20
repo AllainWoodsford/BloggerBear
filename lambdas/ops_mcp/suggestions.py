@@ -57,6 +57,15 @@ CATALOGUE: dict[str, Suggestion] = {
             "The rewrite goes through the reviews again and comes back to the inbox."
         ),
     ),
+    # Professor Grizzlewick approved a financial article (common/reviewer.py): a person checks it.
+    "reviewer_financial_check": Suggestion(
+        action=(
+            "Read the financial article the reviewer bear approved; if it is fine, mark it checked "
+            "(articles checked <id>), and if not, take it down (articles unpublish <id>)"
+        ),
+        arguments="articles get {id}",
+        what_it_does="Shows the article and its full text. Nothing changes.",
+    ),
     "awaiting_review": Suggestion(
         action="Go through the articles waiting for you",
         arguments="approve --source moderation",
@@ -85,6 +94,16 @@ CATALOGUE: dict[str, Suggestion] = {
         action="Look at the runs that ran out of retries",
         arguments="failed-executions list",
         what_it_does="Lists the failed daily runs and their errors. It changes nothing.",
+    ),
+    # The model catalog put a price back that its review could not confirm
+    # (common/model_catalog.py): the old price is in use again, so nothing is wrong now.
+    "model_pricing_reverted": Suggestion(
+        action="Check the model prices in use (models list), then reprice again",
+        arguments="models reprice",
+        what_it_does=(
+            "Looks up every model's price again in the background. A changed price applies at "
+            "once and is reviewed twice more, and is put back again if a review is not confident."
+        ),
     ),
     # A blank musing is fixed where it is: the article is fine, so it is not rewritten.
     "musing_no_text": Suggestion(

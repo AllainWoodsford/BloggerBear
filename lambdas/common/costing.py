@@ -3,10 +3,9 @@
 
 Single source of truth for turning a list of tracked Bedrock calls (see
 common.bedrock.invoke_model_tracked) into the `lineage` dict stored on an
-Articles item -- kept separate from daily_cycle_handler.py/
-trending_digest_handler.py so both handlers assemble lineage identically,
-and so the public Stats page can reuse the same cost math for aggregate
-reporting without duplicating it.
+Articles item -- kept separate from daily_cycle_handler.py so every
+publish path assembles lineage identically, and so the public Stats page
+can reuse the same cost math for aggregate reporting without duplicating it.
 
 **Pricing** is looked up by the canonical model id (an ARN is reduced to the
 profile id it names -- see common/model_pricing.py): the Models registry first,
@@ -25,7 +24,7 @@ each research call is counted in exactly one article.
 
 from __future__ import annotations
 
-from common.dynamo import get_model
+from common.dynamo import get_model, get_model_archive
 from common.model_pricing import canonical_model_id, default_model_entry, model_label
 
 # Fixed, periodically-updated approximation -- deliberately not a live FX
@@ -57,13 +56,23 @@ def pricing_for(model_id: str) -> dict | None:
     """The price entry to use for a model id, or None if nothing prices it.
 
     The Models registry wins (under the id as given, then the canonical id, so
-    a row registered by ARN or by profile id both match); the built-in table is
+    a row registered by ARN or by profile id both match); then the archived price
+    of a model the fleet pruned (common/model_fleet.py); the built-in table is
     the fallback that makes cost work on a deploy nobody has seeded.
     """
-    for candidate in dict.fromkeys((model_id, canonical_model_id(model_id))):
+    candidates = tuple(dict.fromkeys((model_id, canonical_model_id(model_id))))
+    for candidate in candidates:
         entry = get_model(candidate)
         if _priced(entry):
             return entry
+    try:
+        archive = get_model_archive()
+    except Exception as exc:  # noqa: BLE001 - an unreadable archive prices nothing, never fails a cost
+        print(f"costing: the pruned-model archive could not be read: {exc!r}")
+        archive = {}
+    for candidate in candidates:
+        if _priced(archive.get(candidate)):
+            return archive[candidate]
     return default_model_entry(model_id)
 
 

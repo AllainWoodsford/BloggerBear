@@ -42,6 +42,7 @@ import boto3
 
 from common import equipment, feedback_limits, feedback_verification, gear, security_events, wear
 from common.attribution import (
+    LEGACY_CROSS_TOPIC_ID,
     clean_sources,
     sources_for_article,
     sources_for_topic,
@@ -56,7 +57,6 @@ from common.comment_screening import (
     SQL,
     screen_comment,
 )
-from common.digest import DIGEST_TOPIC_ID
 from common.dynamo import (
     get_article,
     get_articles_stats_snapshot,
@@ -67,9 +67,9 @@ from common.dynamo import (
     get_view_count,
     increment_view_count,
     list_all_articles,
-    list_models,
     list_musings,
     list_pending_moderation_for_topic,
+    list_priced_models,
     list_prompt_refinements,
     list_published_articles,
     list_recent_findings,
@@ -359,10 +359,9 @@ def _topic_activity(event: dict) -> dict:
 
 
 def _topic_attribution(topic_id: str) -> list[dict]:
-    """The source credit shown under a topic's title: its adapter's declared sources. The digest
-    is not a Topics row and draws on every topic, so its page credits all of their sources (each
-    digest article carries the narrower credit of the topics that actually contributed)."""
-    if topic_id == DIGEST_TOPIC_ID:
+    """The source credit shown under a topic's title: its adapter's declared sources. A legacy
+    digest's page (common/attribution.py's LEGACY_CROSS_TOPIC_ID) credits every topic's."""
+    if topic_id == LEGACY_CROSS_TOPIC_ID:
         return sources_for_topics(list_topics())
     return sources_for_topic(get_topic(topic_id))
 
@@ -731,6 +730,14 @@ def _list_musings(event: dict) -> dict:
             "topic_name": topic_names.get(m.get("topic_id")),
             "text": m.get("text"),
             "mood": m.get("mood"),
+            # Who wrote it: absent for BloggerBear, "grizzlewick" for the reviewer bear.
+            **({"character": m["character"]} if m.get("character") else {}),
+            # A reply in the bears' back-and-forth: whose musing it answers (a name, never text).
+            **(
+                {"replying_to": m["replying_to"]}
+                if m.get("replying_to") in ("grizzlewick", "bloggerbear")
+                else {}
+            ),
             "created_at": m.get("created_at"),
             # A loot drop carries a snapshot of the gear it announces (already the public view).
             **({"gear": m["gear"]} if m.get("gear") else {}),
@@ -755,7 +762,7 @@ def _articles_stats() -> dict:
     deploy, before the first run)."""
     snapshot = get_articles_stats_snapshot()
     if snapshot is None:
-        return build_stats(list_all_articles(), list_topics(), list_models())
+        return build_stats(list_all_articles(), list_topics(), list_priced_models())
     stats = json.loads(snapshot)
     stats["daily"] = rewindow_daily(stats.get("daily") or [])
     return stats
@@ -865,9 +872,7 @@ def _rss_feed(event: dict) -> dict:
 
     items_xml = []
     for article in articles:
-        attribution = sources_for_article(
-            article, get_topic=topics_by_id.get, list_topics=lambda: topics
-        )
+        attribution = sources_for_article(article, get_topic=topics_by_id.get, list_topics=lambda: topics)
         body = ""
         body_s3_key = article.get("body_s3_key")
         if body_s3_key:

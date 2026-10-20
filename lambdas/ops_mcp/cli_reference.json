@@ -11,6 +11,7 @@
     "purge",
     "reject",
     "remove",
+    "restore",
     "unpublish",
     "wipe"
   ],
@@ -52,7 +53,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -667,10 +668,30 @@
           "nargs": null,
           "metavar": null,
           "destructive": false
+        },
+        {
+          "name": "--reviewer-may-approve",
+          "dest": "reviewer_may_approve",
+          "kind": "option",
+          "flags": [
+            "--reviewer-may-approve"
+          ],
+          "help": "May the reviewer bear approve this topic's held articles; '' = `reviewer` setting",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON]\n                                  [--goal-rotation-json GOAL_ROTATION_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--stagger-slot STAGGER_SLOT]\n                                  [--model-id MODEL_ID] [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --goal-rotation-json GOAL_ROTATION_JSON\n                        2 to 7 editorial goals taken in turn: '[{\"name\": \"access\",\n                        \"primary_focus\": \"...\"}, ...]'. With nothing new, the last findings are\n                        revisited under a goal not yet used on them. Replaces the whole list; '[]'\n                        clears it\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336, for a topic that does not\n                        write every day; '' clears it (back to 24)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --stagger-slot STAGGER_SLOT\n                        Move this topic to another turn in the stagger (a whole number no other\n                        topic holds); '' gives it the next free slot. Its two schedules are\n                        rewritten at once\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
+      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON]\n                                  [--goal-rotation-json GOAL_ROTATION_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--stagger-slot STAGGER_SLOT]\n                                  [--model-id MODEL_ID] [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  [--reviewer-may-approve {on,off,}]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --goal-rotation-json GOAL_ROTATION_JSON\n                        2 to 7 editorial goals taken in turn: '[{\"name\": \"access\",\n                        \"primary_focus\": \"...\"}, ...]'. With nothing new, the last findings are\n                        revisited under a goal not yet used on them. Replaces the whole list; '[]'\n                        clears it\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336, for a topic that does not\n                        write every day; '' clears it (back to 24)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --stagger-slot STAGGER_SLOT\n                        Move this topic to another turn in the stagger (a whole number no other\n                        topic holds); '' gives it the next free slot. Its two schedules are\n                        rewritten at once\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n  --reviewer-may-approve {on,off,}\n                        May the reviewer bear approve this topic's held articles; '' = `reviewer`\n                        setting\n"
     },
     "topics delete": {
       "help": "Delete a topic",
@@ -1040,13 +1061,59 @@
       "help": "Manage articles",
       "group": true,
       "subcommands": [
+        "get",
+        "checked",
         "publish",
         "unpublish",
         "rewrite",
         "feedback-lock",
         "feedback-unlock"
       ],
-      "help_text": "usage: admin_cli.py articles [-h] {publish,unpublish,rewrite,feedback-lock,feedback-unlock} ...\n\npositional arguments:\n  {publish,unpublish,rewrite,feedback-lock,feedback-unlock}\n    publish             Force-publish an article regardless of its current status\n    unpublish           Take a published article down: delete its page, mark it rejected, remove\n                        its musings and clear the CDN cache\n    rewrite             Rewrite an article to fix what you say is wrong with it. A published\n                        article stays up until its rewrite is ready, then comes down; the rewrite\n                        goes through the reviews again and waits in the inbox\n    feedback-lock       Stop taking feedback on one article (its feedback_locked flag, set to\n                        true)\n    feedback-unlock     Take feedback on one article again (feedback_locked false). An article\n                        locked because it reached its limit also needs --reset-count, or it stays\n                        at the limit\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py articles [-h] <action> ...\n\npositional arguments:\n  <action>\n    get              Show one article in any status: its title, topic, status, who published it,\n                     what it cost, its sources and its full text. Nothing changes\n    checked          Mark a financial article the reviewer bear approved as checked by you: clears\n                     his flag, so he stops watching it for downvotes and the assistant stops\n                     reporting it\n    publish          Force-publish an article regardless of its current status\n    unpublish        Take a published article down: delete its page, mark it rejected, remove its\n                     musings and clear the CDN cache\n    rewrite          Rewrite an article to fix what you say is wrong with it. A published article\n                     stays up until its rewrite is ready, then comes down; the rewrite goes\n                     through the reviews again and waits in the inbox\n    feedback-lock    Stop taking feedback on one article (its feedback_locked flag, set to true)\n    feedback-unlock  Take feedback on one article again (feedback_locked false). An article locked\n                     because it reached its limit also needs --reset-count, or it stays at the\n                     limit\n\noptions:\n  -h, --help         show this help message and exit\n"
+    },
+    "articles get": {
+      "help": "Show one article in any status: its title, topic, status, who published it, what it cost, its sources and its full text. Nothing changes",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py articles get [-h] article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "articles checked": {
+      "help": "Mark a financial article the reviewer bear approved as checked by you: clears his flag, so he stops watching it for downvotes and the assistant stops reporting it",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py articles checked [-h] article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "articles publish": {
       "help": "Force-publish an article regardless of its current status",
@@ -1903,6 +1970,292 @@
       "destructive": false,
       "help_text": "usage: admin_cli.py moderation stats [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
+    "backup": {
+      "help": "Snapshot this deployment's content and configuration to one file, restore one, or copy every article to another bucket",
+      "group": true,
+      "subcommands": [
+        "list",
+        "snapshot",
+        "restore",
+        "export",
+        "status",
+        "resume"
+      ],
+      "help_text": "usage: admin_cli.py backup [-h] {list,snapshot,restore,export,status,resume} ...\n\npositional arguments:\n  {list,snapshot,restore,export,status,resume}\n    list                List this deployment's snapshot files and its most recent backup jobs\n    snapshot            Write a snapshot now: articles (final text and figures), costs and stats,\n                        gear and refinements, musings, topics, models and settings, as one file in\n                        the backup bucket\n    restore             Load a snapshot file into this deployment (rows and article text written\n                        back under their own keys), then rewrite topic schedules and published\n                        pages\n    export              Copy every article (its row as JSON, its final text and figures) to a\n                        bucket, with a manifest.json\n    status              Show a backup job's progress\n    resume              Restart a stalled backup job from where it got to\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "backup list": {
+      "help": "List this deployment's snapshot files and its most recent backup jobs",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py backup list [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "backup snapshot": {
+      "help": "Write a snapshot now: articles (final text and figures), costs and stats, gear and refinements, musings, topics, models and settings, as one file in the backup bucket",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--no-wait",
+          "dest": "no_wait",
+          "kind": "flag",
+          "flags": [
+            "--no-wait"
+          ],
+          "help": "Print the started job and return instead of following its progress",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py backup snapshot [-h] [--no-wait]\n\noptions:\n  -h, --help  show this help message and exit\n  --no-wait   Print the started job and return instead of following its progress\n"
+    },
+    "backup restore": {
+      "help": "Load a snapshot file into this deployment (rows and article text written back under their own keys), then rewrite topic schedules and published pages",
+      "group": false,
+      "arguments": [
+        {
+          "name": "key",
+          "dest": "key",
+          "kind": "positional",
+          "flags": [],
+          "help": "The snapshot's key, as `backup list` shows it (backup/<prefix>-<env>/snapshots/...)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--bucket",
+          "dest": "bucket",
+          "kind": "option",
+          "flags": [
+            "--bucket"
+          ],
+          "help": "Read it from this bucket instead of the backup bucket (one of backup_export_buckets)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--no-pages",
+          "dest": "no_pages",
+          "kind": "flag",
+          "flags": [
+            "--no-pages"
+          ],
+          "help": "Do not re-render the published articles' pages",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--no-schedules",
+          "dest": "no_schedules",
+          "kind": "flag",
+          "flags": [
+            "--no-schedules"
+          ],
+          "help": "Do not write the restored topics' schedules",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--yes",
+          "dest": "yes",
+          "kind": "flag",
+          "flags": [
+            "--yes"
+          ],
+          "help": "Do not ask for confirmation",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--no-wait",
+          "dest": "no_wait",
+          "kind": "flag",
+          "flags": [
+            "--no-wait"
+          ],
+          "help": "Print the started job and return instead of following its progress",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py backup restore [-h] [--bucket BUCKET] [--no-pages] [--no-schedules] [--yes]\n                                   [--no-wait]\n                                   key\n\npositional arguments:\n  key              The snapshot's key, as `backup list` shows it\n                   (backup/<prefix>-<env>/snapshots/...)\n\noptions:\n  -h, --help       show this help message and exit\n  --bucket BUCKET  Read it from this bucket instead of the backup bucket (one of\n                   backup_export_buckets)\n  --no-pages       Do not re-render the published articles' pages\n  --no-schedules   Do not write the restored topics' schedules\n  --yes            Do not ask for confirmation\n  --no-wait        Print the started job and return instead of following its progress\n"
+    },
+    "backup export": {
+      "help": "Copy every article (its row as JSON, its final text and figures) to a bucket, with a manifest.json",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--bucket",
+          "dest": "bucket",
+          "kind": "option",
+          "flags": [
+            "--bucket"
+          ],
+          "help": "Target bucket (one of backup_export_buckets); default: the backup bucket's exports/",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--prefix",
+          "dest": "prefix",
+          "kind": "option",
+          "flags": [
+            "--prefix"
+          ],
+          "help": "Key prefix in the target bucket (default: the UTC time)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--no-wait",
+          "dest": "no_wait",
+          "kind": "flag",
+          "flags": [
+            "--no-wait"
+          ],
+          "help": "Print the started job and return instead of following its progress",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py backup export [-h] [--bucket BUCKET] [--prefix PREFIX] [--no-wait]\n\noptions:\n  -h, --help       show this help message and exit\n  --bucket BUCKET  Target bucket (one of backup_export_buckets); default: the backup bucket's\n                   exports/\n  --prefix PREFIX  Key prefix in the target bucket (default: the UTC time)\n  --no-wait        Print the started job and return instead of following its progress\n"
+    },
+    "backup status": {
+      "help": "Show a backup job's progress",
+      "group": false,
+      "arguments": [
+        {
+          "name": "job_id",
+          "dest": "job_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--wait",
+          "dest": "wait",
+          "kind": "flag",
+          "flags": [
+            "--wait"
+          ],
+          "help": "Follow it until it finishes",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py backup status [-h] [--wait] job_id\n\npositional arguments:\n  job_id\n\noptions:\n  -h, --help  show this help message and exit\n  --wait      Follow it until it finishes\n"
+    },
+    "backup resume": {
+      "help": "Restart a stalled backup job from where it got to",
+      "group": false,
+      "arguments": [
+        {
+          "name": "job_id",
+          "dest": "job_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--no-wait",
+          "dest": "no_wait",
+          "kind": "flag",
+          "flags": [
+            "--no-wait"
+          ],
+          "help": "Print the started job and return instead of following its progress",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py backup resume [-h] [--no-wait] job_id\n\npositional arguments:\n  job_id\n\noptions:\n  -h, --help  show this help message and exit\n  --no-wait   Print the started job and return instead of following its progress\n"
+    },
     "failed-executions": {
       "help": "View daily_cycle executions that exhausted their retries",
       "group": true,
@@ -2271,9 +2624,12 @@
       "group": true,
       "subcommands": [
         "list",
-        "add"
+        "add",
+        "disable",
+        "reprice",
+        "discover"
       ],
-      "help_text": "usage: admin_cli.py models [-h] {list,add} ...\n\npositional arguments:\n  {list,add}\n    list      List the supported-models registry\n    add       Add or update a model in the registry\n\noptions:\n  -h, --help  show this help message and exit\n"
+      "help_text": "usage: admin_cli.py models [-h] {list,add,disable,reprice,discover} ...\n\npositional arguments:\n  {list,add,disable,reprice,discover}\n    list                List the supported-models registry\n    add                 Add or update a model in the registry\n    disable             Disable a model: every topic's rotation, model and fallback, and the\n                        shared rotation pool, stop using it (asks first if it is the application's\n                        default or fallback)\n    reprice             Look up model prices now, as the scheduled reprice does: up to 50, longest\n                        unchecked first, a few every 5 minutes; changed prices apply at once and\n                        are reviewed 1 and 2 hours later, and put back if a review is not\n                        confident\n    discover            Add up to 5 models the account can call that the registry lacks now\n                        (disabled, unpriced: the next reprice prices them); none once the registry\n                        holds 50\n\noptions:\n  -h, --help            show this help message and exit\n"
     },
     "models list": {
       "help": "List the supported-models registry",
@@ -2382,10 +2738,688 @@
           "metavar": null,
           "destructive": false,
           "value": false
+        },
+        {
+          "name": "--lock-price",
+          "dest": "price_locked",
+          "kind": "flag",
+          "flags": [
+            "--lock-price",
+            "--no-lock-price"
+          ],
+          "help": "--lock-price keeps the model catalog's reprice from ever changing this price (e.g. a geo-profile premium you set on purpose); --no-lock-price lets it again",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": null
+        },
+        {
+          "name": "--yes",
+          "dest": "yes",
+          "kind": "flag",
+          "flags": [
+            "--yes"
+          ],
+          "help": "With --disabled: do not ask before disabling the application's default or fallback model",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py models add [-h] --model-id MODEL_ID --display-name DISPLAY_NAME\n                               --provider PROVIDER --input-price INPUT_PRICE\n                               --output-price OUTPUT_PRICE [--disabled]\n\noptions:\n  -h, --help            show this help message and exit\n  --model-id MODEL_ID\n  --display-name DISPLAY_NAME\n  --provider PROVIDER\n  --input-price INPUT_PRICE\n                        USD per 1k input tokens\n  --output-price OUTPUT_PRICE\n                        USD per 1k output tokens\n  --disabled            Register the model as disabled (default: enabled)\n"
+      "help_text": "usage: admin_cli.py models add [-h] --model-id MODEL_ID --display-name DISPLAY_NAME\n                               --provider PROVIDER --input-price INPUT_PRICE\n                               --output-price OUTPUT_PRICE [--disabled]\n                               [--lock-price | --no-lock-price] [--yes]\n\noptions:\n  -h, --help            show this help message and exit\n  --model-id MODEL_ID\n  --display-name DISPLAY_NAME\n  --provider PROVIDER\n  --input-price INPUT_PRICE\n                        USD per 1k input tokens\n  --output-price OUTPUT_PRICE\n                        USD per 1k output tokens\n  --disabled            Register the model as disabled (default: enabled)\n  --lock-price, --no-lock-price\n                        --lock-price keeps the model catalog's reprice from ever changing this\n                        price (e.g. a geo-profile premium you set on purpose); --no-lock-price\n                        lets it again\n  --yes                 With --disabled: do not ask before disabling the application's default or\n                        fallback model\n"
+    },
+    "models disable": {
+      "help": "Disable a model: every topic's rotation, model and fallback, and the shared rotation pool, stop using it (asks first if it is the application's default or fallback)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--model-id",
+          "dest": "model_id",
+          "kind": "option",
+          "flags": [
+            "--model-id"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--yes",
+          "dest": "yes",
+          "kind": "flag",
+          "flags": [
+            "--yes"
+          ],
+          "help": "do not ask, even for the default or fallback",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py models disable [-h] --model-id MODEL_ID [--yes]\n\noptions:\n  -h, --help           show this help message and exit\n  --model-id MODEL_ID\n  --yes                do not ask, even for the default or fallback\n"
+    },
+    "models reprice": {
+      "help": "Look up model prices now, as the scheduled reprice does: up to 50, longest unchecked first, a few every 5 minutes; changed prices apply at once and are reviewed 1 and 2 hours later, and put back if a review is not confident",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py models reprice [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "models discover": {
+      "help": "Add up to 5 models the account can call that the registry lacks now (disabled, unpriced: the next reprice prices them); none once the registry holds 50",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py models discover [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "reviewer": {
+      "help": "Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag (no deploy)",
+      "group": true,
+      "subcommands": [
+        "get",
+        "set"
+      ],
+      "help_text": "usage: admin_cli.py reviewer [-h] {get,set} ...\n\npositional arguments:\n  {get,set}\n    get       Show his settings, their effective values, and his last or current run\n    set       Change settings (send any of them; a setting not sent is unchanged; '' clears one)\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "reviewer get": {
+      "help": "Show his settings, their effective values, and his last or current run",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py reviewer get [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "reviewer set": {
+      "help": "Change settings (send any of them; a setting not sent is unchanged; '' clears one)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--enabled",
+          "dest": "enabled",
+          "kind": "option",
+          "flags": [
+            "--enabled"
+          ],
+          "help": "Run (on) or pause (off) his scheduled runs (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--may-approve",
+          "dest": "may_approve",
+          "kind": "option",
+          "flags": [
+            "--may-approve"
+          ],
+          "help": "May he approve held articles himself (a topic's own setting wins) (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--fix-content",
+          "dest": "fix_content",
+          "kind": "option",
+          "flags": [
+            "--fix-content"
+          ],
+          "help": "Task 1: fix the assistant's content findings (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--review-held",
+          "dest": "review_held",
+          "kind": "option",
+          "flags": [
+            "--review-held"
+          ],
+          "help": "Task 2: review articles held --stale-after-hours or more (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--review-published",
+          "dest": "review_published",
+          "kind": "option",
+          "flags": [
+            "--review-published"
+          ],
+          "help": "Task 3: review the newest published articles (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--watch-flags",
+          "dest": "watch_flags",
+          "kind": "option",
+          "flags": [
+            "--watch-flags"
+          ],
+          "help": "Task 4: watch his financial approvals for downvotes (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--defang-held",
+          "dest": "defang_held",
+          "kind": "option",
+          "flags": [
+            "--defang-held"
+          ],
+          "help": "Task 5: publish long-waiting articles with flagged parts cut, or reject (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--stale-after-hours",
+          "dest": "stale_after_hours",
+          "kind": "option",
+          "flags": [
+            "--stale-after-hours"
+          ],
+          "help": "Hours a held article waits before he reviews it, 1-720 (default 48)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--published-per-run",
+          "dest": "published_per_run",
+          "kind": "option",
+          "flags": [
+            "--published-per-run"
+          ],
+          "help": "Published articles he reviews a run, 1-25 (default 5)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--published-lookback",
+          "dest": "published_lookback",
+          "kind": "option",
+          "flags": [
+            "--published-lookback"
+          ],
+          "help": "How many newest published he looks through, 1-200 (default 25)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--max-rewrites",
+          "dest": "max_rewrites",
+          "kind": "option",
+          "flags": [
+            "--max-rewrites"
+          ],
+          "help": "Rewrites before he rejects a held article, 1-10 (default 3)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--content-days",
+          "dest": "content_days",
+          "kind": "option",
+          "flags": [
+            "--content-days"
+          ],
+          "help": "Days of content findings he fixes, 1-30 (default 7)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--tasks-per-tick",
+          "dest": "tasks_per_tick",
+          "kind": "option",
+          "flags": [
+            "--tasks-per-tick"
+          ],
+          "help": "Tasks he does a tick, 1-5 (default 2)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--tick-minutes",
+          "dest": "tick_minutes",
+          "kind": "option",
+          "flags": [
+            "--tick-minutes"
+          ],
+          "help": "Minutes between his ticks, 1-60 (default 5)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--defang-after-days",
+          "dest": "defang_after_days",
+          "kind": "option",
+          "flags": [
+            "--defang-after-days"
+          ],
+          "help": "Days a held article waits before task 5, 3-90 (default 10)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--chat-chance-pct",
+          "dest": "chat_chance_pct",
+          "kind": "option",
+          "flags": [
+            "--chat-chance-pct"
+          ],
+          "help": "Chance BloggerBear replies to his report, 0-100 (default 25)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--reply-chance-pct",
+          "dest": "reply_chance_pct",
+          "kind": "option",
+          "flags": [
+            "--reply-chance-pct"
+          ],
+          "help": "Chance he answers that reply, 0-100 (default 10)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py reviewer set [-h] [--enabled {on,off,}] [--may-approve {on,off,}]\n                                 [--fix-content {on,off,}] [--review-held {on,off,}]\n                                 [--review-published {on,off,}] [--watch-flags {on,off,}]\n                                 [--defang-held {on,off,}] [--stale-after-hours STALE_AFTER_HOURS]\n                                 [--published-per-run PUBLISHED_PER_RUN]\n                                 [--published-lookback PUBLISHED_LOOKBACK]\n                                 [--max-rewrites MAX_REWRITES] [--content-days CONTENT_DAYS]\n                                 [--tasks-per-tick TASKS_PER_TICK] [--tick-minutes TICK_MINUTES]\n                                 [--defang-after-days DEFANG_AFTER_DAYS]\n                                 [--chat-chance-pct CHAT_CHANCE_PCT]\n                                 [--reply-chance-pct REPLY_CHANCE_PCT]\n\noptions:\n  -h, --help            show this help message and exit\n  --enabled {on,off,}   Run (on) or pause (off) his scheduled runs (default on)\n  --may-approve {on,off,}\n                        May he approve held articles himself (a topic's own setting wins) (default\n                        on)\n  --fix-content {on,off,}\n                        Task 1: fix the assistant's content findings (default on)\n  --review-held {on,off,}\n                        Task 2: review articles held --stale-after-hours or more (default on)\n  --review-published {on,off,}\n                        Task 3: review the newest published articles (default on)\n  --watch-flags {on,off,}\n                        Task 4: watch his financial approvals for downvotes (default on)\n  --defang-held {on,off,}\n                        Task 5: publish long-waiting articles with flagged parts cut, or reject\n                        (default on)\n  --stale-after-hours STALE_AFTER_HOURS\n                        Hours a held article waits before he reviews it, 1-720 (default 48)\n  --published-per-run PUBLISHED_PER_RUN\n                        Published articles he reviews a run, 1-25 (default 5)\n  --published-lookback PUBLISHED_LOOKBACK\n                        How many newest published he looks through, 1-200 (default 25)\n  --max-rewrites MAX_REWRITES\n                        Rewrites before he rejects a held article, 1-10 (default 3)\n  --content-days CONTENT_DAYS\n                        Days of content findings he fixes, 1-30 (default 7)\n  --tasks-per-tick TASKS_PER_TICK\n                        Tasks he does a tick, 1-5 (default 2)\n  --tick-minutes TICK_MINUTES\n                        Minutes between his ticks, 1-60 (default 5)\n  --defang-after-days DEFANG_AFTER_DAYS\n                        Days a held article waits before task 5, 3-90 (default 10)\n  --chat-chance-pct CHAT_CHANCE_PCT\n                        Chance BloggerBear replies to his report, 0-100 (default 25)\n  --reply-chance-pct REPLY_CHANCE_PCT\n                        Chance he answers that reply, 0-100 (default 10)\n"
+    },
+    "model-catalog": {
+      "help": "The model discover and reprice jobs (every second day): pause flags, sizes, reviews",
+      "group": true,
+      "subcommands": [
+        "get",
+        "set"
+      ],
+      "help_text": "usage: admin_cli.py model-catalog [-h] {get,set} ...\n\npositional arguments:\n  {get,set}\n    get       Show the settings, what each job last did, and the pricing run under review\n    set       Change settings (send any of them; a setting not sent is unchanged; '' clears one)\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "model-catalog get": {
+      "help": "Show the settings, what each job last did, and the pricing run under review",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py model-catalog get [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "model-catalog set": {
+      "help": "Change settings (send any of them; a setting not sent is unchanged; '' clears one)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--discover",
+          "dest": "discover",
+          "kind": "option",
+          "flags": [
+            "--discover"
+          ],
+          "help": "Run (on) or pause (off) discover's schedule (every second day, 02:00 Sydney)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--reprice",
+          "dest": "reprice",
+          "kind": "option",
+          "flags": [
+            "--reprice"
+          ],
+          "help": "Run (on) or pause (off) reprice's schedule (every second day, 03:00 Sydney)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--cycle",
+          "dest": "cycle",
+          "kind": "option",
+          "flags": [
+            "--cycle"
+          ],
+          "help": "Run (on) or pause (off) the weekly rotation cycle (Fridays, 04:00 Sydney)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--max-models",
+          "dest": "max_models",
+          "kind": "option",
+          "flags": [
+            "--max-models"
+          ],
+          "help": "Once the registry holds this many models, discover prunes instead of adding (default 50)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--prune-mode",
+          "dest": "prune_mode",
+          "kind": "option",
+          "flags": [
+            "--prune-mode"
+          ],
+          "help": "What pruning keeps and the cycle adds: value_for_money (cheaper models, the default) or frontier (high-end models)",
+          "type": "str",
+          "choices": [
+            "value_for_money",
+            "frontier",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--prune-max-per-run",
+          "dest": "prune_max_per_run",
+          "kind": "option",
+          "flags": [
+            "--prune-max-per-run"
+          ],
+          "help": "Models one pruning run may remove, 1 to 100 (default 20)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--access-checks-per-run",
+          "dest": "access_checks_per_run",
+          "kind": "option",
+          "flags": [
+            "--access-checks-per-run"
+          ],
+          "help": "1-token Converse probes one discover may make to see which models the account can call (default 10)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--rotation-max",
+          "dest": "rotation_max",
+          "kind": "option",
+          "flags": [
+            "--rotation-max"
+          ],
+          "help": "The cycle adds models to a topic's rotation until it holds this many (default 10)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--discover-max-added",
+          "dest": "discover_max_added",
+          "kind": "option",
+          "flags": [
+            "--discover-max-added"
+          ],
+          "help": "Models one discover may add, 1 to 5 (default 5)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--reprice-max-queued",
+          "dest": "reprice_max_queued",
+          "kind": "option",
+          "flags": [
+            "--reprice-max-queued"
+          ],
+          "help": "Models one reprice may queue for a price check, 1 to 50 (default 50)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--review-after-hours",
+          "dest": "review_after_hours",
+          "kind": "option",
+          "flags": [
+            "--review-after-hours"
+          ],
+          "help": "Hours after a run each review runs, comma-separated (default 1,2; 1 to 4 reviews)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--review-tolerance-pct",
+          "dest": "review_tolerance_pct",
+          "kind": "option",
+          "flags": [
+            "--review-tolerance-pct"
+          ],
+          "help": "How far, in percent, a review's fresh price may be from the applied one (default 5)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--max-change-factor",
+          "dest": "max_change_factor",
+          "kind": "option",
+          "flags": [
+            "--max-change-factor"
+          ],
+          "help": "A price moving more than this many times either way fails review (default 10)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--max-web-lookups",
+          "dest": "max_web_lookups",
+          "kind": "option",
+          "flags": [
+            "--max-web-lookups"
+          ],
+          "help": "Paid web searches one run may make (default 10)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py model-catalog set [-h] [--discover {on,off,}] [--reprice {on,off,}]\n                                      [--cycle {on,off,}] [--max-models MAX_MODELS]\n                                      [--prune-mode {value_for_money,frontier,}]\n                                      [--prune-max-per-run PRUNE_MAX_PER_RUN]\n                                      [--access-checks-per-run ACCESS_CHECKS_PER_RUN]\n                                      [--rotation-max ROTATION_MAX]\n                                      [--discover-max-added DISCOVER_MAX_ADDED]\n                                      [--reprice-max-queued REPRICE_MAX_QUEUED]\n                                      [--review-after-hours REVIEW_AFTER_HOURS]\n                                      [--review-tolerance-pct REVIEW_TOLERANCE_PCT]\n                                      [--max-change-factor MAX_CHANGE_FACTOR]\n                                      [--max-web-lookups MAX_WEB_LOOKUPS]\n\noptions:\n  -h, --help            show this help message and exit\n  --discover {on,off,}  Run (on) or pause (off) discover's schedule (every second day, 02:00\n                        Sydney)\n  --reprice {on,off,}   Run (on) or pause (off) reprice's schedule (every second day, 03:00\n                        Sydney)\n  --cycle {on,off,}     Run (on) or pause (off) the weekly rotation cycle (Fridays, 04:00 Sydney)\n  --max-models MAX_MODELS\n                        Once the registry holds this many models, discover prunes instead of\n                        adding (default 50)\n  --prune-mode {value_for_money,frontier,}\n                        What pruning keeps and the cycle adds: value_for_money (cheaper models,\n                        the default) or frontier (high-end models)\n  --prune-max-per-run PRUNE_MAX_PER_RUN\n                        Models one pruning run may remove, 1 to 100 (default 20)\n  --access-checks-per-run ACCESS_CHECKS_PER_RUN\n                        1-token Converse probes one discover may make to see which models the\n                        account can call (default 10)\n  --rotation-max ROTATION_MAX\n                        The cycle adds models to a topic's rotation until it holds this many\n                        (default 10)\n  --discover-max-added DISCOVER_MAX_ADDED\n                        Models one discover may add, 1 to 5 (default 5)\n  --reprice-max-queued REPRICE_MAX_QUEUED\n                        Models one reprice may queue for a price check, 1 to 50 (default 50)\n  --review-after-hours REVIEW_AFTER_HOURS\n                        Hours after a run each review runs, comma-separated (default 1,2; 1 to 4\n                        reviews)\n  --review-tolerance-pct REVIEW_TOLERANCE_PCT\n                        How far, in percent, a review's fresh price may be from the applied one\n                        (default 5)\n  --max-change-factor MAX_CHANGE_FACTOR\n                        A price moving more than this many times either way fails review (default\n                        10)\n  --max-web-lookups MAX_WEB_LOOKUPS\n                        Paid web searches one run may make (default 10)\n"
     },
     "model-config": {
       "help": "Manage the global default/fallback model",

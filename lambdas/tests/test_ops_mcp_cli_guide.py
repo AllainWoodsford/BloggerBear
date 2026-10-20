@@ -472,7 +472,8 @@ DESTRUCTIVE = [
 
 def test_the_destructive_commands_are_the_ones_the_reference_marks():
     assert DESTRUCTIVE == [
-        "topics delete", "articles unpublish", "moderation reject", "refinements reject", "equipment delete",
+        "topics delete", "articles unpublish", "moderation reject", "backup restore", "refinements reject",
+        "equipment delete",
     ]  # fmt: skip
 
 
@@ -483,6 +484,7 @@ def test_a_destructive_command_is_a_template_whatever_values_are_given(path, par
         "article_id": "f5e88f3a",
         "queue_id": "q-123",
         "version": "2026-10-01T00:00:00",
+        "key": "backup/bloggerbear-dev/snapshots/20261019T000000Z-manual.jsonl.gz",
     }
     names = [a["dest"] for a in cli_guide.reference()["commands"][path]["arguments"] if not a["flags"]]
 
@@ -578,6 +580,7 @@ FILLER = {
     "findings_window_hours": 192,
     "limit": 10,
     "days": 2,
+    "reprice": "off",
 }
 
 
@@ -599,6 +602,7 @@ def test_the_guides_are_the_ones_the_owner_asked_for():
         "topic-setup",
         "review",
         "musings",
+        "model-prices",
     ]
     listing = cli_guide.cli_guides()
     assert [guide["id"] for guide in listing["guides"]] == list(cli_guide.GUIDES)

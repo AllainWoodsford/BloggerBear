@@ -13,6 +13,7 @@ Settings live in six places:
 | [Environment Terraform variables](#environment-terraform-variables) | The domain, the model, a few switches | `infra/environments/<env>/terraform.tfvars`, by pull request |
 | [SSM Parameter Store](#ssm-parameter-store) | API keys for the data sources | `aws ssm put-parameter`, or the console |
 | [DynamoDB](#dynamodb-settings-changed-with-no-deploy) | Models, pipeline behaviour, topics | `python scripts/admin_cli.py`, or the console |
+| [The model catalog's environment variables](#the-model-catalogs-environment-variables) | Which Lambda `models reprice` and `models discover` start (not on/off switches; nothing to set) | Terraform, with a default in the code |
 | [Your own machine](#your-own-machine) | Where the admin CLI points | Environment variables |
 
 Two more are set in a console and nowhere else: [AWS account settings](#aws-account-settings) and
@@ -40,6 +41,7 @@ be on the `production` environment or on the repository.
 | `AWS_REGION` | variable | repo | The region everything is deployed to. Optional: unset, it is `ap-southeast-2`. Read [Deploying to another region](deployment-runsheet.md#deploying-to-another-region) before setting it. | `eu-west-1` |
 | `TF_STATE_REGION` | variable | repo | The region of the state bucket, only if it is not `AWS_REGION`. Optional, and rarely needed. | `eu-west-1` |
 | `VISION_ENABLED` | variable | repo | Set to `true` to deploy the vision worker (OpenCV on arm64 in `vision_region`, for the `satellite_vision` and `rail_access` topics; [the vision docs](enhancements/archive/vision.md)). Read as a switch: `true`, in any letter case (GitHub Actions compares strings ignoring case), turns the worker on; any other value, or unset, is read as off, so nothing of it is created and a deployed worker is removed on the next apply. The bootstrap must have been re-applied with `vision_region` first. Set on the repository, it also turns the worker on in production at the next release: the release job runs in the `production` environment, whose `vars.VISION_ENABLED` falls back to the repository's value. To keep production off until the dev trial is done, set `VISION_ENABLED` to `false` on the `production` environment. Set to `true` on the `production` environment alone, it turns the worker on there alone. | `true` |
+| `REVIEWER_ENABLED` | variable | repo or environment | Deploys Professor Grizzlewick, the reviewer bear ([reviewer-bear.md](enhancements/reviewer-bear.md)). **On unless set to `false`** (any letter case): the opposite reading to `VISION_ENABLED`, so a deployment that never set it gets him. `false` deploys neither his Lambda nor his schedule, and removes them on the next apply. Set on the `production` environment alone to differ there. | `false` |
 | `UNIQUE_NAME_PREFIX` | variable | repo | What every resource name starts with: `<prefix>-<env>-<resource>`. Optional: unset, it is `bloggerbear`. **Required for a fork.** Bucket names and the sign-in host name must be unique across all of AWS, and the default ones are taken. Lowercase letters, digits and hyphens, starting with a letter, at most 14, with no hyphen at the end (at most 12 if the vision worker will run in production: [the bucket that limits it](#environment-terraform-variables)). No two hyphens in a row, and no `aws`, `amazon` or `cognito` in it: the plan refuses them. Must be the same as bootstrap's `unique_name_prefix`. Set it before the first deploy and never change it. | `acme-blog` |
 | `ADMIN_ALLOWED_CIDRS_DEV` | secret | repo | Your public IP, as a Terraform list. Without it nothing can call dev's admin API. | `["203.0.113.7/32"]` |
 | `ADMIN_ALLOWED_CIDRS_PROD` | secret | `production` | The same, for production. | `["203.0.113.7/32"]` |
@@ -123,7 +125,8 @@ only production's domain.
 
 Do not set these in `terraform.tfvars`; CI supplies them from the GitHub settings above:
 `admin_allowed_cidrs`, `alert_email`, `aws_account_id`, `unique_name_prefix`, `aws_region`,
-`vision_enabled` (the `VISION_ENABLED` variable above), and the firewall switches
+`vision_enabled` (the `VISION_ENABLED` variable above), `reviewer_enabled` (the `REVIEWER_ENABLED`
+variable above), and the firewall switches
 `waf_regional_enabled`, `waf_admin_allowlist`, `waf_log_all_requests` and, in production only,
 `waf_site_enabled` (the `WAF_*` variables above).
 
@@ -147,8 +150,8 @@ checks this bucket's length yet, and the variable's description in `variables.tf
 name has room to spare at 14") predates the worker; shortening the name, and testing it, is a code
 follow-up ([vision.md §10](enhancements/archive/vision.md#10-still-open)).
 
-The times of the fixed jobs (the weekly reflection, the Stats rollover, the daily digest, the cost
-poll and the feedback musing) are not variables: they are written in each environment's `main.tf`.
+The times of the fixed jobs (the weekly reflection, the Stats rollover, the cost poll, the feedback
+musing and the model catalog's jobs) are not variables: they are written in each environment's `main.tf`.
 
 ## SSM Parameter Store
 
@@ -205,7 +208,10 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 
 | Setting | Table and item | Command | Default |
 |---|---|---|---|
-| The model registry: each model's name, provider and price | `<prefix>-<env>-models`, one item per `model_id` | `models add`, `models list` | Empty. Claude Haiku 4.5 has a built-in price; any other model is unpriced until registered. |
+| The model registry: each model's name, provider and price, whether it is switched on (`enabled`), and whether the reprice may change its price (`price_locked`). The model catalog adds every model the account can call (`enabled: false`, with `region`, `discovered_at`, `pricing_unit`) and keeps its price current (`price_source`, `price_checked_at`, `price_evidence_hash`) | `<prefix>-<env>-models`, one item per `model_id` | `models add` (also switches a discovered model on; `--lock-price`), `models list`, `models discover`, `models reprice` | Empty until the first discover (every second day). Claude Haiku 4.5 has a built-in price |
+| The model catalog: pause the discover (every second day, 02:00 Sydney), reprice (03:00) or rotation cycle (Fridays 04:00), and how a changed price is checked (`discover_enabled`, `reprice_enabled`, `review_after_hours`, `review_tolerance_pct`, `max_change_factor`, `max_web_lookups`; [model-catalog-refresh.md](enhancements/model-catalog-refresh.md)) | `<prefix>-<env>-model-config`, item `config_id` = `model-catalog` | `model-catalog get`, `model-catalog set --discover on\|off --reprice on\|off --review-after-hours 1,2 ...` | Both on; checked 1 and 2 hours later, within 5%, at most 10x from the old price, 10 web searches a run. The days are the schedules' crons, in Terraform |
+| What the model catalog last did (`last_discover_at`, `last_reprice_at` and their results) and the pricing run under review (`active_run_id`). Written by the job only | `<prefix>-<env>-model-config`, item `config_id` = `model-catalog-state` | `model-catalog get` | No item until a job runs |
+| A pricing run: each changed model's old and new price, its check times and what each check found. Pruned by TTL 14 days after it closes | `<prefix>-<env>-model-config`, items `config_id` = `pricing-run#<run id>` | `model-catalog get` (the run under review) | None |
 | The global default and fallback model | `<prefix>-<env>-model-config`, item `config_id` = `default` | `model-config set --model-id … --fallback-model-id …` | No item: the model Terraform set (`BEDROCK_MODEL_ID`), no fallback. |
 | How often research really runs, for every topic | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --research-interval-hours N` | 1 hour |
 | The stagger: the minutes between one topic's schedules and the next (`stagger_minutes`; 0 turns it off), then `topics reschedule` to apply it | same item | `pipeline-config set --stagger-minutes N`, `topics schedule`, `topics reschedule` | 5 minutes: slot 1 researches at :05 past, slot 2 at :10, ...; the daily cycles start one slot past the hour's last heartbeat (topics × 5 minutes), then one slot apart |
@@ -217,12 +223,69 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | A user locked out of the assistant after failed sign-ins | `<prefix>-<env>-sign-ins`, one item per sign-in event | `sign-ins list`, `sign-ins unlock <username>` | Locked after 5 failures in 15 minutes; lifts by itself |
 | Reader feedback limits and lockdown | the feedback configuration | `feedback-config set …`; for one article, `articles feedback-lock\|feedback-unlock <article_id>` | See `feedback-config --help` |
 | A topic: its adapter, schedule, time zone, editorial goals, model, rotation, whether it is financial | `<prefix>-<env>-topics`, one item per topic | `topics create`, `topics update` | Daily at 9 AM `Australia/Sydney`; hourly research heartbeat |
+| Whether the reviewer bear may approve this topic's held articles himself (`reviewer_may_approve`: `true`, `false`, or unset for his `may_approve` setting). A topic with `force_manual_review` always waits for a person | same item | `topics update --reviewer-may-approve on\|off` (`""` clears it) | Unset: the project's default, on |
+| The reviewer bear's settings: his pause flag (`enabled`), whether he may approve (`may_approve`, a topic's own `reviewer_may_approve` wins), each of his five tasks (`fix_content`, `review_held`, `review_published`, `watch_flags`, `defang_held`) and his limits (`stale_after_hours`, `published_per_run`, `published_lookback`, `max_rewrites`, `content_days`, `tasks_per_tick`, `tick_minutes`, `defang_after_days`) and the bears' back-and-forth (`chat_chance_pct`, `reply_chance_pct`). Read at the start of each run | `<prefix>-<env>-model-config`, item `config_id` = `reviewer` | `reviewer get`, `reviewer set --enabled on\|off --may-approve on\|off --defang-after-days N ...` (`""` clears one) | Every switch on; 48 hours, 5 articles a run (from the newest 25), 3 rewrites, 7 days of content findings, 2 tasks a tick 5 minutes apart, 10 days before task 5 |
+| The reviewer bear's run under way: its queue of tasks, its tick, what each task came to (`run_id`, `queue`, `counts`, `woken`, `next_tick_at`). Written by his Lambda only | `<prefix>-<env>-model-config`, item `config_id` = `reviewer-state` | none (read it in the console) | No item until his first run |
+| On an article: when the reviewer bear last reviewed it and found it fine (`reviewer_reviewed_at`), that he took it down after readers downvoted it (`reviewer_held_at`: it is a person's to decide from
+then on, for good), what he cut when he published it after `defang_after_days` (`reviewer_defanged`: when, how many sentences, for how many flags; the original body is kept as `articles/<id>.before-defang.md`), and his flag on a financial article he approved (`reviewer_flag` = `financial_approved`, `reviewer_flagged_at`), which the assistant reports until a person clears it | `<prefix>-<env>-articles`, the article's item | `articles get <article_id>` shows them; `articles checked <article_id>` clears the flag | None |
 | How far back a topic's daily article reads findings (`findings_window_hours`), never past its last article. Widen it for a topic that does not write every day about the same thing (a rotating topic, whose cities each have some days of the week, or a weekly topic), so a finding made on a day it does not write about its subject is still drafted. Whole hours, 1 to 336: findings expire after 14 days | same item | `topics create\|update --findings-window-hours N` (`""` clears it) | 24 hours |
 | A topic that rotates through its subjects, one a day ([the day-subject hook](enhancements/archive/dailysubject_hook.md)): `rotation` in its `adapter_config`, either the seven weekdays each naming a subject (`{"MON": "sydney", ...}`) or a list of subjects cycled one a day (or one a week, with `rotation_period` `"week"`), every subject at least once, and `rotation_timezone`, the zone whose calendar day decides (an IANA name). Read by an adapter that names a day subject: `rail_access` (its sites are the subjects, and `rotation_timezone` defaults to the topic's `daily_timezone`; [A `rail_access` topic](#a-rail_access-topic)). The daily cycle then writes about the day's subject only, from the Findings that report it (at most 48 of that subject's own), and keeps that subject's last article (`last_article_by_subject`, beside `last_article_at`: `topics get` and the assistant's `topics_overview` for one topic show it). `findings list --next-article` and the assistant's `topic_findings` answer for the day's subject. Set `findings_window_hours` to the longest gap between one subject's days, plus a day. **Adopt a rota on a new topic, not on one that has published:** each subject's first window starts from `findings_window_hours`, not from the topic's last article (a subject with no last article of its own is bounded by the window alone), so a topic changed with `topics update` would draft again, on each subject's first day, Findings its last article already used. Create the rotating topic and pause or delete the old one ([restart, not migrate](enhancements/archive/dailysubject_hook.md#44-migrating-the-four-deployed-topics)) | same item | `topics create --config-json`, or `topics update --adapter-config-json` on a topic that has not published yet (the whole config: read it, edit it, send it back) | No rota: the topic writes about everything it watches. `rotation_timezone` unset: the topic's `daily_timezone` if the adapter passes it (`rail_access` does), else UTC |
 | A topic's goal rotation (`editorial_goal_rotation`): 2 to 7 editorial goals, each `{"name", "primary_focus"}`, taken in turn so one set of findings is written up from different sides ([common/goal_rotation.py](../lambdas/common/goal_rotation.py)). Each goal's focus stands in for `editorial_goals.primary_focus`; the topic's `exclusion_criteria` apply to every goal. New findings get the goal after the one used last; with nothing new, the daily run *revisits* the findings of the last set (still unexpired, the day's subject's only on a rotating topic) under the next goal not yet used on them, and stops (`no_findings`) once every goal has had them. The state is `goal_rotation_state` on the topic item (subject key, or `*` for the whole topic, to the goal used last, the goals used on the current set and its oldest and newest `captured_at`), written by the daily cycle. An article records its goal as `editorial_goal`, and `revisit` when it was one; a revisit's research is not counted again. Ignored on a topic with a daily editorial goal (the crypto feed) | same item | `topics create\|update --goal-rotation-json '[...]'` (`'[]'` clears it; the state is kept) | No rotation: one goal, and nothing new writes nothing |
 
 Seeding the model tables, with a sample item, is in
 [The model registry](deployment-runsheet.md#the-model-registry-seeding-and-rotation).
+
+## The model catalog's environment variables
+
+Neither is a switch, and neither needs setting: Terraform sets the first, and the code falls back
+to the same value without it. The on/off switches are in DynamoDB, not here: `discover_enabled`
+and `reprice_enabled` on the `model-catalog` row of `<prefix>-<env>-model-config`, **on unless set
+to `false`** (an absent row or setting is on), changed with `admin_cli.py model-catalog set
+--discover off|on --reprice off|on` ([DynamoDB: settings changed with no
+deploy](#dynamodb-settings-changed-with-no-deploy)).
+
+| Variable | Set on | Meaning | Default |
+|---|---|---|---|
+| `MODEL_CATALOG_FUNCTION_NAME` | every Lambda (read by the admin API) | Which Lambda `models reprice` and `models discover` start. Terraform sets it to the model-catalog function's name. | `<prefix>-<env>-model-catalog`, from `NAME_PREFIX` and `ENVIRONMENT_NAME`: the name Terraform gives the function |
+| `MODEL_CATALOG_FUNCTION_ARN` | nothing, by default | What a pricing run's two review schedules invoke. Only to point them at another function. | The model-catalog Lambda's own ARN, which it reads from its invocation context |
+
+The schedules (`<prefix>-<env>-model-discover` and `<prefix>-<env>-model-reprice`, every second
+day at 02:00 and 03:00 Sydney, and `<prefix>-<env>-model-cycle`, Fridays 04:00) are Terraform's:
+change their days or time there (`aws_scheduler_schedule.model_catalog_*` in each environment's
+`main.tf`). Each run's review schedules (`<prefix>-<env>-price-review-<run>-<n>`) are made by the
+Lambda and delete themselves once fired ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md)).
+
+## The reviewer bear (Professor Grizzlewick)
+
+An old, bespectacled, mustachioed bear who does the reviews the admins have fallen behind on, every
+second day, and writes to the musings feed as himself ([reviewer-bear.md](enhancements/reviewer-bear.md)).
+
+**One switch needs a deploy:** `REVIEWER_ENABLED` (GitHub variable) → `reviewer_enabled`
+(Terraform), on unless `false`, deploys his Lambda (`<prefix>-<env>-reviewer`) and schedule.
+**Everything else is a setting**, in the `reviewer` row of `<prefix>-<env>-model-config`, read at the
+start of each of his runs: `python scripts/admin_cli.py reviewer get|set` ([the table
+above](#dynamodb-settings-changed-with-no-deploy)).
+
+| Setting | Default | What it does |
+|---|---|---|
+| `enabled` | on | Off: his scheduled runs are skipped (a run under way finishes) |
+| `may_approve` | on | The project's default for whether he may approve a held article himself, financial or not. A topic's `reviewer_may_approve` (`topics update <id> --reviewer-may-approve on\|off`, `""` to clear) wins |
+| `fix_content` | on | Task 1: fix the assistant's content findings from the last `content_days` (7) |
+| `review_held` | on | Task 2: review articles held `stale_after_hours` (48) or more; reject after `max_rewrites` (3) |
+| `review_published` | on | Task 3: review `published_per_run` (5) of the newest `published_lookback` (25) published articles |
+| `watch_flags` | on | Task 4: take down a financial article he approved if readers downvote it with comments |
+| `defang_held` | on | Task 5: an article held `defang_after_days` (10) or more is published with its flagged sentences cut, or rejected if it cannot stand without them |
+| `tasks_per_tick`, `tick_minutes` | 2, 5 | How fast he works through a run |
+| `chat_chance_pct`, `reply_chance_pct` | 25, 10 | The chance BloggerBear replies to his report on the Musings page, and that he answers back (0 turns it off) |
+
+A topic with `force_manual_review` (every vision topic) always waits for a person, whatever these
+say; tasks 2 and 5 never publish for it. Each financial article he approves is flagged for a person to check: the assistant reports it
+(`reviewer_financial_check`) until `admin_cli articles checked <id>` clears it, and he takes it back
+down himself if readers downvote it with comments meanwhile.
+
+His schedule (`<prefix>-<env>-reviewer`, every second day at 05:00 Sydney) is Terraform's
+(`aws_scheduler_schedule.reviewer`). A run's tick schedules (`<prefix>-<env>-reviewer-tick-<run>-<n>`,
+`tick_minutes` apart) are made by his Lambda and delete themselves once fired.
 
 ## Your own machine
 
@@ -378,7 +441,7 @@ is 192 ([DynamoDB settings](#dynamodb-settings-changed-with-no-deploy)): Boston'
 its Thursdays plus a day, so each article drafts every Finding about its city since that city's
 last. The runsheet's [rail_access topics](deployment-runsheet.md#rail_access-topics) creates it
 and says how to add a city. In dev, `rail-cities` has since moved to a city a week, written up
-from three sides ([RailVisionSeeding.md, section 7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)).
+from four sides ([RailVisionSeeding.md, section 7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)).
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -387,9 +450,9 @@ from three sides ([RailVisionSeeding.md, section 7](RailVisionSeeding.md#7-a-cit
 | `rotation_timezone` | the topic's `daily_timezone`, else UTC | The IANA zone whose calendar day decides the rota's day, so "Tuesday" is Tuesday there. Only with a `rotation`. |
 | `rotation_period` | `"day"` | With a list `rotation` only: `"day"` cycles one city a day, `"week"` gives each city in turn a whole calendar week, Monday to Sunday in `rotation_timezone` (the weeks since Monday 1970-01-05, so every reader agrees). A city then comes back only after every other city's week, longer than a Finding lives (14 days), so the research tick writes a **weekly reading**: on the first tick of a city's week that reports nothing else about it, its newest clear scene (one the agent did not doubt) is reported as that week's reading, no change claimed, with its map and planner notes, once a week (`reported_period` on the city's record). With a [goal rotation](#dynamodb-settings-changed-with-no-deploy) the following days write it up from other sides. Set `findings_window_hours` to at least 24 (the reading is written in the week's first hours). A weekday `rotation` refuses `"week"`. |
 | `backend` | `"opencv"` | Or `"cool"`, once a COOL worker exists. |
-| `params` | `{}` | Rail parameter overrides, any of the `RailParams` fields in [vision.md's table](enhancements/archive/vision.md#the-rail-tasks-request), within the worker contract's bounds (checked before any call). |
+| `params` | `{}` | Rail parameter overrides, any of the `RailParams` fields in [vision.md's table](enhancements/archive/vision.md#the-rail-tasks-request), within the worker contract's bounds (checked before any call); among them `stop_reach_m` (400: the straight-line walking reach of a mapped bus, tram or ferry stop, 5 minutes at 80 m a minute) and `feeder_reach_m` (2000: how far beyond a station's own reach its hinterland is read for feeder coverage; at least `reach_m`). The stop measures are reported, never material, and these two are left out of the baseline's comparability key, so changing them starts no new baseline. |
 | `reach_m` | 1000 | Walking reach of a station, straight-line metres, 200 to 5000 (the contract's bounds). Always sent to the worker; a `reach_m` in `params` wins over it. |
-| `osm_ttl_days` | 30 | How long a city's stored OpenStreetMap network serves before it is fetched again; more than 0 and at most 365. |
+| `osm_ttl_days` | 30 | How long a city's stored OpenStreetMap network serves before it is fetched again; more than 0 and at most 365. A network stored before the stops layer (every bus and tram stop as bare points) carries none, so the city's stop measures stay absent (`no_stops_layer`, not zero) and it gets no transit-reach map until that refresh or a `network_prefetch` ([the runsheet](deployment-runsheet.md#rail_access-topics)). |
 | `max_cloud_cover` | 40 | Scene-level cloud filter in the search, %. |
 | `lookback_days` | 20 | How far back to search for a scene. |
 | `coverage_floor` | 0.6 | 0 to 1. Below it a scene is never material and never part of a baseline, and never the first observation. |

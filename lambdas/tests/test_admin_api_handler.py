@@ -1790,7 +1790,9 @@ def test_put_model_creates_entry(aws_resources):
     }
     result = admin_api_handler.handler(_event("POST /models", body=body), None)
     assert result["statusCode"] == 200
-    assert json.loads(result["body"]) == body
+    stored = json.loads(result["body"])
+    assert {key: stored[key] for key in body} == body
+    assert stored["access"] == "unknown"  # enabling probes it (conftest.py stubs the probe)
 
     list_result = admin_api_handler.handler(_event("GET /models"), None)
     listed = json.loads(list_result["body"])["models"]

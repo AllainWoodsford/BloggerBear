@@ -329,11 +329,11 @@ def test_a_refused_recording_stops_the_replay_out_of_the_adapter(blobs):
 
 def test_with_new_line_adds_a_line_of_stations_fetched_a_day_later():
     network = {"ways": [], "stations": [], "pois": [], "fetched_at": "2026-10-16T05:00:00+00:00",
-               "counts": {"ways": 0, "stations": 0, "pois": 0, "points": 0}}  # fmt: skip
+               "counts": {"ways": 0, "stations": 0, "pois": 0, "points": 0, "stops": 0}}  # fmt: skip
     out = driver_module.with_new_line(network, 151.0, -33.9, stations=5, spacing_m=600.0)
     assert network["stations"] == [] and len(out["stations"]) == 5 and len(out["ways"]) == 1
     assert out["fetched_at"] == "2026-10-17T05:00:00+00:00"
-    assert out["counts"] == {"ways": 1, "stations": 5, "pois": 0, "points": 5}
+    assert out["counts"] == {"ways": 1, "stations": 5, "pois": 0, "points": 5, "stops": 0}
     lons = [s["lon"] for s in out["stations"]]
     assert lons == sorted(lons) and abs(lons[2] - 151.0) < 1e-9
     assert re.fullmatch(r"eval-line-\d", out["stations"][0]["id"])

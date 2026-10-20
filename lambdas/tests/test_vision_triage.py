@@ -295,7 +295,7 @@ def test_the_ships_prompt_is_unchanged_and_the_rail_prompt_says_tool_text_is_dat
 def test_the_task_profile_keeps_the_specified_field_order_with_the_later_additions_last():
     names = [f.name for f in dataclasses.fields(vision_triage.TaskProfile)]
     assert names == ["task", "system_prompt", "tools", "metric_keys", "look_again_limits", "web_query",
-                     "history_keys", "min_look_again_seconds"]  # fmt: skip
+                     "history_keys", "min_look_again_seconds", "complete_params"]  # fmt: skip
     # Built as the specification writes it, positionally: site_history then tells the metric keys.
     profile = vision_triage.TaskProfile("ships", "prompt", [], ("count",), contract.PARAM_LIMITS, None)
     assert profile.history_keys == () and profile.min_look_again_seconds == 10.0
@@ -928,3 +928,18 @@ def test_summarise_step_is_pure_and_reads_only_the_body():
     assert set(vision_triage.STEP_MEASURES) == set(vision_triage.PROFILES)
     every = {k for keys in vision_triage.STEP_MEASURES.values() for k in keys}
     assert set(vision_triage.STEP_MEASURE_KEYS) == every
+
+
+def test_rail_look_again_at_a_reach_past_the_default_feeder_reach_is_completed_as_a_tick_is():
+    """The tool's schema allows reach_m up to 5000 m, and the contract refuses a feeder reach under
+    the station reach, each read against the other's default: the rail profile completes the
+    settings with contract.with_feeder_reach, as the rail adapter's worker_params does for a tick,
+    so a re-measure at a wider reach is taken, not refused; the agent sees the settings as sent."""
+    worker = RailWorker()
+    script = Script(tool("look_again", {"reach_m": 3000}), text('{"verdict": "artefact", "reason": "x"}'))
+    run_rail(script, worker=worker)
+    assert worker.calls[0]["params"] == {"reach_m": 3000, "feeder_reach_m": 3000.0}
+    answer = script.requests[1]["messages"][-1]["content"][0]["toolResult"]["content"][0]["json"]
+    assert answer["settings"] == {"reach_m": 3000, "feeder_reach_m": 3000.0}
+    assert vision_triage.PROFILES["rail_access"].complete_params is contract.with_feeder_reach
+    assert vision_triage.PROFILES["ships"].complete_params is dict

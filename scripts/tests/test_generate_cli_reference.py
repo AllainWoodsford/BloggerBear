@@ -129,6 +129,7 @@ def test_which_commands_are_destructive_is_read_from_the_parser(fresh):
 
     assert sorted(path for path, entry in commands.items() if entry.get("destructive")) == [
         "articles unpublish",
+        "backup restore",
         "equipment delete",
         "moderation reject",
         "refinements reject",

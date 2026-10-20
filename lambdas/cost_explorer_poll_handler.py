@@ -5,7 +5,7 @@ from one Cost Explorer call.
 
 Manually invocable (`event` is ignored) but designed to run on a static EventBridge Scheduler
 daily schedule wired up directly to this function -- same "one global job, not per-topic" pattern
-as trending_digest_handler.py. Polls Cost Explorer once a day (see common/cost_explorer.py for why
+as weekly_reflection_handler.py. Polls Cost Explorer once a day (see common/cost_explorer.py for why
 daily, and why every window ends yesterday, not today) and writes the latest readings straight
 onto this week's StatsCurrent row -- refreshed snapshots, not accumulated counters, so a repeat
 run just overwrites the previous reading rather than double-counting it (unlike every other

@@ -1390,6 +1390,55 @@ def list_feedback_since(since_iso: str) -> list[dict]:
     return _paginated_scan(table, filter_expression)
 
 
+
+# --- Professor Grizzlewick, the reviewer bear (common/reviewer.py) --------------------------------
+
+
+def list_feedback_for_article(article_id: str) -> list[dict]:
+    """Every Feedback item on one article (the table's hash key is article_id)."""
+    table = get_table(os.environ["FEEDBACK_TABLE"])
+    kwargs = {"KeyConditionExpression": Key("article_id").eq(article_id)}
+    items = []
+    while True:
+        response = table.query(**kwargs)
+        items.extend(response.get("Items", []))
+        if "LastEvaluatedKey" not in response:
+            return items
+        kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+
+def set_article_fields(article_id: str, updates: dict) -> None:
+    """Set (a value) or remove (None) fields of an existing Articles item, leaving the rest: the
+    reviewer's tag and flag. Fails rather than creating an article that no longer exists."""
+    if not updates:
+        return
+    names, values, sets, removes = {}, {}, [], []
+    for index, (name, value) in enumerate(updates.items()):
+        names[f"#f{index}"] = name
+        if value is None:
+            removes.append(f"#f{index}")
+        else:
+            sets.append(f"#f{index} = :v{index}")
+            values[f":v{index}"] = _floats_to_decimal(value)
+    clauses = []
+    if sets:
+        clauses.append("SET " + ", ".join(sets))
+    if removes:
+        clauses.append("REMOVE " + ", ".join(removes))
+    get_table(os.environ["ARTICLES_TABLE"]).update_item(
+        Key={"article_id": article_id},
+        UpdateExpression=" ".join(clauses),
+        ConditionExpression="attribute_exists(article_id)",
+        ExpressionAttributeNames=names,
+        **({"ExpressionAttributeValues": values} if values else {}),
+    )
+
+
+def list_reviewer_flagged_articles(flag_field: str) -> list[dict]:
+    """Every article carrying the reviewer's flag (a scan with a filter: there are few)."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    return _paginated_scan(table, Attr(flag_field).exists())
+
 # --- Feedback (Phase 5) ------------------------------------------------------
 #
 # Owned by the public-api worker. Table name comes from the FEEDBACK_TABLE
@@ -1547,8 +1596,12 @@ def put_failed_execution(
     error: dict | str | None,
     raw_message: str,
     created_at: str,
+    kind: str | None = None,
 ) -> dict:
     """Write a FailedExecutions item and return it.
+
+    `kind` says what failed when it is not a daily_cycle run: "model_pricing" is a price the
+    model catalog's review put back (common/model_catalog.py). A DLQ record has none.
 
     `topic_id` and `error` may be None/malformed if the DLQ message body
     didn't parse as expected -- `raw_message` (the untouched SQS message
@@ -1566,6 +1619,8 @@ def put_failed_execution(
         "created_at": created_at,
         "expires_at": _expires_in(CLEANUP_TTL_DAYS),
     }
+    if kind is not None:
+        item["kind"] = kind
     table.put_item(Item=item)
     return item
 
@@ -1595,10 +1650,16 @@ def put_musing(
     article_id: str | None = None,
     topic_id: str | None = None,
     gear: dict | None = None,
+    character: str | None = None,
+    reply_to: str | None = None,
+    replying_to: str | None = None,
 ) -> dict:
     """Write a Musings item and return it. `kind` is "article", "feedback", "loot" or "rejection" (a
-    draft turned away at moderation: topic only, never an article_id). A loot musing carries `gear`,
-    a public snapshot of the piece it announces."""
+    draft turned away at moderation: topic only, never an article_id), or one of Professor
+    Grizzlewick's (common/musings.py's REVIEWER_KINDS). A loot musing carries `gear`, a public
+    snapshot of the piece it announces. `character` is stored only for a musing that is not
+    BloggerBear's ("grizzlewick"), so every existing musing keeps its shape. A reply in the bears'
+    back-and-forth carries `reply_to` (the musing it answers) and `replying_to` (whose it was)."""
     table = get_table(os.environ["MUSINGS_TABLE"])
     item = {
         "musing_id": musing_id,
@@ -1611,6 +1672,11 @@ def put_musing(
     }
     if gear is not None:
         item["gear"] = gear
+    if character is not None:
+        item["character"] = character
+    if reply_to is not None:
+        item["reply_to"] = reply_to
+        item["replying_to"] = replying_to
     table.put_item(Item=item)
     return item
 
@@ -1861,6 +1927,206 @@ def put_model_rotation_candidates(candidates: list[str]) -> None:
     """Set (or, with [], clear) the pool of model ids rotation may pick from."""
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])
     table.put_item(Item={"config_id": _MODEL_ROTATION_CONFIG_ID, "candidates": candidates})
+
+
+# --- Model catalog (common/model_catalog.py, docs/enhancements/model-catalog-refresh.md) ----------
+#
+# More rows in the same config table: `model-catalog` (the settings, edited by hand or from the
+# admin API/CLI), `model-catalog-state` (written only by the job, kept apart so saving the settings
+# never wipes it) and one `pricing-run#<id>` per run that changed a price, holding the old prices
+# until its reviews are done; the table's TTL prunes it after. The Models rows the catalog writes
+# go through set_model_fields, with a condition, so a price someone set by hand in the meantime
+# is never overwritten or "reverted".
+
+
+def _plain_numbers(value):
+    """DynamoDB's Decimals as plain numbers, all the way down: int when whole, else float."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {key: _plain_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_numbers(item) for item in value]
+    return value
+
+
+def _set_remove(updates: dict) -> tuple[str, dict]:
+    """An UpdateExpression for `updates` (a value sets it, None removes it) and its values."""
+    sets, removes, values = [], [], {}
+    for index, (name, value) in enumerate(updates.items()):
+        if value is None:
+            removes.append(name)
+        else:
+            sets.append(f"{name} = :v{index}")
+            values[f":v{index}"] = _floats_to_decimal(value)
+    expression = ""
+    if sets:
+        expression += "SET " + ", ".join(sets)
+    if removes:
+        expression += (" " if expression else "") + "REMOVE " + ", ".join(removes)
+    return expression, values
+
+
+def get_config_row(config_id: str) -> dict | None:
+    """One row of the config table by id, numbers as plain numbers, or None."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = table.get_item(Key={"config_id": config_id}, ConsistentRead=True).get("Item")
+    return _plain_numbers(item) if item is not None else None
+
+
+def update_config_row(config_id: str, updates: dict) -> dict:
+    """Set (a value) or remove (None) the given attributes of one config row and return the row.
+    Attributes not in `updates` are left as they are."""
+    expression, values = _set_remove(updates)
+    if expression:
+        kwargs = {"ExpressionAttributeValues": values} if values else {}
+        table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+        table.update_item(Key={"config_id": config_id}, UpdateExpression=expression, **kwargs)
+    return get_config_row(config_id) or {"config_id": config_id}
+
+
+def put_config_row(item: dict) -> None:
+    """Write (create or overwrite) one config row."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    table.put_item(Item=_floats_to_decimal(item))
+
+
+def claim_config_field(config_id: str, field: str, value: str) -> bool:
+    """Set `field` on a config row only if it is not set yet. False when it already is: someone
+    else holds it."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.update_item(
+            Key={"config_id": config_id},
+            UpdateExpression="SET #f = :v",
+            ConditionExpression="attribute_not_exists(#f)",
+            ExpressionAttributeNames={"#f": field},
+            ExpressionAttributeValues={":v": value},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def release_config_field(config_id: str, field: str, value: str) -> None:
+    """Remove `field` from a config row if it still holds `value` (anything else is left)."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.update_item(
+            Key={"config_id": config_id},
+            UpdateExpression="REMOVE #f",
+            ConditionExpression="#f = :v",
+            ExpressionAttributeNames={"#f": field},
+            ExpressionAttributeValues={":v": value},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        pass
+
+
+def add_model_if_missing(item: dict) -> bool:
+    """Write a Models row only if none has its model_id. True if it was added."""
+    table = get_table(os.environ["MODELS_TABLE"])
+    try:
+        table.put_item(
+            Item=_floats_to_decimal(item), ConditionExpression="attribute_not_exists(model_id)"
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def set_model_fields(model_id: str, updates: dict, *, expected: dict) -> bool:
+    """Set (a value) or remove (None) fields of an existing Models row, but only while each field
+    in `expected` still holds its value there (None: is not set). False, and nothing written, when
+    the row is gone or one of them has changed since it was read."""
+    expression, values = _set_remove(updates)
+    names = {}
+    conditions = ["attribute_exists(model_id)"]
+    for index, (name, value) in enumerate(expected.items()):
+        names[f"#e{index}"] = name
+        if value is None:
+            conditions.append(f"attribute_not_exists(#e{index})")
+        else:
+            conditions.append(f"#e{index} = :e{index}")
+            values[f":e{index}"] = _floats_to_decimal(value)
+    kwargs = {"ExpressionAttributeValues": values} if values else {}
+    if names:
+        kwargs["ExpressionAttributeNames"] = names
+    table = get_table(os.environ["MODELS_TABLE"])
+    try:
+        table.update_item(
+            Key={"model_id": model_id},
+            UpdateExpression=expression,
+            ConditionExpression=" AND ".join(conditions),
+            **kwargs,
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def delete_model(model_id: str) -> None:
+    """Delete a Models row (the model fleet's pruning, common/model_fleet.py)."""
+    get_table(os.environ["MODELS_TABLE"]).delete_item(Key={"model_id": model_id})
+
+
+def set_topic_model_fields(topic_id: str, updates: dict) -> None:
+    """Set (a value) or remove (None) fields of an existing Topic, leaving every other attribute
+    alone: the model fleet's rotation edits (`model_id_candidates`, `model_id`,
+    `fallback_model_id`). Fails rather than creating a Topic that no longer exists."""
+    if not updates:
+        return
+    names, values, sets, removes = {}, {}, [], []
+    for index, (name, value) in enumerate(updates.items()):
+        names[f"#f{index}"] = name
+        if value is None:
+            removes.append(f"#f{index}")
+        else:
+            sets.append(f"#f{index} = :v{index}")
+            values[f":v{index}"] = _floats_to_decimal(value)
+    clauses = []
+    if sets:
+        clauses.append("SET " + ", ".join(sets))
+    if removes:
+        clauses.append("REMOVE " + ", ".join(removes))
+    expression = " ".join(clauses)
+    kwargs = {"ExpressionAttributeValues": values} if values else {}
+    get_table(os.environ["TOPICS_TABLE"]).update_item(
+        Key={"topic_id": topic_id},
+        UpdateExpression=expression,
+        ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeNames=names,
+        **kwargs,
+    )
+
+
+# One more config row: the prices of the models the fleet pruned, so an article that used one is
+# still priced on the Stats page (list_priced_models), and discovery never adds it back.
+_MODEL_ARCHIVE_ID = "model-archive"
+
+
+def get_model_archive() -> dict[str, dict]:
+    """{model_id: {display_name, provider, input/output price, pruned_at}} for every pruned model."""
+    return (get_config_row(_MODEL_ARCHIVE_ID) or {}).get("models") or {}
+
+
+def archive_models(entries: dict[str, dict]) -> None:
+    """Add (or replace) entries in the pruned-model archive."""
+    if entries:
+        put_config_row({"config_id": _MODEL_ARCHIVE_ID, "models": {**get_model_archive(), **entries}})
+
+
+def list_priced_models() -> list[dict]:
+    """list_models(), plus the archived price of every pruned model the registry no longer holds
+    (as a row with `archived: true`): what the Stats page prices past articles with."""
+    models = list_models()
+    held = {model["model_id"] for model in models}
+    archived = [
+        {**entry, "model_id": model_id, "archived": True}
+        for model_id, entry in get_model_archive().items()
+        if model_id not in held
+    ]
+    return models + archived
 
 
 # --- Feedback limits (see common/feedback_limits.py) ---------------------------------------

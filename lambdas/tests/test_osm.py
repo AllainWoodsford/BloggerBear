@@ -67,6 +67,10 @@ def elements():
         way(22, center=[151.2, -33.86], amenity="ferry_terminal"),
         node(23, 151.25, -33.95, amenity="parking", park_ride="yes"),
         node(24, 151.25, -33.96, amenity="parking", park_ride="no"),
+        {"type": "node", "id": 50, "lon": 151.22, "lat": -33.92},  # a bus stop as `.bus out skel` prints it
+        {"type": "node", "id": 51, "lon": 151.23, "lat": -33.93, "tags": {}},  # the same, with an empty tags
+        node(52, 151.24, -33.94, public_transport="platform", bus="yes", tram="yes", name="Both modes"),
+        node(53, 151.2, -33.91, railway="tram_stop", name="Capitol Square"),
         node(30, 151.2, -33.88, railway="subway_entrance"),
         {"type": "relation", "id": 40, "tags": {"railway": "rail"}, "members": []},
         "not an element",
@@ -164,7 +168,7 @@ def test_an_osm_error_carries_its_code_and_detail():
 # --- the query ---------------------------------------------------------------------------------
 
 
-def test_the_query_selects_rail_stations_and_the_intermodal_classes_as_json():
+def test_the_query_selects_rail_stations_the_intermodal_classes_and_every_stop_as_json():
     query = osm.overpass_query(POLY)
 
     assert query.startswith("[out:json][timeout:25];")
@@ -173,12 +177,23 @@ def test_the_query_selects_rail_stations_and_the_intermodal_classes_as_json():
     assert 'node["railway"~"^(station|halt)$"]' in query and 'way["railway"~"^(station|halt)$"]' in query
     for selector in ('["amenity"="bus_station"]', '["amenity"="ferry_terminal"]', '["park_ride"]'):
         assert f"node{selector}" in query and f"way{selector}" in query
-    assert 'node["highway"="bus_stop"](around.stations:400);' in query
-    assert "-> .rail;" in query and "-> .stations;" in query and "-> .pois;" in query
-    assert query.rstrip().endswith(".rail out geom; .stations out center; .pois out center;")
+    # Every bus and tram stop in the polygon, by either tagging; bus stops are no longer fetched
+    # as points of interest around stations, and the stops layer has them all.
+    assert "around.stations" not in query
+    assert f'( node["highway"="bus_stop"](poly:"{CLOSED_POLY}");' in query
+    assert f'node["public_transport"="platform"]["bus"="yes"](poly:"{CLOSED_POLY}"); ) -> .bus;' in query
+    assert f'( node["railway"="tram_stop"](poly:"{CLOSED_POLY}");' in query
+    assert f'node["public_transport"="platform"]["tram"="yes"](poly:"{CLOSED_POLY}"); ) -> .tram;' in query
+    for name in (".rail", ".stations", ".pois", ".bus", ".tram"):
+        assert f"-> {name};" in query
+    # Bus stops come as ids and coordinates only (`skel`): a big city has 20-30 k of them.
+    assert query.rstrip().endswith(
+        ".rail out geom; .stations out center; .pois out center; .bus out skel qt; .tram out qt;"
+    )
 
 
-# The query as it always was with the default 25 s, byte for byte.
+# The query with the default 25 s, byte for byte (the copy in docs/architecture/blogger-vision.md
+# is compared against this one).
 DEFAULT_QUERY = (
     "[out:json][timeout:25];\n"
     '( way["railway"~"^(rail|light_rail|subway)$"]["service"!~"^(yard|siding|spur|crossover)$"]\n'
@@ -187,13 +202,16 @@ DEFAULT_QUERY = (
     '  way["railway"~"^(station|halt)$"](poly:"{p}"); ) -> .stations;\n'
     '( node["amenity"="bus_station"](poly:"{p}"); way["amenity"="bus_station"](poly:"{p}");\n'
     '  node["amenity"="ferry_terminal"](poly:"{p}"); way["amenity"="ferry_terminal"](poly:"{p}");\n'
-    '  node["park_ride"](poly:"{p}"); way["park_ride"](poly:"{p}");\n'
-    '  node["highway"="bus_stop"](around.stations:400); ) -> .pois;\n'
-    ".rail out geom; .stations out center; .pois out center;\n"
+    '  node["park_ride"](poly:"{p}"); way["park_ride"](poly:"{p}"); ) -> .pois;\n'
+    '( node["highway"="bus_stop"](poly:"{p}");\n'
+    '  node["public_transport"="platform"]["bus"="yes"](poly:"{p}"); ) -> .bus;\n'
+    '( node["railway"="tram_stop"](poly:"{p}");\n'
+    '  node["public_transport"="platform"]["tram"="yes"](poly:"{p}"); ) -> .tram;\n'
+    ".rail out geom; .stations out center; .pois out center; .bus out skel qt; .tram out qt;\n"
 ).replace("{p}", CLOSED_POLY)
 
 
-def test_the_default_query_is_unchanged_and_a_hops_read_timeout_is_its_timeout_rounded_down():
+def test_the_default_query_is_the_documented_one_and_a_hops_read_timeout_is_its_timeout_rounded_down():
     """Overpass' `[timeout:]` is a server-side limit on the query's runtime: each hop declares the
     read timeout it gets, in whole seconds rounded down, so the server never aborts a query the
     client would still wait for, nor keeps running one the client has given up on."""
@@ -215,8 +233,8 @@ def test_the_default_query_is_unchanged_and_a_hops_read_timeout_is_its_timeout_r
 def test_the_poly_is_closed_lat_lon_pairs_and_the_same_in_every_selector():
     query = osm.overpass_query(POLY)
 
-    assert query.count(f'(poly:"{CLOSED_POLY}")') == 9  # rail, 2 station, 6 intermodal selectors
-    assert query.count("(poly:") == 9
+    assert query.count(f'(poly:"{CLOSED_POLY}")') == 13  # rail, 2 station, 6 intermodal, 4 stop selectors
+    assert query.count("(poly:") == 13
     # An already closed ring is not closed twice.
     assert osm.overpass_query([*POLY, POLY[0]]) == query
 
@@ -288,35 +306,79 @@ def test_parsing_builds_ways_with_lon_lat_points_tunnels_and_names():
     assert [w["name"] for w in ways] == ["Illawarra Line", "City Circle", None, None]
 
 
-def test_parsing_builds_stations_from_nodes_and_station_areas_and_drops_tram_stations():
-    stations = osm.parse_elements(elements())["stations"]
+def test_parsing_builds_stations_from_nodes_and_station_areas_and_a_tram_station_is_a_tram_stop():
+    parsed = osm.parse_elements(elements())
 
-    assert stations == [
+    assert parsed["stations"] == [
         {"id": "n10", "name": "Redfern", "lon": 151.198, "lat": -33.892, "kind": "station"},
         {"id": "n11", "name": "Unnamed station (n11)", "lon": 151.19, "lat": -33.88, "kind": "halt"},
         {"id": "w12", "name": "Central", "lon": 151.207, "lat": -33.884, "kind": "station"},
     ]
+    assert [151.2, -33.87] in parsed["stops"]["tram"]  # Haymarket tram, a station=tram node
+    assert [151.2, -33.87] not in parsed["stops"]["bus"]
 
 
 def test_parsing_classifies_the_intermodal_points_and_drops_what_is_not_one():
     pois = osm.parse_elements(elements())["pois"]
 
     assert pois == [
-        {"id": "n20", "lon": 151.199, "lat": -33.893, "kind": "bus_stop"},
         {"id": "n21", "lon": 151.21, "lat": -33.89, "kind": "bus_station"},
         {"id": "w22", "lon": 151.2, "lat": -33.86, "kind": "ferry_terminal"},
         {"id": "n23", "lon": 151.25, "lat": -33.95, "kind": "park_ride"},
     ]
+    assert "bus_stop" not in {p["kind"] for p in pois}  # a bus stop is a stop, never a point of interest
+
+
+def test_parsing_lists_the_stops_by_mode_as_bare_points_with_no_ids_or_names():
+    stops = osm.parse_elements(elements())["stops"]
+
+    assert list(stops) == ["bus", "tram"] == list(osm.STOP_MODES)
+    # A tagless node, or one with an empty tags dict, is a bus stop: `.bus out skel` prints ids and
+    # coordinates only, and nothing else in the query prints a node bare.
+    assert stops["bus"] == [[151.199, -33.893], [151.22, -33.92], [151.23, -33.93], [151.24, -33.94]]
+    # A tram station, a platform for both modes (counted for both), a tram stop.
+    assert stops["tram"] == [[151.2, -33.87], [151.24, -33.94], [151.2, -33.91]]
+    assert all(isinstance(point, list) and len(point) == 2 for mode in stops.values() for point in mode)
+
+
+def test_a_bus_station_that_is_a_bus_stop_is_both_and_a_stop_printed_twice_counts_once_per_mode():
+    parsed = osm.parse_elements(
+        [
+            node(1, 151.2, -33.9, amenity="bus_station", highway="bus_stop", name="Central bus station"),
+            {"type": "node", "id": 1, "lon": 151.2, "lat": -33.9},  # the same, as `.bus out skel` prints it
+            node(2, 151.21, -33.9, public_transport="platform", bus="yes", tram="yes"),
+            node(2, 151.21, -33.9, public_transport="platform", bus="yes", tram="yes"),  # `.tram` prints it
+            node(3, 151.22, -33.9, railway="tram_stop"),
+            node(3, 151.22, -33.9, railway="tram_stop"),
+            node(4, 151.23, -33.9, railway="station", station="tram", name="Light rail stop"),
+            way(5, center=[151.24, -33.9], railway="station", station="tram"),  # a tram station area
+            node(6, 151.25, -33.9, railway="halt", station="tram"),
+            node(7, 151.26, -33.9, public_transport="platform", train="yes"),  # a rail platform: neither
+            way(8, [[151.2, -33.9], [151.21, -33.9]]),  # a way without tags is nothing, not a stop
+            node(9, 151.27, -33.9, highway="bus_stop", railway="station", name="A station with a stop"),
+        ]
+    )
+
+    assert parsed["pois"] == [{"id": "n1", "lon": 151.2, "lat": -33.9, "kind": "bus_station"}]
+    assert parsed["stops"]["bus"] == [[151.2, -33.9], [151.21, -33.9], [151.27, -33.9]]
+    assert parsed["stops"]["tram"] == [
+        [151.21, -33.9], [151.22, -33.9], [151.23, -33.9], [151.24, -33.9], [151.25, -33.9]
+    ]  # fmt: skip
+    assert [s["id"] for s in parsed["stations"]] == ["n9"]  # a tram station is never a station
+    assert parsed["ways"] == []
 
 
 def test_parsing_takes_each_element_once_and_tolerates_junk():
     network = osm.parse_elements([*elements(), *elements()])
 
     assert [w["id"] for w in network["ways"]] == ["w1", "w2", "w3", "w4"]
-    assert len(network["stations"]) == 3 and len(network["pois"]) == 4
-    assert osm.parse_elements(None) == {"ways": [], "stations": [], "pois": []}
+    assert len(network["stations"]) == 3 and len(network["pois"]) == 3
+    assert len(network["stops"]["bus"]) == 4 and len(network["stops"]["tram"]) == 3
+    empty = {"ways": [], "stations": [], "pois": [], "stops": {"bus": [], "tram": []}}
+    assert osm.parse_elements(None) == osm.parse_elements([]) == empty
     broken = {"type": "way", "id": 1, "tags": {"railway": "rail"}, "geometry": "x"}
     assert osm.parse_elements([broken])["ways"] == []
+    assert osm.parse_elements([{"type": "node", "id": 1, "lon": "x", "lat": -33.9}])["stops"]["bus"] == []
     json.dumps(network)
 
 
@@ -397,9 +459,46 @@ def test_decimation_leaves_short_ways_alone_is_idempotent_and_never_mutates_its_
 # --- capping -----------------------------------------------------------------------------------
 
 
-def network_of(*ways, stations=(), pois=()):
-    parsed = osm.parse_elements([*ways, *stations, *pois])
+def network_of(*ways, stations=(), pois=(), stops=()):
+    parsed = osm.parse_elements([*ways, *stations, *pois, *stops])
     return {"source": "overpass", **parsed}
+
+
+def counts(ways=0, stations=0, pois=0, points=0, bus=0, tram=0):
+    """A capped network's counts, for a network with a stops layer (network_of always has one)."""
+    return {"ways": ways, "stations": stations, "pois": pois, "points": points, "stops": bus + tram,
+            "stops_by_mode": {"bus": bus, "tram": tram}}  # fmt: skip
+
+
+def bus_stops(count, step_m, start_lon=151.2, lat=LAT, first_id=100):
+    """`count` bus stops `step_m` apart along a parallel, as `.bus out skel` prints them."""
+    return [
+        {"type": "node", "id": first_id + i, "lon": start_lon + i * step_m * _LON_PER_METRE, "lat": lat}
+        for i in range(count)
+    ]
+
+
+def tram_stops(count, step_m, start_lon=151.2, lat=LAT, first_id=200):
+    return [
+        node(first_id + i, start_lon + i * step_m * _LON_PER_METRE, lat, railway="tram_stop")
+        for i in range(count)
+    ]
+
+
+def points_of(stop_nodes):
+    return [[round(n["lon"], 5), round(n["lat"], 5)] for n in stop_nodes]
+
+
+def first_per_cell(points, spacing_m):
+    """What the grid keeps of `points`: the first in each cell, on the module's own grid."""
+    cos_lat = osm._middle_cos_lat(points)
+    kept, cells = [], set()
+    for point in points:
+        cell = osm._grid_cell(point, spacing_m, cos_lat)
+        if cell not in cells:
+            cells.add(cell)
+            kept.append(point)
+    return kept
 
 
 def test_a_network_under_the_caps_is_unchanged_counted_and_not_truncated():
@@ -409,7 +508,11 @@ def test_a_network_under_the_caps_is_unchanged_counted_and_not_truncated():
     capped = osm.cap_network(network)
 
     assert capped["ways"] == network["ways"] and capped["stations"] == network["stations"]
-    assert capped["counts"] == {"ways": 2, "stations": 1, "pois": 0, "points": 15}
+    assert capped["stops"] == {"bus": [], "tram": []}
+    assert capped["counts"] == {
+        "ways": 2, "stations": 1, "pois": 0, "points": 15, "stops": 0, "stops_by_mode": {"bus": 0, "tram": 0}
+    }  # fmt: skip
+    assert capped["counts"] == counts(ways=2, stations=1, points=15)
     assert capped["truncated"] is False
     assert capped["source"] == "overpass"
 
@@ -434,7 +537,7 @@ def test_when_coarser_spacing_is_not_enough_the_longest_ways_go_first():
     capped = osm.cap_network(network, max_points=90)
 
     assert [w["id"] for w in capped["ways"]] == ["w2", "w3"]
-    assert capped["counts"] == {"ways": 2, "stations": 0, "pois": 0, "points": 80}
+    assert capped["counts"] == counts(ways=2, points=80)
     assert capped["truncated"] is True
 
 
@@ -447,7 +550,7 @@ def test_the_way_station_and_poi_caps_cut_the_lists_and_say_so(monkeypatch):
         line(2, 3, 20.0),
         line(3, 3, 20.0),
         stations=[node(10, 151.2, LAT, railway="station"), node(11, 151.3, LAT, railway="halt")],
-        pois=[node(20, 151.2, LAT, highway="bus_stop"), node(21, 151.3, LAT, amenity="bus_station")],
+        pois=[node(20, 151.2, LAT, amenity="ferry_terminal"), node(21, 151.3, LAT, amenity="bus_station")],
     )
 
     capped = osm.cap_network(network)
@@ -455,7 +558,7 @@ def test_the_way_station_and_poi_caps_cut_the_lists_and_say_so(monkeypatch):
     assert [w["id"] for w in capped["ways"]] == ["w1", "w2"]
     assert [s["id"] for s in capped["stations"]] == ["n10"]
     assert [p["id"] for p in capped["pois"]] == ["n20"]
-    assert capped["counts"] == {"ways": 2, "stations": 1, "pois": 1, "points": 6}
+    assert capped["counts"] == counts(ways=2, stations=1, pois=1, points=6)
     assert capped["truncated"] is True
 
 
@@ -463,6 +566,108 @@ def test_capping_again_keeps_an_earlier_truncation_on_record():
     network = {**network_of(line(1, 3, 20.0)), "truncated": True}
 
     assert osm.cap_network(network)["truncated"] is True
+
+
+# --- capping the stops -------------------------------------------------------------------------
+
+
+def test_stops_are_one_per_mode_per_grid_cell_which_is_the_analysis_grid_not_a_truncation():
+    # Ten bus stops 2 m apart span 18 m: one or two 20 m cells. Five stops 40 m apart are each in
+    # their own cell. A bus stop and a tram stop in one cell are both kept: one per mode.
+    cluster, spread = bus_stops(10, 2.0), bus_stops(5, 40.0, start_lon=151.21, first_id=120)
+    tram = tram_stops(1, 0.0, start_lon=151.21)
+    network = network_of(stops=[*cluster, *spread, *tram])
+    given = points_of([*cluster, *spread])
+
+    capped = osm.cap_network(network)
+
+    kept = capped["stops"]["bus"]
+    assert kept == first_per_cell(given, osm.MIN_SPACING_M)
+    assert kept[:1] == given[:1] and 1 <= len(kept) - 5 <= 2  # the cluster's first, and one or two in all
+    assert kept[-5:] == given[-5:]  # the spread ones all stay, in their order
+    assert capped["stops"]["tram"] == points_of(tram)
+    assert capped["counts"]["stops"] == len(kept) + 1
+    assert capped["counts"]["stops_by_mode"] == {"bus": len(kept), "tram": 1}
+    assert capped["truncated"] is False  # the grid is the worker's own resolution
+    again = osm.cap_network(capped)  # and so capping is idempotent
+    assert again["stops"] == capped["stops"] and again["truncated"] is False
+    assert network["stops"]["bus"] == given  # never mutated
+
+
+def test_a_tram_stop_in_a_stations_cell_is_dropped_but_a_bus_stop_there_stays():
+    # A light-rail platform mapped as a station and a tram stop is one thing: the station.
+    station = node(10, 151.2, LAT, railway="station", name="Central")
+    at_station = node(200, 151.2, LAT, railway="tram_stop")
+    nearby = tram_stops(1, 0.0, start_lon=151.2 + 40.0 * _LON_PER_METRE, first_id=201)
+    bus_at_station = {"type": "node", "id": 100, "lon": 151.2, "lat": LAT}
+    network = network_of(stations=[station], stops=[at_station, *nearby, bus_at_station])
+
+    capped = osm.cap_network(network)
+
+    assert capped["stops"] == {"bus": [[151.2, LAT]], "tram": points_of(nearby)}
+    assert capped["counts"] == counts(stations=1, bus=1, tram=1)
+    assert capped["truncated"] is False
+
+
+def test_over_the_stop_cap_the_cell_doubles_before_any_list_is_cut():
+    # Nine stops 40 m apart are nine 20 m cells and nine 40 m cells; 80 m cells hold two each.
+    stops = bus_stops(9, 40.0)
+    network = network_of(stops=stops)
+    given = points_of(stops)
+
+    capped = osm.cap_network(network, max_stops=5)
+
+    kept = capped["stops"]["bus"]
+    assert kept == first_per_cell(given, 80.0)
+    assert len(kept) == 5 and [p for p in given if p in kept] == kept
+    assert capped["counts"]["stops"] == len(kept) and capped["truncated"] is True
+    # Under the cap after the base grid, nothing doubles and nothing is cut.
+    assert osm.cap_network(network, max_stops=9)["stops"]["bus"] == given
+
+
+def test_when_four_doublings_are_not_enough_each_mode_is_cut_in_proportion_at_an_even_stride():
+    # Stops 400 m apart survive every cell up to 320 m, so only cutting can help: 12 bus and 6 tram
+    # stops to 9 is 6 and 3, every second one of each, never the front of a list (Overpass prints by
+    # quadtile, so the front is one corner of the city).
+    bus, tram = bus_stops(12, 400.0), tram_stops(6, 400.0, lat=LAT + 0.01)
+    network = network_of(stops=[*bus, *tram])
+
+    capped = osm.cap_network(network, max_stops=9)
+
+    assert capped["stops"]["bus"] == points_of(bus)[::2]
+    assert capped["stops"]["tram"] == points_of(tram)[::2]
+    assert capped["counts"] == counts(bus=6, tram=3)
+    assert capped["truncated"] is True
+    json.dumps(capped)
+
+    # The floor of each share keeps the total under the cap, whatever the split.
+    lopsided = osm.cap_network(network_of(stops=[*bus, *tram[:1]]), max_stops=9)["counts"]
+    assert lopsided["stops_by_mode"] == {"bus": 8, "tram": 0} and lopsided["stops"] == 8
+
+
+def test_the_stop_cap_is_the_contracts_and_the_grid_helpers_read_metres_on_the_ground():
+    assert osm.MAX_STOPS == 40_000 and osm.STOP_MODES == ("bus", "tram")
+    cos_lat = osm._middle_cos_lat([[151.2, LAT], [151.3, LAT]])
+    assert cos_lat == pytest.approx(math.cos(math.radians(LAT)))
+    here = [151.2, LAT]
+    row, col = osm._grid_cell(here, 20.0, cos_lat)
+    north = [151.2, LAT + 100.0 / osm._METRES_PER_DEGREE]
+    east = [151.2 + 100.0 * _LON_PER_METRE, LAT]
+    assert osm._grid_cell(north, 20.0, cos_lat) == (row + 5, col)
+    assert osm._grid_cell(east, 20.0, cos_lat) == (row, col + 5)
+    assert osm._evenly([1, 2, 3, 4, 5, 6], 3) == [1, 3, 5] and osm._evenly([1, 2], 5) == [1, 2]
+    assert osm._evenly([1, 2, 3], 0) == []
+
+
+def test_a_network_without_a_stops_layer_caps_as_before_and_counts_no_stops_as_not_measured():
+    fixture = {"ways": network_of(line(1, 3, 20.0))["ways"], "stations": [], "pois": []}
+
+    capped = osm.cap_network(fixture)
+
+    assert "stops" not in capped
+    assert capped["counts"] == {"ways": 1, "stations": 0, "pois": 0, "points": 3, "stops": 0}
+    assert capped["truncated"] is False
+    assert osm.cap_network({**fixture, "stops": None})["counts"]["stops"] == 0
 
 
 # --- fetching ----------------------------------------------------------------------------------
@@ -488,11 +693,14 @@ def test_fetch_posts_the_query_once_and_returns_the_network_shape():
     assert network["query_url"] == osm.query_url(POLY, PRIMARY)
     assert [w["id"] for w in network["ways"]] == ["w1", "w2", "w3", "w4"]
     assert [s["name"] for s in network["stations"]] == ["Redfern", "Unnamed station (n11)", "Central"]
-    assert [p["kind"] for p in network["pois"]] == ["bus_stop", "bus_station", "ferry_terminal", "park_ride"]
-    assert network["counts"] == {"ways": 4, "stations": 3, "pois": 4, "points": 9}
+    assert [p["kind"] for p in network["pois"]] == ["bus_station", "ferry_terminal", "park_ride"]
+    assert network["stops"] == osm.parse_elements(elements())["stops"]  # none share a cell
+    assert network["counts"] == counts(ways=4, stations=3, pois=3, points=9, bus=4, tram=3)
     assert network["truncated"] is False
+    assert network["bytes"] == len(reply().content)  # the body's size, read against MAX_RESPONSE_BYTES
     assert list(network) == [
-        "source", "endpoint", "fetched_at", "query_url", "ways", "stations", "pois", "counts", "truncated"
+        "source", "endpoint", "fetched_at", "query_url", "ways", "stations", "pois", "stops", "counts",
+        "truncated", "bytes",
     ]  # fmt: skip
     json.dumps(network)
 
@@ -505,8 +713,25 @@ def test_fetch_decimates_the_ways_and_caps_the_network():
 
     kept = network["ways"][0]["points"]
     assert_greedy(points, kept, 20.0)
-    assert network["counts"] == {"ways": 1, "stations": 0, "pois": 0, "points": len(kept)}
+    assert network["counts"] == counts(ways=1, points=len(kept))
     assert 9 <= len(kept) <= 11
+
+
+def test_fetch_puts_the_stops_on_the_grid_and_records_the_bodys_bytes():
+    pair = bus_stops(2, 5.0)  # the two sides of a street: one pixel to the worker
+    body = reply([*pair, *bus_stops(1, 0.0, start_lon=151.25, first_id=150)])
+    size = len(body.content)
+
+    network, _ = fetch(body)
+
+    assert network["stops"]["bus"] == first_per_cell(points_of(pair), 20.0) + [[151.25, LAT]]
+    assert network["stops"]["tram"] == []
+    assert network["counts"]["stops"] == len(network["stops"]["bus"]) in (2, 3)
+    assert network["truncated"] is False
+    assert network["bytes"] == size and isinstance(network["bytes"], int)
+    # A reply read to the mirror records the mirror's body.
+    network, _ = fetch(reply(status=503), body)
+    assert network["bytes"] == size and network["endpoint"] == MIRROR
 
 
 def test_fetch_uses_the_given_timeout_and_the_clock_when_no_time_is_given():

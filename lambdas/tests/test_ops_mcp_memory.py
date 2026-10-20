@@ -454,7 +454,8 @@ def test_every_kind_with_a_command_about_an_id_has_a_checker():
         kind
         for kind, entry in suggestions.CATALOGUE.items()
         if entry.arguments is not None
-        and kind != "awaiting_review"  # about no id: never recorded
+        # About no id: never recorded.
+        and kind not in ("awaiting_review", "model_pricing_reverted")
         # Never recorded either: the sign_ins tool is not passed through memory (a lock lifts by
         # itself in minutes; test_ops_mcp_sign_ins.py holds that the server leaves it out).
         and kind not in ("sign_in_locked", "sign_in_failures")
@@ -1089,7 +1090,7 @@ def test_watch_refuses_a_function_or_table_we_do_not_have_or_never_read(tables, 
 def test_one_follow_up_reads_at_most_a_few_logs_and_leaves_the_rest_open(tables, monkeypatch):
     """One request stops at 30 seconds: past LOG_READS_MAX log reads a row is left open, unchecked
     this time, never taken for calm and never deleted."""
-    functions = ["research-tick", "daily-cycle", "dlq-handler", "trending-digest"]
+    functions = ["research-tick", "daily-cycle", "dlq-handler", "weekly-reflection"]
     for index, function in enumerate(functions):
         found = {"spoken": "x", "findings": [_timeout_finding(5, function=function)]}
         memory.remember(ALICE, found, now=NOW + timedelta(minutes=index))

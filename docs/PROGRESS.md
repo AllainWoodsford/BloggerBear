@@ -1,7 +1,7 @@
 ---
 doc: progress-tracker
 schema_version: 1
-last_updated: 2026-10-17
+last_updated: 2026-10-19
 source_of_truth: docs/project-plan.md
 phases:
   - id: phase-0
@@ -890,6 +890,83 @@ submission-round entries after them are docs and tests, with nothing to deploy.
 - [x] The Musings page names the topic an article musing is for, in grey italics beside "read the
   article": the public API's `GET /musings` adds `topic_name` to each musing, read once per page
   from the Topics table (`None` for a topic since deleted, and then no name is shown)
+- [x] Bus, tram and ferry stops join the rail-cities investigation: the OpenStreetMap client
+  fetches every bus and tram stop in a city as a bare-point `stops` layer (thinned to the 20 m
+  grid, capped at 40,000 across modes, the Overpass body's `bytes` kept beside the counts); the
+  worker measures straight-line reach to the nearest mapped stop beside station reach (the
+  any-mode share, the area beyond both, the mapped stops' efficiency as built-up km² within reach
+  per 100 stops and their overlap with station reach, each desert's stop cover, each station's
+  feeder coverage and a multimodal isolation weight, the rail weight × (1 − feeder coverage),
+  which ranks the theoretical links); it draws a second figure per scene, the transit-reach map,
+  with minutes as reach restated at a stated 80 m a minute, and calls every simulated link
+  theoretical, with its justification and what its straight line crosses (water, unmeasured
+  ground; a link mostly over water is ranked after the dry ones and dashed in azure). Nothing new
+  is material, and a network stored before the layer measures as not measured (`no_stops_layer`)
+  until its refresh or a prefetch. The goals, the adapter's default mandate and its drafting
+  guidance take a constructive register (what the measures show and what a theoretical link would
+  change; no cost, political, agency or resource-allocation view), and a fourth rotating goal,
+  `transit`, joins the week (`lambdas/common/osm.py`, `vision_contract.py`,
+  `vision/rail_analyse.py`, `rail_annotate.py`, `vision_worker_handler.py`,
+  `adapters/rail_access.py`, `rail_notes.py`; [RailVisionSeeding.md §7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides);
+  on `claude/wonderful-brahmagupta-9vt5t3`, to merge after the hackathon results)
+- [x] The model registry keeps itself up to date ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md)):
+  a new `model-catalog` Lambda, on two weekly schedules (03:00 Sydney). On Tuesdays it adds every
+  model the account can call, from every provider (Bedrock `ListFoundationModels` and
+  `ListInferenceProfiles`), as `enabled: false`. On Wednesdays it reprices every token-priced model
+  in the registry, from the AWS Price List API first and the AgentCore web search read by a model
+  second (diff-first). A changed price applies at once and is reviewed 1 and 2 hours later, on
+  one-shot schedules the run creates. A price a review cannot confirm goes back to the old one,
+  with a `kind: "model_pricing"` FailedExecutions record that `pipeline_health` reports. One that
+  passes both reviews leaves a snapshot of the old prices at `pricing/<date>-<run>.json` in the
+  content bucket. The pause flags and review settings are the `model-catalog` row of the
+  ModelConfig table (`admin_cli.py model-catalog get|set`). `models reprice` and `models discover`
+  run a job now, with its own reviews. `models add --lock-price` keeps the reprice off a price
+- [x] The model catalog is throttled, after its first dev run added 84 models and its review's
+  burst of model calls all failed with `ServiceUnavailableException` (the reverts the assistant
+  reported): both jobs run every second day (discover 02:00, reprice 03:00 Sydney); discover adds
+  at most 5 models and none once the registry holds 50, and no longer prices; reprice queues at
+  most 50 models, oldest looked up first, and checks them 5 every 5 minutes on one-shot tick
+  schedules, reviews too; a lookup that errors defers a model instead of failing it
+  ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md#throttling-2026-10-20))
+- [x] The model fleet ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md#pruning-and-cycling-2026-10-20)):
+  once the registry holds `max_models` (50), discover prunes instead, inactive and unpriced models
+  first, then by `prune_mode` (`value_for_money` keeps the cheaper models, `frontier` the high-end
+  ones), never a default, fallback, topic or rotation model; pruned prices are archived for the
+  Stats page and never rediscovered. A topic whose rotation model is inactive routes to its
+  fallback, the default, or a random active model that takes its slot. A weekly cycle (Fridays)
+  drops inactive models from rotations and adds one new model each up to 10. Disabling a model
+  (`models disable`) updates every topic's rotation, and asks "are you sure?" for the
+  application's default or fallback. Discover probes each text model with a 1-token Converse call
+  before adding it: one the account cannot call is not added (nor tried again for 30 days), and
+  its spare probes re-check the registry; denied models are pruned first and never routed to
+- [x] Backups: `admin_cli backup snapshot` writes one file of a deployment's content and
+  configuration (articles with their final text and figures, costs and stats, gear and refinements,
+  musings, feedback, the moderation queue, topics, models and settings; never findings, candidate
+  ideas or failed runs) into the bootstrap state bucket, weekly on its own; `backup restore` loads
+  one into a deployment (another environment's or region's too), then writes the topics' schedules
+  and renders the published pages through the Admin API's own functions; `backup export` copies
+  every article to a bucket. Each runs as a job of ~20-second steps of the admin-api Lambda, with
+  progress the CLI follows: no new function, queue or table (`lambdas/common/backup.py`,
+  `scripts/README.md`, the deployment runsheet's "Keeping dev's content across a teardown")
+
+- [x] The Trending Everywhere digest is removed as a feature: its Lambda, schedule, IAM statement,
+  alarms, handler, `common/digest.py` and every special case for its `digest` topic id; the header's
+  link is now About. Existing digest articles are left in DynamoDB as ordinary articles (pages, RSS,
+  Stats, the review inbox and `admin_cli` all keep working through the generic paths)
+  ([project-plan.md](project-plan.md#removed-the-trending-everywhere-digest-2026-10-20))
+
+- [x] Professor Grizzlewick, the reviewer bear ([reviewer-bear.md](enhancements/reviewer-bear.md)):
+  a new character (his own picture, `frontend/bears/grizzlewick.svg`, and musings) and Lambda,
+  every second day, tasks a few at a time on one-shot ticks: fixes content findings, decides
+  articles held two days or more (approves, rewrites, or rejects after three rewrites), reviews the
+  newest published articles, and takes down financial articles he approved that readers downvoted
+  with comments; an article held ten days or more is published with its flagged sentences cut (by
+  deletion only) or rejected. `REVIEWER_ENABLED` deploys him; everything else is a setting with no
+  deploy (`admin_cli reviewer get|set`: pause, each task, limits, `may_approve`, and the chances of
+  a back-and-forth on the Musings page: BloggerBear replies to his report 25% of the time, proud,
+  grateful, contrite or sulky, and he answers 10% of the time), and a topic's
+  `reviewer_may_approve`; `articles get` and `articles checked`; the assistant's
+  `reviewer_financial_check`; the Terms, Privacy Policy and About page say what he does
 
 ## Backlog / not yet scheduled
 

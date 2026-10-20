@@ -41,6 +41,7 @@ another ([Deploying to another region](#deploying-to-another-region)).
   - [The evidence export, the trace and the labels (O9)](#the-evidence-export-the-trace-and-the-labels-o9)
 - [Deploying to another region](#deploying-to-another-region)
 - [Tearing down and cost control](#tearing-down-and-cost-control)
+  - [Keeping dev's content across a teardown](#keeping-devs-content-across-a-teardown)
 - [Local development](#local-development)
 - [What is still tied to the original deployment](#what-is-still-tied-to-the-original-deployment)
 
@@ -479,8 +480,9 @@ straight in the DynamoDB console instead:
 }
 ```
 
-The same table holds a second item, `config_id` = `pipeline`, for the pipeline-wide settings
-(`pipeline-config set`). Leave it alone here; the two never overwrite each other.
+The same table holds other items: `config_id` = `pipeline` for the pipeline-wide settings
+(`pipeline-config set`), and the model catalog's `model-catalog`, `model-catalog-state` and
+`pricing-run#<id>` (step 4). Leave them alone here; none overwrites another.
 
 **3. Rotate between models on a topic (optional).** Useful for comparing models on the same
 topic: each article records which model wrote it.
@@ -503,6 +505,30 @@ Before you add a model anywhere:
   shows up as a failed run (and a fallback, if you set one).
 - Any provider's model works. Every call goes through Bedrock's Converse API.
 - The registry is per environment. Do it again for production.
+
+**4. Let the model catalog keep the registry current (on by default).** Nothing to set up: once
+deployed, the `model-catalog` Lambda adds every model the account can call in this region, from
+every provider, to the registry **switched off** (Tuesdays 03:00 Sydney), and reprices every model
+(Wednesdays 03:00 Sydney). A changed price is used at once and checked 1 and 2 hours later; one a
+check cannot confirm goes back to the old price, shows in `failed-executions list` and in the
+assistant's pipeline health. A model you registered by hand above is repriced too: add
+`--lock-price` to `models add` to keep a price you chose. To fill the registry now rather than
+waiting for Tuesday, and to check it:
+
+```bash
+python scripts/admin_cli.py models discover          # starts in the background; a minute or two
+python scripts/admin_cli.py model-catalog get        # what it added and priced, any run being checked
+python scripts/admin_cli.py models list
+python scripts/admin_cli.py models add --model-id "<a discovered id>" --display-name "<name>" \
+    --provider <provider> --input-price <usd per 1k> --output-price <usd per 1k>   # switch one on
+python scripts/admin_cli.py model-catalog set --reprice off   # pause a job ('' or on resumes it)
+```
+
+The pause flags are the only settings: `discover_enabled` and `reprice_enabled` on the
+`model-catalog` item of the same table, on unless set to `false`. `MODEL_CATALOG_FUNCTION_NAME`
+is not one of them: it only tells the admin API which Lambda to start, and Terraform sets it
+([configuration.md](configuration.md#the-model-catalogs-environment-variables)). Details:
+[model-catalog-refresh.md](enhancements/model-catalog-refresh.md).
 
 ### DynamoDB tag-based access control (ABAC)
 
@@ -563,6 +589,34 @@ Then list your own personal strings (a name, a home IP, a personal address), one
 the same list in the `PII_DENYLIST` repository secret. Neither check ever prints what it found, so
 the logs stay safe to publish.
 
+### The reviewer bear (on by default)
+
+Professor Grizzlewick (`<prefix>-<env>-reviewer`, [reviewer-bear.md](enhancements/reviewer-bear.md))
+is deployed with everything else: every second day at 05:00 Sydney he reviews what the admins have
+not, and writes to the Musings page as himself.
+
+**On his first run he works through the backlog as it stands.** Every article that has waited in the
+inbox two days or more is his to decide: he may **approve** it (financial ones too, each flagged for
+you to check), **send it back for a rewrite**, or **reject** one still wrong after three rewrites. If
+you want to decide some yourself first, do so before his first run (he skips anything no longer
+waiting), or turn his approvals off (`reviewer set --may-approve off`, or per topic). Anything that
+has already waited 10 days or more goes to the de-fanged publish (task 5) instead.
+
+- **Turn him off:** set the `REVIEWER_ENABLED` variable to `false` (repository, or one environment)
+  and deploy: his Lambda and schedule are removed.
+- **Pause him, with no deploy:** `python scripts/admin_cli.py reviewer set --enabled off`.
+- **Let him review but never approve:** `reviewer set --may-approve off` for the whole project, or
+  per topic: `python scripts/admin_cli.py topics update <topic_id> --reviewer-may-approve off`.
+- **Articles waiting 10 days or more** are published with their flagged sentences cut, or rejected
+  (task 5): `reviewer set --defang-held off`, or `--defang-after-days N`, to change that. Every other
+  task and limit is a setting too (`reviewer set --help`).
+- **His financial approvals:** the assistant lists each one (`reviewer_financial_check`). Read it
+  (`articles get <article_id>`), then `articles checked <article_id>` if it is fine, or
+  `articles unpublish <article_id>` if not. Until you do, he takes it back down himself if readers
+  downvote it with comments.
+- **What he did:** his report on the Musings page; `moderation_decision` evidence lines with
+  `by: reviewer`; the `reviewer-state` row in `<prefix>-<env>-model-config`.
+
 ### Vision (optional)
 
 The vision worker, for the `satellite_vision` and `rail_access` topics
@@ -609,8 +663,7 @@ variable, not with a tfvars edit. Every setting it uses is in
    tile, and writes about one of them a day: [`rail_access` topics](#rail_access-topics), below,
    creates one topic over the four starting cities from a file. Both get `force_manual_review`
    whether you ask or not:
-   every article waits for `admin_cli approve`, and the daily trending digest, which publishes
-   with no person, leaves these topics out (#298). Trigger the first tick by hand
+   every article waits for `admin_cli approve`. Trigger the first tick by hand
    (`topics trigger <id> --pipeline research_tick`); the first scene measured at or above the
    topic's coverage floor is its first observation, reported once, so a Finding, then a held
    article, is what success looks like. The CLI waits only 30 s for the Finding, and a tick that
@@ -660,6 +713,7 @@ field() { python -c 'import json, sys; v = json.load(open("scripts/rail_topics.e
 python scripts/admin_cli.py topics create --topic-id "$(field topic_id)" --name "$(field name)" \
     --adapter rail_access --config-json "$(field adapter_config)" \
     --editorial-goals-json "$(field editorial_goals)" \
+    --goal-rotation-json "$(field editorial_goal_rotation)" \
     --daily-cadence "$(field daily_cadence)" --daily-timezone "$(field daily_timezone)" \
     --findings-window-hours "$(field findings_window_hours)"
 python scripts/admin_cli.py topics get rail-cities
@@ -667,8 +721,14 @@ python scripts/admin_cli.py topics get rail-cities
 
 The answer shows `"force_manual_review": true`, which was not sent: the admin API forces it for
 this adapter. The example's editorial goal names no city: it asks for the measured figures of "the
-day's city", the capture date and the coverage, and rules out ridership, cost, recommendations and
-causes; each day's mandate names the city (below). A rail topic created without a goal is drafted
+day's city", the capture date and the coverage, with reach to a stop as the same straight-line
+proxy as reach to a station and minutes as that distance at 80 m a minute; it calls every
+simulated link theoretical, justified by its numbers and by what its straight line crosses; and
+it rules out ridership, journey time, cost, recommendations, causes and any complaint, political
+or resource-allocation view. Its `editorial_goal_rotation` carries the four angles (access,
+network, simulations, transit) taken in turn on a city's Findings
+([RailVisionSeeding.md §3 and §7](RailVisionSeeding.md#3-the-editorial-goal)); each day's mandate
+names the city (below). A rail topic created without a goal is drafted
 under the adapter's own (`ADAPTER_DEFAULTS` in `lambdas/common/editorial_resolver.py`, #298), which
 restates the summary prompt's limits (only what was measured, with the capture dates; no
 ridership, journey time, cost, cause, forecast or recommendation). A topic's own goal wins over it.
@@ -832,10 +892,41 @@ old network is still measured against; run the prefetch again to replace it. If 
 is too big for Overpass to answer: shrink the polygon (it starts a new baseline, and a new network
 is fetched for it).
 
-**Where things land.** In the content bucket, `<prefix>-<env>-content`: the figure as the worker
-drew it, `vision/<topic>/<site>/<scene>.png` (for example
-`vision/rail-cities/sydney/S2A_56HLH_20240105_0_L2A.png`); each city's network, its only copy,
-`vision/<topic>/<site>/network.json`, written by the tick's fetches and by `network_prefetch` alike
+**After deploying the stops layer** (every bus and tram stop in the network, the stop measures and
+the transit-reach map): a network stored before it carries no `stops`, so the city's Findings keep
+reporting `no_stops_layer`, with no stop measures and no second map, until the network is
+refreshed at its TTL (30 days) or replaced. Once the deploy is green, run the prefetch once:
+
+```bash
+python scripts/admin_cli.py topics trigger rail-cities --pipeline network_prefetch
+```
+
+Each city's `network_prefetch` line carries the Overpass body's size as `bytes` beside its
+`counts` (which gain `stops` and `stops_by_mode`); read it against the client's 20 MB cap
+(`MAX_RESPONSE_BYTES` in `lambdas/common/osm.py`): a big city's bus stops add a few MB to its rail
+query (Sydney's rail reply alone was 5.5 MB), and a city near the cap is a polygon to shrink. A
+`deferred` city is seeded by its next research ticks, as above. Then push the goals, whose text
+changed with the layer (every simulated link theoretical with what it crosses, minutes as walking
+time at 80 m a minute, a constructive register, and the fourth rotating goal, `transit`): write
+them out from [RailVisionSeeding.md §3 and §7](RailVisionSeeding.md#3-the-editorial-goal) and send
+both in one update, which changes nothing else of the topic:
+
+```bash
+python scripts/admin_cli.py topics update rail-cities --goal-rotation-json "$(cat rail_goal_rotation.json)" --editorial-goals-json "$(cat goals.json)"
+```
+
+Until the rows are pushed, the adapter's own default mandate and drafting guidance already carry
+the framing. The benchmark's committed networks (`scripts/vision_benchmark_networks/*.json`)
+predate the layer too and keep working without it (their runs report `no_stops_layer`); refetch
+one with `python scripts/vision_benchmark.py fetch-network --scene <name>` on a machine that can
+reach Overpass ([scripts/README.md](../scripts/README.md)), which prints the file's counts and
+`bytes`.
+
+**Where things land.** In the content bucket, `<prefix>-<env>-content`: the figures as the worker
+drew them, the rail map `vision/<topic>/<site>/<scene>.png` (for example
+`vision/rail-cities/sydney/S2A_56HLH_20240105_0_L2A.png`) and, once the city's network carries
+its stops, the transit-reach map `vision/<topic>/<site>/<scene>-modes.png`; each city's network,
+its only copy, `vision/<topic>/<site>/network.json`, written by the tick's fetches and by `network_prefetch` alike
 and kept outside `snapshots/` (whose objects the bucket expires after 21 days); the running state,
 rewritten every tick, `snapshots/<topic>/running-state.json`; and each Finding's own snapshot,
 `snapshots/<topic>/<captured_at>.json`. The running state holds, per city, the history (the newest
@@ -848,7 +939,7 @@ the page shows it under the credits with its caption.
 
 ```bash
 aws s3 cp s3://<prefix>-dev-content/snapshots/rail-cities/running-state.json - | python -m json.tool | less
-aws s3 cp s3://<prefix>-dev-content/vision/rail-cities/sydney/network.json - | python -c 'import json, sys; n = json.load(sys.stdin); print(n["fetched_at"], n["counts"])'
+aws s3 cp s3://<prefix>-dev-content/vision/rail-cities/sydney/network.json - | python -c 'import json, sys; n = json.load(sys.stdin); print(n["fetched_at"], n["counts"], n.get("bytes"))'
 ```
 
 **Reading the agent's trail.** From the second clear scene of a city on, a numeric change goes to
@@ -1442,6 +1533,23 @@ at list price), and four switches can trim it for a deployment that only tries t
 [docs/cost-saving.md](cost-saving.md). Every switch is on by default, and the admin API's address
 allowlist stays on whatever you switch off. A fork that stores real people's data should leave
 them alone.
+
+### Keeping dev's content across a teardown
+
+Destroying dev deletes its tables and buckets, and with them every article. The bootstrap state
+bucket is not part of dev, so a snapshot kept there survives
+([`admin_cli backup`](../scripts/README.md#backups-restores-and-article-exports-backup)):
+
+1. **Before:** `python scripts/admin_cli.py backup snapshot`, and note the key it prints. If you
+   want the articles as plain files too, `backup export` (or `--bucket` one of yours).
+2. Run the `destroy-dev` workflow.
+3. **After the rebuild** (the next merge to `dev` applies it), point the CLI at the new Admin API
+   URL and run `python scripts/admin_cli.py backup restore <key>`. Topics, gear, settings, costs,
+   musings and articles come back; the topics' schedules are written and the published pages
+   rendered again.
+
+The same file restores into another region or account: copy it into that deployment's state
+bucket under `backup/`, then restore it there. Snapshots are also taken weekly on their own.
 
 ## Local development
 

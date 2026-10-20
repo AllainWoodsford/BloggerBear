@@ -22,7 +22,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import boto3
 from botocore.config import Config
@@ -30,9 +30,11 @@ from botocore.config import Config
 from common import vision_contract as contract
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-# A reply's figure is a map at most 1024 px on its longer side, plus, on the rail figure, the strip
-# of caption and legend under it (vision/rail_annotate.py, which also keeps that figure within a
-# 2 MiB budget); 3 MB is far above any such PNG and well under Lambda's 6 MB synchronous response
+# A reply's figure is a map at most 1024 px on its longer side, plus, on the rail figures, the
+# strip of caption and legend under it (vision/rail_annotate.py, which keeps the rail map within a
+# 2 MiB budget and the second figure, the transit-reach map under `figures_png_b64["modes"]`,
+# within 512 KiB); 3 MB is far above any such PNG, each figure is held to it on its own, and the
+# worker's own reply-size guard keeps the two together under Lambda's 6 MB synchronous response
 # limit.
 MAX_IMAGE_BYTES = 3 * 1024 * 1024
 
@@ -72,6 +74,11 @@ class VisionResult:
     # The worker invocation's Lambda request id (ResponseMetadata.RequestId), the key that joins
     # the measurement to the worker's log line and its REPORT line; None from a fake or a local run.
     request_id: str | None = None
+    # The reply's further figures by name (contract.FIGURE_NAMES), decoded as the map is: "modes",
+    # the rail task's transit-reach map, when the network had a stops layer and the worker's
+    # reply-size guard kept it. Empty from a ships reply, an older worker or a fake, so an adapter
+    # reads `figures.get(name)` and loses nothing else when one is missing.
+    figures: dict[str, bytes] = field(default_factory=dict)
 
     @property
     def metrics(self) -> dict:
@@ -172,10 +179,15 @@ def measure(
         raise VisionError("reply", "the reply is for a different task", request_id)
     try:
         image = _decode_image(reply.get("image_png_b64"))
+        # Each figure is held to MAX_IMAGE_BYTES and the PNG signature on its own, like the map.
+        figures = {
+            name: _decode_image(b64, f"figure {name!r}")
+            for name, b64 in (reply.get("figures_png_b64") or {}).items()
+        }
     except VisionError as exc:
         exc.request_id = request_id
         raise
-    return VisionResult(reply=reply, image_png=image, request_id=request_id)
+    return VisionResult(reply=reply, image_png=image, request_id=request_id, figures=figures)
 
 
 def _request_id(response) -> str | None:
@@ -188,17 +200,19 @@ def _request_id(response) -> str | None:
     return request_id if isinstance(request_id, str) and request_id else None
 
 
-def _decode_image(b64: str | None) -> bytes | None:
+def _decode_image(b64: str | None, what: str = "image") -> bytes | None:
+    """The PNG in `b64`, or None for None; VisionError("reply", ...) naming `what` (the map, or
+    which figure) when it is over MAX_IMAGE_BYTES, not base64 or not a PNG."""
     if b64 is None:
         return None
     if len(b64) > MAX_IMAGE_BYTES * 4 // 3 + 4:
-        raise VisionError("reply", "image too large")
+        raise VisionError("reply", f"{what} too large")
     try:
         png = base64.b64decode(b64, validate=True)
     except ValueError as exc:
-        raise VisionError("reply", "image is not base64") from exc
+        raise VisionError("reply", f"{what} is not base64") from exc
     if not png.startswith(PNG_SIGNATURE):
-        raise VisionError("reply", "image is not a PNG")
+        raise VisionError("reply", f"{what} is not a PNG")
     return png
 
 

@@ -349,3 +349,36 @@ variable "vision_region" {
     error_message = "vision_region must look like an AWS region, e.g. us-west-2."
   }
 }
+
+variable "backup_bucket_name" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    The bucket backups are kept in (lambdas/common/backup.py): the bootstrap state bucket, under
+    backup/<prefix>-<env>/. Empty means the backend block's default, bloggerbear-terraform-state;
+    CI passes the TF_STATE_BUCKET_* secret, the same name the backend is initialised with.
+  EOT
+}
+
+variable "backup_export_buckets" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Buckets besides the backup bucket that `admin_cli backup export --bucket` may copy articles
+    into, and `backup restore --bucket` may read a snapshot from. Each is granted to the Lambda role
+    (GetObject/PutObject on its objects); the bucket itself is made and kept outside Terraform.
+  EOT
+}
+
+variable "reviewer_enabled" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Whether to deploy Professor Grizzlewick, the reviewer bear (lambdas/reviewer_handler.py): every
+    second day he reviews held and newly published articles, fixes content findings, and writes to
+    the musings feed. On by default; false deploys neither his function nor his schedule. Set from
+    the REVIEWER_ENABLED GitHub variable. His behaviour (tasks, limits, pause flag, whether he may
+    approve) is the `reviewer` row of the model-config table, changed with no deploy. Design:
+    docs/enhancements/reviewer-bear.md.
+  EOT
+}

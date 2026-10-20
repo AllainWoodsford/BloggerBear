@@ -225,6 +225,9 @@ Then, in order:
    `<prefix>-production-model-config`) the same way as dev's (`<prefix>` is your
    `UNIQUE_NAME_PREFIX`, `bloggerbear` by default):
    [deployment-runsheet.md, "Optional, but recommended"](deployment-runsheet.md#optional-but-recommended).
+   The model catalog fills and reprices production's registry by itself from the first Tuesday
+   (on by default); `models discover` does it now, and `model-catalog get` shows what it did
+   ([the model registry, step 4](deployment-runsheet.md#the-model-registry-seeding-and-rotation)).
 5. **Smoke-test in a browser**: the home page, an article, the Stats page, `/rss.xml`, a thumbs-up
    on an article (this exercises the feedback token), and `https://www.<your domain>` (should land
    on the bare domain).
@@ -253,6 +256,15 @@ Then, in order:
 8. **Optional: Alexa+.** Production's own add-on, linked to production's pool only, is a one-time
    bootstrap: [alexa/README.md](../alexa/README.md). Putting Alexa's redirect URLs in
    `ops_alexa_redirect_uris` also keeps the MCP function warm (about 8,600 invocations a month).
+
+## The reviewer bear
+
+Production gets Professor Grizzlewick too, unless the `production` environment's
+`REVIEWER_ENABLED` variable is `false`. **His first run after the release decides every article
+that has waited two days or more**: clear what you want to decide yourself first, or turn approvals
+off for the release (`python scripts/admin_cli.py reviewer set --may-approve off` against production,
+which needs no release, or `topics update <id> --reviewer-may-approve off`). The switches and what to do with his financial
+approvals are in [the deployment runsheet](deployment-runsheet.md#the-reviewer-bear-on-by-default).
 
 ## Vision (optional)
 
@@ -295,9 +307,7 @@ satisfactory, in order:
 
 `force_manual_review` is forced on every vision topic: **every vision article waits for a
 person** in the review inbox, whatever the compliance review said, and that holds on every publish
-path: the daily cycle holds the article, the daily trending digest (which publishes with no
-person) leaves out every topic with `force_manual_review` (#298), and approving or force-publishing
-is a person's act. A vision topic created without `editorial_goals` is drafted under its adapter's
+path: the daily cycle holds the article, and approving or force-publishing is a person's act. A vision topic created without `editorial_goals` is drafted under its adapter's
 default goal (#298), not the global one. Take it down again by setting
 the `production` environment's `VISION_ENABLED` to `false` and releasing (removing it falls back to
 the repository's value); topics keep their state.

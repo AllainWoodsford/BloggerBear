@@ -160,6 +160,9 @@ def _apply_model_flags(body: dict, args: argparse.Namespace) -> None:
         body["model_id_candidates"] = [
             candidate.strip() for candidate in args.model_candidates.split(",") if candidate.strip()
         ]
+    if getattr(args, "reviewer_may_approve", None) is not None:  # topics update only
+        # '' clears it (sent as null): back to the reviewer's `may_approve` setting.
+        body["reviewer_may_approve"] = {"on": True, "off": False}.get(args.reviewer_may_approve)
 
 
 def _add_model_flags(parser: argparse.ArgumentParser) -> None:
@@ -572,6 +575,14 @@ def _cmd_findings_list(args: argparse.Namespace) -> None:
 # --- articles subcommands ------------------------------------------------
 
 
+def _cmd_articles_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", f"/articles/{urllib.parse.quote(args.article_id, safe='')}")
+
+
+def _cmd_articles_checked(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", f"/articles/{urllib.parse.quote(args.article_id, safe='')}/checked")
+
+
 def _cmd_articles_publish(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/articles/{args.article_id}/publish")
 
@@ -910,7 +921,182 @@ def _cmd_models_add(args: argparse.Namespace) -> None:
         "output_price_usd_per_1k_tokens": args.output_price,
         "enabled": args.enabled,
     }
-    _do_request(args, "POST", "/models", body=body)
+    if args.price_locked is not None:
+        body["price_locked"] = args.price_locked
+    _post_model(args, body, assume_yes=args.yes)
+
+
+def _post_model(args: argparse.Namespace, body: dict, *, assume_yes: bool) -> None:
+    """POST /models. Disabling the application's default or fallback model is refused (409,
+    `confirm_required`) until confirmed: this asks "are you sure?" (or takes --yes) and resends
+    with `confirm: true`."""
+    api_url = _resolve_api_url(args)
+    region = _resolve_region(args)
+    response = signed_request("POST", api_url, "/models", region, body=body)
+    if response.status_code == 409:
+        try:
+            refusal = response.json()
+        except ValueError:
+            refusal = {}
+        if refusal.get("confirm_required"):
+            roles = " and ".join(refusal.get("roles") or [])
+            question = (
+                f"{body['model_id']} is the application's {roles} model. Topics and rotations "
+                "will stop using it. Are you sure you want to disable it? [y/N] "
+            )
+            try:
+                sure = assume_yes or input(question).strip().lower() in ("y", "yes")
+            except EOFError:
+                sure = False
+            if not sure:
+                print("Not disabled.", file=sys.stderr)
+                raise SystemExit(1)
+            response = signed_request("POST", api_url, "/models", region, body={**body, "confirm": True})
+    _print_response_and_exit_on_error(response)
+
+
+def _cmd_models_disable(args: argparse.Namespace) -> None:
+    response = signed_request("GET", _resolve_api_url(args), "/models", _resolve_region(args))
+    if not 200 <= response.status_code < 300:
+        _print_response_and_exit_on_error(response)
+    listed = response.json()
+    rows = listed.get("models", listed) if isinstance(listed, dict) else listed
+    row = next((m for m in rows if m.get("model_id") == args.model_id), None)
+    if row is None:
+        raise CliError(f"'{args.model_id}' is not in the registry (see `models list`)")
+    if row.get("enabled") is False:
+        print(f"'{args.model_id}' is already disabled.", file=sys.stderr)
+        return
+    if row.get("input_price_usd_per_1k_tokens") is None:
+        raise CliError(f"'{args.model_id}' has no price; disable it with `models add ... --disabled`")
+    body = {
+        "model_id": row["model_id"],
+        "display_name": row.get("display_name") or row["model_id"],
+        "provider": row.get("provider") or "unknown",
+        "input_price_usd_per_1k_tokens": row["input_price_usd_per_1k_tokens"],
+        "output_price_usd_per_1k_tokens": row.get("output_price_usd_per_1k_tokens") or 0.0,
+        "enabled": False,
+    }
+    if row.get("price_locked") is not None:
+        body["price_locked"] = row["price_locked"]
+    _post_model(args, body, assume_yes=args.yes)
+
+
+def _cmd_models_reprice(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", "/models/reprice")
+    print(
+        "Repricing in the background, a few models every 5 minutes. A changed price applies now "
+        "and is reviewed twice later (by default 1 and 2 hours on); `model-catalog get` shows the "
+        "run and its next review.",
+        file=sys.stderr,
+    )
+
+
+def _cmd_models_discover(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", "/models/discover")
+    print(
+        "Discovering in the background. New models are added disabled and unpriced (at most 5, "
+        "none once the registry is full); the next reprice prices them. `models list` shows them.",
+        file=sys.stderr,
+    )
+
+
+# --- reviewer subcommands ----------------------------------------------------
+
+_REVIEWER_SWITCHES = (
+    "enabled",
+    "may_approve",
+    "fix_content",
+    "review_held",
+    "review_published",
+    "watch_flags",
+    "defang_held",
+)
+_REVIEWER_NUMBERS = (
+    "stale_after_hours",
+    "published_per_run",
+    "published_lookback",
+    "max_rewrites",
+    "content_days",
+    "tasks_per_tick",
+    "tick_minutes",
+    "defang_after_days",
+    "chat_chance_pct",
+    "reply_chance_pct",
+)
+
+
+def _cmd_reviewer_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/reviewer-config")
+
+
+def _cmd_reviewer_set(args: argparse.Namespace) -> None:
+    body: dict = {}
+    for name in _REVIEWER_SWITCHES:
+        value = getattr(args, name)
+        if value is not None:
+            body[name] = {"on": True, "off": False}.get(value)  # '' clears it (back to the default)
+    for name in _REVIEWER_NUMBERS:
+        raw = getattr(args, name)
+        if raw is not None:
+            body[name] = _whole_or_clear("--" + name.replace("_", "-"), raw)
+    if not body:
+        raise CliError("reviewer set needs at least one setting (see --help)")
+    _do_request(args, "PUT", "/reviewer-config", body=body)
+
+
+# --- model-catalog subcommands ----------------------------------------------
+
+def _cmd_model_catalog_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/model-catalog-config")
+
+
+def _whole_or_clear(name: str, raw: str):
+    """A whole-number setting from the command line, or None for '' (clears it)."""
+    if raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise CliError(f"{name} must be a whole number, or '' to clear it") from exc
+
+
+def _cmd_model_catalog_set(args: argparse.Namespace) -> None:
+    body: dict = {}
+    for name, value in (
+        ("discover_enabled", args.discover),
+        ("reprice_enabled", args.reprice),
+        ("cycle_enabled", args.cycle),
+    ):
+        if value is not None:
+            body[name] = {"on": True, "off": False}.get(value)  # '' clears it (back to on)
+    for name in (
+        "max_models",
+        "discover_max_added",
+        "reprice_max_queued",
+        "prune_max_per_run",
+        "rotation_max",
+        "access_checks_per_run",
+        "review_tolerance_pct",
+        "max_change_factor",
+        "max_web_lookups",
+    ):
+        raw = getattr(args, name)
+        if raw is not None:
+            body[name] = _whole_or_clear("--" + name.replace("_", "-"), raw)
+    if args.prune_mode is not None:
+        body["prune_mode"] = args.prune_mode or None
+    if args.review_after_hours is not None:
+        if args.review_after_hours == "":
+            body["review_after_hours"] = None
+        else:
+            body["review_after_hours"] = [
+                _whole_or_clear("--review-after-hours", part.strip())
+                for part in args.review_after_hours.split(",")
+            ]
+    if not body:
+        raise CliError("model-catalog set needs at least one setting (see --help)")
+    _do_request(args, "PUT", "/model-catalog-config", body=body)
 
 
 def _cmd_model_config_get(args: argparse.Namespace) -> None:
@@ -1072,6 +1258,107 @@ def _cmd_equipment_unequip(args: argparse.Namespace) -> None:
 
 
 # --- argument parsing -----------------------------------------------------
+
+
+# --- backup subcommands --------------------------------------------------
+#
+# A snapshot, restore or export runs as a job in the Admin API's Lambda (lambdas/common/backup.py),
+# not here: closing this terminal does not stop it. Without --no-wait the command follows the job,
+# printing a line each time its progress changes; `backup status JOB_ID --wait` picks it up again.
+
+# How often a followed job's status is read.
+_BACKUP_POLL_SECONDS = 5
+
+
+def _backup_progress_line(job: dict) -> str:
+    progress = job.get("progress") or {}
+    estimates = job.get("estimates") or {}
+    parts = []
+    for name, count in progress.items():
+        estimate = estimates.get(name)
+        parts.append(f"{name} {count}/~{estimate}" if estimate else f"{name} {count}")
+    stalled = "  [STALLED: run `backup resume`]" if job.get("stalled") else ""
+    return f"[{job.get('status')}] {job.get('phase')}: {', '.join(parts) or '-'}{stalled}"
+
+
+def _follow_backup_job(args: argparse.Namespace, job: dict) -> None:
+    """Print the job's progress until it finishes, then the finished job. Ctrl-C stops following,
+    never the job."""
+    job_id = job["job_id"]
+    print(f"Job {job_id} started; follow it again with `backup status {job_id} --wait`.", file=sys.stderr)
+    last = None
+    try:
+        while job.get("status") == "running":
+            line = _backup_progress_line(job)
+            if line != last:
+                print(line, file=sys.stderr)
+                last = line
+            time.sleep(_BACKUP_POLL_SECONDS)
+            job = _fetch_json(args, "GET", f"/backups/jobs/{job_id}")["job"]
+    except KeyboardInterrupt:
+        print(f"\nStopped following; the job carries on. `backup status {job_id}`", file=sys.stderr)
+        return
+    print(json.dumps(job, indent=2))
+    if job.get("status") != "succeeded":
+        sys.exit(1)
+
+
+def _start_backup(args: argparse.Namespace, path: str, body: dict | None = None) -> None:
+    job = _fetch_json(args, "POST", path, body=body)["job"]
+    if args.no_wait:
+        print(json.dumps(job, indent=2))
+        return
+    _follow_backup_job(args, job)
+
+
+def _cmd_backup_list(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/backups")
+
+
+def _cmd_backup_snapshot(args: argparse.Namespace) -> None:
+    _start_backup(args, "/backups/snapshot")
+
+
+def _cmd_backup_restore(args: argparse.Namespace) -> None:
+    if not args.yes:
+        where = f"s3://{args.bucket}/{args.key}" if args.bucket else args.key
+        print(
+            f"This writes every row and article in {where} into this deployment "
+            f"({_resolve_api_url(args)}), over any with the same keys, and rewrites its topic "
+            "schedules and published pages.",
+            file=sys.stderr,
+        )
+        if input("Type 'restore' to continue: ").strip() != "restore":
+            raise CliError("restore cancelled")
+    body: dict = {"key": args.key, "pages": not args.no_pages, "schedules": not args.no_schedules}
+    if args.bucket:
+        body["bucket"] = args.bucket
+    _start_backup(args, "/backups/restore", body)
+
+
+def _cmd_backup_export(args: argparse.Namespace) -> None:
+    body: dict = {}
+    if args.bucket:
+        body["bucket"] = args.bucket
+    if args.prefix is not None:
+        body["prefix"] = args.prefix
+    _start_backup(args, "/backups/export", body)
+
+
+def _cmd_backup_status(args: argparse.Namespace) -> None:
+    job = _fetch_json(args, "GET", f"/backups/jobs/{args.job_id}")["job"]
+    if args.wait:
+        _follow_backup_job(args, job)
+    else:
+        print(json.dumps(job, indent=2))
+
+
+def _cmd_backup_resume(args: argparse.Namespace) -> None:
+    job = _fetch_json(args, "POST", f"/backups/jobs/{args.job_id}/resume")["job"]
+    if args.no_wait:
+        print(json.dumps(job, indent=2))
+        return
+    _follow_backup_job(args, job)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1263,6 +1550,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_model_flags(update_parser)
+    update_parser.add_argument(
+        "--reviewer-may-approve",
+        dest="reviewer_may_approve",
+        choices=["on", "off", ""],
+        default=None,
+        help="May the reviewer bear approve this topic's held articles; '' = `reviewer` setting",
+    )
     update_parser.set_defaults(func=_cmd_topics_update)
 
     delete_parser = topics_sub.add_parser("delete", help="Delete a topic")
@@ -1414,7 +1708,27 @@ def build_parser() -> argparse.ArgumentParser:
     findings_list_parser.set_defaults(func=_cmd_findings_list)
 
     articles_parser = subparsers.add_parser("articles", help="Manage articles")
-    articles_sub = articles_parser.add_subparsers(dest="action", required=True)
+    articles_sub = articles_parser.add_subparsers(dest="action", required=True, metavar="<action>")
+
+    get_article_parser = articles_sub.add_parser(
+        "get",
+        help=(
+            "Show one article in any status: its title, topic, status, who published it, what it "
+            "cost, its sources and its full text. Nothing changes"
+        ),
+    )
+    get_article_parser.add_argument("article_id")
+    get_article_parser.set_defaults(func=_cmd_articles_get)
+
+    checked_parser = articles_sub.add_parser(
+        "checked",
+        help=(
+            "Mark a financial article the reviewer bear approved as checked by you: clears his "
+            "flag, so he stops watching it for downvotes and the assistant stops reporting it"
+        ),
+    )
+    checked_parser.add_argument("article_id")
+    checked_parser.set_defaults(func=_cmd_articles_checked)
 
     publish_parser = articles_sub.add_parser(
         "publish",
@@ -1797,6 +2111,101 @@ def build_parser() -> argparse.ArgumentParser:
         "stats", help="Summarize what compliance review has flagged, across all history"
     ).set_defaults(func=_cmd_moderation_stats)
 
+    backup_parser = subparsers.add_parser(
+        "backup",
+        help=(
+            "Snapshot this deployment's content and configuration to one file, restore one, "
+            "or copy every article to another bucket"
+        ),
+    )
+    backup_sub = backup_parser.add_subparsers(dest="action", required=True)
+    backup_sub.add_parser(
+        "list", help="List this deployment's snapshot files and its most recent backup jobs"
+    ).set_defaults(func=_cmd_backup_list)
+
+    def _no_wait(command: argparse.ArgumentParser) -> None:
+        command.add_argument(
+            "--no-wait",
+            action="store_true",
+            default=False,
+            help="Print the started job and return instead of following its progress",
+        )
+
+    backup_snapshot_parser = backup_sub.add_parser(
+        "snapshot",
+        help=(
+            "Write a snapshot now: articles (final text and figures), costs and stats, gear and "
+            "refinements, musings, topics, models and settings, as one file in the backup bucket"
+        ),
+    )
+    _no_wait(backup_snapshot_parser)
+    backup_snapshot_parser.set_defaults(func=_cmd_backup_snapshot)
+
+    backup_restore_parser = backup_sub.add_parser(
+        "restore",
+        help=(
+            "Load a snapshot file into this deployment (rows and article text written back under "
+            "their own keys), then rewrite topic schedules and published pages"
+        ),
+    )
+    backup_restore_parser.add_argument(
+        "key", help="The snapshot's key, as `backup list` shows it (backup/<prefix>-<env>/snapshots/...)"
+    )
+    backup_restore_parser.add_argument(
+        "--bucket",
+        default=None,
+        help="Read it from this bucket instead of the backup bucket (one of backup_export_buckets)",
+    )
+    backup_restore_parser.add_argument(
+        "--no-pages",
+        action="store_true",
+        default=False,
+        help="Do not re-render the published articles' pages",
+    )
+    backup_restore_parser.add_argument(
+        "--no-schedules",
+        action="store_true",
+        default=False,
+        help="Do not write the restored topics' schedules",
+    )
+    backup_restore_parser.add_argument(
+        "--yes", action="store_true", default=False, help="Do not ask for confirmation"
+    )
+    _no_wait(backup_restore_parser)
+    backup_restore_parser.set_defaults(func=_cmd_backup_restore)
+
+    backup_export_parser = backup_sub.add_parser(
+        "export",
+        help=(
+            "Copy every article (its row as JSON, its final text and figures) to a bucket, "
+            "with a manifest.json"
+        ),
+    )
+    backup_export_parser.add_argument(
+        "--bucket",
+        default=None,
+        help="Target bucket (one of backup_export_buckets); default: the backup bucket's exports/",
+    )
+    backup_export_parser.add_argument(
+        "--prefix", default=None, help="Key prefix in the target bucket (default: the UTC time)"
+    )
+    _no_wait(backup_export_parser)
+    backup_export_parser.set_defaults(func=_cmd_backup_export)
+
+    backup_status_parser = backup_sub.add_parser("status", help="Show a backup job's progress")
+    backup_status_parser.add_argument("job_id")
+    backup_status_parser.add_argument(
+        "--wait", action="store_true", default=False, help="Follow it until it finishes"
+    )
+    backup_status_parser.set_defaults(func=_cmd_backup_status)
+
+    backup_resume_parser = backup_sub.add_parser(
+        "resume", help="Restart a stalled backup job from where it got to"
+    )
+    backup_resume_parser.add_argument("job_id")
+    _no_wait(backup_resume_parser)
+    backup_resume_parser.set_defaults(func=_cmd_backup_resume)
+
     failed_executions_parser = subparsers.add_parser(
         "failed-executions", help="View daily_cycle executions that exhausted their retries"
     )
@@ -1950,7 +2359,161 @@ def build_parser() -> argparse.ArgumentParser:
         "--disabled", dest="enabled", action="store_false", default=True,
         help="Register the model as disabled (default: enabled)",
     )
+    models_add_parser.add_argument(
+        "--lock-price", dest="price_locked", action=argparse.BooleanOptionalAction, default=None,
+        help=(
+            "--lock-price keeps the model catalog's reprice from ever changing this price (e.g. "
+            "a geo-profile premium you set on purpose); --no-lock-price lets it again"
+        ),
+    )
+    models_add_parser.add_argument(
+        "--yes", action="store_true", default=False,
+        help="With --disabled: do not ask before disabling the application's default or fallback model",
+    )
     models_add_parser.set_defaults(func=_cmd_models_add)
+
+    models_disable_parser = models_sub.add_parser(
+        "disable",
+        help=(
+            "Disable a model: every topic's rotation, model and fallback, and the shared rotation "
+            "pool, stop using it (asks first if it is the application's default or fallback)"
+        ),
+    )
+    models_disable_parser.add_argument("--model-id", required=True, dest="model_id")
+    models_disable_parser.add_argument(
+        "--yes", action="store_true", default=False, help="do not ask, even for the default or fallback",
+    )
+    models_disable_parser.set_defaults(func=_cmd_models_disable)
+
+    models_sub.add_parser(
+        "reprice",
+        help=(
+            "Look up model prices now, as the scheduled reprice does: up to 50, longest unchecked "
+            "first, a few every 5 minutes; changed prices apply at once and are reviewed 1 and 2 "
+            "hours later, and put back if a review is not confident"
+        ),
+    ).set_defaults(func=_cmd_models_reprice)
+    models_sub.add_parser(
+        "discover",
+        help=(
+            "Add up to 5 models the account can call that the registry lacks now (disabled, "
+            "unpriced: the next reprice prices them); none once the registry holds 50"
+        ),
+    ).set_defaults(func=_cmd_models_discover)
+
+    reviewer_parser = subparsers.add_parser(
+        "reviewer",
+        help="Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag (no deploy)",
+    )
+    reviewer_sub = reviewer_parser.add_subparsers(dest="action", required=True)
+    reviewer_sub.add_parser(
+        "get", help="Show his settings, their effective values, and his last or current run"
+    ).set_defaults(func=_cmd_reviewer_get)
+    reviewer_set = reviewer_sub.add_parser(
+        "set", help="Change settings (send any of them; a setting not sent is unchanged; '' clears one)"
+    )
+    for flag, what in (
+        ("enabled", "Run (on) or pause (off) his scheduled runs"),
+        ("may-approve", "May he approve held articles himself (a topic's own setting wins)"),
+        ("fix-content", "Task 1: fix the assistant's content findings"),
+        ("review-held", "Task 2: review articles held --stale-after-hours or more"),
+        ("review-published", "Task 3: review the newest published articles"),
+        ("watch-flags", "Task 4: watch his financial approvals for downvotes"),
+        ("defang-held", "Task 5: publish long-waiting articles with flagged parts cut, or reject"),
+    ):
+        reviewer_set.add_argument(
+            f"--{flag}", dest=flag.replace("-", "_"), choices=["on", "off", ""], default=None,
+            help=f"{what} (default on)",
+        )
+    for flag, what in (
+        ("stale-after-hours", "Hours a held article waits before he reviews it, 1-720 (default 48)"),
+        ("published-per-run", "Published articles he reviews a run, 1-25 (default 5)"),
+        ("published-lookback", "How many newest published he looks through, 1-200 (default 25)"),
+        ("max-rewrites", "Rewrites before he rejects a held article, 1-10 (default 3)"),
+        ("content-days", "Days of content findings he fixes, 1-30 (default 7)"),
+        ("tasks-per-tick", "Tasks he does a tick, 1-5 (default 2)"),
+        ("tick-minutes", "Minutes between his ticks, 1-60 (default 5)"),
+        ("defang-after-days", "Days a held article waits before task 5, 3-90 (default 10)"),
+        ("chat-chance-pct", "Chance BloggerBear replies to his report, 0-100 (default 25)"),
+        ("reply-chance-pct", "Chance he answers that reply, 0-100 (default 10)"),
+    ):
+        reviewer_set.add_argument(f"--{flag}", dest=flag.replace("-", "_"), default=None, help=what)
+    reviewer_set.set_defaults(func=_cmd_reviewer_set)
+
+    model_catalog_parser = subparsers.add_parser(
+        "model-catalog",
+        help="The model discover and reprice jobs (every second day): pause flags, sizes, reviews",
+    )
+    model_catalog_sub = model_catalog_parser.add_subparsers(dest="action", required=True)
+    model_catalog_sub.add_parser(
+        "get", help="Show the settings, what each job last did, and the pricing run under review"
+    ).set_defaults(func=_cmd_model_catalog_get)
+    model_catalog_set = model_catalog_sub.add_parser(
+        "set", help="Change settings (send any of them; a setting not sent is unchanged; '' clears one)"
+    )
+    model_catalog_set.add_argument(
+        "--discover", choices=["on", "off", ""], default=None,
+        help="Run (on) or pause (off) discover's schedule (every second day, 02:00 Sydney)",
+    )
+    model_catalog_set.add_argument(
+        "--reprice", choices=["on", "off", ""], default=None,
+        help="Run (on) or pause (off) reprice's schedule (every second day, 03:00 Sydney)",
+    )
+    model_catalog_set.add_argument(
+        "--cycle", choices=["on", "off", ""], default=None,
+        help="Run (on) or pause (off) the weekly rotation cycle (Fridays, 04:00 Sydney)",
+    )
+    model_catalog_set.add_argument(
+        "--max-models", dest="max_models", default=None,
+        help="Once the registry holds this many models, discover prunes instead of adding (default 50)",
+    )
+    model_catalog_set.add_argument(
+        "--prune-mode", dest="prune_mode", choices=["value_for_money", "frontier", ""], default=None,
+        help=(
+            "What pruning keeps and the cycle adds: value_for_money (cheaper models, the default) "
+            "or frontier (high-end models)"
+        ),
+    )
+    model_catalog_set.add_argument(
+        "--prune-max-per-run", dest="prune_max_per_run", default=None,
+        help="Models one pruning run may remove, 1 to 100 (default 20)",
+    )
+    model_catalog_set.add_argument(
+        "--access-checks-per-run", dest="access_checks_per_run", default=None,
+        help=(
+            "1-token Converse probes one discover may make to see which models the account can "
+            "call (default 10)"
+        ),
+    )
+    model_catalog_set.add_argument(
+        "--rotation-max", dest="rotation_max", default=None,
+        help="The cycle adds models to a topic's rotation until it holds this many (default 10)",
+    )
+    model_catalog_set.add_argument(
+        "--discover-max-added", dest="discover_max_added", default=None,
+        help="Models one discover may add, 1 to 5 (default 5)",
+    )
+    model_catalog_set.add_argument(
+        "--reprice-max-queued", dest="reprice_max_queued", default=None,
+        help="Models one reprice may queue for a price check, 1 to 50 (default 50)",
+    )
+    model_catalog_set.add_argument(
+        "--review-after-hours", dest="review_after_hours", default=None,
+        help="Hours after a run each review runs, comma-separated (default 1,2; 1 to 4 reviews)",
+    )
+    model_catalog_set.add_argument(
+        "--review-tolerance-pct", dest="review_tolerance_pct", default=None,
+        help="How far, in percent, a review's fresh price may be from the applied one (default 5)",
+    )
+    model_catalog_set.add_argument(
+        "--max-change-factor", dest="max_change_factor", default=None,
+        help="A price moving more than this many times either way fails review (default 10)",
+    )
+    model_catalog_set.add_argument(
+        "--max-web-lookups", dest="max_web_lookups", default=None,
+        help="Paid web searches one run may make (default 10)",
+    )
+    model_catalog_set.set_defaults(func=_cmd_model_catalog_set)
 
     model_config_parser = subparsers.add_parser(
         "model-config", help="Manage the global default/fallback model"

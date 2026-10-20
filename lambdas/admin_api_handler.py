@@ -28,6 +28,7 @@ name, no operator text (rule 1).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import math
 import os
@@ -38,13 +39,23 @@ from decimal import Decimal
 
 import boto3
 
-from common import equipment, evidence, feedback_limits, gear, security_events, sign_ins
+from common import (
+    backup,
+    equipment,
+    evidence,
+    feedback_limits,
+    gear,
+    model_catalog,
+    model_fleet,
+    reviewer,
+    security_events,
+    sign_ins,
+)
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY, MANUAL_REVIEW_ADAPTERS
 from common.adapters.base import SUBJECT_KEY
 from common.assistant_access import assistant_access_error, effective_assistant_access
 from common.attribution import sources_for_article
 from common.day_subject import subject_findings
-from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     REWRITE_FAILED_STATUS,
     claim_moderation_for_rewrite,
@@ -88,12 +99,14 @@ from common.dynamo import (
     put_stats_history_row,
     put_topic,
     set_article_feedback_lock,
+    set_article_fields,
     set_musing_text,
     set_prompt_refinement_equipment,
     set_prompt_refinement_fields,
     set_topic_fields,
     update_article_lineage,
     update_article_status,
+    update_config_row,
     update_moderation_status,
     update_prompt_refinement_status,
 )
@@ -131,6 +144,10 @@ from common.musings import (
 from common.musings import is_blank as musing_is_blank
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
 from common.review_report import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE, build_review_report
+from common.reviewer import FLAG_FIELD as REVIEWER_FLAG_FIELD
+from common.reviewer import FLAGGED_AT_FIELD as REVIEWER_FLAGGED_AT_FIELD
+from common.reviewer import HELD_FIELD as REVIEWER_HELD_FIELD
+from common.reviewer import REVIEWER_MAY_APPROVE_FIELD
 from common.rewrite import (
     MAX_INSTRUCTIONS_CHARS,
     SENT_BACK_REASON,
@@ -262,10 +279,15 @@ def _topic_changed(action: str, before: dict | None, after: dict) -> None:
     )
 
 
+# Who a moderation decision was made by: "human" (the API is IAM-authenticated), or "reviewer"
+# while one of Professor Grizzlewick's calls below is running (_call sets it).
+_DECIDED_BY: contextvars.ContextVar[str] = contextvars.ContextVar("decided_by", default="human")
+
+
 def _moderation_decision(decision: str, *, topic_id, article_id, queue_id=None, from_status=None) -> None:
-    """One `moderation_decision` line after a person's write: `approved`, `rejected`,
-    `force_published`, `unpublished` or `sent_back`, with the article's status before. Always
-    `by: human` (the API is IAM-authenticated), and never who."""
+    """One `moderation_decision` line after a write: `approved`, `rejected`, `force_published`,
+    `unpublished`, `sent_back` or `held_by_reviewer`, with the article's status before. `by` is
+    `human`, or `reviewer` for Professor Grizzlewick's (_DECIDED_BY), and never who."""
     evidence.emit(
         "moderation_decision",
         topic_id=topic_id,
@@ -273,7 +295,7 @@ def _moderation_decision(decision: str, *, topic_id, article_id, queue_id=None, 
         article_id=article_id,
         decision=decision,
         from_status=from_status,
-        by="human",
+        by=_DECIDED_BY.get(),
     )
 
 
@@ -375,6 +397,9 @@ def _create_topic(event: dict) -> dict:
     force_manual_review = body.get("force_manual_review", False)
     if not isinstance(force_manual_review, bool):
         return _error(400, "'force_manual_review' must be a boolean if provided")
+    reviewer_may_approve = body.get(REVIEWER_MAY_APPROVE_FIELD)
+    if reviewer_may_approve is not None and not isinstance(reviewer_may_approve, bool):
+        return _error(400, f"'{REVIEWER_MAY_APPROVE_FIELD}' must be true, false or null if provided")
     # The same kind of guarantee for imagery: an article of a satellite_vision or rail_access topic
     # is always seen by a person before it is published (common/compliance.py's
     # requires_manual_review; the set is common/adapters/__init__.py's MANUAL_REVIEW_ADAPTERS).
@@ -460,6 +485,9 @@ def _create_topic(event: dict) -> dict:
         "is_financial": is_financial,
         # Stored only when set: every other topic keeps the shape it had.
         **({"force_manual_review": True} if force_manual_review else {}),
+        # Whether Professor Grizzlewick may approve its articles; unset takes his `may_approve`
+        # setting (common/reviewer.py).
+        **({REVIEWER_MAY_APPROVE_FIELD: reviewer_may_approve} if reviewer_may_approve is not None else {}),
         "research_cadence": research_cadence,
         "daily_cadence": daily_cadence,
         "daily_timezone": daily_timezone,
@@ -518,6 +546,7 @@ def _update_topic(event: dict) -> dict:
         GOAL_ROTATION_FIELD,
         "is_financial",
         "force_manual_review",
+        REVIEWER_MAY_APPROVE_FIELD,
         "research_cadence",
         "research_interval_hours",
         "findings_window_hours",
@@ -566,6 +595,11 @@ def _update_topic(event: dict) -> dict:
         updated["is_financial"] = True
     if "force_manual_review" in body and not isinstance(updated["force_manual_review"], bool):
         return _error(400, "'force_manual_review' must be a boolean")
+    if REVIEWER_MAY_APPROVE_FIELD in body:
+        if updated[REVIEWER_MAY_APPROVE_FIELD] is None:
+            updated.pop(REVIEWER_MAY_APPROVE_FIELD)  # back to his `may_approve` setting
+        elif not isinstance(updated[REVIEWER_MAY_APPROVE_FIELD], bool):
+            return _error(400, f"'{REVIEWER_MAY_APPROVE_FIELD}' must be true, false or null")
     if updated["adapter"] in MANUAL_REVIEW_ADAPTERS:
         updated["force_manual_review"] = True
     if "research_cadence" in body and (
@@ -1092,9 +1126,7 @@ def _list_findings_route(event: dict) -> dict:
 
 
 def _topic_display_name(topic_id: str) -> str:
-    """A topic's display name, the digest's included (it has no Topics-table row), else its id."""
-    if topic_id == DIGEST_TOPIC_ID:
-        return DIGEST_TOPIC_NAME
+    """A topic's display name, else (a topic that is gone) its id."""
     topic = get_topic(topic_id)
     return (topic or {}).get("name", topic_id)
 
@@ -1111,7 +1143,40 @@ def _baked_view_count(article: dict) -> int:
         return stored
 
 
-def _render_published_page(article: dict, *, published_at: str) -> None:
+def _render_article_page(article: dict, *, published_at: str, published_by: str | None) -> None:
+    """Regenerate an article's static page (docs/project-plan.md §11) from its stored row and body.
+    The page half of _render_published_page below, and on its own what a restore (common/backup.py)
+    does for every published article: the row already says who published it, and its musings come
+    back from the snapshot, so nothing is generated."""
+    topic_name = _topic_display_name(article["topic_id"])
+    body_markdown = read_article_body(article["body_s3_key"])
+    render_and_publish_article_page(
+        article_id=article["article_id"],
+        title=article["title"],
+        body_markdown=body_markdown,
+        topic_name=topic_name,
+        published_at=published_at,
+        source_refs=article.get("source_refs"),
+        view_count=_baked_view_count(article),
+        # lineage was fixed at draft time and never changes -- reread from
+        # the already-stored article, not recomputed here.
+        lineage=article.get("lineage"),
+        published_by=published_by,
+        # The reader-facing line about the fresh-data review, from the stored record:
+        # a person approving a held article is what "reviewed by a person" means.
+        fact_check=fact_check_label(article.get("review"), published_by),
+        equipment_used=article.get("equipment_used"),
+        # The source credit stored when the article was drafted; for an article from before
+        # that was stored, its topic's adapter's sources as declared today. See
+        # common/attribution.py.
+        attribution=sources_for_article(article, get_topic=get_topic, list_topics=list_topics),
+        # The figures stored when it was drafted (common/figures.py): copied onto the site again
+        # on every render, so an article that was taken down and approved gets them back.
+        figures=article.get("figures"),
+    )
+
+
+def _render_published_page(article: dict, *, published_at: str, published_by: str = "humans") -> None:
     """Regenerate the static article page (docs/project-plan.md §11) and
     generate an article musing for an article that just became published.
 
@@ -1124,47 +1189,15 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
     paths reaching this function needed a moderation-approve or
     force-publish override first, so their musing is always generated with
     compliant=False -- the more measured/thoughtful mood, not the
-    published-cleanly proud one.
+    published-cleanly proud one. published_by is "humans" for the same reason, or "reviewer" when
+    Professor Grizzlewick approved it (reviewer_approve below), so the page never says a person
+    checked what he did.
     """
-    # Bugfix: get_topic("digest") returns None -- the cross-topic digest
-    # (trending_digest_handler.py) isn't a real Topics-table row -- so
-    # without this special case, a digest article reaching this function
-    # (approved out of moderation, or force-published) would render with
-    # the raw topic_id "digest" as its display name instead of the
-    # friendly one, inconsistent with what a digest article gets when
-    # trending_digest_handler.py publishes it directly on the first pass.
-    topic_name = _topic_display_name(article["topic_id"])
-    body_markdown = read_article_body(article["body_s3_key"])
-    render_and_publish_article_page(
-        article_id=article["article_id"],
-        title=article["title"],
-        body_markdown=body_markdown,
-        topic_name=topic_name,
-        published_at=published_at,
-        source_refs=article.get("source_refs"),
-        view_count=_baked_view_count(article),
-        # lineage was fixed at draft time and never changes -- reread from
-        # the already-stored article, not recomputed here. published_by is
-        # hardcoded "humans": both routes reaching this function (approve,
-        # force-publish) required an operator action.
-        lineage=article.get("lineage"),
-        published_by="humans",
-        # The reader-facing line about the fresh-data review, from the stored record:
-        # a person approving a held article is what "reviewed by a person" means.
-        fact_check=fact_check_label(article.get("review"), "humans"),
-        equipment_used=article.get("equipment_used"),
-        # The source credit stored when the article was drafted; for an article from before
-        # that was stored, its topic's adapter's sources as declared today (the digest: every
-        # topic's). See common/attribution.py.
-        attribution=sources_for_article(article, get_topic=get_topic, list_topics=list_topics),
-        # The figures stored when it was drafted (common/figures.py): copied onto the site again
-        # on every render, so an article that was taken down and approved gets them back.
-        figures=article.get("figures"),
-    )
+    _render_article_page(article, published_at=published_at, published_by=published_by)
     generate_and_store_article_musing(
         article_id=article["article_id"],
         topic_id=article["topic_id"],
-        topic_name=topic_name,
+        topic_name=_topic_display_name(article["topic_id"]),
         title=article["title"],
         compliant=False,
         model_id=os.environ["BEDROCK_MODEL_ID"],
@@ -1737,7 +1770,9 @@ def _moderation_queue_stats(event: dict) -> dict:
     )
 
 
-def _resolve_moderation_item(event: dict, *, new_status: str, article_status: str) -> dict:
+def _resolve_moderation_item(
+    event: dict, *, new_status: str, article_status: str, published_by: str = "humans"
+) -> dict:
     queue_id = _path_param(event, "queue_id")
     item = get_moderation_item(queue_id)
     if item is None:
@@ -1749,14 +1784,14 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
     published_at = datetime.now(UTC).isoformat() if article_status == "published" else None
     article = get_article(article_id)
     if article_status == "published":
-        # published_by="humans": this only ever reaches "published" via an
-        # operator's moderation-approve action (docs/project-plan.md §11,
-        # PR 2 of 5) -- lineage is untouched, fixed at draft time.
+        # published_by="humans": an operator's moderation-approve action (docs/project-plan.md
+        # §11, PR 2 of 5); "reviewer" when Professor Grizzlewick approved it (common/reviewer.py).
+        # Lineage is untouched, fixed at draft time.
         update_article_status(
-            article_id, article_status, published_at=published_at, published_by="humans"
+            article_id, article_status, published_at=published_at, published_by=published_by
         )
         if article is not None:
-            _render_published_page(article, published_at=published_at)
+            _render_published_page(article, published_at=published_at, published_by=published_by)
     else:
         update_article_status(article_id, article_status, published_at=published_at)
     update_moderation_status(queue_id, new_status)
@@ -1794,6 +1829,128 @@ def _approve_moderation_item(event: dict) -> dict:
 
 def _reject_moderation_item(event: dict) -> dict:
     return _resolve_moderation_item(event, new_status="rejected", article_status="rejected")
+
+
+# --- Professor Grizzlewick, the reviewer bear (common/reviewer.py) --------------------------------
+#
+# The reviewer Lambda (reviewer_handler.py) acts through these, so each of his decisions takes
+# exactly the path an operator's would: the same page rendering, musings, Stats and queue states.
+# Each returns the route's (status code, body). His approvals are published_by "reviewer", never
+# "humans": the page and its fact-check line say an AI reviewer approved it.
+
+REVIEWER_PUBLISHED_BY = "reviewer"
+HELD_BY_REVIEWER_REASON = (
+    "held by Professor Grizzlewick: readers downvoted it with comments after he approved it"
+)
+
+
+def _call(route, path: dict, body: dict | None = None) -> tuple[int, dict]:
+    event = {"pathParameters": path, **({"body": json.dumps(body)} if body is not None else {})}
+    token = _DECIDED_BY.set("reviewer")
+    try:
+        result = route(event)
+    finally:
+        _DECIDED_BY.reset(token)
+    return result["statusCode"], json.loads(result["body"])
+
+
+def reviewer_approve(queue_id: str) -> tuple[int, dict]:
+    def approve(event):
+        return _resolve_moderation_item(
+            event, new_status="approved", article_status="published", published_by=REVIEWER_PUBLISHED_BY
+        )
+
+    return _call(approve, {"queue_id": queue_id})
+
+
+def reviewer_reject(queue_id: str) -> tuple[int, dict]:
+    return _call(_reject_moderation_item, {"queue_id": queue_id})
+
+
+def reviewer_rewrite(article_id: str, instructions: str) -> tuple[int, dict]:
+    """A rewrite steered by his notes, with the topic's own model (resolve_model): a published
+    article stays up until the rewrite is ready, a held one is rewritten where it waits."""
+    return _call(_rewrite_article, {"article_id": article_id}, {"instructions": instructions})
+
+
+def reviewer_regenerate_musings(article_id: str) -> tuple[int, dict]:
+    return _call(_regenerate_article_musings, {"article_id": article_id})
+
+
+def reviewer_replace_body(article_id: str, body: str) -> None:
+    """Put a de-fanged body in place of an article's (common/reviewer.py's task 5), keeping the
+    original beside it as `articles/<id>.before-defang.md`. Nothing else changes: approving it is
+    the next step, as for any held article."""
+    article = get_article(article_id)
+    if article is None:
+        raise ValueError(f"article '{article_id}' not found")
+    s3 = boto3.client("s3")
+    bucket = os.environ["CONTENT_BUCKET"]
+    original = read_article_body(article["body_s3_key"])
+    s3.put_object(
+        Bucket=bucket,
+        Key=f"articles/{article_id}.before-defang.md",
+        Body=original.encode("utf-8"),
+        ContentType="text/markdown",
+    )
+    s3.put_object(
+        Bucket=bucket, Key=article["body_s3_key"], Body=body.encode("utf-8"), ContentType="text/markdown"
+    )
+
+
+def reviewer_hold(article_id: str, reason: str = HELD_BY_REVIEWER_REASON) -> tuple[int, dict]:
+    """Take a published article down and put it back in the inbox, pending, with `reason`: the
+    same clean-up as unpublish (page, musings, CDN cache), but the article is
+    `pending_moderation`, not `rejected`, so `admin_cli` approve, reject and rewrite pick it up."""
+    article = get_article(article_id)
+    if article is None:
+        return 404, {"error": f"article '{article_id}' not found"}
+    if article.get("status") != "published":
+        return 409, {"error": f"article '{article_id}' is '{article.get('status')}', not published"}
+    # The inbox item first: a held article must never be off the site with no item to show it. If a
+    # later step fails, the item is voided and the article stays published as it was.
+    now = datetime.now(UTC).isoformat()
+    item = put_moderation_item(
+        queue_id=str(uuid.uuid4()),
+        article_id=article_id,
+        topic_id=article["topic_id"],
+        reasons=[reason],
+        created_at=now,
+    )
+    try:
+        # His mark on the article itself, for good: a person's rewrite later replaces the item's
+        # reasons, never this (common/reviewer.py's held_by_him).
+        set_article_fields(article_id, {REVIEWER_HELD_FIELD: now})
+        update_article_status(article_id, "pending_moderation")
+    except Exception:
+        update_moderation_status(item["queue_id"], "rejected")
+        raise
+    remove_article_page(article_id, figure_count=len(article.get("figures") or []))
+    token = _DECIDED_BY.set("reviewer")
+    try:
+        _moderation_decision(
+            "held_by_reviewer", topic_id=article.get("topic_id"), article_id=article_id,
+            queue_id=item["queue_id"], from_status="published",
+        )  # fmt: skip
+    finally:
+        _DECIDED_BY.reset(token)
+    traces = _clear_article_traces(article)
+    refresh_articles_snapshot()
+    return 200, {"held": article_id, "queue_id": item["queue_id"], **traces}
+
+
+def _mark_article_checked(event: dict) -> dict:
+    """A person has checked an article Professor Grizzlewick approved and flagged
+    (`admin_cli articles checked <id>`): clear his flag. He stops watching it for downvotes, and
+    the assistant's `reviewer_financial_check` finding is fixed, so its follow-up drops it."""
+    article_id = _path_param(event, "article_id")
+    article = get_article(article_id)
+    if article is None:
+        return _error(404, f"article '{article_id}' not found")
+    if not article.get(REVIEWER_FLAG_FIELD):
+        return _error(409, f"article '{article_id}' has no reviewer flag to clear")
+    set_article_fields(article_id, {REVIEWER_FLAG_FIELD: None, REVIEWER_FLAGGED_AT_FIELD: None})
+    return _response(200, {"checked": article_id})
 
 
 # --- Prompt refinements (Phase 5) ----------------------------------------
@@ -2491,6 +2648,7 @@ def _put_model(event: dict) -> dict:
     input_price = body.get("input_price_usd_per_1k_tokens")
     output_price = body.get("output_price_usd_per_1k_tokens")
     enabled = body.get("enabled", True)
+    price_locked = body.get("price_locked")
 
     if not isinstance(model_id, str) or not model_id:
         return _error(400, "'model_id' is required and must be a non-empty string")
@@ -2504,8 +2662,36 @@ def _put_model(event: dict) -> dict:
         return _error(400, "'output_price_usd_per_1k_tokens' is required and must be a non-negative number")
     if not isinstance(enabled, bool):
         return _error(400, "'enabled' must be a boolean if provided")
+    if price_locked is not None and not isinstance(price_locked, bool):
+        return _error(400, "'price_locked' must be a boolean if provided")
 
+    confirm = body.get("confirm", False)
+    if not isinstance(confirm, bool):
+        return _error(400, "'confirm' must be a boolean if provided")
+
+    # What the model catalog recorded about a model it discovered stays; its price fields go, as
+    # the price is now the one given here (common/model_catalog.py, PRICE_META_FIELDS).
+    existing = get_model(model_id) or {}
+    # Disabling a model that is in use (common/model_fleet.py): the application's default or
+    # fallback needs `confirm: true` (the CLI asks "are you sure?"); every topic's rotation, model
+    # and fallback, and the shared rotation pool, are then updated to do without it.
+    deactivating = not enabled and bool(existing) and existing.get("enabled") is not False
+    if deactivating and not confirm:
+        roles = model_fleet.application_roles(model_id)
+        if roles:
+            return _response(
+                409,
+                {
+                    "error": (
+                        f"'{model_id}' is the application's {' and '.join(roles)} model; "
+                        "send confirm: true to disable it anyway"
+                    ),
+                    "confirm_required": True,
+                    "roles": roles,
+                },
+            )
     item = {
+        **{field: existing[field] for field in _CATALOG_MODEL_FIELDS if existing.get(field) is not None},
         "model_id": model_id,
         "display_name": display_name,
         "provider": provider,
@@ -2513,8 +2699,110 @@ def _put_model(event: dict) -> dict:
         "output_price_usd_per_1k_tokens": output_price,
         "enabled": enabled,
     }
+    if price_locked is not None:
+        item["price_locked"] = price_locked
+    # Enabling a model the account may not be able to call: probe it now (one 1-token Converse
+    # call, common/model_catalog.probe_access), so a denied model is said at once, not found out
+    # when a topic's run falls back. It is enabled either way; the fleet never routes to it.
+    warning = None
+    if enabled and existing.get("access") != model_catalog.GRANTED:
+        access, why = model_catalog.probe_access(model_id)
+        item.update(access=access, access_checked_at=datetime.now(UTC).isoformat(), access_error=why)
+        if why is None:
+            item.pop("access_error")
+        if access == model_catalog.DENIED:
+            warning = f"the account cannot call '{model_id}' ({why}); rotations and routing will skip it"
     put_model(item)
+    if warning:
+        return _response(200, {**item, "warning": warning})
+    if deactivating:
+        rotations = model_fleet.deactivated(model_id, model_catalog.get_settings())
+        return _response(200, {**item, "rotations": rotations})
     return _response(200, item)
+
+
+_CATALOG_MODEL_FIELDS = ("region", "discovered_at", "pricing_unit", *model_catalog.ACCESS_FIELDS)
+
+
+# --- Model catalog (common/model_catalog.py, docs/enhancements/model-catalog-refresh.md) ---------
+#
+# The discover and reprice jobs' settings and pause flags (the `model-catalog` config row), and
+# running either job now. A job runs in its own Lambda, invoked asynchronously: a reprice can take
+# minutes (web searches and a model call per model), well past API Gateway's 29 seconds.
+
+
+def _get_model_catalog_config_route(event: dict) -> dict:
+    return _response(200, model_catalog.summary())
+
+
+def _put_model_catalog_config_route(event: dict) -> dict:
+    """Set (or, with null, clear) model catalog settings: any of model_catalog.SETTINGS. A setting
+    that isn't in the body is left as it is."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if not isinstance(body, dict) or not body:
+        return _error(400, f"send any of: {', '.join(model_catalog.SETTINGS)} (null clears a setting)")
+    for name, value in body.items():
+        problem = model_catalog.validate_setting(name, value)
+        if problem:
+            return _error(400, problem)
+    update_config_row(model_catalog.CONFIG_ID, body)
+    return _get_model_catalog_config_route(event)
+
+
+# --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/reviewer-bear.md) -----
+#
+# The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
+# switches and limits, his pause flag and whether he may approve. Changed with no deploy.
+
+
+def _get_reviewer_config_route(event: dict) -> dict:
+    return _response(200, reviewer.summary())
+
+
+def _put_reviewer_config_route(event: dict) -> dict:
+    """Set (or, with null, clear) reviewer settings: any of reviewer.SETTINGS. A setting that
+    isn't in the body is left as it is."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if not isinstance(body, dict) or not body:
+        return _error(400, f"send any of: {', '.join(reviewer.SETTINGS)} (null clears a setting)")
+    for name, value in body.items():
+        problem = reviewer.validate_setting(name, value)
+        if problem:
+            return _error(400, problem)
+    update_config_row(reviewer.CONFIG_ID, body)
+    return _get_reviewer_config_route(event)
+
+
+def _start_model_catalog_job(job: str) -> dict:
+    run = model_catalog.active_run()
+    # A run whose next tick or review is overdue lost its schedule: the job runs that step first,
+    # so it may go.
+    if job == "reprice" and run is not None and not model_catalog.is_overdue(run, datetime.now(UTC)):
+        return _error(
+            409,
+            f"pricing run {run.get('run_id')} is still under way; a reprice waits for it "
+            "(model-catalog get shows its queue and when its next review is due)",
+        )
+    _get_lambda_client().invoke(
+        FunctionName=model_catalog.function_name(),
+        InvocationType="Event",
+        Payload=json.dumps({"job": job}).encode("utf-8"),
+    )
+    return _response(202, {"triggered": job})
+
+
+def _reprice_models_route(event: dict) -> dict:
+    return _start_model_catalog_job("reprice")
+
+
+def _discover_models_route(event: dict) -> dict:
+    return _start_model_catalog_job("discover")
 
 
 def _get_model_config(event: dict) -> dict:
@@ -2732,6 +3020,129 @@ def _feedback_lock_article(event: dict) -> dict:
     )
 
 
+# --- Backups (common/backup.py) ------------------------------------------------------------------
+#
+# A snapshot, a restore and an article export each run as a job inside this same function: the
+# route saves the job and starts its first step asynchronously, and each step starts the next
+# (handler's "backup_job" event below). `backup status` reads where a job has got to.
+
+
+def _restore_schedules(topics: list[dict]) -> dict:
+    """A restore's schedules phase: every topic's two schedules written as `topics create` and
+    `topics reschedule` write them (_apply_topic_schedules), against the restored pipeline config.
+    A topic that fails is named and the rest still get theirs."""
+    config = _read_pipeline_config_quietly()
+    written, failed = 0, []
+    for topic in topics:
+        try:
+            _apply_topic_schedules(topic, topics=topics, config=config)
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - one topic must not stop the rest
+            print(f"admin_api_handler: could not write {topic.get('topic_id')}'s schedules: {exc!r}")
+            failed.append(topic.get("topic_id"))
+    return {"written": written, "failed": failed}
+
+
+def _restore_page(article: dict) -> None:
+    """A restore's pages phase: one published article's page, rendered as it was published."""
+    _render_article_page(
+        article,
+        published_at=article.get("published_at") or article.get("created_at"),
+        published_by=article.get("published_by"),
+    )
+
+
+def _backup_hooks() -> backup.Hooks:
+    return backup.Hooks(
+        apply_schedules=_restore_schedules,
+        render_page=_restore_page,
+        refresh_stats=refresh_articles_snapshot,
+        load_topics=list_topics,
+        query_published=backup.published_page,
+    )
+
+
+def _start_backup_job(job: dict) -> dict:
+    backup.invoke_step(job)
+    return _response(202, {"job": backup.job_view(job)})
+
+
+def _list_backups(event: dict) -> dict:
+    return _response(200, {"snapshots": backup.list_snapshots(), "jobs": backup.list_jobs()})
+
+
+def _start_snapshot(event: dict) -> dict:
+    return _start_backup_job(backup.start_snapshot("manual"))
+
+
+def _start_restore(event: dict) -> dict:
+    body = _parse_body(event)
+    try:
+        job = backup.start_restore(
+            body.get("key"),
+            bucket=body.get("bucket"),
+            pages=body.get("pages", True) is not False,
+            schedules=body.get("schedules", True) is not False,
+        )
+    except backup.BackupError as exc:
+        return _error(400, str(exc))
+    return _start_backup_job(job)
+
+
+def _start_export(event: dict) -> dict:
+    body = _parse_body(event)
+    try:
+        job = backup.start_export(bucket=body.get("bucket"), prefix=body.get("prefix"))
+    except backup.BackupError as exc:
+        return _error(400, str(exc))
+    return _start_backup_job(job)
+
+
+def _get_backup_job(event: dict) -> dict:
+    job = backup.load_job(_path_param(event, "job_id") or "")
+    if job is None:
+        return _error(404, "no such backup job")
+    return _response(200, {"job": backup.job_view(job)})
+
+
+def _resume_backup_job(event: dict) -> dict:
+    """Start a stopped job's current step again (a step whose invocation was lost or ran out of
+    retries). A job still moving is left alone: two steps at once would do the same work twice."""
+    job = backup.load_job(_path_param(event, "job_id") or "")
+    if job is None:
+        return _error(404, "no such backup job")
+    view = backup.job_view(job)
+    if job["status"] != "running":
+        return _error(409, f"the job has already {job['status']}")
+    if not view.get("stalled"):
+        return _error(409, "the job is still moving; resume only one that has stalled")
+    return _start_backup_job(job)
+
+
+def _run_backup_job(request: dict, context) -> dict:
+    """One step of a backup job (an asynchronous self-invocation), or the weekly schedule's
+    `{"start": "snapshot"}`, which saves the job and starts its first step. A step whose number is
+    not the job's current one is a duplicate delivery (Lambda's async retries) and does nothing."""
+    if request.get("start") == "snapshot":
+        # Only started here, and its steps run as any job's do: a retry of this event (should a
+        # step fail) would otherwise start a second snapshot rather than continue the first.
+        job = backup.start_snapshot(request.get("trigger") or "schedule")
+        backup.invoke_step(job)
+        return {"status": "started", "job_id": job["job_id"]}
+    job = backup.load_job(str(request.get("job_id") or ""))
+    if job is None or job["status"] != "running" or job["step"] != request.get("step"):
+        print(f"admin_api_handler: backup step {request!r} is not current; nothing to do")
+        return {"status": "skipped"}
+    job = backup.run_step(job, time_left_ms=context.get_remaining_time_in_millis, hooks=_backup_hooks())
+    print(
+        f"admin_api_handler: backup job {job['job_id']} step {job['step']} "
+        f"{job['status']} ({job['phase']}): {json.dumps(job['progress'])}"
+    )
+    if job["status"] == "running":
+        backup.invoke_step(job)
+    return {"status": job["status"], "job_id": job["job_id"]}
+
+
 _ROUTES = {
     "GET /topics": _list_topics,
     "POST /topics": _create_topic,
@@ -2749,6 +3160,7 @@ _ROUTES = {
     "GET /articles/{article_id}": _get_article,
     "POST /articles/{article_id}/publish": _publish_article,
     "POST /articles/{article_id}/unpublish": _unpublish_article,
+    "POST /articles/{article_id}/checked": _mark_article_checked,
     "POST /articles/{article_id}/rewrite": _rewrite_article,
     "GET /review/report": _review_report,
     "GET /lineage/audit": _lineage_audit,
@@ -2784,11 +3196,23 @@ _ROUTES = {
     "POST /models": _put_model,
     "GET /model-config": _get_model_config,
     "PUT /model-config": _put_model_config_route,
+    "POST /models/reprice": _reprice_models_route,
+    "POST /models/discover": _discover_models_route,
+    "GET /model-catalog-config": _get_model_catalog_config_route,
+    "PUT /model-catalog-config": _put_model_catalog_config_route,
+    "GET /reviewer-config": _get_reviewer_config_route,
+    "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /pipeline-config": _get_pipeline_config_route,
     "PUT /pipeline-config": _put_pipeline_config_route,
     "GET /feedback-config": _get_feedback_config_route,
     "PUT /feedback-config": _put_feedback_config_route,
     "PUT /articles/{article_id}/feedback-lock": _feedback_lock_article,
+    "GET /backups": _list_backups,
+    "POST /backups/snapshot": _start_snapshot,
+    "POST /backups/restore": _start_restore,
+    "POST /backups/export": _start_export,
+    "GET /backups/jobs/{job_id}": _get_backup_job,
+    "POST /backups/jobs/{job_id}/resume": _resume_backup_job,
 }
 
 
@@ -2807,6 +3231,11 @@ def _route_key(event: dict) -> str | None:
 
 
 def handler(event, context) -> dict:
+    # Not an API request: a backup job's next step (common/backup.py), from this function itself
+    # or the weekly schedule. Errors are raised, not answered: Lambda's async retries run it again.
+    if isinstance(event, dict) and "backup_job" in event:
+        return _run_backup_job(event["backup_job"] or {}, context)
+
     route_key = _route_key(event)
     route_fn = _ROUTES.get(route_key)
 

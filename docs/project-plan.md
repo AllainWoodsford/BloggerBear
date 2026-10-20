@@ -189,16 +189,12 @@ Core pipeline code must remain topic-agnostic.
 ## 7) Compliance and Safety
 - Run regex-based redaction then Bedrock redaction review before writing feedback.
 - Never persist raw, unredacted comment text.
-- Financial topics must avoid advice language and always queue for manual moderation.
-
-**One deliberate exception: the Trending Everywhere digest** (§11, "Staggered schedules by slot,
-pausing a topic, and the digest's steering"). The digest is not a financial topic; it is a
-cross-topic survey written with no figures (every sentence with one is removed before it is
-composed) and nothing more specific than a theme and its direction. It is reviewed by the
-compliance review like every other draft and published when that passes, rather than held for a
-person whenever one of its contributors is financial. The financial drafting guidance still goes
-into its prompt and the disclaimer onto its body whenever a contributor is financial. A financial
-topic's own articles are unchanged: always a person.
+- Financial topics must avoid advice language and always queue for moderation: never published
+  automatically when drafted. A queued article is decided by a person, or, after two days, by the
+  reviewer bear (§11, "Professor Grizzlewick"), when the project and the topic let him approve
+  (his `may_approve` setting, a topic's `reviewer_may_approve`; both on by default). Each financial
+  article he approves is flagged for a person to check, and he takes it down again if readers
+  downvote it with comments.
 
 ## 8) CI/CD and Infrastructure Rules
 
@@ -510,6 +506,9 @@ row keyed by profile id.
   of a model matches) prices a model when the registry has no row; the registry always
   wins, so a price is corrected without a deploy. A model with neither is logged and
   left unpriced -- never guessed.
+- *The registry keeps itself up to date.* Every second day the model catalog discovers up to
+  five new models from any provider (added disabled, up to 50 in all) and reprices up to 50,
+  a few at a time, keeping a changed price only if two later reviews confirm it -- see [model-catalog-refresh.md](enhancements/model-catalog-refresh.md).
 - *Research is a running tally, bundled into the article.* Each Finding records the
   Bedrock call behind its summary (`research_call`: model, tokens). When an article is
   written, the daily cycle sums the calls of every Finding in its window (before any
@@ -2112,6 +2111,45 @@ only the newest `PIPELINE_PENDING_LIMIT` (3) in `pipeline_items`, so it reads at
 nothing for a reader to open (pending articles have not cleared review). The Researching row stays
 below it. The frontend caps at three as well, so an older API response cannot flood the box.
 
+### Professor Grizzlewick, the reviewer bear (2026-10-20)
+
+**Status: built** ([reviewer-bear.md](enhancements/reviewer-bear.md)). A second character: an old,
+bespectacled, mustachioed bear, woken every second day to do the reviews the admins have fallen
+behind on. He fixes the assistant's content findings, decides articles held two days or more
+(skeptical of every major flag; approve, rewrite, or reject after three rewrites), reads the newest
+published articles, watches the financial articles he approved for readers' downvotes, and reports
+on the Musings page as himself. He acts through the admin API's own functions, so every decision
+takes an operator's path, and a page he approved says "AI reviewer", never "a person". On by
+default (`REVIEWER_ENABLED`). Everything else is a setting changed with no deploy (`admin_cli reviewer
+set`): his pause flag, each task, his limits, and whether he may approve (a topic's
+`reviewer_may_approve` wins). An article held ten days or more gets a de-fanged publish: its flagged
+sentences cut, in code, by deletion only, or it is rejected.
+
+### Removed: the Trending Everywhere digest (2026-10-20)
+
+**Status: removed.** The daily cross-topic "Trending Everywhere" digest (`trending_digest_handler.py`,
+`common/digest.py`, its Lambda and its 07:00 UTC schedule) is gone, and the header's "Trending
+Everywhere" link is now **About**: on the site at once, and on a static article page the next time
+that page is rendered (publish, approve, force-publish or a restore). Pages already in the site
+bucket keep the old link until then; it still opens the `digest` topic page.
+
+**Why.** It did not earn its place. An article a person rejected could still be summarised into
+that day's digest, the RSS feed already gives a reader everything across topics, and the musings
+already give the cross-topic voice. It was also a fourth publish path to keep in step with the
+other three (the daily cycle, approve and force-publish), which it fell out of more than once.
+
+**What stays.** Nothing is deleted from DynamoDB: digest articles already published (topic id
+`digest`) are ordinary articles now. They keep their static pages, stay in the RSS feed and on the
+Stats page (under the topic id `digest`, as any article whose topic is gone), and a held one can
+still be approved or rejected from the review inbox and `admin_cli`, through the same generic paths
+every article uses. An old digest with no stored source credit still credits every topic's sources
+(`common/attribution.py`'s `LEGACY_CROSS_TOPIC_ID`), as some sources' terms require; that is the one
+place the `digest` id is still named. Removing those rows is a separate decision.
+
+**Also gone.** The digest-only special cases: its display name in the admin API and on the Stats
+page, its heading in the frontend, its IAM statement, alarms and log group, and the
+assistant's catalogue entry. The §7 exception it had is withdrawn.
+
 ### Staggered schedules by slot, pausing a topic, and the digest's steering
 
 **Status: built** (#302; design for the next step in
@@ -2166,7 +2204,8 @@ review stay listed above it. The bear muses about it each way: a reflective "set
 for a while" on a pause, an excited "back on it" on a resume (`common/musings.py`, kinds `pause`
 and `resume`, reusing moods that already have their bear).
 
-**The digest's steering.** Trending Everywhere is a survey for readers who follow none of the
+**The digest's steering.** *(Removed with the digest on 2026-10-20: see "Removed: the Trending
+Everywhere digest" above.)* Trending Everywhere was a survey for readers who follow none of the
 topics closely, so it is told to stay general (what kind of thing is moving and in which
 direction, no particulars) and to carry **no figures**: no prices, amounts, percentages, counts,
 rankings, dates or version numbers. The rule is held to in code (`common/digest.py`'s

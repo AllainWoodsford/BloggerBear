@@ -3,7 +3,7 @@
 Manually invocable (`event` is ignored) but designed to run on a static
 EventBridge Scheduler `rate(4 days)` schedule wired up directly to this
 function -- same "one global job, not per-topic" pattern as
-weekly_reflection_handler.py/trending_digest_handler.py, since this looks
+weekly_reflection_handler.py, since this looks
 across all feedback at once rather than per-topic.
 
 Flow: look back over the last _LOOKBACK_DAYS of Feedback (all topics, all

@@ -92,6 +92,7 @@ from typing import NamedTuple
 
 from boto3.dynamodb.conditions import Key
 
+from common import reviewer
 from common.dynamo import (
     get_article,
     get_pipeline_config,
@@ -612,6 +613,19 @@ def _content_checker(kind: str) -> Callable[[str, _Sources], Check]:
     return check
 
 
+def _check_reviewer_flag(article_id: str, sources: _Sources) -> Check:
+    """Still open while the article is published and carries the reviewer's flag. A person clears
+    it (`articles checked`), or the reviewer does when readers' downvotes make him take it down
+    (common/reviewer.py)."""
+    article = get_article(article_id)
+    if article is None:
+        return Check(GONE)
+    name = _article_topic(article)
+    if article.get("status") == "published" and article.get(reviewer.FLAG_FIELD):
+        return Check(OPEN, tools.reviewer_flag_finding(article), name)
+    return Check(FIXED, None, name)
+
+
 def _read_complete(result: dict) -> dict:
     """A log read follow_up can judge from, or an error: a refusal or an incomplete read is never
     taken for "it has calmed down"."""
@@ -705,6 +719,7 @@ def _check_firewall_spike(log_group: str, sources: _Sources) -> Check:
 
 CHECKERS: dict[str, Callable[[str, _Sources], Check]] = {
     "draft_truncated": _check_draft_truncated,
+    reviewer.FINDING_KIND: _check_reviewer_flag,
     "security_incident": _check_security_incident,
     "firewall_spike": _check_firewall_spike,
     "research_overdue": _topic_checker("research_overdue"),

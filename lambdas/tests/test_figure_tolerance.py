@@ -20,6 +20,7 @@ from common import compliance, rewrite
 from common import fresh_review as fr
 from common.adapters.base import Adapter
 from common.adapters.crypto_feed import CryptoFeedAdapter
+from common.adapters.rail_access import RailAccessAdapter
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.editorial_goals import EditorialGoal
 
@@ -53,8 +54,17 @@ def test_the_crypto_feed_declares_a_tolerance_and_how_to_write_its_figures():
 def test_every_other_adapter_and_an_unknown_one_declare_nothing():
     quiet = {"figure_tolerance": 0.0, "figure_guidance": "", "drafting_guidance": ""}
     for key, adapter_cls in ADAPTER_REGISTRY.items():
-        if adapter_cls is not CryptoFeedAdapter:
-            assert fr.writing_rules({"adapter": key}) == quiet, key
+        if adapter_cls is CryptoFeedAdapter:
+            continue
+        rules = fr.writing_rules({"adapter": key})
+        if adapter_cls is RailAccessAdapter:
+            # The rail adapter fixes how its articles are written (the register, the theoretical
+            # links, the walking minutes; test_rail_access_adapter.py holds the text), but none of
+            # its figures moves while an article is written: no tolerance, no figure guidance.
+            assert rules["drafting_guidance"] == RailAccessAdapter.drafting_guidance != "", key
+            assert (rules["figure_tolerance"], rules["figure_guidance"]) == (0.0, ""), key
+            continue
+        assert rules == quiet, key
     assert fr.writing_rules({"adapter": "no-such-adapter"}) == quiet
     assert fr.writing_rules({}) == quiet and fr.writing_rules(None) == quiet
     assert Adapter.figure_tolerance_percent == 0.0

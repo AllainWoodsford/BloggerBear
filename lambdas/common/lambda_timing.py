@@ -14,7 +14,7 @@ does **not** capture is a cold start's separate Init Duration (module import, cl
 before `handler` is ever entered) -- this is a lower bound on a cold invocation, not the whole bill.
 
 Applied only to the scheduled pipeline handlers (research_tick, daily_cycle, weekly_reflection,
-musing_feedback, trending_digest, dlq_handler, stats_rollover) -- deliberately **not**
+musing_feedback, dlq_handler, stats_rollover) -- deliberately **not**
 admin_api_handler or public_api_handler, which serve live requests on every hit: adding a
 synchronous DynamoDB write to those would add real latency and cost to traffic that has none today,
 for a number ("how long did this one API request take") nobody asked to see on the Stats page.

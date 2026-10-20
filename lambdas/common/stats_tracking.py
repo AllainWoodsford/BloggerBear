@@ -64,7 +64,7 @@ from common.costing import USD_TO_AUD_RATE, call_cost_usd, pricing_for
 from common.dynamo import (
     increment_current_stats,
     list_all_articles,
-    list_models,
+    list_priced_models,
     list_stats_history_weeks,
     list_topics,
     put_articles_stats_snapshot,
@@ -84,6 +84,10 @@ BEDROCK_CATEGORIES = (
     # The vision agent's triage of a measured change (common/vision_triage.py): several Converse
     # calls per decision, with images and tools, tallied per decision by record_model_usage.
     "vision_triage",
+    # The model catalog reading a model's price out of web search results (common/model_catalog.py).
+    "model_pricing",
+    # Professor Grizzlewick, the reviewer bear, judging held and published articles (common/reviewer.py).
+    "reviewer",
 )
 
 # The operator's assistant (lambdas/ops_agent): every question it answers, on the page or started
@@ -458,7 +462,7 @@ def record_article_lineage(lineage: dict) -> None:
     """Tally one just-drafted article's total spend (authoring + research, if any) onto this
     week's Stats row under `articles` -- called once per article, right after
     common.costing.build_lineage (and build_research_lineage, when there is one) finish
-    (daily_cycle_handler.py, trending_digest_handler.py). Deliberately per-article, not per
+    (daily_cycle_handler.py). Deliberately per-article, not per
     Bedrock call within it: that finer detail (which model, ideation vs draft vs title, which
     topic) stays common/stats.py's job, read live off the Articles table; this is one coarse
     weekly total sitting alongside it, so Weekly/Total Stats aren't missing the largest share of
@@ -553,7 +557,7 @@ def refresh_articles_snapshot() -> None:
     """Rebuild the Stats page's Articles section (common/stats.py's build_stats: totals, by model,
     by topic and the 30-day table) and store it for the public API to read (common/dynamo.py's
     put_articles_stats_snapshot). Called after anything that changes what that section shows: a
-    daily cycle, a rewrite or a digest that wrote an article, and the admin routes that publish,
+    daily cycle or a rewrite that wrote an article, and the admin routes that publish,
     reject or re-price one. The page then reads one row; it used to scan every article per view.
 
     A model's price or a topic's name changed in between shows from the next call.
@@ -565,7 +569,7 @@ def refresh_articles_snapshot() -> None:
     try:
         # Taken before the scan: see put_articles_stats_snapshot.
         started_at = datetime.now(UTC).isoformat()
-        stats = build_stats(list_all_articles(), list_topics(), list_models())
+        stats = build_stats(list_all_articles(), list_topics(), list_priced_models())
         put_articles_stats_snapshot(json.dumps(stats), started_at)
     except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a publish
         print(f"stats_tracking: could not refresh the articles snapshot: {exc!r}")

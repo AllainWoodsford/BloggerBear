@@ -4,16 +4,19 @@ rail_annotate.py.
 The scene is a synthetic 400 x 400 city at 20 m in UTM zone 56S: a vegetated background, a
 built district, a lake (SCL 6) inside it and a cloud (SCL 9) outside it. The network is drawn in
 pixels and turned into lon/lat with `geo.utm_to_lonlat`, so every test also round-trips the
-projection. The graph measures, flags and suggestions are tested on hand-built graphs whose
-answers are known. The figure is tested by decoding the PNG and sampling pixels, on the city's
-own analysis, on copies of its metrics with flags and suggestions injected, on the city upscaled
-to the worker's 1024 px, and on a crowded city of noise built to be as many bytes as a figure gets.
+projection; its stops layer puts bus stops along a street beyond rail reach and a tram stop in
+the south of the district, and the ferry terminal is among the pois. The graph measures, flags
+and suggestions are tested on hand-built graphs whose answers are known. The figures are tested
+by decoding the PNG and sampling pixels, on the city's own analysis, on copies of its metrics
+with flags and suggestions injected, on the city upscaled to the worker's 1024 px, and on a
+crowded city of noise built to be as many bytes as a figure gets.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import resource
 import time
 
 import cv2
@@ -26,8 +29,11 @@ from common import vision_contract as contract
 from common.vision_client import MAX_IMAGE_BYTES
 from vision import access, geo, rail_analyse, rail_annotate, urban
 from vision import network as rail_network
-from vision.annotate import CAPTION_BACKGROUND, CAPTION_PAD, burn_caption, caption_bar_size
+from vision.annotate import CAPTION_BACKGROUND, CAPTION_PAD, UNMEASURED_TINT, burn_caption, caption_bar_size
+from vision.detect import stretch
 from vision.rail_analyse import (
+    MODES,
+    MOSTLY_WATER,
     PARAM_LIMITS,
     RailAnalysis,
     RailParams,
@@ -38,20 +44,29 @@ from vision.rail_analyse import (
     suggest,
 )
 from vision.rail_annotate import (
+    BEYOND_FILL,
+    BEYOND_OUTLINE,
     CAPTION_LINES,
     DESERT_COLOUR,
     FIGURE_BYTE_BUDGET,
     FIGURE_MIN_SIDE,
+    FILL_ALPHA,
     FLAG_COLOUR,
     HUB_COLOUR,
     LEGEND_MIN_WIDTH,
+    MODES_FIGURE_BYTE_BUDGET,
     RULE_COLOUR,
+    STATION_FILL,
+    STOP_FILL,
     STRETCH_MAX,
     SUGGESTION_COLOUR,
+    WET_LINK_COLOUR,
     _dashed_line,
+    annotate_modes,
     annotate_rail,
     figure_strip,
     legend_strip,
+    modes_legend_entries,
 )
 
 SIZE, PX = 400, 20.0
@@ -95,14 +110,24 @@ POIS_PX = (
     ("p1", "bus_stop", 205, 200), ("p2", "bus_stop", 200, 210), ("p3", "bus_stop", 220, 200),
     ("p4", "bus_station", 120, 215), ("p5", "ferry_terminal", 360, 222), ("p6", "park_ride", 390, 200),
 )  # fmt: skip
+# The stops layer: the three bus stops near Central again (the layer carries what the pois carried
+# before it, and the pois' copies must not be counted twice), six more along a street at y = 120
+# through the north-west of the district, beyond the 50 px reach of every station (Midwest, at
+# (120, 203), is the nearest to most of it, 83 px off), and a tram stop in the south, beyond reach
+# too and in South's cell. The ferry terminal is p5, among the pois.
+STOPS_PX = {
+    "bus": [(205, 200), (200, 210), (220, 200)] + [(x, 120) for x in range(105, 181, 15)],
+    "tram": [(260, 290)],
+}
 FETCHED_AT = "2026-10-10T03:00:00+00:00"
 NO_INTERMODAL = {"bus_stop_near": 0, "bus_station_near": 0, "ferry_terminal_far": 0, "park_ride_far": 0}
 
 
-def grid_network():
+def grid_network(stops=True):
     """Two crossing lines and a branch, the southern arm in tunnel, seven stations (one 3 px
     off its line), bus stops near Central, a bus station near Midwest, a ferry terminal and a
-    park-and-ride near East."""
+    park-and-ride near East, and (unless `stops` is False: a network cached before the layer)
+    the STOPS_PX layer."""
     ways = [
         {"id": "w1", "points": [lonlat(40, 200), lonlat(360, 200)], "tunnel": False, "name": "East West"},
         {"id": "w2", "points": [lonlat(200, 40), lonlat(200, 200)], "tunnel": False, "name": "North"},
@@ -117,7 +142,10 @@ def grid_network():
         {"id": pid, "kind": kind, "lon": lonlat(x, y)[0], "lat": lonlat(x, y)[1]}
         for pid, kind, x, y in POIS_PX
     ]
-    return {"ways": ways, "stations": stations, "pois": pois, "fetched_at": FETCHED_AT}
+    network = {"ways": ways, "stations": stations, "pois": pois, "fetched_at": FETCHED_AT}
+    if stops:
+        network["stops"] = {mode: [lonlat(x, y) for x, y in points] for mode, points in STOPS_PX.items()}
+    return network
 
 
 @pytest.fixture(scope="module")
@@ -190,6 +218,16 @@ def test_no_station_means_everything_is_out_of_reach():
     assert np.isinf(dist).all() and not labels.any()
     assert access.label_of_station(labels, [(1, 1), (50, 50), None]) == [0, 0, 0]
     assert access.catchment_activity(np.ones((10, 10), np.float32), labels, dist, 5, [0]) == ([None], [0.0])
+    assert np.isinf(access.distance_to_points(np.zeros((10, 10), np.uint8))).all()
+
+
+def test_distance_to_points_is_the_station_transform_without_labels():
+    mask = access.station_raster((SIZE, SIZE), [(200, 200), (120, 203), None, (-5, 3)])
+    dist = access.distance_to_points(mask)
+    with_labels, _ = access.distance_to_stations(mask)
+    assert dist.dtype == np.float32 and dist.shape == (SIZE, SIZE)
+    np.testing.assert_allclose(dist, with_labels, rtol=1e-5)  # the two differ in the last float bit
+    assert dist[200, 200] == 0.0 and dist[200, 210] == pytest.approx(10.0, rel=0.05)
 
 
 def test_desert_clusters_are_built_up_beyond_reach_with_lonlat_centroids(analysis):
@@ -214,6 +252,14 @@ def test_desert_clusters_are_filtered_and_capped():
     assert [c["area_px"] for c in found] == [225, 100]
     assert found[0]["bbox"] == [30, 30, 15, 15] and found[0]["x"] == 37.0
     assert access.desert_clusters(desert, min_px=1, top=1) == found[:1]
+    assert "within_share" not in found[0]
+    # With a mask, each patch says the share of its pixels inside it: the stop reach, later.
+    within = np.zeros_like(desert)
+    within[30:35, 30:45] = 255  # a third of the large patch
+    within[0:20, 0:20] = 255  # the whole small one, and the 4 px speck
+    covered = access.desert_clusters(desert, min_px=10, within=within)
+    assert [c["within_share"] for c in covered] == [pytest.approx(75 / 225), 1.0]
+    assert [{k: v for k, v in c.items() if k != "within_share"} for c in covered] == found
 
 
 def test_catchment_activity_is_the_mean_heat_of_a_clipped_voronoi_cell():
@@ -240,6 +286,52 @@ def test_catchment_activity_is_the_mean_heat_of_a_clipped_voronoi_cell():
     activities, coverage = activity(100, usable)
     assert activities == [pytest.approx(0.4), None]
     assert coverage == [pytest.approx(0.8), 0.0]
+
+
+def test_feeder_coverage_is_the_stop_covered_share_of_each_hinterland():
+    """Two stations on a 40 x 20 grid, each cell one half; reach 4 px, feeder reach 12 px. The
+    left station's hinterland (built, usable, 4 < d <= 12) has stops over the half of it to the
+    right of the station; the right station's hinterland is under cloud but for a strip the
+    stops do not cover; a third station is outside the image."""
+    built = np.full((20, 40), 255, np.uint8)
+    usable = np.full((20, 40), 255, np.uint8)
+    usable[:, 24:] = 0  # cloud over most of the right half: a hinterland of what the cloud leaves
+    stations = [(10, 10), (30, 10), None]
+    dist, labels = access.distance_to_stations(access.station_raster(built.shape, stations))
+    station_labels = access.label_of_station(labels, stations)
+    stop_reach = np.zeros((20, 40), np.uint8)
+    stop_reach[:, 10:20] = 255  # the half of the left hinterland right of its station, none of the right
+    coverage = access.feeder_coverage(built, usable, labels, dist, stop_reach, 4, 12, station_labels)
+    left = (dist > 4) & (dist <= 12) & (labels == station_labels[0])
+    assert coverage[0] == pytest.approx(np.count_nonzero(left & (stop_reach > 0)) / np.count_nonzero(left))
+    assert 0.3 < coverage[0] < 0.7 and coverage[1] == 0.0 and coverage[2] is None
+    # Without a stops layer nothing is measured; a station whose cell is all within reach has no
+    # hinterland (nothing to cover), which is None too, not 0.
+    assert access.feeder_coverage(built, usable, labels, dist, None, 4, 12, station_labels) == [None] * 3
+    assert access.feeder_coverage(built, usable, labels, dist, stop_reach, 4, 4, station_labels) == [None] * 3
+    built[:, :21] = 0  # nothing built in the left cell (the tie column x = 20 included)
+    assert access.feeder_coverage(built, usable, labels, dist, stop_reach, 4, 12, station_labels)[0] is None
+
+
+def test_stop_stats_add_the_stops_to_the_stations():
+    built = np.zeros((10, 10), np.uint8)
+    built[:, :8] = 255  # 80 built pixels
+    dist = np.full((10, 10), 9.0, np.float32)
+    dist[:, :4] = 1.0  # the left 40 within station reach
+    stop_reach = np.zeros((10, 10), np.uint8)
+    stop_reach[:, 2:6] = 255  # 40 within stop reach: 20 also by a station, 20 beyond it
+    stats = access.stop_stats(built, dist, 2.0, stop_reach, 0.01)
+    assert stats == {
+        "stop_served_km2": pytest.approx(0.4), "stop_served_share": pytest.approx(0.5),
+        "any_mode_served_km2": pytest.approx(0.6), "any_mode_served_share": pytest.approx(0.75),
+        "any_mode_desert_km2": pytest.approx(0.2), "stops_only_km2": pytest.approx(0.2),
+        "stop_overlap_share": pytest.approx(0.5),
+    }  # fmt: skip
+    empty = access.stop_stats(built, dist, 2.0, np.zeros_like(stop_reach), 0.01)
+    assert empty["stop_served_share"] == 0.0 and empty["stop_overlap_share"] is None
+    assert empty["any_mode_served_km2"] == pytest.approx(0.4) and empty["stops_only_km2"] == 0.0
+    nothing = access.stop_stats(np.zeros_like(built), dist, 2.0, stop_reach, 0.01)
+    assert nothing["stop_served_share"] == nothing["any_mode_served_share"] == 0.0
 
 
 def test_intermodal_counts_at_both_radii():
@@ -295,10 +387,16 @@ def test_betweenness_hubs_and_d_hub_on_a_star():
     assert not graph_metrics(graph, activity, hub_count=1)["approximate"]
 
 
-def row(sid, activity, degree, betweenness, d_hub_m):
+def row(sid, activity, degree, betweenness, d_hub_m, feeder_coverage=None):
+    """A station row as analyse_rail_access builds it, with its two weights: the rail one from
+    `d_hub_m` and `activity`, the multimodal one from that and `feeder_coverage` (None: not
+    measured, so no multimodal weight either)."""
     weight = None if d_hub_m is None else round((d_hub_m / 1000) / max(activity, 0.05), 4)
+    measured = weight is not None and feeder_coverage is not None
+    multimodal = round(weight * (1 - feeder_coverage), 4) if measured else None
     return {"id": sid, "name": sid[2:], "activity": activity, "degree": degree, "betweenness": betweenness,
-            "d_hub_m": d_hub_m, "isolation_weight": weight}  # fmt: skip
+            "d_hub_m": d_hub_m, "isolation_weight": weight, "feeder_coverage": feeder_coverage,
+            "multimodal_isolation_weight": multimodal}  # fmt: skip
 
 
 def test_the_three_station_flags():
@@ -313,7 +411,14 @@ def test_the_three_station_flags():
     flags = flag_stations(rows, adjacency)
     assert [f["type"] for f in flags] == ["isolated_high_demand", "single_point_of_failure", "ghost_line"]
     assert flags[0] == {"type": "isolated_high_demand", "station": "s:A", "name": "A", "activity": 0.9,
-                        "degree": 1, "isolation_weight": 10.0}  # fmt: skip
+                        "degree": 1, "isolation_weight": 10.0, "feeder_coverage": None,
+                        "multimodal_isolation_weight": None}  # fmt: skip
+    # The condition stays on the rail weight; the flag quotes the multimodal weight beside it,
+    # so a station whose hinterland the stops cover is still flagged, and says so.
+    rows[0] = row("s:A", 0.9, 1, 0.1, 9000.0, feeder_coverage=0.75)
+    covered = flag_stations(rows, adjacency)[0]
+    assert covered["isolation_weight"] == 10.0 and covered["feeder_coverage"] == 0.75
+    assert covered["multimodal_isolation_weight"] == 2.5
     assert flags[1] == {"type": "single_point_of_failure", "station": "s:B", "name": "B",
                         "ratio": pytest.approx(8 / 3, abs=1e-4)}  # fmt: skip
     assert flags[2] == {"type": "ghost_line", "stations": ["s:C1", "s:C2", "s:C3", "s:C4"],
@@ -453,12 +558,18 @@ def spokes():
     return graph, activity
 
 
-def rows_of(graph, activity, measures):
+def rows_of(graph, activity, measures, feeder_coverage=None):
     return [
         row(node, activity[node], measures["degree"][node], measures["betweenness"][node],
-            measures["d_hub_m"][node])  # fmt: skip
+            measures["d_hub_m"][node], (feeder_coverage or {}).get(node))  # fmt: skip
         for node in sorted(graph.nodes)
     ]
+
+
+def dry(shape=(SIZE, SIZE)):
+    """Water, unusable and built layers with nothing in them: every straight line crosses dry,
+    measured, unbuilt ground."""
+    return tuple(np.zeros(shape, np.uint8) for _ in range(3))
 
 
 def test_orbital_links_lower_the_mean_distance_to_a_hub_and_are_deterministic():
@@ -467,8 +578,8 @@ def test_orbital_links_lower_the_mean_distance_to_a_hub_and_are_deterministic():
     assert measures["hubs"] == ["s:H"]
     rows = rows_of(graph, activity, measures)
     adjacency = {node: sorted(graph.neighbors(node)) for node in graph}
-    first = suggest(graph, rows, measures, adjacency, PX, max_orbital_km=5.0)
-    second = suggest(graph, rows, measures, adjacency, PX, max_orbital_km=5.0)
+    first = suggest(graph, rows, measures, adjacency, PX, 5.0, *dry())
+    second = suggest(graph, rows, measures, adjacency, PX, 5.0, *dry())
     assert first == second
     orbital = [s for s in first if s["type"] == "orbital_link"]
     assert len(orbital) == 1
@@ -478,10 +589,54 @@ def test_orbital_links_lower_the_mean_distance_to_a_hub_and_are_deterministic():
     # B3 reaches the hub through A2 in 960 + 4000 m instead of 6000: the mean over the seven falls.
     assert link["delta_mean_d_hub_m"] == pytest.approx(-(6000 - 4960) / 7, abs=0.1)
     assert link["delta_top_hub_betweenness"] < 0
+    # Every link is theoretical and says what it changes and what its straight line crosses: here
+    # B3 alone comes closer, from 6 km; the line (40 px of blank layers) crosses nothing.
+    assert link["theoretical"] is True and link["stations_closer"] == 1
+    assert (link["from_d_hub_m"], link["to_d_hub_m"]) == (4000.0, 6000.0)
+    crossing = (link["water_share"], link["unmeasured_share"], link["built_share"], link["water_km"])
+    assert crossing == (0, 0, 0, 0)
     # Out of straight-line range, no link; linking the two is not suggested when they are adjacent.
-    assert not [s for s in suggest(graph, rows, measures, adjacency, PX, 0.5) if s["type"] == "orbital_link"]
+    assert not orbital_links(suggest(graph, rows, measures, adjacency, PX, 0.5, *dry()))
     adjacency["s:A2"].append("s:B3")
-    assert not [s for s in suggest(graph, rows, measures, adjacency, PX, 5.0) if s["type"] == "orbital_link"]
+    assert not orbital_links(suggest(graph, rows, measures, adjacency, PX, 5.0, *dry()))
+
+
+def orbital_links(suggestions):
+    return [s for s in suggestions if s["type"] == "orbital_link"]
+
+
+def test_an_orbital_link_over_water_says_so_and_ranks_after_the_dry_ones():
+    """The spokes graph with a fourth arm whose far end, D2 (4.5 km from the hub by rail), is a
+    short dry hop from B3 (6 km): a link that brings B3 to 5.4 km, less than A2-B3's 4.96 km. A
+    lake under half of the A2-B3 line puts that link, the better one, after the dry B3-D2, and
+    its crossing is reported, never dropped."""
+    graph, activity = spokes()
+    graph.add_node("s:D1", kind="station", x=0.0, y=-75.0, station="D1")
+    graph.add_node("s:D2", kind="station", x=130.0, y=60.0, station="D2")
+    graph.add_edge("s:H", "s:D1", length_m=1500.0)
+    graph.add_edge("s:D1", "s:D2", length_m=3000.0)
+    activity = {**activity, "s:D1": 0.5, "s:D2": 0.2}
+    measures = graph_metrics(graph, activity, hub_count=1)
+    rows = rows_of(graph, activity, measures)
+    adjacency = {node: sorted(graph.neighbors(node)) for node in graph}
+    water, unusable, built = dry()
+    water[18:39, 100:101] = 255  # 21 of the 41 pixels of the A2 (100, 0) to B3 (100, 40) line
+    unusable[0:10, 100:101] = 255  # and 10 of them under cloud
+    links = orbital_links(suggest(graph, rows, measures, adjacency, PX, 5.0, water, unusable, built))
+    pairs = [(s["from"], s["to"]) for s in links]
+    assert ("s:A2", "s:B3") in pairs and ("s:B3", "s:D2") in pairs
+    by_pair = {(s["from"], s["to"]): s for s in links}
+    wet, other = by_pair["s:A2", "s:B3"], by_pair["s:B3", "s:D2"]
+    assert wet["water_share"] >= MOSTLY_WATER > other["water_share"] == 0
+    assert wet["water_km"] == pytest.approx(wet["water_share"] * wet["straight_km"], abs=1e-4)
+    assert wet["unmeasured_share"] == pytest.approx(10 / 41, abs=0.03) and wet["built_share"] == 0
+    # The wet link lowers the mean distance more, yet the dry one is listed first.
+    assert wet["delta_mean_d_hub_m"] < other["delta_mean_d_hub_m"] < 0
+    assert pairs.index(("s:B3", "s:D2")) < pairs.index(("s:A2", "s:B3"))
+    # Dry everywhere, the better link leads again.
+    dried = orbital_links(suggest(graph, rows, measures, adjacency, PX, 5.0, *dry()))
+    assert [(s["from"], s["to"]) for s in dried][0] == ("s:A2", "s:B3")
+    assert all(s["theoretical"] is True for s in dried)
 
 
 
@@ -494,7 +649,7 @@ def test_a_simulated_link_is_measured_with_the_base_graphs_sampling(monkeypatch)
 
     def run():
         measures = graph_metrics(graph, activity, hub_count=1)
-        return suggest(graph, rows_of(graph, activity, measures), measures, adjacency, PX, 5.0)
+        return suggest(graph, rows_of(graph, activity, measures), measures, adjacency, PX, 5.0, *dry())
 
     unlimited = run()
     n, m = graph.number_of_nodes(), graph.number_of_edges()
@@ -517,30 +672,62 @@ def test_feeder_corridors_target_the_nearest_hub():
     measures = graph_metrics(graph, activity, hub_count=2)
     assert measures["hubs"] == ["s:H", "s:B1"]  # B1 carries every path to B2 and B3
     rows = rows_of(graph, activity, measures)
-    suggestions = suggest(graph, rows, measures, {n: [] for n in graph}, PX, 5.0)
+    suggestions = suggest(graph, rows, measures, {n: [] for n in graph}, PX, 5.0, *dry())
     feeders = [s for s in suggestions if s["type"] == "feeder_corridor"]
     # The three largest isolation weights, each to the hub nearest by rail: B3 and B2 to B1, A2 to H.
     assert [(f["station"], f["hub"], f["length_m"]) for f in feeders] == [
         ("s:B3", "s:B1", 4500.0), ("s:A2", "s:H", 4000.0), ("s:B2", "s:B1", 1500.0),
     ]  # fmt: skip
-    assert feeders[0] == {"type": "feeder_corridor", "station": "s:B3", "name": "B3", "hub": "s:B1",
-                          "hub_name": "B1", "length_m": 4500.0}  # fmt: skip
-    assert suggest(graph, rows, {**measures, "hubs": []}, {}, PX, 5.0) == []
+    assert feeders[0] == {"type": "feeder_corridor", "theoretical": True, "station": "s:B3", "name": "B3",
+                          "hub": "s:B1", "hub_name": "B1", "length_m": 4500.0, "isolation_weight": 22.5,
+                          "multimodal_isolation_weight": None, "feeder_coverage": None}  # fmt: skip
+    assert suggest(graph, rows, {**measures, "hubs": []}, {}, PX, 5.0, *dry()) == []
+
+
+def test_feeder_corridors_and_orbital_candidates_rank_by_the_multimodal_weight():
+    """With a stops layer, a station's weight is its rail weight discounted by the share of its
+    hinterland the stops cover: B3 (rail weight 30, six tenths covered: 12) falls behind A2
+    (13.3, nothing covered) and stays ahead of B2 (10, no hinterland so no discount), and A2-B3
+    is still the one orbital candidate."""
+    graph, activity = spokes()
+    measures = graph_metrics(graph, activity, hub_count=1)
+    coverage = {"s:B3": 0.6, "s:A2": 0.0, "s:B2": None, "s:A1": 0.5, "s:B1": 0.0, "s:C1": 0.2, "s:H": 0.0}
+    rows = rows_of(graph, activity, measures, coverage)
+    by_id = {r["id"]: r for r in rows}
+    assert by_id["s:B3"]["multimodal_isolation_weight"] == 12.0
+    assert by_id["s:B2"]["multimodal_isolation_weight"] is None
+    nobody_next = {n: [] for n in graph}
+    suggestions = suggest(graph, rows, measures, nobody_next, PX, 5.0, *dry())
+    feeders = [s for s in suggestions if s["type"] == "feeder_corridor"]
+    assert [f["station"] for f in feeders] == ["s:A2", "s:B3", "s:B2"]
+    keys = ("isolation_weight", "multimodal_isolation_weight", "feeder_coverage")
+    weights = [tuple(f[k] for k in keys) for f in feeders]
+    assert weights == [(13.3333, 13.3333, 0.0), (30.0, 12.0, 0.6), (10.0, None, None)]
+    # Ranked by the rail weight alone (no layer), B3 leads, as the test above holds.
+    plain = suggest(graph, rows_of(graph, activity, measures), measures, nobody_next, PX, 5.0, *dry())
+    assert [f["station"] for f in plain if f["type"] == "feeder_corridor"] == ["s:B3", "s:A2", "s:B2"]
+    assert [(s["from"], s["to"]) for s in orbital_links(suggestions)] == [("s:A2", "s:B3")]
 
 
 # --- the whole pass ------------------------------------------------------------------------------
 
+STOP_METRIC_KEYS = {
+    "stops", "stop_served_share", "stop_served_km2", "stop_served_share_by_mode", "any_mode_served_share",
+    "any_mode_served_km2", "any_mode_desert_km2", "stops_only_km2", "stop_coverage_km2_per_100",
+    "stop_overlap_share",
+}  # fmt: skip
 METRIC_KEYS = {
     "task", "coverage", "built_up_km2", "served_km2", "desert_km2", "served_share", "station_count",
     "snapped_station_count", "node_count", "edge_count", "components", "hubs", "interchanges", "flags",
     "suggestions", "stations", "deserts", "edges", "truncated", "quality_flags", "warnings", "network",
-    "params",
+    "params", *STOP_METRIC_KEYS,
 }  # fmt: skip
 STATION_KEYS = {
     "id", "name", "kind", "lon", "lat", "snapped", "degree", "betweenness", "activity", "catchment_coverage",
-    "d_hub_m", "isolation_weight", "intermodal",
+    "d_hub_m", "isolation_weight", "feeder_coverage", "multimodal_isolation_weight", "intermodal",
 }  # fmt: skip
 FLAG_TYPES = {"isolated_high_demand", "single_point_of_failure", "ghost_line"}
+NETWORK_BLOCK = {"ways": 4, "stations": 7, "pois": 6, "points": 8, "stops": 10, "fetched_at": FETCHED_AT}
 
 
 def test_the_analysis_is_json_and_echoes_its_params(analysis):
@@ -550,7 +737,8 @@ def test_the_analysis_is_json_and_echoes_its_params(analysis):
     assert all(set(station) == STATION_KEYS for station in metrics["stations"])
     assert metrics["task"] == "rail_access"
     assert metrics["params"] == {"pixel_size_m": PX, "coverage_floor": 0.6, **RailParams().__dict__}
-    assert metrics["network"] == {"ways": 4, "stations": 7, "pois": 6, "points": 8, "fetched_at": FETCHED_AT}
+    assert (metrics["params"]["stop_reach_m"], metrics["params"]["feeder_reach_m"]) == (400.0, 2000.0)
+    assert metrics["network"] == NETWORK_BLOCK
     again = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network()).metrics
     assert again == metrics
 
@@ -587,8 +775,102 @@ def test_the_analysis_measures_the_city(analysis):
     assert edges["s:n2", "s:n7"]["corridor_visibility"] == 1.0
     assert all(0 <= e["betweenness"] <= 1 for e in m["edges"])
     assert {f["type"] for f in m["flags"]} <= FLAG_TYPES
-    assert analysis.layers["timings"].keys() == {"masks", "access", "graph", "metrics"}
+    assert analysis.layers["timings"].keys() == {"masks", "access", "modes", "graph", "metrics"}
     assert analysis.layers["skeleton"].sum() > 300 and analysis.layers["heat"].max() <= 1.0
+
+
+def test_the_analysis_measures_the_stops(analysis):
+    """The stops layer against the same city: the bus street and the tram stop add built-up
+    ground beyond the stations' reach, the ferry terminal (off the district) adds none."""
+    m, layers = analysis.metrics, analysis.layers
+    assert m["stops"] == {"bus": 9, "tram": 1, "ferry": 1} and m["network"]["stops"] == 10
+    assert 0 < m["stop_served_share"] < m["served_share"] < m["any_mode_served_share"] < 1
+    assert m["stop_served_km2"] == pytest.approx(m["stop_served_share"] * m["built_up_km2"], abs=1e-3)
+    assert m["any_mode_served_km2"] >= m["served_km2"]
+    assert m["stops_only_km2"] == pytest.approx(m["any_mode_served_km2"] - m["served_km2"], abs=1e-3)
+    assert m["any_mode_desert_km2"] == pytest.approx(m["built_up_km2"] - m["any_mode_served_km2"], abs=1e-3)
+    assert m["any_mode_desert_km2"] < m["desert_km2"]
+    by_mode = m["stop_served_share_by_mode"]
+    assert set(by_mode) == set(MODES) == {"bus", "tram", "ferry"}
+    assert by_mode["bus"] > by_mode["tram"] > by_mode["ferry"] == 0.0
+    # The bus and tram reaches barely overlap, so their shares add up to the stops' share.
+    assert by_mode["bus"] + by_mode["tram"] == pytest.approx(m["stop_served_share"], abs=0.01)
+    # How far the mapped stops go: built-up km2 within reach per 100 of the 11 stops, and the part
+    # of the stop-served ground the stations reach already (the three stops at Central).
+    assert m["stop_coverage_km2_per_100"] == pytest.approx(100 * m["stop_served_km2"] / 11, abs=1e-3)
+    assert 0 < m["stop_overlap_share"] < 0.5
+    # The one desert (the district beyond the stations) says how much of it the stops cover.
+    (desert,) = m["deserts"]
+    assert desert["stop_covered_share"] == pytest.approx(m["stops_only_km2"] / desert["area_km2"], abs=1e-3)
+    # The stop reach layer is the mask the figure fills from: 20 px round each stop in the window.
+    stop_reach = layers["stop_reach"]
+    assert stop_reach.dtype == np.uint8 and set(np.unique(stop_reach)) == {0, 255}
+    assert stop_reach[120, 120] == 255 and stop_reach[290, 260] == 255 and stop_reach[222, 360] == 255
+    assert stop_reach[120, 201] == 0 and stop_reach[200, 300] == 0 and stop_reach[221, 360] == 255
+    assert stop_reach[290, 281] == 0 and stop_reach[271, 260] == 255 and stop_reach[250, 260] == 0
+    # Feeder coverage: Midwest's hinterland holds the bus street, South's the tram stop, East's
+    # nothing (0, measured), and West's cell has no built-up ground beyond its reach (None), so
+    # Midwest and South get a multimodal weight below their rail weight, East the same weight
+    # and West none.
+    by_id = {s["id"]: s for s in m["stations"]}
+    assert 0 < by_id["s:n7"]["feeder_coverage"] < 1 and 0 < by_id["s:n5"]["feeder_coverage"] < 1
+    assert by_id["s:n3"]["feeder_coverage"] == 0.0 and by_id["s:n1"]["feeder_coverage"] is None
+    south = by_id["s:n5"]
+    assert 0 < south["multimodal_isolation_weight"] < south["isolation_weight"]
+    assert south["multimodal_isolation_weight"] == pytest.approx(
+        south["isolation_weight"] * (1 - south["feeder_coverage"]), abs=1e-3
+    )
+    assert by_id["s:n3"]["multimodal_isolation_weight"] == by_id["s:n3"]["isolation_weight"] > 0
+    assert by_id["s:n1"]["multimodal_isolation_weight"] is None and by_id["s:n1"]["isolation_weight"] > 0
+    # Which ranks the feeder corridors: East (62.8, nothing covered) now leads South (63.6 by rail,
+    # 48.6 once the tram stop's cover counts); West, without a multimodal weight, by its rail weight.
+    feeders = [s for s in m["suggestions"] if s["type"] == "feeder_corridor"]
+    assert [f["station"] for f in feeders] == ["s:n3", "s:n5", "s:n1"]
+    assert feeders[1]["multimodal_isolation_weight"] == south["multimodal_isolation_weight"]
+    assert feeders[2]["multimodal_isolation_weight"] is None and feeders[2]["isolation_weight"] == 32.0
+    assert all(s["theoretical"] is True for s in m["suggestions"])
+    assert "no_stops_layer" not in m["quality_flags"]
+
+
+def test_a_network_without_a_stops_layer_measures_no_stops_and_says_so(analysis):
+    """A network cached before the layer existed: every stop measure None (not measured, never
+    nothing there), the flag no_stops_layer, the mask empty; the rest of the analysis the same,
+    including the intermodal counts, which then come from the pois' bus stops."""
+    plain = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network(stops=False))
+    m, with_stops = plain.metrics, analysis.metrics
+    assert m["quality_flags"] == ["no_stops_layer"]
+    assert all(m[key] is None for key in STOP_METRIC_KEYS)  # the by-mode shares too, not a dict of None
+    assert m["network"] == {**NETWORK_BLOCK, "stops": None}
+    assert all(d["stop_covered_share"] is None for d in m["deserts"])
+    for station in m["stations"]:
+        assert station["feeder_coverage"] is None and station["multimodal_isolation_weight"] is None
+    assert not plain.layers["stop_reach"].any() and plain.layers["stop_reach"].shape == (SIZE, SIZE)
+    assert json.loads(json.dumps(m, allow_nan=False)) == m
+    # The old pois path still counts Central's two bus stops within 300 m; with the layer the
+    # count is the layer's, the same, and the pois' copies are not counted twice.
+    central = {s["id"]: s for s in m["stations"]}["s:n2"]
+    assert central["intermodal"] == {**NO_INTERMODAL, "bus_stop_near": 2}
+    assert [s["intermodal"] for s in with_stops["stations"]] == [s["intermodal"] for s in m["stations"]]
+    # Everything that is not a stop measure is the same analysis.
+    differ = {"quality_flags", "stations", "suggestions", "deserts", "flags", "network"}
+    same = set(m) - STOP_METRIC_KEYS - differ
+    assert {k: m[k] for k in same} == {k: with_stops[k] for k in same}
+    assert [(s["id"], s["isolation_weight"]) for s in m["stations"]] == [
+        (s["id"], s["isolation_weight"]) for s in with_stops["stations"]
+    ]
+    # Ranked by the rail weight alone, South leads East.
+    feeders = [s for s in m["suggestions"] if s["type"] == "feeder_corridor"]
+    assert [s["station"] for s in feeders] == ["s:n5", "s:n3", "s:n1"]
+    assert all(s["multimodal_isolation_weight"] is None for s in m["suggestions"])
+    # An empty layer is a layer: nothing within reach, measured as 0, and no flag.
+    empty_net = {**grid_network(stops=False), "stops": {}}
+    e = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, empty_net).metrics
+    assert e["quality_flags"] == [] and e["stops"] == {"bus": 0, "tram": 0, "ferry": 1}
+    assert e["stop_served_share"] == 0.0 and e["stop_overlap_share"] is None
+    assert e["stop_coverage_km2_per_100"] == 0.0  # one ferry terminal, reaching nothing built
+    assert e["any_mode_served_km2"] == e["served_km2"] and e["stops_only_km2"] == 0
+    assert e["network"]["stops"] == 0 and e["stop_served_share_by_mode"]["bus"] == 0.0
+    assert e["stations"][6]["feeder_coverage"] == 0.0  # Midwest: a hinterland, nothing covering it
 
 
 def test_project_network_round_trips_pixels():
@@ -599,8 +881,26 @@ def test_project_network_round_trips_pixels():
         assert station["inside"]
     assert len(projected["ways_px"]) == 3 and len(projected["tunnels_px"]) == 1
     np.testing.assert_allclose(projected["tunnels_px"][0], [[200, 200], [200, 360]], atol=1e-3)
-    assert projected["stations_xy_m"].shape == (7, 2) and projected["pois_xy_m"].shape == (6, 2)
-    assert projected["poi_kinds"][3] == "bus_station"
+    # The pois without their bus stops (the layer carries those), then the layer's nine bus stops.
+    assert projected["stations_xy_m"].shape == (7, 2) and projected["pois_xy_m"].shape == (12, 2)
+    assert projected["poi_kinds"] == ["bus_station", "ferry_terminal", "park_ride"] + ["bus_stop"] * 9
+    stops_px = projected["stops_px"]
+    assert set(stops_px) == set(projected["stops_xy_m"]) == {"bus", "tram", "ferry"}
+    for mode, points in STOPS_PX.items():
+        np.testing.assert_allclose(stops_px[mode], points, atol=1e-3)
+        assert projected["stops_xy_m"][mode].shape == (len(points), 2)
+    np.testing.assert_allclose(stops_px["ferry"], [(360, 222)], atol=1e-3)
+    np.testing.assert_allclose(projected["pois_xy_m"][3:], projected["stops_xy_m"]["bus"])
+    # Without the layer the pois keep their bus stops and the stops are not measured.
+    projected = project_network(grid_network(stops=False), EPSG, TRANSFORM, (SIZE, SIZE))
+    assert projected["pois_xy_m"].shape == (6, 2) and projected["poi_kinds"][3] == "bus_station"
+    assert projected["stops_px"] is None and projected["stops_xy_m"] is None
+    # A layer without a mode has none of it; a stop outside the window is None in pixels.
+    thin = {**grid_network(stops=False), "stops": {"tram": [lonlat(260, 290), [152.0, -34.0]]}}
+    projected = project_network(thin, EPSG, TRANSFORM, (SIZE, SIZE))
+    assert projected["stops_px"]["bus"] == [] and projected["stops_xy_m"]["bus"].shape == (0, 2)
+    assert projected["stops_px"]["tram"][1] is None and projected["stops_xy_m"]["tram"].shape == (2, 2)
+    assert projected["poi_kinds"] == ["bus_station", "ferry_terminal", "park_ride"]  # no pois' bus stops
     far = {"stations": [{"id": "x", "name": "Far", "lon": 152.0, "lat": -34.0}]}
     projected = project_network(far, EPSG, TRANSFORM, (SIZE, SIZE))
     assert projected["stations"][0]["inside"] is False and projected["stations_px"] == [None]
@@ -613,12 +913,15 @@ def test_low_coverage_and_no_network_are_flagged_not_crashes():
     m = analyse_rail_access(bands, WHOLE, PX, TRANSFORM, EPSG, grid_network()).metrics
     assert "low_coverage" in m["quality_flags"] and m["coverage"] < 0.6
     m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, {}).metrics
-    assert m["quality_flags"] == ["no_network"]
+    assert m["quality_flags"] == ["no_network", "no_stops_layer"]
     assert m["station_count"] == m["edge_count"] == m["node_count"] == 0
     assert m["served_share"] == 0.0 and m["desert_km2"] == m["built_up_km2"] > 0
     assert m["hubs"] == m["stations"] == m["edges"] == m["flags"] == m["suggestions"] == []
     assert m["deserts"][0]["nearest_station"] is None and m["deserts"][0]["nearest_station_m"] is None
-    assert m["network"] == {"ways": 0, "stations": 0, "pois": 0, "points": 0, "fetched_at": None}
+    assert m["network"] == {
+        "ways": 0, "stations": 0, "pois": 0, "points": 0, "stops": None, "fetched_at": None
+    }  # fmt: skip
+    assert m["stops"] is None and m["any_mode_served_share"] is None
     m = analyse_rail_access(city(), [], PX, TRANSFORM, EPSG, grid_network()).metrics
     assert "empty_site" in m["quality_flags"] and m["coverage"] == 0.0 and m["built_up_km2"] == 0.0
 
@@ -671,18 +974,32 @@ def test_network_elements_off_the_earth_are_skipped_with_a_warning():
     net["ways"].append({"id": "w9", "points": [[200.0, 0.0], [1e400, 0.0]], "tunnel": False})
     net["stations"].append({"id": "n8", "name": "Pole", "lon": 151.0, "lat": 95.0})
     net["stations"].append({"id": "n9", "name": "Text", "lon": "x", "lat": -33.9})
-    net["pois"].append({"id": "p9", "kind": "bus_stop", "lon": 200.0, "lat": -33.9})
+    net["pois"].append({"id": "p9", "kind": "park_ride", "lon": 200.0, "lat": -33.9})
+    net["stops"]["bus"] += [[200.0, -33.9], [151.0, float("nan")]]
+    net["stops"]["tram"].append({"lon": 151.0, "lat": -33.9})
     projected = project_network(net, EPSG, TRANSFORM, (SIZE, SIZE))
     assert projected["warnings"] == [
         "4 way vertices with coordinates not on Earth skipped",
         "2 stations with coordinates not on Earth skipped",
         "1 points of interest with coordinates not on Earth skipped",
+        "2 bus stops with coordinates not on Earth skipped",
+        "1 tram stops with coordinates not on Earth skipped",
     ]
-    assert (len(projected["ways_px"]), len(projected["stations"]), len(projected["poi_kinds"])) == (3, 7, 6)
+    assert (len(projected["ways_px"]), len(projected["stations"]), len(projected["poi_kinds"])) == (3, 7, 12)
+    assert (len(projected["stops_px"]["bus"]), len(projected["stops_px"]["tram"])) == (9, 1)
     m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, net).metrics
-    assert m["warnings"][:3] == projected["warnings"] and m["station_count"] == 7
+    assert m["warnings"][:5] == projected["warnings"] and m["station_count"] == 7
     # The network block counts what was received; the warnings say what was skipped.
-    assert m["network"] == {"ways": 5, "stations": 9, "pois": 7, "points": 12, "fetched_at": FETCHED_AT}
+    assert m["network"] == {
+        "ways": 5, "stations": 9, "pois": 7, "points": 12, "stops": 13, "fetched_at": FETCHED_AT
+    }  # fmt: skip
+    assert m["stops"] == {"bus": 11, "tram": 2, "ferry": 1}
+    # A layer that is not an object at all is not measured, and the warning says so.
+    odd_net = {**grid_network(stops=False), "stops": [[151.0, -33.9]]}
+    odd = project_network(odd_net, EPSG, TRANSFORM, (SIZE, SIZE))
+    assert odd["stops_px"] is None
+    assert odd["warnings"] == ["the stops layer is not an object: the stops were not measured"]
+    assert odd["poi_kinds"][:3] == ["bus_stop", "bus_stop", "bus_stop"]  # the pois' bus stops still count
 
 
 def test_a_repeated_station_id_keeps_one_entry():
@@ -834,7 +1151,7 @@ def test_the_graph_measures_of_a_five_thousand_node_graph_stay_within_budget():
     rows = [row(n, activity[n], measures["degree"][n], between.get(n, 0.0), d_hub[n]) for n in stations]
     adjacency = rail_network.station_adjacency(graph)
     flag_stations(rows, adjacency)
-    suggest(graph, rows, measures, adjacency, PX, max_orbital_km=20.0)
+    suggest(graph, rows, measures, adjacency, PX, 20.0, *dry((720, 720)))
     seconds = time.perf_counter() - started
     print(f"graph measures, flags and suggestions on {graph.number_of_nodes()} nodes: {seconds:.2f} s")
     assert measures["approximate"] and len(measures["hubs"]) == 5
@@ -862,6 +1179,15 @@ def test_a_city_sized_network_completes_in_seconds_with_the_flag():
 
 def two_point_way(wid, a, b):
     return {"id": wid, "points": [lonlat(*a), lonlat(*b)], "tunnel": False}
+
+
+def stops_grid(size, count=contract.NETWORK_LIMITS["stops"]):
+    """A stops layer at the contract's cap: `count` points on a grid across a `size` px window,
+    half bus and half tram, so the worst networks time the modes stage at its heaviest."""
+    step = max(1, int((size * size / count) ** 0.5))
+    across = range(step // 2, size, step)
+    points = [lonlat(x, y) for y in across for x in across][:count]
+    return {"bus": points[: len(points) // 2], "tram": points[len(points) // 2 :]}
 
 
 def station_at(sid, x, y):
@@ -903,7 +1229,8 @@ def comb_and_diagonals(size=4096):
     stations = [station_at(f"n{k}", x, y) for k, (x, y) in enumerate(picked)]
     bar = (spines[0] + spines[1]) // 2
     ways += [two_point_way(f"bar{r}", (100, bar + r), (size - 200, bar + r)) for r in range(66)]
-    return {"ways": ways, "stations": stations, "pois": [], "fetched_at": FETCHED_AT}
+    stops = stops_grid(size)
+    return {"ways": ways, "stations": stations, "pois": [], "fetched_at": FETCHED_AT, "stops": stops}
 
 
 def serpentine_and_bar(size=4096):
@@ -924,33 +1251,42 @@ def serpentine_and_bar(size=4096):
             ways.append(two_point_way(f"u{k}", (x, y), (x, y + 8)))
     bar = rows[0] + 18
     ways += [two_point_way(f"bar{r}", (100, bar + r), (size - 100, bar + r)) for r in range(66)]
-    return {"ways": ways, "stations": stations, "pois": [], "fetched_at": FETCHED_AT}
+    stops = stops_grid(size)
+    return {"ways": ways, "stations": stations, "pois": [], "fetched_at": FETCHED_AT, "stops": stops}
 
 
 @pytest.mark.skipif(not os.environ.get("VISION_PERF"), reason="set VISION_PERF=1 to time the worst networks")
 @pytest.mark.parametrize("make", [comb_and_diagonals, serpentine_and_bar])
 def test_the_worst_networks_measured_stay_within_the_analysis_budget(make):
-    """The whole pass with its figure at the rail task's window cap, and the graph measures, flags
-    and suggestions alone (the stage the quadratic station passes were in). The whole pass is held
-    to 30 s, the analysis's share of the worker's 60 s (the read takes 10-30 s of it), not to the
-    whole invoke. On one core of the machine of scene.MAX_WINDOW_PX (taskset): 13.0-13.3 s and
-    2.9-3.0 s for comb_and_diagonals, 15.3-15.6 s and 6.3-6.4 s for serpentine_and_bar; on its
-    four cores 11.6 s and 13.5 s. With the quadratic station passes back, comb_and_diagonals took
-    30.8 s on one core, 18.5 s of it in the stage, and failed both bounds."""
+    """The whole pass with both figures at the rail task's window cap, and the graph measures,
+    flags and suggestions alone (the stage the quadratic station passes were in). The whole pass
+    is held to 30 s, the analysis's share of the worker's 60 s (the read takes 10-30 s of it), not
+    to the whole invoke. On one core of the machine of scene.MAX_WINDOW_PX (taskset), before the
+    stops layer: 13.0-13.3 s and 2.9-3.0 s for comb_and_diagonals, 15.3-15.6 s and 6.3-6.4 s for
+    serpentine_and_bar; on its four cores 11.6 s and 13.5 s. With a 40,000-stop layer and the
+    transit reach figure, on the four cores: 14.0 s (the modes stage 1.3 s) and 15.3 s (1.0 s),
+    at a peak of 1.24 GB RSS in the test process. With the quadratic station passes back,
+    comb_and_diagonals took 30.8 s on one core, 18.5 s of it in the stage, and failed both
+    bounds."""
     size = worker.RAIL_MAX_WINDOW_PX
     network = contract.validate_network(make(size))
     assert len(network["stations"]) == 2000 and len(network["ways"]) <= contract.NETWORK_LIMITS["ways"]
+    assert sum(len(points) for points in network["stops"].values()) == contract.NETWORK_LIMITS["stops"]
     bands = city(size)
     window = [[[0, 0], [size - 1, 0], [size - 1, size - 1], [0, size - 1]]]
     started = time.perf_counter()
     analysis = analyse_rail_access(bands, window, PX, TRANSFORM, EPSG, network)
     png = annotate_rail(analysis, bands["red"], 2024)
+    modes = annotate_modes(analysis, bands["red"], 2024)
     seconds = time.perf_counter() - started
     m = analysis.metrics
     stages = analysis.layers["timings"]
-    print(f"{make.__name__} at {size} px: {m['node_count']} nodes, {seconds:.1f} s, stages (ms) {stages}")
+    peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    print(f"{make.__name__} at {size} px: {m['node_count']} nodes, {seconds:.1f} s, stages (ms) {stages}, "
+          f"figures {len(png)} and {len(modes)} bytes, peak {peak_mb:.0f} MB")  # fmt: skip
     assert 9000 < m["node_count"] <= rail_analyse.MAX_GRAPH_NODES
     assert "graph_too_large" not in m["quality_flags"] and png.startswith(b"\x89PNG")
+    assert modes.startswith(b"\x89PNG") and m["stops"]["bus"] + m["stops"]["tram"] == 40_000
     if make is comb_and_diagonals:
         assert max(len(f["stations"]) for f in m["flags"] if f["type"] == "ghost_line") > 1000
     assert seconds < 30.0 and stages["metrics"] < 12_000.0
@@ -975,7 +1311,8 @@ def test_a_wide_heat_blur_runs_on_a_reduced_grid_and_matches():
     [{"ndbi_threshold": 0.6}, {"ndvi_max": -0.1}, {"reach_m": 100}, {"heat_sigma_m": 5000}, {"snap_m": 10},
      {"hub_count": 0}, {"hub_count": 2.5}, {"intermodal_near_m": 600, "intermodal_far_m": 500},
      {"min_desert_km2": 0}, {"visibility_ndvi_max": 2}, {"max_orbital_km": 50}, {"reach_m": "1000"},
-     {"hub_count": True}],
+     {"hub_count": True}, {"stop_reach_m": 50}, {"stop_reach_m": 2500}, {"feeder_reach_m": 400},
+     {"feeder_reach_m": 20_000}, {"feeder_reach_m": 900}, {"reach_m": 3000}, {"stop_reach_m": None}],
 )  # fmt: skip
 def test_bad_params_are_refused(kwargs):
     with pytest.raises(ValueError):
@@ -987,6 +1324,11 @@ def test_params_default_inside_their_limits():
     for name, (low, high) in PARAM_LIMITS.items():
         assert low <= getattr(params, name) <= high
     assert RailParams(hub_count=20, intermodal_near_m=1000, intermodal_far_m=1000).hub_count == 20
+    assert (params.stop_reach_m, params.feeder_reach_m) == (400.0, 2000.0)
+    assert set(contract.STOP_PARAMS) == {"stop_reach_m", "feeder_reach_m"} <= set(PARAM_LIMITS)
+    # The feeder reach starts where the station's reach ends, so it is never under it.
+    assert RailParams(reach_m=3000, feeder_reach_m=3000).feeder_reach_m == 3000
+    assert RailParams(reach_m=1000, feeder_reach_m=1000).feeder_reach_m == 1000
 
 
 def test_mismatched_bands_and_bad_pixel_size_are_refused():
@@ -1234,9 +1576,9 @@ def test_the_legend_lays_its_entries_out_in_as_many_columns_as_fit():
     for width, strip in strips.items():
         assert strip.shape[1:] == (width, 3)
         assert (strip[:, -2:] == CAPTION_BACKGROUND).all()  # no words cut off at the right edge
-        for colour in (FLAG_COLOUR, SUGGESTION_COLOUR, DESERT_COLOUR, (255, 255, 255)):
+        for colour in (FLAG_COLOUR, SUGGESTION_COLOUR, WET_LINK_COLOUR, DESERT_COLOUR, (255, 255, 255)):
             assert count_near(strip, colour, 60), (width, colour)  # every symbol is drawn
-    # Row by row: station, hub, flag, suggestion, desert. One column at 256 px ...
+    # Row by row: station, hub, flag, suggestion, desert, wet link. One column at 256 px ...
     (flag_x, flag_y), (desert_x, desert_y) = glyph_centres(strips[256])
     assert flag_x < 40 and desert_x < 40 and flag_y < desert_y
     # ... two at 400 (the flag starts the second row, the desert the third) ...
@@ -1248,6 +1590,17 @@ def test_the_legend_lays_its_entries_out_in_as_many_columns_as_fit():
         (flag_x, flag_y), (desert_x, desert_y) = glyph_centres(strip)
         assert flag_x > width / 2 and width / 5 < desert_x < flag_x and flag_y < strip.shape[0] / 2 < desert_y
     assert strips[1024].shape[0] < 100  # two rows of words at the caption's 1024 px scale
+    # The transit reach figure's entries lay out the same way: one column at 256 px, its widest
+    # entry (the station reach and its minutes) fitting, two columns from 485 px.
+    entries = modes_legend_entries(RailParams().__dict__)
+    assert [kind for kind, _ in entries] == ["fill_station", "fill_stop", "fill_beyond", "line"]
+    for width in (256, 400, 485, 1024, 3000):
+        strip = legend_strip(np.zeros((320, width, 3), np.uint8), entries)
+        assert strip.shape[1:] == (width, 3) and (strip[:, -2:] == CAPTION_BACKGROUND).all(), width
+        for colour in (rail_annotate._swatch(STATION_FILL), rail_annotate._swatch(STOP_FILL),
+                       rail_annotate._swatch(BEYOND_FILL), BEYOND_OUTLINE, (255, 255, 255)):  # fmt: skip
+            assert count_near(strip, colour, 20), (width, colour)
+    assert legend_strip(np.zeros((1, LEGEND_MIN_WIDTH - 1, 3), np.uint8), entries) is None
 
 
 def test_the_legend_never_loses_a_column_as_the_figure_widens(monkeypatch):
@@ -1260,20 +1613,58 @@ def test_the_legend_never_loses_a_column_as_the_figure_widens(monkeypatch):
         return draw(image, kind, centre, size)
 
     monkeypatch.setattr(rail_annotate, "_legend_glyph", recording)
-    counts = []
+    entries = modes_legend_entries(RailParams().__dict__)
+    counts, modes_counts = [], []
     for width in range(LEGEND_MIN_WIDTH, 3001, 8):
         centres.clear()
         strip = legend_strip(np.zeros((1, width, 3), np.uint8))
         assert (strip[:, -2:] == CAPTION_BACKGROUND).all(), width  # and no words cut off
         counts.append(len(set(centres)))
+        centres.clear()
+        strip = legend_strip(np.zeros((1, width, 3), np.uint8), entries)
+        assert (strip[:, -2:] == CAPTION_BACKGROUND).all(), width
+        modes_counts.append(len(set(centres)))
     assert counts == sorted(counts) and counts[0] == 1 and counts[-1] == 3
+    assert modes_counts == sorted(modes_counts) and modes_counts[0] == 1 and modes_counts[-1] >= 2
 
 
-def test_the_legend_calls_the_dashed_line_a_simulated_link_as_the_caption_does():
-    # The caption and the planner notes say "simulated" and never "recommendation": so does the figure.
+def test_the_legend_calls_the_dashed_line_a_theoretical_link_as_the_notes_do():
+    # The planner notes and the articles say "theoretical" and never "recommendation" or "route":
+    # so does the figure, and a link mostly over water says that too.
+    entries = dict(rail_annotate.LEGEND_ENTRIES)
     words = [line for _, lines in rail_annotate.LEGEND_ENTRIES for line in lines]
-    assert dict(rail_annotate.LEGEND_ENTRIES)["suggestion"] == ("simulated link",)
-    assert not any("suggest" in line or "recommend" in line for line in words)
+    assert entries["suggestion"] == ("theoretical link",)
+    assert entries["wet_suggestion"] == ("theoretical link (mostly over water)",)
+    assert not any(word in line for line in words for word in ("suggest", "recommend", "route", "simulated"))
+    assert [kind for kind, _ in rail_annotate.LEGEND_ENTRIES] == [
+        "station", "hub", "flag", "suggestion", "desert", "wet_suggestion"
+    ]  # fmt: skip
+
+
+def test_an_orbital_link_mostly_over_water_is_dashed_in_its_own_colour(analysis):
+    # Branch End (340, 120) to East (360, 200), as the green test draws it, but mostly over water.
+    link = {"type": "orbital_link", "from": "s:n6", "to": "s:n3", "from_name": "Branch End",
+            "to_name": "East", "straight_km": 1.65, "delta_top_hub_betweenness": -0.1,
+            "delta_mean_d_hub_m": -100.0, "water_share": 0.6, "water_km": 0.99,
+            "theoretical": True}  # fmt: skip
+    along = np.linspace(0.15, 0.85, 60)
+
+    def dashes(image, colour):
+        return sum(near(image[round(120 + 80 * t), round(340 + 20 * t)], colour, 60) for t in along)
+
+    wet = figure(analysis, suggestions=[link])
+    assert 15 <= dashes(wet, WET_LINK_COLOUR) <= 50 and dashes(wet, SUGGESTION_COLOUR) == 0
+    # Under half over water, or with the share unmeasured (None) or malformed, it is the dry colour.
+    for share in (0.49, None, "wet", True):
+        dried = figure(analysis, suggestions=[{**link, "water_share": share}])
+        assert 15 <= dashes(dried, SUGGESTION_COLOUR) <= 50 and dashes(dried, WET_LINK_COLOUR) == 0, share
+    assert MOSTLY_WATER == 0.5
+    assert 15 <= dashes(figure(analysis, suggestions=[{**link, "water_share": 0.5}]), WET_LINK_COLOUR)
+    # The wet colour is nothing else on the map: not the hub green, the flag red, the desert
+    # amber, the edge cyan, nor the inferno map (checked over the whole city with no link).
+    plain = figure(analysis, suggestions=[])
+    assert count_near(plain[:SIZE], WET_LINK_COLOUR, 60) == 0
+    assert count_near(plain[SIZE:], WET_LINK_COLOUR, 60) > 0  # the legend's glyph
 
 
 def test_a_wide_short_figure_has_a_legend(analysis):
@@ -1396,11 +1787,16 @@ def crowded_city(analysis, side=1024, count=2000, seed=0):
         {"type": "feeder_corridor", "station": f"s:{i}", "hub": f"s:{i + 500}"} for i in range(5, 10)
     ]
     assert (len(stations), len(flags), len(suggestions)) == (2000, 400, 10)
+    def grown(name):
+        return cv2.resize(analysis.layers[name], (side, side), interpolation=cv2.INTER_NEAREST)
+
     layers = {
         **analysis.layers,
         "heat": cv2.resize(analysis.layers["heat"], (side, side), interpolation=cv2.INTER_LINEAR),
         "usable": np.ones((side, side), np.uint8),
-        "desert": cv2.resize(analysis.layers["desert"], (side, side), interpolation=cv2.INTER_NEAREST),
+        "desert": grown("desert"),
+        "built": grown("built"),
+        "stop_reach": grown("stop_reach"),
         "graph": graph,
         "stations_px": list(zip(xs, ys, strict=True)),
         "hubs": [f"s:{i}" for i in range(10)],
@@ -1422,6 +1818,16 @@ def test_a_city_sized_figure_with_every_flag_and_suggestion_stays_within_the_byt
     image = decode(png)
     width = image.shape[1]
     assert FIGURE_MIN_SIDE < width < side and image.shape == (width + strip_height(width), width, 3)
+    # The transit reach figure of the same city: over its own budget at 1024 px too (the noise
+    # band), drawn again smaller until it fits, well under the rail map's bytes.
+    started = time.perf_counter()
+    modes = annotate_modes(crowded, red, 2024)
+    assert time.perf_counter() - started < 10.0
+    assert len(modes) <= MODES_FIGURE_BYTE_BUDGET < len(png)
+    image = decode(modes)
+    width = image.shape[1]
+    assert FIGURE_MIN_SIDE < width < side
+    assert image.shape == (width + modes_strip_height(width, crowded.metrics["params"]), width, 3)
 
 
 def test_a_figure_over_the_byte_budget_is_drawn_again_smaller(analysis, big_city, monkeypatch):
@@ -1442,3 +1848,101 @@ def test_a_figure_over_the_byte_budget_is_drawn_again_smaller(analysis, big_city
     # A map already under the floor is never shrunk.
     small = decode(annotate_rail(analysis, city()["red"], "2024"))
     assert small.shape == (SIZE + strip_height(SIZE), SIZE, 3)
+    # The transit reach figure shrinks the same way, under its own budget.
+    full = annotate_modes(big, red, "2024")
+    params = big.metrics["params"]
+    assert decode(full).shape == (1024 + modes_strip_height(1024, params), 1024, 3)
+    monkeypatch.setattr("vision.rail_annotate.MODES_FIGURE_BYTE_BUDGET", len(full) - 1)
+    smaller = annotate_modes(big, red, "2024")
+    assert len(smaller) < len(full)
+    assert decode(smaller).shape == (819 + modes_strip_height(819, params), 819, 3)
+    monkeypatch.setattr("vision.rail_annotate.MODES_FIGURE_BYTE_BUDGET", 1)
+    floor = decode(annotate_modes(big, red, "2024"))
+    assert floor.shape == (FIGURE_MIN_SIDE + modes_strip_height(FIGURE_MIN_SIDE, params), FIGURE_MIN_SIDE, 3)
+
+
+# --- the transit reach figure ---------------------------------------------------------------------
+
+
+def modes_strip_height(width, params):
+    """The rows the strip (the caption, then the transit reach legend) adds under a map `width`
+    px wide."""
+    return figure_strip(np.zeros((1, width, 3), np.uint8), CAPTION, modes_legend_entries(params)).shape[0]
+
+
+def filled(red_value, colour):
+    """The colour a fill gives a roof pixel whose red band is `red_value`: the fill at FILL_ALPHA
+    over the stretched grey."""
+    grey = int(stretch(np.array([[red_value]], np.uint16), STRETCH_MAX)[0, 0])
+    return tuple(round(FILL_ALPHA * c + (1 - FILL_ALPHA) * grey) for c in colour)
+
+
+def test_the_transit_reach_figure_fills_the_built_up_ground_by_what_reaches_it(analysis):
+    red = city()["red"]
+    png = annotate_modes(analysis, red, year="2024")
+    assert png[:8] == PNG_SIGNATURE and len(png) <= MODES_FIGURE_BYTE_BUDGET <= MAX_IMAGE_BYTES
+    assert annotate_modes(analysis, red, "2024") == png  # the same twice
+    image = decode(png)
+    params = analysis.metrics["params"]
+    assert image.shape == (SIZE + modes_strip_height(SIZE, params), SIZE, 3)
+    # The strip under the map: the caption, then this figure's own legend, naming the minutes.
+    strip = figure_strip(image[:SIZE], CAPTION, modes_legend_entries(params))
+    assert np.array_equal(image[SIZE:], strip) and image[SIZE + 2, 2].tolist() == [0, 0, 0]
+    assert count_white(image[SIZE : SIZE + 30, :150]) > 50
+    words = [line for _, lines in modes_legend_entries(params) for line in lines]
+    assert "built up, within 1 km (about 12 min walk)" in words
+    assert "beyond that, within 400 m (5 min walk)" in words
+    assert "of a bus, tram or ferry stop" in words and "beyond both (outlined)" in words
+    assert any("12 min" in w for w in words) and contract.WALK_M_PER_MIN == 80.0  # 1000 m / 80 = 12.5
+    # The three fills, over roofs (red 1500): within Central's reach, the bus street beyond it,
+    # and the south-west of the district beyond both; the lake, not built, is bare grey; the
+    # vegetation outside the district is the dark scene; the cloud carries the slate tint.
+    roof = BUILT[0]
+    assert near(image[190, 215], filled(roof, STATION_FILL), 12)  # 18 px from Central, off its lines
+    assert near(image[120, 120], filled(roof, STOP_FILL), 12)
+    assert near(image[290, 110], filled(roof, BEYOND_FILL), 12)
+    assert near(image[240, 140], (128, 128, 128), 12) and max(image[20, 20]) < 60
+    cloud = image[55, 340]
+    assert near(cloud, tuple(round(0.4 * 128 + 0.6 * c) for c in UNMEASURED_TINT), 12)
+    # The residual's outline: its pale colour runs along the edge of the violet, and the station
+    # reach's edge (aqua against violet) has none.
+    assert count_near(image[250:300, 100:120], BEYOND_OUTLINE, 30) > 10
+    assert count_near(image[:SIZE], BEYOND_OUTLINE, 30) > 100
+    # The rail lines are white and the stations small white rings; no hub, flag or link colour.
+    assert white(image[200, 300]) and white(image[100, 200])
+    assert count_white(image[195:206, 355:366]) >= 4  # East's ring
+    for colour in (HUB_COLOUR, FLAG_COLOUR, SUGGESTION_COLOUR, WET_LINK_COLOUR, DESERT_COLOUR):
+        assert count_near(image[:SIZE], colour, 30) == 0, colour
+    with pytest.raises(ValueError):
+        annotate_modes(analysis, red[:-1], "2024")
+    # Scaled down with the strip laid out for the narrower map.
+    small = decode(annotate_modes(analysis, red, 2024, max_side=256))
+    assert small.shape == (256 + modes_strip_height(256, params), 256, 3)
+    assert near(small[int(120 * 0.64), int(120 * 0.64)], filled(roof, STOP_FILL), 20)
+
+
+def test_the_transit_reach_figure_is_none_without_a_stops_layer():
+    plain = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network(stops=False))
+    assert "no_stops_layer" in plain.metrics["quality_flags"]
+    assert annotate_modes(plain, city()["red"], 2024) is None
+    assert annotate_rail(plain, city()["red"], 2024).startswith(PNG_SIGNATURE)  # the rail map, as before
+    # An empty layer is drawn: nothing within stop reach, so every desert pixel is the residual.
+    empty_net = {**grid_network(stops=False), "stops": {}}
+    empty = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, empty_net)
+    image = decode(annotate_modes(empty, city()["red"], 2024))
+    assert near(image[120, 120], filled(BUILT[0], BEYOND_FILL), 12)
+    assert count_near(image[:SIZE], filled(BUILT[0], STOP_FILL), 12) == 0
+
+
+def test_the_fill_colours_read_apart_from_each_other_the_tint_and_white():
+    """The three fills over a mid grey, the slate tint over the same grey, and white: every pair
+    at least 40 apart in one channel (the dataviz skill's validator checked the hues apart under
+    colour-vision deficiency; this holds the blended values apart in plain BGR too)."""
+    swatches = [rail_annotate._swatch(c) for c in (STATION_FILL, STOP_FILL, BEYOND_FILL)]
+    tint = tuple(round(0.4 * 128 + 0.6 * c) for c in UNMEASURED_TINT)
+    colours = [*swatches, tint, (255, 255, 255)]
+    for i, a in enumerate(colours):
+        for b in colours[i + 1 :]:
+            assert max(abs(x - y) for x, y in zip(a, b, strict=True)) >= 40, (a, b)
+    assert all(min(s) >= 40 for s in swatches)  # none is near black
+    assert max(BEYOND_OUTLINE) > max(BEYOND_FILL)  # the outline is lighter than its fill

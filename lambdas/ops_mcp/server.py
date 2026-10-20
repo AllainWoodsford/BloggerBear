@@ -44,6 +44,7 @@ from ops_mcp import (
     firewall,
     log_review,
     memory,
+    model_prices,
     runsheets,
     samples,
     sign_in_tool,
@@ -277,6 +278,15 @@ def build_server() -> MCPServer:
         only when this week is more than twice a typical one."""
         return remembered(ctx, account.spend(period))
 
+    @server.tool(annotations=_READ_ONLY, structured_output=True)
+    def model_catalog() -> dict[str, Any]:
+        """The model catalog, which keeps the model registry's list and prices current: whether
+        discover (Tuesdays) and reprice (Wednesdays) are paused, what each last did, and the
+        pricing run under review with when its next check is. Use it when the operator asks about
+        model prices being updated, new models, or a reprice; a price it put back is in
+        pipeline_health. How to pause or rerun it is cli_guides `model-prices`."""
+        return model_prices.model_catalog_status()
+
     # The guide to the Admin CLI (cli_guide.py). Read-only, and not passed through `remembered`:
     # what they return is help and how-to commands, not suggestions to follow up, and a `how_to`
     # finding is not a kind the memory holds. None of them takes `ctx`: who is asking does not
@@ -302,7 +312,8 @@ def build_server() -> MCPServer:
         many options, mock it up"), security incidents and sign-ins (`security`), reviewing and
         publishing (`review`), fixing a musing that is blank or wrong (`musings`), vision topics,
         satellite sites and the Rail Access Monitor (`vision`), a topic's findings and what its
-        next article will be written from (`findings`). Pass a guide's id, or a
+        next article will be written from (`findings`), discovering models and keeping their
+        prices current (`model-prices`). Pass a guide's id, or a
         few words of what the operator wants to do. It puts the help of the guide's main
         commands on screen, each with a suggested command under it, so cli_help is not needed as
         well. `options` fills the suggested commands in with what the operator described (as

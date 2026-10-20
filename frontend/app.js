@@ -77,13 +77,10 @@
 
   // --- Nav ------------------------------------------------------------
 
-  // The site's own sections -- Trending Everywhere, Musings, Stats -- are not
-  // topics (nothing to rank, no article_count/researching fields), so they are
-  // fixed links in index.html (header #nav-site and the footer) and never come
-  // from GET /topics. Trending Everywhere is the cross-topic digest (see
-  // trending_digest_handler.py): it links to the same #/topic/{id} route every
-  // topic uses, with topic_id "digest".
-  var DIGEST_TOPIC_ID = "digest";
+  // The site's own sections -- About, Musings, Stats -- are not topics
+  // (nothing to rank, no article_count/researching fields), so they are fixed
+  // links in index.html (header #nav-site and the footer) and never come from
+  // GET /topics.
 
   // Keeps the compact header nav usable regardless of how many topics
   // exist: at most this many real topics ever show there, ranked by
@@ -117,9 +114,9 @@
     return withArticles.slice(0, NAV_TOPIC_LIMIT).concat(researchingOnly);
   }
 
-  // Only the topics are built here. The site's own sections (Trending
-  // Everywhere, Musings, Stats) are plain links in index.html's #nav-site and
-  // footer, so they are there without any JS or API call.
+  // Only the topics are built here. The site's own sections (About, Musings,
+  // Stats) are plain links in index.html's #nav-site and footer, so they are
+  // there without any JS or API call.
   function renderNav(topics) {
     clearChildren(navEl);
     var navTopics = selectNavTopics(topics);
@@ -247,6 +244,8 @@
     ai_only: "AI only",
     humans: "Humans",
     humans_and_ai: "Humans & AI",
+    // Approved by Professor Grizzlewick, the reviewer bear: an AI, not a person.
+    reviewer: "AI reviewer",
   };
 
   function formatCount(value) {
@@ -659,8 +658,7 @@
   // box is about what comes next, so it is shown on the first page only.
   function renderArticleList(topicId, articles, activity, attribution, paging) {
     clearChildren(contentEl);
-    var heading = topicId === DIGEST_TOPIC_ID ? "Trending Everywhere" : topicId;
-    contentEl.appendChild(el("h1", { text: heading }));
+    contentEl.appendChild(el("h1", { text: topicId }));
     var topicCredit = sourceAttribution(attribution);
     if (topicCredit) {
       contentEl.appendChild(topicCredit);
@@ -901,7 +899,7 @@
       // A bear feeling the musing's mood, where a bullet point would be. It is decorative (the
       // words below say the same), so it has no alt text. A picture that fails to load, or a mood
       // with none, falls back to the plain bear.
-      var mood = window.BloggerMoods.describe(musing.mood);
+      var mood = window.BloggerMoods.describe(musing.mood, musing.character);
       var bear = el("img", {
         className: "musing-bear",
         attrs: { src: mood.image, alt: "", width: "56", height: "56" },
@@ -914,13 +912,20 @@
       item.appendChild(bear);
 
       var body = el("div", { className: "musing-body" });
+      // A reply in the bears' back-and-forth says whom it answers (the musing just below it).
+      var replyNames = { grizzlewick: "Professor Grizzlewick", bloggerbear: "BloggerBear" };
+      if (Object.prototype.hasOwnProperty.call(replyNames, musing.replying_to)) {
+        body.appendChild(
+          el("p", { className: "musing-reply-to", text: "↩ to " + replyNames[musing.replying_to] })
+        );
+      }
       body.appendChild(el("p", { className: "musing-text", text: musing.text }));
       if (musing.kind === "loot" && musing.gear) {
         body.appendChild(lootCard(musing.gear));
       }
       if (mood.label) {
         body.appendChild(
-          el("p", { className: "musing-mood", text: "BloggerBear was feeling " + mood.label })
+          el("p", { className: "musing-mood", text: mood.name + " was feeling " + mood.label })
         );
       }
 
@@ -1109,6 +1114,8 @@
     comment_screening: "Comment screening",
     assistant: "Operator assistant",
     vision_triage: "Vision triage",
+    model_pricing: "Model pricing",
+    reviewer: "Reviewer bear",
   };
 
   function formatHours(value) {
