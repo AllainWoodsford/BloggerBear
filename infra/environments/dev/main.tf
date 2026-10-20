@@ -446,6 +446,21 @@ data "aws_iam_policy_document" "lambda_exec" {
     resources = ["*"]
   }
 
+  # model_catalog_handler.py (docs/enhancements/model-catalog-refresh.md): listing the models and
+  # inference profiles this account can call, and reading their list prices. None of these three
+  # supports resource-level permissions -- AWS requires "*", there is no ARN to scope them to. All
+  # read-only.
+  statement {
+    sid    = "ModelCatalogRead"
+    effect = "Allow"
+    actions = [
+      "bedrock:ListFoundationModels",
+      "bedrock:ListInferenceProfiles",
+      "pricing:GetProducts",
+    ]
+    resources = ["*"]
+  }
+
   statement {
     sid    = "Logs"
     effect = "Allow"
@@ -681,6 +696,13 @@ locals {
     AGENTCORE_WEB_SEARCH_URL    = module.web_search.gateway_url
     AGENTCORE_WEB_SEARCH_REGION = module.web_search.region
     AGENTCORE_WEB_SEARCH_TOOL   = module.web_search.tool_name
+
+    # The model catalog (aws_lambda_function.model_catalog below): the Admin API invokes it by name
+    # for `models reprice` / `models discover`, and a pricing run's one-shot review schedules target
+    # it by ARN (common/model_catalog.py's schedule_reviews). Literals, like the research tick's
+    # above, for the same dependency-cycle reason; keep them in sync with that function_name.
+    MODEL_CATALOG_FUNCTION_NAME = "${var.unique_name_prefix}-dev-model-catalog"
+    MODEL_CATALOG_FUNCTION_ARN  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.unique_name_prefix}-dev-model-catalog"
   }
 }
 
@@ -910,13 +932,18 @@ resource "aws_lambda_function" "admin_api" {
 
 # Second inline policy on the same shared exec role (rather than folding
 # into aws_iam_role_policy.lambda_exec above) so this grant stays visibly
-# scoped to exactly the pipeline Lambda ARNs, never "*".
+# scoped to exactly the pipeline Lambda ARNs, never "*". The model catalog is
+# one: `models reprice` / `models discover` start it.
 data "aws_iam_policy_document" "lambda_invoke_pipeline" {
   statement {
-    sid       = "InvokePipelineLambdas"
-    effect    = "Allow"
-    actions   = ["lambda:InvokeFunction"]
-    resources = [aws_lambda_function.research_tick.arn, aws_lambda_function.daily_cycle.arn]
+    sid     = "InvokePipelineLambdas"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      aws_lambda_function.research_tick.arn,
+      aws_lambda_function.daily_cycle.arn,
+      aws_lambda_function.model_catalog.arn,
+    ]
   }
 
   # Backups: a snapshot, restore or export runs as a chain of ~20-second steps of the admin-api
@@ -1076,6 +1103,13 @@ module "admin_api" {
     "POST /models",
     "GET /model-config",
     "PUT /model-config",
+    # The model catalog (docs/enhancements/model-catalog-refresh.md): run the reprice or discover
+    # job now, and its settings and pause flags. See admin_api_handler.py's model catalog routes and
+    # `admin_cli models reprice|discover`, `admin_cli model-catalog`.
+    "POST /models/reprice",
+    "POST /models/discover",
+    "GET /model-catalog-config",
+    "PUT /model-catalog-config",
     # Pipeline-wide settings (today: the default research interval). See
     # admin_api_handler.py's _*_pipeline_config_route and `admin_cli pipeline-config`.
     "GET /pipeline-config",
@@ -1470,6 +1504,13 @@ data "aws_iam_policy_document" "scheduler_invoke" {
     effect    = "Allow"
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.cost_explorer_poll.arn]
+  }
+
+  statement {
+    sid       = "InvokeModelCatalog"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.model_catalog.arn]
   }
 
   # The weekly backup snapshot (aws_scheduler_schedule.weekly_backup), run by the admin-api Lambda.
@@ -2091,6 +2132,7 @@ locals {
     "${var.unique_name_prefix}-dev-weekly-reflection",
     "${var.unique_name_prefix}-dev-stats-rollover",
     "${var.unique_name_prefix}-dev-cost-explorer-poll",
+    "${var.unique_name_prefix}-dev-model-catalog",
     "${var.unique_name_prefix}-dev-trending-digest",
     "${var.unique_name_prefix}-dev-musing-feedback",
     "${var.unique_name_prefix}-dev-security-events",
@@ -2478,6 +2520,64 @@ resource "aws_scheduler_schedule" "cost_explorer_poll" {
   }
 }
 
+# The model catalog (docs/enhancements/model-catalog-refresh.md): keeps the Models registry's list
+# and prices up to date. Two weekly schedules, discover on Tuesdays and reprice on Wednesdays, at
+# 03:00 Sydney time, when no topic's daily cycle runs; each job skips itself while paused (the
+# `model-catalog` row of the ModelConfig table). A run that changed a price creates its own two
+# one-shot review schedules (1 and 2 hours later by default, `<prefix>-<env>-price-review-*`, under
+# the role's scheduler_manage grant), which delete themselves once fired. A reprice can make a web
+# search and a model call per model, hence the long timeout.
+resource "aws_lambda_function" "model_catalog" {
+  function_name = "${var.unique_name_prefix}-dev-model-catalog"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "model_catalog_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 600
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+resource "aws_scheduler_schedule" "model_catalog_discover" {
+  name                         = "${var.unique_name_prefix}-dev-model-discover"
+  group_name                   = "default"
+  schedule_expression          = "cron(0 3 ? * TUE *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.model_catalog.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+    input    = jsonencode({ job = "discover", trigger = "schedule" })
+  }
+}
+
+resource "aws_scheduler_schedule" "model_catalog_reprice" {
+  name                         = "${var.unique_name_prefix}-dev-model-reprice"
+  group_name                   = "default"
+  schedule_expression          = "cron(0 3 ? * WED *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.model_catalog.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+    input    = jsonencode({ job = "reprice", trigger = "schedule" })
+  }
+}
+
 # =========================================================================
 # Phase 6 -- Observability & hardening: CloudWatch alarms/dashboard for
 # all 5 pipeline Lambdas + the daily-cycle state machine/DLQ (see
@@ -2503,6 +2603,7 @@ locals {
     aws_lambda_function.musing_feedback.function_name,
     aws_lambda_function.stats_rollover.function_name,
     aws_lambda_function.cost_explorer_poll.function_name,
+    aws_lambda_function.model_catalog.function_name,
     aws_lambda_function.security_events.function_name,
     aws_lambda_function.sign_in_events.function_name,
   ]

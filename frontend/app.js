@@ -1109,6 +1109,7 @@
     comment_screening: "Comment screening",
     assistant: "Operator assistant",
     vision_triage: "Vision triage",
+    model_pricing: "Model pricing",
   };
 
   function formatHours(value) {

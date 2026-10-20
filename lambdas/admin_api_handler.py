@@ -38,7 +38,16 @@ from decimal import Decimal
 
 import boto3
 
-from common import backup, equipment, evidence, feedback_limits, gear, security_events, sign_ins
+from common import (
+    backup,
+    equipment,
+    evidence,
+    feedback_limits,
+    gear,
+    model_catalog,
+    security_events,
+    sign_ins,
+)
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY, MANUAL_REVIEW_ADAPTERS
 from common.adapters.base import SUBJECT_KEY
 from common.assistant_access import assistant_access_error, effective_assistant_access
@@ -94,6 +103,7 @@ from common.dynamo import (
     set_topic_fields,
     update_article_lineage,
     update_article_status,
+    update_config_row,
     update_moderation_status,
     update_prompt_refinement_status,
 )
@@ -2497,6 +2507,7 @@ def _put_model(event: dict) -> dict:
     input_price = body.get("input_price_usd_per_1k_tokens")
     output_price = body.get("output_price_usd_per_1k_tokens")
     enabled = body.get("enabled", True)
+    price_locked = body.get("price_locked")
 
     if not isinstance(model_id, str) or not model_id:
         return _error(400, "'model_id' is required and must be a non-empty string")
@@ -2510,8 +2521,14 @@ def _put_model(event: dict) -> dict:
         return _error(400, "'output_price_usd_per_1k_tokens' is required and must be a non-negative number")
     if not isinstance(enabled, bool):
         return _error(400, "'enabled' must be a boolean if provided")
+    if price_locked is not None and not isinstance(price_locked, bool):
+        return _error(400, "'price_locked' must be a boolean if provided")
 
+    # What the model catalog recorded about a model it discovered stays; its price fields go, as
+    # the price is now the one given here (common/model_catalog.py, PRICE_META_FIELDS).
+    existing = get_model(model_id) or {}
     item = {
+        **{field: existing[field] for field in _CATALOG_MODEL_FIELDS if existing.get(field) is not None},
         "model_id": model_id,
         "display_name": display_name,
         "provider": provider,
@@ -2519,8 +2536,66 @@ def _put_model(event: dict) -> dict:
         "output_price_usd_per_1k_tokens": output_price,
         "enabled": enabled,
     }
+    if price_locked is not None:
+        item["price_locked"] = price_locked
     put_model(item)
     return _response(200, item)
+
+
+_CATALOG_MODEL_FIELDS = ("region", "discovered_at", "pricing_unit")
+
+
+# --- Model catalog (common/model_catalog.py, docs/enhancements/model-catalog-refresh.md) ---------
+#
+# The discover and reprice jobs' settings and pause flags (the `model-catalog` config row), and
+# running either job now. A job runs in its own Lambda, invoked asynchronously: a reprice can take
+# minutes (web searches and a model call per model), well past API Gateway's 29 seconds.
+
+
+def _get_model_catalog_config_route(event: dict) -> dict:
+    return _response(200, model_catalog.summary())
+
+
+def _put_model_catalog_config_route(event: dict) -> dict:
+    """Set (or, with null, clear) model catalog settings: any of model_catalog.SETTINGS. A setting
+    that isn't in the body is left as it is."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if not isinstance(body, dict) or not body:
+        return _error(400, f"send any of: {', '.join(model_catalog.SETTINGS)} (null clears a setting)")
+    for name, value in body.items():
+        problem = model_catalog.validate_setting(name, value)
+        if problem:
+            return _error(400, problem)
+    update_config_row(model_catalog.CONFIG_ID, body)
+    return _get_model_catalog_config_route(event)
+
+
+def _start_model_catalog_job(job: str) -> dict:
+    run = model_catalog.active_run()
+    # A run whose review is overdue lost its schedule: the job runs that review first, so it may go.
+    if job == "reprice" and run is not None and not model_catalog.is_overdue(run, datetime.now(UTC)):
+        return _error(
+            409,
+            f"pricing run {run.get('run_id')} is still under review; a reprice waits for it "
+            "(model-catalog get shows when its next review is due)",
+        )
+    _get_lambda_client().invoke(
+        FunctionName=os.environ["MODEL_CATALOG_FUNCTION_NAME"],
+        InvocationType="Event",
+        Payload=json.dumps({"job": job}).encode("utf-8"),
+    )
+    return _response(202, {"triggered": job})
+
+
+def _reprice_models_route(event: dict) -> dict:
+    return _start_model_catalog_job("reprice")
+
+
+def _discover_models_route(event: dict) -> dict:
+    return _start_model_catalog_job("discover")
 
 
 def _get_model_config(event: dict) -> dict:
@@ -2913,6 +2988,10 @@ _ROUTES = {
     "POST /models": _put_model,
     "GET /model-config": _get_model_config,
     "PUT /model-config": _put_model_config_route,
+    "POST /models/reprice": _reprice_models_route,
+    "POST /models/discover": _discover_models_route,
+    "GET /model-catalog-config": _get_model_catalog_config_route,
+    "PUT /model-catalog-config": _put_model_catalog_config_route,
     "GET /pipeline-config": _get_pipeline_config_route,
     "PUT /pipeline-config": _put_pipeline_config_route,
     "GET /feedback-config": _get_feedback_config_route,

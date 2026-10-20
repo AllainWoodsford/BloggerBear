@@ -518,6 +518,14 @@ CATALOGUE: tuple[Component, ...] = (
         "daily at 10:00 UTC (EventBridge Scheduler)",
     ),
     _lambda(
+        "model-catalog",
+        "Keeps the models table's list and prices up to date: adds every provider's new models "
+        "(disabled) on Tuesdays, reprices on Wednesdays, and reviews each changed price 1 and 2 "
+        "hours later, putting it back if it cannot be confirmed.",
+        "Tuesdays and Wednesdays 03:00 Sydney time (EventBridge Scheduler), each review on a "
+        "one-shot schedule of its own, and on demand (models discover, models reprice)",
+    ),
+    _lambda(
         "trending-digest",
         'Writes the cross-topic "trending everywhere" digest article from every topic\'s latest finding.',
         "daily at 07:00 UTC (EventBridge Scheduler)",

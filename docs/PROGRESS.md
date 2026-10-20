@@ -1,7 +1,7 @@
 ---
 doc: progress-tracker
 schema_version: 1
-last_updated: 2026-10-17
+last_updated: 2026-10-19
 source_of_truth: docs/project-plan.md
 phases:
   - id: phase-0
@@ -890,6 +890,18 @@ submission-round entries after them are docs and tests, with nothing to deploy.
 - [x] The Musings page names the topic an article musing is for, in grey italics beside "read the
   article": the public API's `GET /musings` adds `topic_name` to each musing, read once per page
   from the Topics table (`None` for a topic since deleted, and then no name is shown)
+- [x] The model registry keeps itself up to date ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md)):
+  a new `model-catalog` Lambda, on two weekly schedules (03:00 Sydney). On Tuesdays it adds every
+  model the account can call, from every provider (Bedrock `ListFoundationModels` and
+  `ListInferenceProfiles`), as `enabled: false`. On Wednesdays it reprices every token-priced model
+  in the registry, from the AWS Price List API first and the AgentCore web search read by a model
+  second (diff-first). A changed price applies at once and is reviewed 1 and 2 hours later, on
+  one-shot schedules the run creates. A price a review cannot confirm goes back to the old one,
+  with a `kind: "model_pricing"` FailedExecutions record that `pipeline_health` reports. One that
+  passes both reviews leaves a snapshot of the old prices at `pricing/<date>-<run>.json` in the
+  content bucket. The pause flags and review settings are the `model-catalog` row of the
+  ModelConfig table (`admin_cli.py model-catalog get|set`). `models reprice` and `models discover`
+  run a job now, with its own reviews. `models add --lock-price` keeps the reprice off a price
 - [x] Backups: `admin_cli backup snapshot` writes one file of a deployment's content and
   configuration (articles with their final text and figures, costs and stats, gear and refinements,
   musings, feedback, the moderation queue, topics, models and settings; never findings, candidate
