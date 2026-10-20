@@ -42,7 +42,6 @@ be on the `production` environment or on the repository.
 | `TF_STATE_REGION` | variable | repo | The region of the state bucket, only if it is not `AWS_REGION`. Optional, and rarely needed. | `eu-west-1` |
 | `VISION_ENABLED` | variable | repo | Set to `true` to deploy the vision worker (OpenCV on arm64 in `vision_region`, for the `satellite_vision` and `rail_access` topics; [the vision docs](enhancements/archive/vision.md)). Read as a switch: `true`, in any letter case (GitHub Actions compares strings ignoring case), turns the worker on; any other value, or unset, is read as off, so nothing of it is created and a deployed worker is removed on the next apply. The bootstrap must have been re-applied with `vision_region` first. Set on the repository, it also turns the worker on in production at the next release: the release job runs in the `production` environment, whose `vars.VISION_ENABLED` falls back to the repository's value. To keep production off until the dev trial is done, set `VISION_ENABLED` to `false` on the `production` environment. Set to `true` on the `production` environment alone, it turns the worker on there alone. | `true` |
 | `REVIEWER_ENABLED` | variable | repo or environment | Deploys Professor Grizzlewick, the reviewer bear ([reviewer-bear.md](enhancements/reviewer-bear.md)). **On unless set to `false`** (any letter case): the opposite reading to `VISION_ENABLED`, so a deployment that never set it gets him. `false` deploys neither his Lambda nor his schedule, and removes them on the next apply. Set on the `production` environment alone to differ there. | `false` |
-| `REVIEWER_MAY_APPROVE` | variable | repo or environment | The project's default for whether the reviewer bear may approve a held article himself, financial topics included (each financial one he approves is flagged for a person to check). **On unless set to `false`.** A topic's own `reviewer_may_approve` overrides it ([below](#the-reviewer-bear-professor-grizzlewick)). | `false` |
 | `UNIQUE_NAME_PREFIX` | variable | repo | What every resource name starts with: `<prefix>-<env>-<resource>`. Optional: unset, it is `bloggerbear`. **Required for a fork.** Bucket names and the sign-in host name must be unique across all of AWS, and the default ones are taken. Lowercase letters, digits and hyphens, starting with a letter, at most 14, with no hyphen at the end (at most 12 if the vision worker will run in production: [the bucket that limits it](#environment-terraform-variables)). No two hyphens in a row, and no `aws`, `amazon` or `cognito` in it: the plan refuses them. Must be the same as bootstrap's `unique_name_prefix`. Set it before the first deploy and never change it. | `acme-blog` |
 | `ADMIN_ALLOWED_CIDRS_DEV` | secret | repo | Your public IP, as a Terraform list. Without it nothing can call dev's admin API. | `["203.0.113.7/32"]` |
 | `ADMIN_ALLOWED_CIDRS_PROD` | secret | `production` | The same, for production. | `["203.0.113.7/32"]` |
@@ -126,9 +125,8 @@ only production's domain.
 
 Do not set these in `terraform.tfvars`; CI supplies them from the GitHub settings above:
 `admin_allowed_cidrs`, `alert_email`, `aws_account_id`, `unique_name_prefix`, `aws_region`,
-`vision_enabled` (the `VISION_ENABLED` variable above), `reviewer_enabled` and
-`reviewer_may_approve` (the `REVIEWER_ENABLED` and `REVIEWER_MAY_APPROVE` variables above), and the
-firewall switches
+`vision_enabled` (the `VISION_ENABLED` variable above), `reviewer_enabled` (the `REVIEWER_ENABLED`
+variable above), and the firewall switches
 `waf_regional_enabled`, `waf_admin_allowlist`, `waf_log_all_requests` and, in production only,
 `waf_site_enabled` (the `WAF_*` variables above).
 
@@ -225,9 +223,10 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | A user locked out of the assistant after failed sign-ins | `<prefix>-<env>-sign-ins`, one item per sign-in event | `sign-ins list`, `sign-ins unlock <username>` | Locked after 5 failures in 15 minutes; lifts by itself |
 | Reader feedback limits and lockdown | the feedback configuration | `feedback-config set …`; for one article, `articles feedback-lock\|feedback-unlock <article_id>` | See `feedback-config --help` |
 | A topic: its adapter, schedule, time zone, editorial goals, model, rotation, whether it is financial | `<prefix>-<env>-topics`, one item per topic | `topics create`, `topics update` | Daily at 9 AM `Australia/Sydney`; hourly research heartbeat |
-| Whether the reviewer bear may approve this topic's held articles himself (`reviewer_may_approve`: `true`, `false`, or unset for the project's `REVIEWER_MAY_APPROVE`). A topic with `force_manual_review` always waits for a person | same item | `topics update --reviewer-may-approve on\|off` (`""` clears it) | Unset: the project's default, on |
+| Whether the reviewer bear may approve this topic's held articles himself (`reviewer_may_approve`: `true`, `false`, or unset for his `may_approve` setting). A topic with `force_manual_review` always waits for a person | same item | `topics update --reviewer-may-approve on\|off` (`""` clears it) | Unset: the project's default, on |
+| The reviewer bear's settings: his pause flag (`enabled`), whether he may approve (`may_approve`, a topic's own `reviewer_may_approve` wins), each of his five tasks (`fix_content`, `review_held`, `review_published`, `watch_flags`, `defang_held`) and his limits (`stale_after_hours`, `published_per_run`, `published_lookback`, `max_rewrites`, `content_days`, `tasks_per_tick`, `tick_minutes`, `defang_after_days`). Read at the start of each run | `<prefix>-<env>-model-config`, item `config_id` = `reviewer` | `reviewer get`, `reviewer set --enabled on\|off --may-approve on\|off --defang-after-days N ...` (`""` clears one) | Every switch on; 48 hours, 5 articles a run (from the newest 25), 3 rewrites, 7 days of content findings, 2 tasks a tick 5 minutes apart, 10 days before task 5 |
 | The reviewer bear's run under way: its queue of tasks, its tick, what each task came to (`run_id`, `queue`, `counts`, `woken`, `next_tick_at`). Written by his Lambda only | `<prefix>-<env>-model-config`, item `config_id` = `reviewer-state` | none (read it in the console) | No item until his first run |
-| On an article: when the reviewer bear last reviewed it and found it fine (`reviewer_reviewed_at`), and his flag on a financial article he approved (`reviewer_flag` = `financial_approved`, `reviewer_flagged_at`), which the assistant reports until a person clears it | `<prefix>-<env>-articles`, the article's item | `articles get <article_id>` shows them; `articles checked <article_id>` clears the flag | None |
+| On an article: when the reviewer bear last reviewed it and found it fine (`reviewer_reviewed_at`), what he cut when he published it after `defang_after_days` (`reviewer_defanged`: when, how many sentences, for how many flags; the original body is kept as `articles/<id>.before-defang.md`), and his flag on a financial article he approved (`reviewer_flag` = `financial_approved`, `reviewer_flagged_at`), which the assistant reports until a person clears it | `<prefix>-<env>-articles`, the article's item | `articles get <article_id>` shows them; `articles checked <article_id>` clears the flag | None |
 | How far back a topic's daily article reads findings (`findings_window_hours`), never past its last article. Widen it for a topic that does not write every day about the same thing (a rotating topic, whose cities each have some days of the week, or a weekly topic), so a finding made on a day it does not write about its subject is still drafted. Whole hours, 1 to 336: findings expire after 14 days | same item | `topics create\|update --findings-window-hours N` (`""` clears it) | 24 hours |
 | A topic that rotates through its subjects, one a day ([the day-subject hook](enhancements/archive/dailysubject_hook.md)): `rotation` in its `adapter_config`, either the seven weekdays each naming a subject (`{"MON": "sydney", ...}`) or a list of subjects cycled one a day (or one a week, with `rotation_period` `"week"`), every subject at least once, and `rotation_timezone`, the zone whose calendar day decides (an IANA name). Read by an adapter that names a day subject: `rail_access` (its sites are the subjects, and `rotation_timezone` defaults to the topic's `daily_timezone`; [A `rail_access` topic](#a-rail_access-topic)). The daily cycle then writes about the day's subject only, from the Findings that report it (at most 48 of that subject's own), and keeps that subject's last article (`last_article_by_subject`, beside `last_article_at`: `topics get` and the assistant's `topics_overview` for one topic show it). `findings list --next-article` and the assistant's `topic_findings` answer for the day's subject. Set `findings_window_hours` to the longest gap between one subject's days, plus a day. **Adopt a rota on a new topic, not on one that has published:** each subject's first window starts from `findings_window_hours`, not from the topic's last article (a subject with no last article of its own is bounded by the window alone), so a topic changed with `topics update` would draft again, on each subject's first day, Findings its last article already used. Create the rotating topic and pause or delete the old one ([restart, not migrate](enhancements/archive/dailysubject_hook.md#44-migrating-the-four-deployed-topics)) | same item | `topics create --config-json`, or `topics update --adapter-config-json` on a topic that has not published yet (the whole config: read it, edit it, send it back) | No rota: the topic writes about everything it watches. `rotation_timezone` unset: the topic's `daily_timezone` if the adapter passes it (`rail_access` does), else UTC |
 | A topic's goal rotation (`editorial_goal_rotation`): 2 to 7 editorial goals, each `{"name", "primary_focus"}`, taken in turn so one set of findings is written up from different sides ([common/goal_rotation.py](../lambdas/common/goal_rotation.py)). Each goal's focus stands in for `editorial_goals.primary_focus`; the topic's `exclusion_criteria` apply to every goal. New findings get the goal after the one used last; with nothing new, the daily run *revisits* the findings of the last set (still unexpired, the day's subject's only on a rotating topic) under the next goal not yet used on them, and stops (`no_findings`) once every goal has had them. The state is `goal_rotation_state` on the topic item (subject key, or `*` for the whole topic, to the goal used last, the goals used on the current set and its oldest and newest `captured_at`), written by the daily cycle. An article records its goal as `editorial_goal`, and `revisit` when it was one; a revisit's research is not counted again. Ignored on a topic with a daily editorial goal (the crypto feed) | same item | `topics create\|update --goal-rotation-json '[...]'` (`'[]'` clears it; the state is kept) | No rotation: one goal, and nothing new writes nothing |
@@ -260,24 +259,31 @@ Lambda and delete themselves once fired ([model-catalog-refresh.md](enhancements
 An old, bespectacled, mustachioed bear who does the reviews the admins have fallen behind on, every
 second day, and writes to the musings feed as himself ([reviewer-bear.md](enhancements/reviewer-bear.md)).
 
-**Two switches, both on by default:**
+**One switch needs a deploy:** `REVIEWER_ENABLED` (GitHub variable) → `reviewer_enabled`
+(Terraform), on unless `false`, deploys his Lambda (`<prefix>-<env>-reviewer`) and schedule.
+**Everything else is a setting**, in the `reviewer` row of `<prefix>-<env>-model-config`, read at the
+start of each of his runs: `python scripts/admin_cli.py reviewer get|set` ([the table
+above](#dynamodb-settings-changed-with-no-deploy)).
 
-| Switch | Where | Effect |
+| Setting | Default | What it does |
 |---|---|---|
-| `REVIEWER_ENABLED` (GitHub variable) → `reviewer_enabled` (Terraform) | repo or environment | Deploys his Lambda (`<prefix>-<env>-reviewer`) and schedule. `false`: neither is deployed |
-| `REVIEWER_MAY_APPROVE` (GitHub variable) → `reviewer_may_approve` (Terraform) → `REVIEWER_MAY_APPROVE` on his Lambda | repo or environment | The project's default for whether he may approve a held article himself, financial or not. `false`: he still reviews, rewrites and rejects, but every article he would approve waits for a person |
-| `reviewer_may_approve` on a topic | `<prefix>-<env>-topics` | Overrides the project's default for that topic (`topics update <id> --reviewer-may-approve on\|off`, `""` to clear) |
+| `enabled` | on | Off: his scheduled runs are skipped (a run under way finishes) |
+| `may_approve` | on | The project's default for whether he may approve a held article himself, financial or not. A topic's `reviewer_may_approve` (`topics update <id> --reviewer-may-approve on\|off`, `""` to clear) wins |
+| `fix_content` | on | Task 1: fix the assistant's content findings from the last `content_days` (7) |
+| `review_held` | on | Task 2: review articles held `stale_after_hours` (48) or more; reject after `max_rewrites` (3) |
+| `review_published` | on | Task 3: review `published_per_run` (5) of the newest `published_lookback` (25) published articles |
+| `watch_flags` | on | Task 4: take down a financial article he approved if readers downvote it with comments |
+| `defang_held` | on | Task 5: an article held `defang_after_days` (10) or more is published with its flagged sentences cut, or rejected if it cannot stand without them |
+| `tasks_per_tick`, `tick_minutes` | 2, 5 | How fast he works through a run |
 
 A topic with `force_manual_review` (every vision topic) always waits for a person, whatever these
-say. Each financial article he approves is flagged for a person to check: the assistant reports it
+say; tasks 2 and 5 never publish for it. Each financial article he approves is flagged for a person to check: the assistant reports it
 (`reviewer_financial_check`) until `admin_cli articles checked <id>` clears it, and he takes it back
 down himself if readers downvote it with comments meanwhile.
 
 His schedule (`<prefix>-<env>-reviewer`, every second day at 05:00 Sydney) is Terraform's
 (`aws_scheduler_schedule.reviewer`). A run's tick schedules (`<prefix>-<env>-reviewer-tick-<run>-<n>`,
-five minutes apart) are made by his Lambda and delete themselves once fired. How many published
-articles he reads a run (5), how long a held article waits before he looks at it (2 days) and how
-many rewrites before he rejects (3) are constants in `lambdas/common/reviewer.py`.
+`tick_minutes` apart) are made by his Lambda and delete themselves once fired.
 
 ## Your own machine
 

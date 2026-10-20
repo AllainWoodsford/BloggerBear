@@ -129,11 +129,10 @@ jobs:
     # case), turns the worker on, and any other value, or none, is handed to Terraform as `false`
     # (also the variable's own default), so a deployment that never set it never creates the
     # worker, and a stray value cannot fail the apply (docs/configuration.md).
-    # TF_VAR_reviewer_enabled / TF_VAR_reviewer_may_approve: Professor Grizzlewick, the reviewer
-    # bear (lambdas/reviewer_handler.py), and whether he may approve held articles himself. The
-    # opposite reading to VISION_ENABLED: both are ON unless the REVIEWER_ENABLED or
-    # REVIEWER_MAY_APPROVE variable is `false` (any letter case), so a deployment that never set
-    # them gets the bear, and only an explicit `false` turns him (or his approvals) off.
+    # TF_VAR_reviewer_enabled: whether Professor Grizzlewick, the reviewer bear
+    # (lambdas/reviewer_handler.py), is deployed. The opposite reading to VISION_ENABLED: ON unless
+    # the REVIEWER_ENABLED variable is `false` (any letter case), so a deployment that never set it
+    # gets the bear. Everything else about him is a setting in DynamoDB (`admin_cli reviewer set`).
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
@@ -148,7 +147,6 @@ jobs:
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
       TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}
       TF_VAR_reviewer_enabled: ${{ vars.REVIEWER_ENABLED == 'false' && 'false' || 'true' }}
-      TF_VAR_reviewer_may_approve: ${{ vars.REVIEWER_MAY_APPROVE == 'false' && 'false' || 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

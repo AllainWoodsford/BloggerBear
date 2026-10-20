@@ -599,12 +599,17 @@ not, and writes to the Musings page as himself.
 inbox two days or more is his to decide: he may **approve** it (financial ones too, each flagged for
 you to check), **send it back for a rewrite**, or **reject** one already rewritten three times. If
 you want to decide some yourself first, do so before his first run (he skips anything no longer
-waiting), or set a topic to `--reviewer-may-approve off`.
+waiting), or turn his approvals off (`reviewer set --may-approve off`, or per topic). Anything that
+has already waited 10 days or more goes to the de-fanged publish (task 5) instead.
 
 - **Turn him off:** set the `REVIEWER_ENABLED` variable to `false` (repository, or one environment)
   and deploy: his Lambda and schedule are removed.
-- **Let him review but never approve:** `REVIEWER_MAY_APPROVE` = `false` for the whole project, or
+- **Pause him, with no deploy:** `python scripts/admin_cli.py reviewer set --enabled off`.
+- **Let him review but never approve:** `reviewer set --may-approve off` for the whole project, or
   per topic: `python scripts/admin_cli.py topics update <topic_id> --reviewer-may-approve off`.
+- **Articles waiting 10 days or more** are published with their flagged sentences cut, or rejected
+  (task 5): `reviewer set --defang-held off`, or `--defang-after-days N`, to change that. Every other
+  task and limit is a setting too (`reviewer set --help`).
 - **His financial approvals:** the assistant lists each one (`reviewer_financial_check`). Read it
   (`articles get <article_id>`), then `articles checked <article_id>` if it is fine, or
   `articles unpublish <article_id>` if not. Until you do, he takes it back down himself if readers

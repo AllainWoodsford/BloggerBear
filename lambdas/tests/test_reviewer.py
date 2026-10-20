@@ -37,8 +37,7 @@ def aws(monkeypatch):
         "SCHEDULER_INVOKE_ROLE_ARN": "arn:aws:iam::123456789012:role/scheduler-invoke",
     }.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.delenv("REVIEWER_MAY_APPROVE", raising=False)
-    dynamo._dynamodb_resource = None
+        dynamo._dynamodb_resource = None
     with mock_aws():
         client = boto3.client("dynamodb", region_name=REGION)
         for name, keys in {
@@ -150,14 +149,24 @@ def verdicts(*real, instructions=""):
 # --- what he may approve ------------------------------------------------------------------------
 
 
-def test_he_may_approve_by_default_a_topic_or_the_project_can_say_no_and_vision_never(monkeypatch):
-    monkeypatch.delenv("REVIEWER_MAY_APPROVE", raising=False)
-    assert reviewer.may_approve({"topic_id": "t"}) is True
-    assert reviewer.may_approve({"topic_id": "t", "reviewer_may_approve": False}) is False
-    monkeypatch.setenv("REVIEWER_MAY_APPROVE", "FALSE")
-    assert reviewer.may_approve({"topic_id": "t"}) is False
-    assert reviewer.may_approve({"topic_id": "t", "reviewer_may_approve": True}) is True
-    assert reviewer.may_approve({"reviewer_may_approve": True, "force_manual_review": True}) is False
+def test_he_may_approve_by_default_a_topic_or_the_setting_can_say_no_and_vision_never():
+    settings = reviewer.effective_settings(None)
+    assert reviewer.may_approve({"topic_id": "t"}, settings) is True
+    assert reviewer.may_approve({"topic_id": "t", "reviewer_may_approve": False}, settings) is False
+    off = {**settings, "may_approve": False}
+    assert reviewer.may_approve({"topic_id": "t"}, off) is False
+    assert reviewer.may_approve({"topic_id": "t", "reviewer_may_approve": True}, off) is True
+    vision = {"reviewer_may_approve": True, "force_manual_review": True}
+    assert reviewer.may_approve(vision, settings) is False
+
+
+def test_every_setting_has_a_default_and_bad_values_fall_back_to_it():
+    row = {"published_per_run": 99, "may_approve": "yes", "max_rewrites": 5}
+    effective = reviewer.effective_settings(row)
+    assert effective["published_per_run"] == 5 and effective["may_approve"] is True
+    assert effective["max_rewrites"] == 5
+    assert reviewer.validate_setting("enabled", "on") and reviewer.validate_setting("tick_minutes", 0)
+    assert reviewer.validate_setting("nope", 1) and reviewer.validate_setting("max_rewrites", None) is None
 
 
 # --- reading a held article's flags --------------------------------------------------------------
@@ -512,3 +521,144 @@ def test_a_run_with_nothing_worth_saying_posts_no_report(monkeypatch):
     assert posted == []
     reviewer_handler._report({"counts": {"approved": 1}, "woken": True})
     assert posted[0]["facts"] == ["approved 1 held article"] and posted[0]["woken"] is True
+
+
+# --- task 5: the de-fanged publish ---------------------------------------------------------------
+
+LONG_AGO = (NOW - timedelta(days=11)).isoformat()
+BODY = (
+    "The Wow Forever patch lands this week.\n\n"
+    "- The beta runs for Jane Doe at 1 Main Street.\n"
+    "- Raids get a new boss.\n\n"
+    "Players can expect shorter queues and a calmer economy all season.\n"
+)
+CUT = "The beta runs for Jane Doe at 1 Main Street."
+
+
+def defang_answer(real=(True,), plausible=True, remove=(CUT,)):
+    return json.dumps(
+        {
+            "verdicts": [{"n": n, "real": r} for n, r in enumerate(real, 1)],
+            "plausible": plausible,
+            "remove": list(remove),
+        }
+    )
+
+
+class DefangHands(FakeHands):
+    def build(self):
+        built = super().build()
+        built.read_body = lambda key: BODY
+        built.replace_body = lambda article_id, body: self.calls.append(("replace_body", article_id, body))
+        return built
+
+
+def test_articles_past_the_defang_threshold_go_to_task_five_younger_ones_to_task_two(aws):
+    put_held(aws, "q-long", "a-long", created_at=LONG_AGO)
+    put_held(aws, "q-old", "a-old", created_at=OLD)
+    tasks = reviewer.plan(NOW, reviewer.effective_settings(None), content_findings=[])["tasks"]
+    assert [(t["task"], t["queue_id"]) for t in tasks] == [("defang", "q-long"), ("held", "q-old")]
+    off = {**reviewer.effective_settings(None), "defang_held": False}
+    assert [t["task"] for t in reviewer.plan(NOW, off, content_findings=[])["tasks"]] == ["held", "held"]
+    only_defang = {**reviewer.effective_settings(None), "review_held": False}
+    planned = reviewer.plan(NOW, only_defang, content_findings=[])["tasks"]
+    assert [t["queue_id"] for t in planned] == ["q-long"]
+
+
+def test_a_plausible_cut_removes_only_the_quoted_sentences_and_publishes(aws):
+    put_topic(aws)
+    put_held(aws, "q", "a", created_at=LONG_AGO, reasons=["PII: names a private person's address"])
+    hands = DefangHands([defang_answer()])
+
+    assert reviewer.do_task({"task": "defang", "queue_id": "q"}, hands.build(), NOW) == "defanged"
+
+    assert hands.names() == ["ask", "replace_body", "approve"]
+    new_body = hands.calls[1][2]
+    assert CUT not in new_body and "- Raids get a new boss." in new_body
+    assert "- \n" not in new_body and "\n\n\n" not in new_body
+    assert article(aws, "a")[reviewer.DEFANGED_FIELD]["removed"] == 1
+
+
+def test_a_cut_that_does_not_stand_is_rejected_and_nothing_real_is_just_approved(aws):
+    put_topic(aws)
+    put_held(aws, "q1", "a1", created_at=LONG_AGO, reasons=["PII: names a person"])
+    hands = DefangHands([defang_answer(plausible=False)])
+    assert reviewer.do_task({"task": "defang", "queue_id": "q1"}, hands.build(), NOW) == "defang_rejected"
+    assert hands.names() == ["ask", "reject", "rejection_musing"]
+
+    put_held(aws, "q2", "a2", created_at=LONG_AGO, reasons=["PII: release dates"])
+    hands = DefangHands([defang_answer(real=(False,), remove=())])
+    assert reviewer.do_task({"task": "defang", "queue_id": "q2"}, hands.build(), NOW) == "approved"
+    assert "replace_body" not in hands.names()
+
+
+def test_a_cut_leaving_too_little_is_rejected_a_misquoted_one_waits(aws):
+    put_topic(aws)
+    put_held(aws, "q1", "a1", created_at=LONG_AGO, reasons=["PII: everything"])
+    most = [
+        "The Wow Forever patch lands this week.",
+        CUT,
+        "Players can expect shorter queues and a calmer economy all season.",
+    ]
+    hands = DefangHands([defang_answer(remove=most)])
+    assert reviewer.do_task({"task": "defang", "queue_id": "q1"}, hands.build(), NOW) == "defang_rejected"
+
+    put_held(aws, "q2", "a2", created_at=LONG_AGO, reasons=["PII: a person"])
+    hands = DefangHands([defang_answer(remove=["A sentence that is not in the article."])])
+    assert reviewer.do_task({"task": "defang", "queue_id": "q2"}, hands.build(), NOW) == "left_for_human"
+    assert "reject" not in hands.names()
+
+
+def test_task_five_never_publishes_where_he_may_not_and_a_fault_is_rejected(aws):
+    put_topic(aws, "vision", force_manual_review=True)
+    put_held(aws, "q1", "a1", topic_id="vision", created_at=LONG_AGO, reasons=["PII: x"])
+    hands = DefangHands()
+    assert reviewer.do_task({"task": "defang", "queue_id": "q1"}, hands.build(), NOW) == "left_for_human"
+    assert hands.names() == []
+
+    put_topic(aws)
+    put_held(aws, "q2", "a2", created_at=LONG_AGO, reasons=["draft truncated: stopped"])
+    hands = DefangHands()
+    assert reviewer.do_task({"task": "defang", "queue_id": "q2"}, hands.build(), NOW) == "defang_rejected"
+
+
+def test_a_financial_article_published_by_task_five_is_flagged_for_a_person(aws):
+    put_topic(aws, "crypto", is_financial=True)
+    put_held(aws, "q", "a", topic_id="crypto", created_at=LONG_AGO, reasons=["advice: says buy"])
+    hands = DefangHands([defang_answer()])
+    assert reviewer.do_task({"task": "defang", "queue_id": "q"}, hands.build(), NOW) == "defanged"
+    assert article(aws, "a")[reviewer.FLAG_FIELD] == reviewer.FLAG_FINANCIAL
+
+
+def test_cut_sentences_only_deletes():
+    assert reviewer.cut_sentences(BODY, ["not there"]) is None
+    cut = reviewer.cut_sentences(BODY, [CUT])
+    assert all(line in BODY for line in cut.splitlines() if line)
+
+
+# --- his settings -----------------------------------------------------------------------------------
+
+
+def test_a_paused_reviewer_skips_his_scheduled_run(aws):
+    dynamo.put_config_row({"config_id": reviewer.CONFIG_ID, "enabled": False})
+    result = reviewer_handler.handle({"job": "run"}, "arn", NOW, hands=FakeHands().build())
+    assert result == {"status": "paused"}
+
+
+def test_his_limits_come_from_the_settings(aws, monkeypatch):
+    put_topic(aws)
+    put_held(aws, "q", "a", rewrites=[{"n": 1}])
+    settings = {**reviewer.effective_settings(None), "max_rewrites": 1}
+    hands = FakeHands()
+    task = {"task": "held", "queue_id": "q"}
+    assert reviewer.do_task(task, hands.build(), NOW, settings=settings) == "rejected"
+
+    for n in range(4):
+        put_held(aws, f"t{n}", f"b{n}", reasons=["draft truncated: x"])
+    monkeypatch.setattr(reviewer_handler, "_report", lambda state: None)
+    monkeypatch.setattr("ops_mcp.content.content_checks", lambda days, now: {"findings": []})
+    monkeypatch.setattr(reviewer_handler, "_get_scheduler", lambda: FakeScheduler())
+    dynamo.put_config_row({"config_id": reviewer.CONFIG_ID, "tasks_per_tick": 3, "tick_minutes": 12})
+    first = reviewer_handler.handle({"job": "run"}, "arn", NOW, hands=FakeHands().build())
+    assert first["left"] == 2  # five held (q is still pending: the fake reject changed nothing), three a tick
+    assert reviewer.get_state()["next_tick_at"] == (NOW + timedelta(minutes=12)).isoformat()

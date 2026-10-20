@@ -253,8 +253,15 @@ python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-hai
 python scripts/admin_cli.py topics update github-trending     --model-candidates "model-id-a,model-id-b" --fallback-model-id "model-id-a"
 python scripts/admin_cli.py topics update github-trending --model-candidates ""
 # Whether Professor Grizzlewick, the reviewer bear, may approve this topic's held articles himself
-# ('' falls back to the project's REVIEWER_MAY_APPROVE, on by default):
+# ('' falls back to his `may_approve` setting, on by default):
 python scripts/admin_cli.py topics update finance-crypto-investing --reviewer-may-approve off
+
+# His settings, read at the start of each run, so no deploy (see `reviewer set --help`):
+python scripts/admin_cli.py reviewer get
+python scripts/admin_cli.py reviewer set --enabled off                  # pause his scheduled runs
+python scripts/admin_cli.py reviewer set --may-approve off              # he reviews, but never approves
+python scripts/admin_cli.py reviewer set --defang-after-days 14 --max-rewrites 2
+python scripts/admin_cli.py reviewer set --review-published ""          # back to its default
 ```
 
 **The Rail Access Monitor's topic.** One `rail_access` topic, `rail-cities`, over the four

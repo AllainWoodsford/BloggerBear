@@ -161,7 +161,7 @@ def _apply_model_flags(body: dict, args: argparse.Namespace) -> None:
             candidate.strip() for candidate in args.model_candidates.split(",") if candidate.strip()
         ]
     if getattr(args, "reviewer_may_approve", None) is not None:  # topics update only
-        # '' clears it (sent as null): back to the project's REVIEWER_MAY_APPROVE.
+        # '' clears it (sent as null): back to the reviewer's `may_approve` setting.
         body["reviewer_may_approve"] = {"on": True, "off": False}.get(args.reviewer_may_approve)
 
 
@@ -1001,6 +1001,48 @@ def _cmd_models_discover(args: argparse.Namespace) -> None:
     )
 
 
+# --- reviewer subcommands ----------------------------------------------------
+
+_REVIEWER_SWITCHES = (
+    "enabled",
+    "may_approve",
+    "fix_content",
+    "review_held",
+    "review_published",
+    "watch_flags",
+    "defang_held",
+)
+_REVIEWER_NUMBERS = (
+    "stale_after_hours",
+    "published_per_run",
+    "published_lookback",
+    "max_rewrites",
+    "content_days",
+    "tasks_per_tick",
+    "tick_minutes",
+    "defang_after_days",
+)
+
+
+def _cmd_reviewer_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/reviewer-config")
+
+
+def _cmd_reviewer_set(args: argparse.Namespace) -> None:
+    body: dict = {}
+    for name in _REVIEWER_SWITCHES:
+        value = getattr(args, name)
+        if value is not None:
+            body[name] = {"on": True, "off": False}.get(value)  # '' clears it (back to the default)
+    for name in _REVIEWER_NUMBERS:
+        raw = getattr(args, name)
+        if raw is not None:
+            body[name] = _whole_or_clear("--" + name.replace("_", "-"), raw)
+    if not body:
+        raise CliError("reviewer set needs at least one setting (see --help)")
+    _do_request(args, "PUT", "/reviewer-config", body=body)
+
+
 # --- model-catalog subcommands ----------------------------------------------
 
 def _cmd_model_catalog_get(args: argparse.Namespace) -> None:
@@ -1511,7 +1553,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="reviewer_may_approve",
         choices=["on", "off", ""],
         default=None,
-        help="May the reviewer bear approve this topic's held articles; '' = project default",
+        help="May the reviewer bear approve this topic's held articles; '' = `reviewer` setting",
     )
     update_parser.set_defaults(func=_cmd_topics_update)
 
@@ -2356,6 +2398,43 @@ def build_parser() -> argparse.ArgumentParser:
             "unpriced: the next reprice prices them); none once the registry holds 50"
         ),
     ).set_defaults(func=_cmd_models_discover)
+
+    reviewer_parser = subparsers.add_parser(
+        "reviewer",
+        help="Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag (no deploy)",
+    )
+    reviewer_sub = reviewer_parser.add_subparsers(dest="action", required=True)
+    reviewer_sub.add_parser(
+        "get", help="Show his settings, their effective values, and his last or current run"
+    ).set_defaults(func=_cmd_reviewer_get)
+    reviewer_set = reviewer_sub.add_parser(
+        "set", help="Change settings (send any of them; a setting not sent is unchanged; '' clears one)"
+    )
+    for flag, what in (
+        ("enabled", "Run (on) or pause (off) his scheduled runs"),
+        ("may-approve", "May he approve held articles himself (a topic's own setting wins)"),
+        ("fix-content", "Task 1: fix the assistant's content findings"),
+        ("review-held", "Task 2: review articles held --stale-after-hours or more"),
+        ("review-published", "Task 3: review the newest published articles"),
+        ("watch-flags", "Task 4: watch his financial approvals for downvotes"),
+        ("defang-held", "Task 5: publish long-waiting articles with flagged parts cut, or reject"),
+    ):
+        reviewer_set.add_argument(
+            f"--{flag}", dest=flag.replace("-", "_"), choices=["on", "off", ""], default=None,
+            help=f"{what} (default on)",
+        )
+    for flag, what in (
+        ("stale-after-hours", "Hours a held article waits before he reviews it, 1-720 (default 48)"),
+        ("published-per-run", "Published articles he reviews a run, 1-25 (default 5)"),
+        ("published-lookback", "How many newest published he looks through, 1-200 (default 25)"),
+        ("max-rewrites", "Rewrites before he rejects a held article, 1-10 (default 3)"),
+        ("content-days", "Days of content findings he fixes, 1-30 (default 7)"),
+        ("tasks-per-tick", "Tasks he does a tick, 1-5 (default 2)"),
+        ("tick-minutes", "Minutes between his ticks, 1-60 (default 5)"),
+        ("defang-after-days", "Days a held article waits before task 5, 3-90 (default 10)"),
+    ):
+        reviewer_set.add_argument(f"--{flag}", dest=flag.replace("-", "_"), default=None, help=what)
+    reviewer_set.set_defaults(func=_cmd_reviewer_set)
 
     model_catalog_parser = subparsers.add_parser(
         "model-catalog",

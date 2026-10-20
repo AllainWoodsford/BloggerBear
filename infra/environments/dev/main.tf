@@ -1112,6 +1112,8 @@ module "admin_api" {
     "POST /models/discover",
     "GET /model-catalog-config",
     "PUT /model-catalog-config",
+    "GET /reviewer-config",
+    "PUT /reviewer-config",
     # Pipeline-wide settings (today: the default research interval). See
     # admin_api_handler.py's _*_pipeline_config_route and `admin_cli pipeline-config`.
     "GET /pipeline-config",
@@ -2613,8 +2615,9 @@ resource "aws_scheduler_schedule" "model_catalog_cycle" {
 # financial articles he approved -- a couple of tasks at a time on one-shot tick schedules
 # (`<prefix>-<env>-reviewer-tick-*`, under the role's scheduler_manage grant) five minutes apart,
 # and writes to the musings feed as himself. On by default; var.reviewer_enabled = false (the
-# REVIEWER_ENABLED GitHub variable) deploys none of it. REVIEWER_MAY_APPROVE is the project's
-# default for whether he may approve (a topic's reviewer_may_approve overrides it). Each tick can
+# REVIEWER_ENABLED GitHub variable) deploys none of it. Everything else about him (his tasks,
+# limits, pause flag, whether he may approve) is the `reviewer` row of the model-config table,
+# changed with no deploy (`admin_cli reviewer get|set`). Each tick can
 # make two model calls and start two rewrites, hence the timeout; he imports the admin API's code,
 # hence the memory.
 resource "aws_lambda_function" "reviewer" {
@@ -2631,9 +2634,7 @@ resource "aws_lambda_function" "reviewer" {
   source_code_hash = data.archive_file.lambdas.output_base64sha256
 
   environment {
-    variables = merge(local.lambda_env_variables, {
-      REVIEWER_MAY_APPROVE = var.reviewer_may_approve ? "true" : "false"
-    })
+    variables = local.lambda_env_variables
   }
 }
 

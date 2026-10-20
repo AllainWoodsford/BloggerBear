@@ -232,3 +232,42 @@ def test_the_assistant_reports_each_flagged_published_article_with_a_command():
 
     admin_api_handler.set_article_fields("article-1", {reviewer.FLAG_FIELD: None})
     assert tools.reviewer_flag_findings() == []
+
+
+# --- his settings, through the admin API -------------------------------------------------------------
+
+
+def test_his_settings_are_read_and_changed_with_no_deploy():
+    read = admin_api_handler.handler(_event("GET /reviewer-config"), None)
+    body = json.loads(read["body"])
+    assert body["effective"] == reviewer.SETTINGS and body["run"] is None
+
+    bad = admin_api_handler.handler(_event("PUT /reviewer-config", body={"max_rewrites": 0}), None)
+    assert bad["statusCode"] == 400
+    changed = admin_api_handler.handler(
+        _event("PUT /reviewer-config", body={"may_approve": False, "defang_after_days": 14}), None
+    )
+    effective = json.loads(changed["body"])["effective"]
+    assert effective["may_approve"] is False and effective["defang_after_days"] == 14
+    cleared = admin_api_handler.handler(_event("PUT /reviewer-config", body={"may_approve": None}), None)
+    assert json.loads(cleared["body"])["effective"]["may_approve"] is True
+
+
+def test_the_cli_sends_each_reviewer_setting_as_the_api_takes_it():
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    import admin_cli
+
+    sent = []
+    argv = ["reviewer", "set", "--may-approve", "off", "--defang-held", "", "--max-rewrites", "4"]
+    args = admin_cli.build_parser().parse_args([*argv, "--tick-minutes", ""])
+
+    def record(_args, method, path, body=None):
+        sent.append((method, path, body))
+
+    with patch.object(admin_cli, "_do_request", record):
+        args.func(args)
+    expected = {"may_approve": False, "defang_held": None, "max_rewrites": 4, "tick_minutes": None}
+    assert sent == [("PUT", "/reviewer-config", expected)]

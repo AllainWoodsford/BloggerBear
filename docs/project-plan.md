@@ -192,7 +192,7 @@ Core pipeline code must remain topic-agnostic.
 - Financial topics must avoid advice language and always queue for moderation: never published
   automatically when drafted. A queued article is decided by a person, or, after two days, by the
   reviewer bear (§11, "Professor Grizzlewick"), when the project and the topic let him approve
-  (`REVIEWER_MAY_APPROVE`, a topic's `reviewer_may_approve`; both on by default). Each financial
+  (his `may_approve` setting, a topic's `reviewer_may_approve`; both on by default). Each financial
   article he approves is flagged for a person to check, and he takes it down again if readers
   downvote it with comments.
 
@@ -2120,8 +2120,10 @@ behind on. He fixes the assistant's content findings, decides articles held two 
 published articles, watches the financial articles he approved for readers' downvotes, and reports
 on the Musings page as himself. He acts through the admin API's own functions, so every decision
 takes an operator's path, and a page he approved says "AI reviewer", never "a person". On by
-default (`REVIEWER_ENABLED`); whether he may approve is the project's `REVIEWER_MAY_APPROVE` and a
-topic's `reviewer_may_approve`.
+default (`REVIEWER_ENABLED`). Everything else is a setting changed with no deploy (`admin_cli reviewer
+set`): his pause flag, each task, his limits, and whether he may approve (a topic's
+`reviewer_may_approve` wins). An article held ten days or more gets a de-fanged publish: its flagged
+sentences cut, in code, by deletion only, or it is rejected.
 
 ### Removed: the Trending Everywhere digest (2026-10-20)
 

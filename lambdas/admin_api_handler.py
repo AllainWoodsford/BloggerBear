@@ -47,6 +47,7 @@ from common import (
     gear,
     model_catalog,
     model_fleet,
+    reviewer,
     security_events,
     sign_ins,
 )
@@ -483,8 +484,8 @@ def _create_topic(event: dict) -> dict:
         "is_financial": is_financial,
         # Stored only when set: every other topic keeps the shape it had.
         **({"force_manual_review": True} if force_manual_review else {}),
-        # Whether Professor Grizzlewick may approve its articles; unset takes the project's
-        # REVIEWER_MAY_APPROVE (common/reviewer.py).
+        # Whether Professor Grizzlewick may approve its articles; unset takes his `may_approve`
+        # setting (common/reviewer.py).
         **({REVIEWER_MAY_APPROVE_FIELD: reviewer_may_approve} if reviewer_may_approve is not None else {}),
         "research_cadence": research_cadence,
         "daily_cadence": daily_cadence,
@@ -595,7 +596,7 @@ def _update_topic(event: dict) -> dict:
         return _error(400, "'force_manual_review' must be a boolean")
     if REVIEWER_MAY_APPROVE_FIELD in body:
         if updated[REVIEWER_MAY_APPROVE_FIELD] is None:
-            updated.pop(REVIEWER_MAY_APPROVE_FIELD)  # back to the project's default
+            updated.pop(REVIEWER_MAY_APPROVE_FIELD)  # back to his `may_approve` setting
         elif not isinstance(updated[REVIEWER_MAY_APPROVE_FIELD], bool):
             return _error(400, f"'{REVIEWER_MAY_APPROVE_FIELD}' must be true, false or null")
     if updated["adapter"] in MANUAL_REVIEW_ADAPTERS:
@@ -1875,6 +1876,27 @@ def reviewer_regenerate_musings(article_id: str) -> tuple[int, dict]:
     return _call(_regenerate_article_musings, {"article_id": article_id})
 
 
+def reviewer_replace_body(article_id: str, body: str) -> None:
+    """Put a de-fanged body in place of an article's (common/reviewer.py's task 5), keeping the
+    original beside it as `articles/<id>.before-defang.md`. Nothing else changes: approving it is
+    the next step, as for any held article."""
+    article = get_article(article_id)
+    if article is None:
+        raise ValueError(f"article '{article_id}' not found")
+    s3 = boto3.client("s3")
+    bucket = os.environ["CONTENT_BUCKET"]
+    original = read_article_body(article["body_s3_key"])
+    s3.put_object(
+        Bucket=bucket,
+        Key=f"articles/{article_id}.before-defang.md",
+        Body=original.encode("utf-8"),
+        ContentType="text/markdown",
+    )
+    s3.put_object(
+        Bucket=bucket, Key=article["body_s3_key"], Body=body.encode("utf-8"), ContentType="text/markdown"
+    )
+
+
 def reviewer_hold(article_id: str, reason: str = HELD_BY_REVIEWER_REASON) -> tuple[int, dict]:
     """Take a published article down and put it back in the inbox, pending, with `reason`: the
     same clean-up as unpublish (page, musings, CDN cache), but the article is
@@ -2717,6 +2739,33 @@ def _put_model_catalog_config_route(event: dict) -> dict:
     return _get_model_catalog_config_route(event)
 
 
+# --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/reviewer-bear.md) -----
+#
+# The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
+# switches and limits, his pause flag and whether he may approve. Changed with no deploy.
+
+
+def _get_reviewer_config_route(event: dict) -> dict:
+    return _response(200, reviewer.summary())
+
+
+def _put_reviewer_config_route(event: dict) -> dict:
+    """Set (or, with null, clear) reviewer settings: any of reviewer.SETTINGS. A setting that
+    isn't in the body is left as it is."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if not isinstance(body, dict) or not body:
+        return _error(400, f"send any of: {', '.join(reviewer.SETTINGS)} (null clears a setting)")
+    for name, value in body.items():
+        problem = reviewer.validate_setting(name, value)
+        if problem:
+            return _error(400, problem)
+    update_config_row(reviewer.CONFIG_ID, body)
+    return _get_reviewer_config_route(event)
+
+
 def _start_model_catalog_job(job: str) -> dict:
     run = model_catalog.active_run()
     # A run whose next tick or review is overdue lost its schedule: the job runs that step first,
@@ -3138,6 +3187,8 @@ _ROUTES = {
     "POST /models/discover": _discover_models_route,
     "GET /model-catalog-config": _get_model_catalog_config_route,
     "PUT /model-catalog-config": _put_model_catalog_config_route,
+    "GET /reviewer-config": _get_reviewer_config_route,
+    "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /pipeline-config": _get_pipeline_config_route,
     "PUT /pipeline-config": _put_pipeline_config_route,
     "GET /feedback-config": _get_feedback_config_route,

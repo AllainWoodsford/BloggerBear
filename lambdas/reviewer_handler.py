@@ -88,6 +88,7 @@ def build_hands() -> reviewer.Hands:
         rewrite=admin.reviewer_rewrite,
         regenerate_musings=admin.reviewer_regenerate_musings,
         hold=admin.reviewer_hold,
+        replace_body=admin.reviewer_replace_body,
         ask=_ask,
         model_for=lambda topic: resolve_model(topic)[0],
         read_body=read_article_body,
@@ -116,8 +117,8 @@ def _report(state: dict) -> None:
         print(f"reviewer_handler: could not post the report musing: {exc!r}")
 
 
-def _advance(state: dict, own_arn: str | None, now: datetime, hands=None) -> dict:
-    state = reviewer.tick(state, hands or build_hands(), now)
+def _advance(state: dict, own_arn: str | None, now: datetime, settings: dict, hands=None) -> dict:
+    state = reviewer.tick(state, hands or build_hands(), now, settings)
     if state.get("queue"):
         try:
             schedule_tick(state, own_arn)
@@ -133,20 +134,26 @@ def _advance(state: dict, own_arn: str | None, now: datetime, hands=None) -> dic
 
 
 def handle(event: dict, own_arn: str | None, now: datetime | None = None, hands=None) -> dict:
+    """`{"job": "run"}` (his schedule) plans a run, unless the `enabled` setting is off;
+    `{"job": "tick", ...}` does a run's next tick, finishing a run already started even then.
+    The settings are read fresh on every invocation, so a change needs no deploy."""
     now = now or datetime.now(UTC)
+    settings = reviewer.get_settings()
     job = (event or {}).get("job", "run")
     if job == "run":
-        started = reviewer.start(now)
+        if not settings["enabled"]:
+            return {"status": "paused"}
+        started = reviewer.start(now, settings)
         if started["status"] == "busy":
             return started
-        return {"status": started["status"], **_advance(started, own_arn, now, hands)}
+        return {"status": started["status"], **_advance(started, own_arn, now, settings, hands)}
     if job == "tick":
         state = reviewer.get_state()
         if state.get("run_id") != event.get("run_id") or state.get("tick") != event.get("tick"):
             return {"status": "stale", "run_id": event.get("run_id")}
         if not state.get("queue"):
             return {"status": "done", "run_id": state.get("run_id")}
-        return {"status": "ticked", **_advance(state, own_arn, now, hands)}
+        return {"status": "ticked", **_advance(state, own_arn, now, settings, hands)}
     return {"status": "ignored", "reason": f"unknown job {job!r}"}
 
 

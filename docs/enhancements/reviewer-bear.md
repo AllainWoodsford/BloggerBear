@@ -43,6 +43,23 @@ tasks, in order:
    An article he took down this way is **never his to decide again**: however long it waits, it is
    left for a person.
 
+5. **Articles held ten days or more: the de-fanged publish.** These have waited for a person who
+   never came (a financial article whose majors did not matter, an answer he could not read). A
+   final review by the topic's model judges each major again and, for each real one, quotes the
+   exact sentences that carry it, and says whether the article stands without them: nothing left
+   refers to what goes, and the problem does not run through the whole of it. **The cut is made in
+   code by deleting those verbatim sentences** (`cut_sentences`), so it can only take text out,
+   never add or reword any; list items left empty go, and at least half the article must remain.
+   - nothing real to cut: approved;
+   - a plausible cut: the original body kept as `articles/<id>.before-defang.md`, the cut one
+     published, and `reviewer_defanged` on the article (when, how many sentences, for how many
+     flags);
+   - not plausible, too little left, or a fault in the draft itself: rejected (his rejection musing);
+   - a sentence he quoted that is not in the article: his slip, not the article's, so it waits for
+     the next run.
+   Never for a topic he may not approve for. A financial one is flagged for a person, like any
+   approval of his. Articles under the threshold go to task 2 as before.
+
 ## How he acts
 
 Through the admin API's own functions (`reviewer_approve`, `reviewer_reject`, `reviewer_rewrite`,
@@ -86,25 +103,33 @@ Like BloggerBear's, they name a topic but never an article's title, pass the com
 back to a plain line if the model's answer will not do. The report's facts are counts in fixed words:
 nothing a model or a reader wrote reaches its prompt.
 
-## Switches
+## Settings: changed with no deploy
 
-| Setting | Default | Effect |
+Whether he is deployed at all is `REVIEWER_ENABLED` (GitHub variable) → `reviewer_enabled`, on
+unless `false`: the one thing that needs a deploy. Everything else is the `reviewer` row of the
+ModelConfig table (the same table and pattern as the model catalog's `model-catalog` row), read at
+the start of each run: `admin_cli reviewer get|set`, `GET`/`PUT /reviewer-config`. A setting left
+unset, or holding something invalid, takes its default.
+
+| Setting | Default | Range |
 |---|---|---|
-| `REVIEWER_ENABLED` (GitHub variable) → `reviewer_enabled` | on | Deploys his Lambda and schedule; `false` deploys neither |
-| `REVIEWER_MAY_APPROVE` (GitHub variable) → `reviewer_may_approve` → his Lambda's `REVIEWER_MAY_APPROVE` | on | The project's default for whether he may approve, financial or not |
-| a topic's `reviewer_may_approve` | unset | Overrides the project's default (`topics update --reviewer-may-approve on\|off`, `""` to clear) |
-| a topic's `force_manual_review` | off | On: he never approves its articles (the vision topics) |
-
-The constants (5 published articles a run, 2 days before a held article is his, 3 rewrites before he
-rejects, 2 tasks a tick, 5 minutes between ticks) are in `common/reviewer.py`.
+| `enabled` (his scheduled runs) | on | |
+| `may_approve` (project default; a topic's `reviewer_may_approve` wins, `force_manual_review` never) | on | |
+| `fix_content`, `review_held`, `review_published`, `watch_flags`, `defang_held` (tasks 1-5) | on | |
+| `stale_after_hours` | 48 | 1-720 |
+| `published_per_run` / `published_lookback` | 5 / 25 | 1-25 / 1-200 |
+| `max_rewrites` | 3 | 1-10 |
+| `content_days` | 7 | 1-30 |
+| `defang_after_days` | 10 | 3-90 |
+| `tasks_per_tick` / `tick_minutes` | 2 / 5 | 1-5 / 1-60 |
 
 ## Infrastructure
 
 One Lambda (`<prefix>-<env>-reviewer`, 600 s, 512 MB; he imports the admin API's code) on the shared
 Lambda role, which already has every table, the content bucket, Bedrock, invoking the daily cycle
 (for rewrites) and making `<prefix>-<env>-*` schedules (his ticks). New: the scheduler role's
-`InvokeReviewer` statement, his log group and his place in the alarms, and the admin route
-`POST /articles/{article_id}/checked`. His schedule is `cron(0 5 1/2 * ? *)` Sydney, two hours after
+`InvokeReviewer` statement, his log group and his place in the alarms, and the admin routes
+`POST /articles/{article_id}/checked` and `GET`/`PUT /reviewer-config`. His schedule is `cron(0 5 1/2 * ? *)` Sydney, two hours after
 the model catalog's reprice. His model calls are tallied on the Stats page as **Reviewer bear**.
 
 ## What the public pages say

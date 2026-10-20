@@ -53,7 +53,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,model-catalog,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,model-catalog,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -676,7 +676,7 @@
           "flags": [
             "--reviewer-may-approve"
           ],
-          "help": "May the reviewer bear approve this topic's held articles; '' = project default",
+          "help": "May the reviewer bear approve this topic's held articles; '' = `reviewer` setting",
           "type": "str",
           "choices": [
             "on",
@@ -691,7 +691,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON]\n                                  [--goal-rotation-json GOAL_ROTATION_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--stagger-slot STAGGER_SLOT]\n                                  [--model-id MODEL_ID] [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  [--reviewer-may-approve {on,off,}]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --goal-rotation-json GOAL_ROTATION_JSON\n                        2 to 7 editorial goals taken in turn: '[{\"name\": \"access\",\n                        \"primary_focus\": \"...\"}, ...]'. With nothing new, the last findings are\n                        revisited under a goal not yet used on them. Replaces the whole list; '[]'\n                        clears it\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336, for a topic that does not\n                        write every day; '' clears it (back to 24)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --stagger-slot STAGGER_SLOT\n                        Move this topic to another turn in the stagger (a whole number no other\n                        topic holds); '' gives it the next free slot. Its two schedules are\n                        rewritten at once\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n  --reviewer-may-approve {on,off,}\n                        May the reviewer bear approve this topic's held articles; '' = project\n                        default\n"
+      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON]\n                                  [--goal-rotation-json GOAL_ROTATION_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--stagger-slot STAGGER_SLOT]\n                                  [--model-id MODEL_ID] [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  [--reviewer-may-approve {on,off,}]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --goal-rotation-json GOAL_ROTATION_JSON\n                        2 to 7 editorial goals taken in turn: '[{\"name\": \"access\",\n                        \"primary_focus\": \"...\"}, ...]'. With nothing new, the last findings are\n                        revisited under a goal not yet used on them. Replaces the whole list; '[]'\n                        clears it\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336, for a topic that does not\n                        write every day; '' clears it (back to 24)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --stagger-slot STAGGER_SLOT\n                        Move this topic to another turn in the stagger (a whole number no other\n                        topic holds); '' gives it the next free slot. Its two schedules are\n                        rewritten at once\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n  --reviewer-may-approve {on,off,}\n                        May the reviewer bear approve this topic's held articles; '' = `reviewer`\n                        setting\n"
     },
     "topics delete": {
       "help": "Delete a topic",
@@ -2832,6 +2832,298 @@
       "arguments": [],
       "destructive": false,
       "help_text": "usage: admin_cli.py models discover [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "reviewer": {
+      "help": "Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag (no deploy)",
+      "group": true,
+      "subcommands": [
+        "get",
+        "set"
+      ],
+      "help_text": "usage: admin_cli.py reviewer [-h] {get,set} ...\n\npositional arguments:\n  {get,set}\n    get       Show his settings, their effective values, and his last or current run\n    set       Change settings (send any of them; a setting not sent is unchanged; '' clears one)\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "reviewer get": {
+      "help": "Show his settings, their effective values, and his last or current run",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py reviewer get [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "reviewer set": {
+      "help": "Change settings (send any of them; a setting not sent is unchanged; '' clears one)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--enabled",
+          "dest": "enabled",
+          "kind": "option",
+          "flags": [
+            "--enabled"
+          ],
+          "help": "Run (on) or pause (off) his scheduled runs (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--may-approve",
+          "dest": "may_approve",
+          "kind": "option",
+          "flags": [
+            "--may-approve"
+          ],
+          "help": "May he approve held articles himself (a topic's own setting wins) (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--fix-content",
+          "dest": "fix_content",
+          "kind": "option",
+          "flags": [
+            "--fix-content"
+          ],
+          "help": "Task 1: fix the assistant's content findings (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--review-held",
+          "dest": "review_held",
+          "kind": "option",
+          "flags": [
+            "--review-held"
+          ],
+          "help": "Task 2: review articles held --stale-after-hours or more (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--review-published",
+          "dest": "review_published",
+          "kind": "option",
+          "flags": [
+            "--review-published"
+          ],
+          "help": "Task 3: review the newest published articles (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--watch-flags",
+          "dest": "watch_flags",
+          "kind": "option",
+          "flags": [
+            "--watch-flags"
+          ],
+          "help": "Task 4: watch his financial approvals for downvotes (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--defang-held",
+          "dest": "defang_held",
+          "kind": "option",
+          "flags": [
+            "--defang-held"
+          ],
+          "help": "Task 5: publish long-waiting articles with flagged parts cut, or reject (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--stale-after-hours",
+          "dest": "stale_after_hours",
+          "kind": "option",
+          "flags": [
+            "--stale-after-hours"
+          ],
+          "help": "Hours a held article waits before he reviews it, 1-720 (default 48)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--published-per-run",
+          "dest": "published_per_run",
+          "kind": "option",
+          "flags": [
+            "--published-per-run"
+          ],
+          "help": "Published articles he reviews a run, 1-25 (default 5)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--published-lookback",
+          "dest": "published_lookback",
+          "kind": "option",
+          "flags": [
+            "--published-lookback"
+          ],
+          "help": "How many newest published he looks through, 1-200 (default 25)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--max-rewrites",
+          "dest": "max_rewrites",
+          "kind": "option",
+          "flags": [
+            "--max-rewrites"
+          ],
+          "help": "Rewrites before he rejects a held article, 1-10 (default 3)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--content-days",
+          "dest": "content_days",
+          "kind": "option",
+          "flags": [
+            "--content-days"
+          ],
+          "help": "Days of content findings he fixes, 1-30 (default 7)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--tasks-per-tick",
+          "dest": "tasks_per_tick",
+          "kind": "option",
+          "flags": [
+            "--tasks-per-tick"
+          ],
+          "help": "Tasks he does a tick, 1-5 (default 2)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--tick-minutes",
+          "dest": "tick_minutes",
+          "kind": "option",
+          "flags": [
+            "--tick-minutes"
+          ],
+          "help": "Minutes between his ticks, 1-60 (default 5)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--defang-after-days",
+          "dest": "defang_after_days",
+          "kind": "option",
+          "flags": [
+            "--defang-after-days"
+          ],
+          "help": "Days a held article waits before task 5, 3-90 (default 10)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py reviewer set [-h] [--enabled {on,off,}] [--may-approve {on,off,}]\n                                 [--fix-content {on,off,}] [--review-held {on,off,}]\n                                 [--review-published {on,off,}] [--watch-flags {on,off,}]\n                                 [--defang-held {on,off,}] [--stale-after-hours STALE_AFTER_HOURS]\n                                 [--published-per-run PUBLISHED_PER_RUN]\n                                 [--published-lookback PUBLISHED_LOOKBACK]\n                                 [--max-rewrites MAX_REWRITES] [--content-days CONTENT_DAYS]\n                                 [--tasks-per-tick TASKS_PER_TICK] [--tick-minutes TICK_MINUTES]\n                                 [--defang-after-days DEFANG_AFTER_DAYS]\n\noptions:\n  -h, --help            show this help message and exit\n  --enabled {on,off,}   Run (on) or pause (off) his scheduled runs (default on)\n  --may-approve {on,off,}\n                        May he approve held articles himself (a topic's own setting wins) (default\n                        on)\n  --fix-content {on,off,}\n                        Task 1: fix the assistant's content findings (default on)\n  --review-held {on,off,}\n                        Task 2: review articles held --stale-after-hours or more (default on)\n  --review-published {on,off,}\n                        Task 3: review the newest published articles (default on)\n  --watch-flags {on,off,}\n                        Task 4: watch his financial approvals for downvotes (default on)\n  --defang-held {on,off,}\n                        Task 5: publish long-waiting articles with flagged parts cut, or reject\n                        (default on)\n  --stale-after-hours STALE_AFTER_HOURS\n                        Hours a held article waits before he reviews it, 1-720 (default 48)\n  --published-per-run PUBLISHED_PER_RUN\n                        Published articles he reviews a run, 1-25 (default 5)\n  --published-lookback PUBLISHED_LOOKBACK\n                        How many newest published he looks through, 1-200 (default 25)\n  --max-rewrites MAX_REWRITES\n                        Rewrites before he rejects a held article, 1-10 (default 3)\n  --content-days CONTENT_DAYS\n                        Days of content findings he fixes, 1-30 (default 7)\n  --tasks-per-tick TASKS_PER_TICK\n                        Tasks he does a tick, 1-5 (default 2)\n  --tick-minutes TICK_MINUTES\n                        Minutes between his ticks, 1-60 (default 5)\n  --defang-after-days DEFANG_AFTER_DAYS\n                        Days a held article waits before task 5, 3-90 (default 10)\n"
     },
     "model-catalog": {
       "help": "The model discover and reprice jobs (every second day): pause flags, sizes, reviews",
