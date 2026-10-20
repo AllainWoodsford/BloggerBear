@@ -460,7 +460,7 @@ def record_article_lineage(lineage: dict) -> None:
     """Tally one just-drafted article's total spend (authoring + research, if any) onto this
     week's Stats row under `articles` -- called once per article, right after
     common.costing.build_lineage (and build_research_lineage, when there is one) finish
-    (daily_cycle_handler.py, trending_digest_handler.py). Deliberately per-article, not per
+    (daily_cycle_handler.py). Deliberately per-article, not per
     Bedrock call within it: that finer detail (which model, ideation vs draft vs title, which
     topic) stays common/stats.py's job, read live off the Articles table; this is one coarse
     weekly total sitting alongside it, so Weekly/Total Stats aren't missing the largest share of
@@ -555,7 +555,7 @@ def refresh_articles_snapshot() -> None:
     """Rebuild the Stats page's Articles section (common/stats.py's build_stats: totals, by model,
     by topic and the 30-day table) and store it for the public API to read (common/dynamo.py's
     put_articles_stats_snapshot). Called after anything that changes what that section shows: a
-    daily cycle, a rewrite or a digest that wrote an article, and the admin routes that publish,
+    daily cycle or a rewrite that wrote an article, and the admin routes that publish,
     reject or re-price one. The page then reads one row; it used to scan every article per view.
 
     A model's price or a topic's name changed in between shows from the next call.

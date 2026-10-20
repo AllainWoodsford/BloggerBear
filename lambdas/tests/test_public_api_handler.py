@@ -2108,16 +2108,6 @@ def test_topic_page_listing_returns_the_topics_credit(aws_resources):
     assert json.loads(public_api_handler.handler(event, None)["body"])["attribution"] == []
 
 
-def test_digest_topic_page_credits_every_topics_sources_once(aws_resources):
-    _put_topic()
-    _put_topic(_CRYPTO_TOPIC)
-    _put_topic({**TOPIC, "topic_id": "web", "name": "Web", "adapter": "web_search"})
-    event = _event("GET /articles", query_params={"topic_id": "digest"})
-    body = json.loads(public_api_handler.handler(event, None)["body"])
-    urls = [source["url"] for source in body["attribution"]]
-    assert sorted(urls) == sorted(
-        ["https://github.com/trending", "https://www.coingecko.com/en/api", "https://www.gdeltproject.org/"]
-    )
 
 
 def test_article_detail_falls_back_to_the_topics_adapter_when_nothing_was_stored(aws_resources):

@@ -4,7 +4,7 @@ and that declaration is what readers see credited.
 These are the build-breaking checks: a new adapter with no source, a source that is not a plain
 https link, or a source the About page does not name, fails here. The pages that show the credit
 are tested where they live (test_static_pages.py, test_public_api_handler.py,
-test_trending_digest_handler.py, test_frontend_attribution.py).
+test_frontend_attribution.py).
 """
 
 from __future__ import annotations
@@ -95,13 +95,6 @@ def test_a_topic_carries_its_adapters_sources_and_an_unknown_adapter_carries_non
         assert attribution.sources_for_topic(topic) == []
 
 
-def test_the_union_of_several_topics_lists_each_source_once_in_first_met_order():
-    adapters = ["web_search", "crypto_feed", "web_search", "no_such_adapter"]
-    topics = [{"adapter": adapter} for adapter in adapters]
-    assert [source["label"] for source in attribution.sources_for_topics(topics)] == [
-        "GDELT Project",
-        "CoinGecko API",
-    ]
 
 
 def test_sources_returned_are_copies_so_a_caller_cannot_edit_the_declaration():
@@ -116,29 +109,21 @@ def _no_lookup(*_args):
 def test_an_article_keeps_the_credit_stored_on_it():
     stored = [{"text": "Data from X", "label": "X", "url": "https://x.example/"}]
     article = {"topic_id": "crypto", "attribution": stored}
-    assert attribution.sources_for_article(article, get_topic=_no_lookup, list_topics=_no_lookup) == stored
+    assert attribution.sources_for_article(article, get_topic=_no_lookup) == stored
     # "Nothing to credit" was stored: that is the answer.
     article = {"topic_id": "crypto", "attribution": []}
-    assert attribution.sources_for_article(article, get_topic=_no_lookup, list_topics=_no_lookup) == []
+    assert attribution.sources_for_article(article, get_topic=_no_lookup) == []
 
 
 def test_an_older_article_falls_back_to_its_topics_adapter():
     topics = {"crypto": {"topic_id": "crypto", "adapter": "crypto_feed"}}
-    found = attribution.sources_for_article(
-        {"topic_id": "crypto"}, get_topic=topics.get, list_topics=_no_lookup
-    )
+    found = attribution.sources_for_article({"topic_id": "crypto"}, get_topic=topics.get)
     assert found == attribution.sources_for_adapter("crypto_feed")
     # Its topic has since been deleted: nothing to credit, and no error.
-    gone = attribution.sources_for_article({"topic_id": "gone"}, get_topic=topics.get, list_topics=_no_lookup)
+    gone = attribution.sources_for_article({"topic_id": "gone"}, get_topic=topics.get)
     assert gone == []
 
 
-def test_an_older_digest_credits_every_current_topics_sources():
-    topics = [{"topic_id": "a", "adapter": "github_trending"}, {"topic_id": "b", "adapter": "hacker_news"}]
-    found = attribution.sources_for_article(
-        {"topic_id": "digest"}, get_topic=_no_lookup, list_topics=lambda: topics
-    )
-    assert [source["label"] for source in found] == ["GitHub Trending", "Hacker News"]
 
 
 @pytest.mark.parametrize(

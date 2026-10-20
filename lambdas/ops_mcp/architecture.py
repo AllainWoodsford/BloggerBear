@@ -198,8 +198,7 @@ CATALOGUE: tuple[Component, ...] = (
             ),
             (
                 "Read by",
-                "daily-cycle, trending-digest, the public API, the Admin API, the assistant "
-                "(topic_findings)",
+                "daily-cycle, the public API, the Admin API, the assistant (topic_findings)",
             ),
             ("Expires", "14 days after it was captured (TTL)"),
             (
@@ -239,7 +238,7 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             (
                 "Written by",
-                "daily-cycle and trending-digest; the Admin API on approve, reject, rewrite and unpublish",
+                "daily-cycle; the Admin API on approve, reject, rewrite and unpublish",
             ),
             ("Read by", "the public API (home, topic pages, RSS), the Admin API, the assistant"),
             ("Bodies", "in the content bucket under articles/, not in the table"),
@@ -262,7 +261,7 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             (
                 "Written by",
-                "daily-cycle and trending-digest (held articles); the Admin API (approve, reject, rewrite)",
+                "daily-cycle (held articles); the Admin API (approve, reject, rewrite)",
             ),
             ("Read by", "the Admin API's inbox, the public API's pending counts, the assistant"),
             ("Expires", "only rejected items, by TTL; pending and approved ones never"),
@@ -535,11 +534,6 @@ CATALOGUE: tuple[Component, ...] = (
         "hours later, putting it back if it cannot be confirmed.",
         "Tuesdays and Wednesdays 03:00 Sydney time (EventBridge Scheduler), each review on a "
         "one-shot schedule of its own, and on demand (models discover, models reprice)",
-    ),
-    _lambda(
-        "trending-digest",
-        'Writes the cross-topic "trending everywhere" digest article from every topic\'s latest finding.',
-        "daily at 07:00 UTC (EventBridge Scheduler)",
     ),
     _lambda(
         "musing-feedback",
@@ -1012,7 +1006,7 @@ LAYERS: tuple[Layer, ...] = (
         services=(
             (
                 "Pipeline Lambdas",
-                "Research, the daily article, the cross-topic digest, the weekly reflection.",
+                "Research, the daily article, the weekly reflection.",
             ),
             ("API Lambdas", "Answer the public API and the admin API."),
             ("Housekeeping Lambdas", "Stats, the daily cost read, failed runs, firewall and sign-in events."),

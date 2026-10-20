@@ -53,7 +53,6 @@ from common.adapters.base import SUBJECT_KEY
 from common.assistant_access import assistant_access_error, effective_assistant_access
 from common.attribution import sources_for_article
 from common.day_subject import subject_findings
-from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     REWRITE_FAILED_STATUS,
     claim_moderation_for_rewrite,
@@ -1102,9 +1101,7 @@ def _list_findings_route(event: dict) -> dict:
 
 
 def _topic_display_name(topic_id: str) -> str:
-    """A topic's display name, the digest's included (it has no Topics-table row), else its id."""
-    if topic_id == DIGEST_TOPIC_ID:
-        return DIGEST_TOPIC_NAME
+    """A topic's display name, else (a topic that is gone) its id."""
     topic = get_topic(topic_id)
     return (topic or {}).get("name", topic_id)
 
@@ -1126,13 +1123,6 @@ def _render_article_page(article: dict, *, published_at: str, published_by: str 
     The page half of _render_published_page below, and on its own what a restore (common/backup.py)
     does for every published article: the row already says who published it, and its musings come
     back from the snapshot, so nothing is generated."""
-    # Bugfix: get_topic("digest") returns None -- the cross-topic digest
-    # (trending_digest_handler.py) isn't a real Topics-table row -- so
-    # without this special case, a digest article reaching this function
-    # (approved out of moderation, or force-published) would render with
-    # the raw topic_id "digest" as its display name instead of the
-    # friendly one, inconsistent with what a digest article gets when
-    # trending_digest_handler.py publishes it directly on the first pass.
     topic_name = _topic_display_name(article["topic_id"])
     body_markdown = read_article_body(article["body_s3_key"])
     render_and_publish_article_page(
@@ -1152,9 +1142,9 @@ def _render_article_page(article: dict, *, published_at: str, published_by: str 
         fact_check=fact_check_label(article.get("review"), published_by),
         equipment_used=article.get("equipment_used"),
         # The source credit stored when the article was drafted; for an article from before
-        # that was stored, its topic's adapter's sources as declared today (the digest: every
-        # topic's). See common/attribution.py.
-        attribution=sources_for_article(article, get_topic=get_topic, list_topics=list_topics),
+        # that was stored, its topic's adapter's sources as declared today. See
+        # common/attribution.py.
+        attribution=sources_for_article(article, get_topic=get_topic),
         # The figures stored when it was drafted (common/figures.py): copied onto the site again
         # on every render, so an article that was taken down and approved gets them back.
         figures=article.get("figures"),

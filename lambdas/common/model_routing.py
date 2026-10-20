@@ -36,8 +36,8 @@ def resolve_model(topic: dict | None = None) -> tuple[str, str | None]:
     `topic` is an optional Topics item (as returned by common.dynamo.
     get_topic) -- pass it when the call is on behalf of a specific topic,
     so that topic's own model_id/fallback_model_id override (if set) wins.
-    Pass None for topic-agnostic calls (e.g. trending_digest_handler.py's
-    cross-topic synthesis).
+    Pass None for topic-agnostic calls (e.g. the model catalog's reading of
+    a web search result).
     """
     model_id = None
     fallback_model_id = None

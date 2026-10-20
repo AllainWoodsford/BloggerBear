@@ -395,7 +395,7 @@ python scripts/admin_cli.py topics resume wow-forever
 
 Two things need a person, and both are covered:
 
-1. **Articles in the moderation queue.** Financial topics (crypto, the trending digest) always wait for
+1. **Articles in the moderation queue.** Financial topics (crypto) always wait for
    you, by design. Others land here when the compliance or fresh-data review held them, and the reasons
    are shown. (Every article that needs a decision has a queue item, so this is all of them.)
 2. **Prompt-change proposals** from the weekly reflection. Approving one changes how future articles on

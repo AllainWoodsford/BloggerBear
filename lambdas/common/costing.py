@@ -3,10 +3,9 @@
 
 Single source of truth for turning a list of tracked Bedrock calls (see
 common.bedrock.invoke_model_tracked) into the `lineage` dict stored on an
-Articles item -- kept separate from daily_cycle_handler.py/
-trending_digest_handler.py so both handlers assemble lineage identically,
-and so the public Stats page can reuse the same cost math for aggregate
-reporting without duplicating it.
+Articles item -- kept separate from daily_cycle_handler.py so every
+publish path assembles lineage identically, and so the public Stats page
+can reuse the same cost math for aggregate reporting without duplicating it.
 
 **Pricing** is looked up by the canonical model id (an ARN is reduced to the
 profile id it names -- see common/model_pricing.py): the Models registry first,

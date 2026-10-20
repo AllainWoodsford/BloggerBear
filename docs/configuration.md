@@ -148,8 +148,8 @@ checks this bucket's length yet, and the variable's description in `variables.tf
 name has room to spare at 14") predates the worker; shortening the name, and testing it, is a code
 follow-up ([vision.md §10](enhancements/archive/vision.md#10-still-open)).
 
-The times of the fixed jobs (the weekly reflection, the Stats rollover, the daily digest, the cost
-poll and the feedback musing) are not variables: they are written in each environment's `main.tf`.
+The times of the fixed jobs (the weekly reflection, the Stats rollover, the cost poll, the feedback
+musing and the model catalog's jobs) are not variables: they are written in each environment's `main.tf`.
 
 ## SSM Parameter Store
 

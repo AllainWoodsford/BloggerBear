@@ -45,7 +45,6 @@ from common.attribution import (
     clean_sources,
     sources_for_article,
     sources_for_topic,
-    sources_for_topics,
 )
 from common.comment_screening import (
     INJECTION,
@@ -56,7 +55,6 @@ from common.comment_screening import (
     SQL,
     screen_comment,
 )
-from common.digest import DIGEST_TOPIC_ID
 from common.dynamo import (
     get_article,
     get_articles_stats_snapshot,
@@ -359,18 +357,14 @@ def _topic_activity(event: dict) -> dict:
 
 
 def _topic_attribution(topic_id: str) -> list[dict]:
-    """The source credit shown under a topic's title: its adapter's declared sources. The digest
-    is not a Topics row and draws on every topic, so its page credits all of their sources (each
-    digest article carries the narrower credit of the topics that actually contributed)."""
-    if topic_id == DIGEST_TOPIC_ID:
-        return sources_for_topics(list_topics())
+    """The source credit shown under a topic's title: its adapter's declared sources."""
     return sources_for_topic(get_topic(topic_id))
 
 
 def _article_attribution(article: dict) -> list[dict]:
     """The source credit an article was published with (or, for one from before that was stored,
     its topic's adapter's sources today). See common/attribution.py's sources_for_article."""
-    return sources_for_article(article, get_topic=get_topic, list_topics=list_topics)
+    return sources_for_article(article, get_topic=get_topic)
 
 
 # Articles per page of GET /articles?topic_id= (a topic page shows one page at a time, newest first).
@@ -865,9 +859,7 @@ def _rss_feed(event: dict) -> dict:
 
     items_xml = []
     for article in articles:
-        attribution = sources_for_article(
-            article, get_topic=topics_by_id.get, list_topics=lambda: topics
-        )
+        attribution = sources_for_article(article, get_topic=topics_by_id.get)
         body = ""
         body_s3_key = article.get("body_s3_key")
         if body_s3_key:
