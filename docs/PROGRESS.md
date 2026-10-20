@@ -962,7 +962,9 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   newest published articles, and takes down financial articles he approved that readers downvoted
   with comments; an article held ten days or more is published with its flagged sentences cut (by
   deletion only) or rejected. `REVIEWER_ENABLED` deploys him; everything else is a setting with no
-  deploy (`admin_cli reviewer get|set`: pause, each task, limits, `may_approve`), and a topic's
+  deploy (`admin_cli reviewer get|set`: pause, each task, limits, `may_approve`, and the chances of
+  a back-and-forth on the Musings page: BloggerBear replies to his report 25% of the time, proud,
+  grateful, contrite or sulky, and he answers 10% of the time), and a topic's
   `reviewer_may_approve`; `articles get` and `articles checked`; the assistant's
   `reviewer_financial_check`; the Terms, Privacy Policy and About page say what he does
 

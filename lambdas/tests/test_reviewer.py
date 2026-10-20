@@ -460,7 +460,7 @@ def test_a_run_ticks_through_its_queue_and_reports_once_it_is_done(aws, monkeypa
     monkeypatch.setattr(reviewer_handler, "_get_scheduler", lambda: scheduler)
     monkeypatch.setattr("ops_mcp.content.content_checks", lambda days, now: {"findings": []})
     reports = []
-    monkeypatch.setattr(reviewer_handler, "_report", lambda state: reports.append(state))
+    monkeypatch.setattr(reviewer_handler, "_report", lambda state, settings=None: reports.append(state))
     hands = FakeHands()
     arn = "arn:aws:lambda:ap-southeast-2:123456789012:function:reviewer"
 
@@ -501,7 +501,7 @@ def test_a_run_whose_tick_was_lost_is_carried_on_by_the_next(aws, monkeypatch):
             "next_tick_at": (NOW - timedelta(hours=2)).isoformat(),
         }
     )
-    monkeypatch.setattr(reviewer_handler, "_report", lambda state: None)
+    monkeypatch.setattr(reviewer_handler, "_report", lambda state, settings=None: None)
     result = reviewer_handler.handle({"job": "run"}, "arn", NOW, hands=FakeHands().build())
     assert (result["status"], result["run_id"], result["counts"]) == ("resumed", "r1", {"rewrite": 1})
 
@@ -669,7 +669,7 @@ def test_his_limits_come_from_the_settings(aws, monkeypatch):
 
     for n in range(4):
         put_held(aws, f"t{n}", f"b{n}", reasons=["draft truncated: x"])
-    monkeypatch.setattr(reviewer_handler, "_report", lambda state: None)
+    monkeypatch.setattr(reviewer_handler, "_report", lambda state, settings=None: None)
     monkeypatch.setattr("ops_mcp.content.content_checks", lambda days, now: {"findings": []})
     monkeypatch.setattr(reviewer_handler, "_get_scheduler", lambda: FakeScheduler())
     dynamo.put_config_row({"config_id": reviewer.CONFIG_ID, "tasks_per_tick": 3, "tick_minutes": 12})
@@ -793,3 +793,74 @@ def test_task_five_reads_the_cut_before_publishing_it_and_rejects_a_bad_one(aws)
     hands = DefangHands([defang_answer(), BAD_READ])
     assert reviewer.do_task({"task": "defang", "queue_id": "q"}, hands.build(), NOW) == "defang_rejected"
     assert "replace_body" not in hands.names()
+
+
+# --- the bears' back-and-forth after his report --------------------------------------------------
+
+
+def test_how_his_report_reads_to_bloggerbear():
+    assert reviewer.conversation_situation({"rejected": 1, "approved": 4}) == "scolded"
+    assert reviewer.conversation_situation({"held_downvoted": 1}) == "scolded"
+    assert reviewer.conversation_situation({"rewrite": 3, "approved": 1}) == "scolded"
+    assert reviewer.conversation_situation({"approved": 2, "reviewed_ok": 3}) == "praised"
+    assert reviewer.conversation_situation({"approved": 2, "rewrite": 1}) == "grateful"
+    assert reviewer.conversation_situation({"musing_fixed": 1}) == "grateful"
+
+
+class Said:
+    """Records the conversation's musings instead of storing them."""
+
+    def __init__(self, monkeypatch):
+        self.musings = []
+        from common import musings
+
+        def reply(**kw):
+            self.musings.append(("bloggerbear", kw))
+            return {"musing_id": "reply-1", **kw}
+
+        def answer(**kw):
+            self.musings.append(("grizzlewick", kw))
+            return {"musing_id": "answer-1", **kw}
+
+        monkeypatch.setattr(musings, "generate_and_store_bloggerbear_reply", reply)
+        monkeypatch.setattr(musings, "generate_and_store_reviewer_answer", answer)
+        monkeypatch.setattr(reviewer_handler, "_musing_model", lambda: "m")
+
+
+REPORT = {"musing_id": "report-1", "created_at": "2026-10-20T18:30:00+00:00"}
+SETTINGS = reviewer.effective_settings(None)
+
+
+def test_bloggerbear_replies_only_on_his_chance_and_the_professor_answers_only_on_his(monkeypatch):
+    said = Said(monkeypatch)
+    assert reviewer_handler._converse(REPORT, {"approved": 2}, SETTINGS, lambda: 0.30, lambda t: t[0]) == []
+    assert said.musings == []
+
+    rolls = iter([0.20, 0.50])  # 20 < 25: a reply; 50 >= 10: no answer
+    reviewer_handler._converse(REPORT, {"approved": 2}, SETTINGS, lambda: next(rolls), lambda t: t[0])
+    assert [who for who, _ in said.musings] == ["bloggerbear"]
+    reply = said.musings[0][1]
+    assert (reply["situation"], reply["tone"], reply["reply_to"]) == ("praised", "proud", "report-1")
+    assert reply["created_at"] == "2026-10-20T18:30:01+00:00"
+
+
+def test_a_conversation_is_at_most_three_musings_each_answering_the_last(monkeypatch):
+    said = Said(monkeypatch)
+    rolls = iter([0.0, 0.0])
+    out = reviewer_handler._converse(
+        REPORT, {"rejected": 1}, SETTINGS, lambda: next(rolls), lambda tones: tones[-1]
+    )
+    assert len(out) == 2  # with the report: three
+    (_, reply), (_, answer) = said.musings
+    assert reply["tone"] == "sulky" and answer["tone"] == "sulky"
+    assert answer["reply_to"] == "reply-1"
+    assert answer["created_at"] == "2026-10-20T18:30:02+00:00"
+
+
+def test_the_chances_are_settings_and_zero_means_never(monkeypatch):
+    said = Said(monkeypatch)
+    quiet = {**SETTINGS, "chat_chance_pct": 0}
+    assert reviewer_handler._converse(REPORT, {"approved": 1}, quiet, lambda: 0.0, lambda t: t[0]) == []
+    assert said.musings == []
+    assert reviewer.validate_setting("chat_chance_pct", 101)
+    assert reviewer.validate_setting("reply_chance_pct", -1)

@@ -123,6 +123,20 @@ Grizzlewick was feeling …". Three kinds:
 | `reviewer_rejection` | he rejected a draft: "it unfortunately did not make the pub test", and a bear joke. Timestamped a moment before the reject, so BloggerBear's own shocked rejection musing reads as the reply | stern |
 | `reviewer_hold` | he took down an article he approved, after downvotes | shocked |
 
+**The bears' back-and-forth.** After his report, BloggerBear may reply (`chat_chance_pct`, 25%), and
+the Professor may answer that (`reply_chance_pct`, 10%): a conversation of at most three musings,
+each a second after the one it answers, and each marked with whom it answers (the Musings page shows
+"↩ to Professor Grizzlewick"). How the report went sets BloggerBear's tone:
+
+| The report (`conversation_situation`) | BloggerBear | The Professor's answer |
+|---|---|---|
+| **scolded**: he rejected or took down work, or sent back more than he passed | *contrite* ("I should be more careful, I seem to have angered the old man") or *sulky* (a little sad) | contrite: a dry quip, "you youngsters never learn", with a constructive pointer · sulky: "I'm tough because I want you to do well" |
+| **praised**: work passed, nothing sent back | *proud* | "I'm proud of your work recently, but we must stay vigilant" |
+| **grateful**: a mixed report | *grateful* to work with him | "always happy to help", grumbling about being woken |
+
+BloggerBear replies in his own voice and moods (each with its picture); the replies are kinds
+`reply` and `reviewer_answer`, with `reply_to` and `replying_to` on the musing.
+
 Like BloggerBear's, they name a topic but never an article's title, pass the comment screen, and fall
 back to a plain line if the model's answer will not do. The report's facts are counts in fixed words:
 nothing a model or a reader wrote reaches its prompt.
@@ -146,6 +160,7 @@ unset, or holding something invalid, takes its default.
 | `content_days` | 7 | 1-30 |
 | `defang_after_days` | 10 | 3-90 |
 | `tasks_per_tick` / `tick_minutes` | 2 / 5 | 1-5 / 1-60 |
+| `chat_chance_pct` / `reply_chance_pct` (the bears' back-and-forth) | 25 / 10 | 0-100 |
 
 ## Infrastructure
 

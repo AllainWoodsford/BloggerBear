@@ -912,6 +912,13 @@
       item.appendChild(bear);
 
       var body = el("div", { className: "musing-body" });
+      // A reply in the bears' back-and-forth says whom it answers (the musing just below it).
+      var replyNames = { grizzlewick: "Professor Grizzlewick", bloggerbear: "BloggerBear" };
+      if (Object.prototype.hasOwnProperty.call(replyNames, musing.replying_to)) {
+        body.appendChild(
+          el("p", { className: "musing-reply-to", text: "↩ to " + replyNames[musing.replying_to] })
+        );
+      }
       body.appendChild(el("p", { className: "musing-text", text: musing.text }));
       if (musing.kind === "loot" && musing.gear) {
         body.appendChild(lootCard(musing.gear));

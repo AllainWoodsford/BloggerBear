@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+import random
+from datetime import UTC, datetime, timedelta
 
 import boto3
 
@@ -99,22 +100,63 @@ def build_hands() -> reviewer.Hands:
     )
 
 
-def _report(state: dict) -> None:
+def _report(state: dict, settings: dict | None = None, chance=random.random, pick=random.choice) -> None:
     """His report on the run, unless he did nothing worth saying: then he slept through it, and the
-    feed is not filled with "nothing to do" every second day."""
+    feed is not filled with "nothing to do" every second day. Then, maybe, the bears' back-and-forth
+    (_converse)."""
     from common import musings
 
     facts = reviewer.report_facts(state.get("counts") or {})
     if not facts:
         return
     try:
-        musings.generate_and_store_reviewer_report(
+        report = musings.generate_and_store_reviewer_report(
             facts=facts,
             woken=bool(state.get("woken")),
             model_id=_musing_model(),
         )
     except Exception as exc:  # noqa: BLE001 - the run is done; never fail it over its report
         print(f"reviewer_handler: could not post the report musing: {exc!r}")
+        return
+    try:
+        settings = settings or reviewer.effective_settings(None)
+        _converse(report, state.get("counts") or {}, settings, chance, pick)
+    except Exception as exc:  # noqa: BLE001 - the conversation is a flourish; never fail the run over it
+        print(f"reviewer_handler: could not carry on the conversation: {exc!r}")
+
+
+def _converse(report: dict, counts: dict, settings: dict, chance, pick) -> list[dict]:
+    """With `chat_chance_pct`, BloggerBear replies to the report, in a tone the report's situation
+    allows (proud, grateful, contrite or sulky); then, with `reply_chance_pct`, the Professor answers
+    him (a quip, tough love, or pride with a warning). Each a second after the one it answers, so
+    the feed reads as a conversation. At most three musings: report, reply, answer."""
+    from common import musings
+
+    said = []
+    if chance() * 100 >= settings["chat_chance_pct"]:
+        return said
+    situation = reviewer.conversation_situation(counts)
+    tone = pick(musings.bloggerbear_tones(situation))
+    at = datetime.fromisoformat(report["created_at"])
+    reply = musings.generate_and_store_bloggerbear_reply(
+        situation=situation,
+        tone=tone,
+        reply_to=report["musing_id"],
+        model_id=_musing_model(),
+        created_at=(at + timedelta(seconds=1)).isoformat(),
+    )
+    said.append(reply)
+    if chance() * 100 >= settings["reply_chance_pct"]:
+        return said
+    said.append(
+        musings.generate_and_store_reviewer_answer(
+            tone=tone,
+            reply_to=reply["musing_id"],
+            model_id=_musing_model(),
+            created_at=(at + timedelta(seconds=2)).isoformat(),
+        )
+    )
+    return said
 
 
 def _advance(state: dict, own_arn: str | None, now: datetime, settings: dict, hands=None) -> dict:
@@ -125,7 +167,7 @@ def _advance(state: dict, own_arn: str | None, now: datetime, settings: dict, ha
         except Exception as exc:  # noqa: BLE001 - the next run carries on from an overdue tick
             print(f"reviewer_handler: could not schedule tick {state.get('tick')}: {exc!r}")
     else:
-        _report(state)
+        _report(state, settings)
     return {
         "run_id": state.get("run_id"),
         "left": len(state.get("queue") or []),

@@ -1021,6 +1021,8 @@ _REVIEWER_NUMBERS = (
     "tasks_per_tick",
     "tick_minutes",
     "defang_after_days",
+    "chat_chance_pct",
+    "reply_chance_pct",
 )
 
 
@@ -2432,6 +2434,8 @@ def build_parser() -> argparse.ArgumentParser:
         ("tasks-per-tick", "Tasks he does a tick, 1-5 (default 2)"),
         ("tick-minutes", "Minutes between his ticks, 1-60 (default 5)"),
         ("defang-after-days", "Days a held article waits before task 5, 3-90 (default 10)"),
+        ("chat-chance-pct", "Chance BloggerBear replies to his report, 0-100 (default 25)"),
+        ("reply-chance-pct", "Chance he answers that reply, 0-100 (default 10)"),
     ):
         reviewer_set.add_argument(f"--{flag}", dest=flag.replace("-", "_"), default=None, help=what)
     reviewer_set.set_defaults(func=_cmd_reviewer_set)
