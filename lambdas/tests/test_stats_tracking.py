@@ -1034,7 +1034,7 @@ def _refresh(articles):
     with (
         patch("common.stats_tracking.list_all_articles", return_value=articles),
         patch("common.stats_tracking.list_topics", return_value=[]),
-        patch("common.stats_tracking.list_models", return_value=[]),
+        patch("common.stats_tracking.list_priced_models", return_value=[]),
     ):
         st.refresh_articles_snapshot()
 

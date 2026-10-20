@@ -2522,12 +2522,16 @@ resource "aws_scheduler_schedule" "cost_explorer_poll" {
 }
 
 # The model catalog (docs/enhancements/model-catalog-refresh.md): keeps the Models registry's list
-# and prices up to date. Two weekly schedules, discover on Tuesdays and reprice on Wednesdays, at
-# 03:00 Sydney time, when no topic's daily cycle runs; each job skips itself while paused (the
-# `model-catalog` row of the ModelConfig table). A run that changed a price creates its own two
-# one-shot review schedules (1 and 2 hours later by default, `<prefix>-<env>-price-review-*`, under
-# the role's scheduler_manage grant), which delete themselves once fired. A reprice can make a web
-# search and a model call per model, hence the long timeout.
+# and prices up to date. Two schedules on odd days of the month (every second day; the 31st and
+# the 1st run back to back), Sydney time: discover at 02:00 (no model calls: it adds at most 5
+# models, none once the registry holds 50), then reprice at 03:00, when no topic's daily cycle
+# runs. Each job skips itself while paused (the `model-catalog` row of the ModelConfig table).
+# A reprice queues up to 50 models and checks 5 at a time on one-shot tick schedules 5 minutes
+# apart (`<prefix>-<env>-price-tick-*`); a run that changed a price then creates its own two
+# one-shot review schedules (1 and 2 hours later by default, `<prefix>-<env>-price-review-*`),
+# whose reviews tick through the models the same way. All of them sit under the role's
+# scheduler_manage grant and delete themselves once fired. A tick can make five web searches and
+# model calls, hence the long timeout.
 resource "aws_lambda_function" "model_catalog" {
   function_name = "${var.unique_name_prefix}-dev-model-catalog"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
@@ -2548,7 +2552,7 @@ resource "aws_lambda_function" "model_catalog" {
 resource "aws_scheduler_schedule" "model_catalog_discover" {
   name                         = "${var.unique_name_prefix}-dev-model-discover"
   group_name                   = "default"
-  schedule_expression          = "cron(0 3 ? * TUE *)"
+  schedule_expression          = "cron(0 2 1/2 * ? *)"
   schedule_expression_timezone = "Australia/Sydney"
 
   flexible_time_window {
@@ -2565,7 +2569,7 @@ resource "aws_scheduler_schedule" "model_catalog_discover" {
 resource "aws_scheduler_schedule" "model_catalog_reprice" {
   name                         = "${var.unique_name_prefix}-dev-model-reprice"
   group_name                   = "default"
-  schedule_expression          = "cron(0 3 ? * WED *)"
+  schedule_expression          = "cron(0 3 1/2 * ? *)"
   schedule_expression_timezone = "Australia/Sydney"
 
   flexible_time_window {
@@ -2576,6 +2580,26 @@ resource "aws_scheduler_schedule" "model_catalog_reprice" {
     arn      = aws_lambda_function.model_catalog.arn
     role_arn = aws_iam_role.scheduler_invoke.arn
     input    = jsonencode({ job = "reprice", trigger = "schedule" })
+  }
+}
+
+# The model fleet's weekly cycle (common/model_fleet.py): refreshes every topic's model rotation
+# from the active models in the registry (inactive ones out, one new one in, up to 10). Fridays,
+# an hour after the night's reprice would start, and it makes no model call.
+resource "aws_scheduler_schedule" "model_catalog_cycle" {
+  name                         = "${var.unique_name_prefix}-dev-model-cycle"
+  group_name                   = "default"
+  schedule_expression          = "cron(0 4 ? * FRI *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.model_catalog.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+    input    = jsonencode({ job = "cycle", trigger = "schedule" })
   }
 }
 

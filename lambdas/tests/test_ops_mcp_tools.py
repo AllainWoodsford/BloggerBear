@@ -697,15 +697,50 @@ def test_the_model_catalog_says_what_is_paused_what_ran_and_what_is_under_review
     result = model_prices.model_catalog_status(now=NOW)
 
     assert result["spoken"] == (
-        "Models are discovered on Tuesdays and repriced on Wednesdays, at 3 am Sydney time. "
+        "Models are discovered every second day at 2 am and repriced at 3 am Sydney time, and "
+        "topics' model rotations are refreshed on Fridays at 4 am. "
         "Reprice is paused. Discover last ran 24 hours ago and added 3 models. Reprice has not run "
-        "yet. 2 model prices are under review: check 1 of 2, and its next check is in 30 minutes."
+        "yet. The rotation cycle has not run yet. "
+        "2 model prices are under review: check 1 of 2, and its next check is in 30 minutes."
     )
     assert "Ignore" not in result["spoken"]  # model ids are on screen only
-    assert result["jobs"]["reprice"] == {"runs": "Wednesdays 03:00 Sydney time", "paused": True, "last": None}
+    assert result["jobs"]["reprice"] == {
+        "runs": "every second day 03:00 Sydney time",
+        "paused": True,
+        "last": None,
+    }
     assert result["under_review"]["models"] == [HOSTILE, "b"]
     assert result["reviews"]["after_hours"] == [1, 2]
     assert result["findings"] == []
+
+
+def test_the_model_catalog_says_when_discover_pruned_and_a_run_is_still_pricing(tables):
+    from ops_mcp import model_prices
+
+    config = tables.Table("ModelConfig")
+    config.put_item(
+        Item={
+            "config_id": "model-catalog-state",
+            "last_discover_at": ago(days=1),
+            "last_discover_result": {"status": "full", "prune": {"pruned": 4}},
+            "active_run_id": "r2",
+        }
+    )
+    config.put_item(
+        Item={
+            "config_id": "pricing-run#r2",
+            "run_id": "r2",
+            "status": "pricing",
+            "changes": [],
+            "reviews_due": [],
+            "reviews_done": [],
+            "reverted": [],
+            "pass": {"kind": "price", "queue": ["a", "b", "c"], "tick": 2, "next_tick_at": NOW.isoformat()},
+        }
+    )
+    spoken = model_prices.model_catalog_status(now=NOW)["spoken"]
+    assert "the registry was full, so it pruned 4 models." in spoken
+    assert spoken.endswith("A pricing run is checking prices, 3 models to go.")
 
 
 def test_with_nothing_set_the_model_catalog_says_so(tables):
@@ -713,6 +748,7 @@ def test_with_nothing_set_the_model_catalog_says_so(tables):
 
     result = model_prices.model_catalog_status(now=NOW)
     assert result["spoken"].endswith(
-        "Discover has not run yet. Reprice has not run yet. No pricing run is under review."
+        "Discover has not run yet. Reprice has not run yet. The rotation cycle has not run yet. "
+        "No pricing run is under review."
     )
     assert result["under_review"] is None

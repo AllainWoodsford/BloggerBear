@@ -43,7 +43,8 @@ from ops_mcp.redact import looks_like_instructions, personal_data_kinds
 from ops_mcp.suggestions import ID_PATTERN, finding
 
 DAY_WINDOW = timedelta(hours=26)
-# The model catalog's price reviews run weekly, so a price it put back is reported for a week.
+# A price the model catalog put back is reported for a week (several runs: it reprices every
+# second day), the same as the record's own 7-day TTL.
 PRICING_WINDOW = timedelta(days=7)
 # FailedExecutions' kind for a price the model catalog put back (common/model_catalog.FAILURE_KIND).
 PRICING_FAILURE_KIND = "model_pricing"
