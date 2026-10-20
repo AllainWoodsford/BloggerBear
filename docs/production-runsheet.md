@@ -257,6 +257,15 @@ Then, in order:
    bootstrap: [alexa/README.md](../alexa/README.md). Putting Alexa's redirect URLs in
    `ops_alexa_redirect_uris` also keeps the MCP function warm (about 8,600 invocations a month).
 
+## The reviewer bear
+
+Production gets Professor Grizzlewick too, unless the `production` environment's
+`REVIEWER_ENABLED` variable is `false`. **His first run after the release decides every article
+that has waited two days or more**: clear what you want to decide yourself first, or turn approvals
+off for the release (`python scripts/admin_cli.py reviewer set --may-approve off` against production,
+which needs no release, or `topics update <id> --reviewer-may-approve off`). The switches and what to do with his financial
+approvals are in [the deployment runsheet](deployment-runsheet.md#the-reviewer-bear-on-by-default).
+
 ## Vision (optional)
 
 The vision worker and its topics

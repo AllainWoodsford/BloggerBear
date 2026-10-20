@@ -86,6 +86,8 @@ BEDROCK_CATEGORIES = (
     "vision_triage",
     # The model catalog reading a model's price out of web search results (common/model_catalog.py).
     "model_pricing",
+    # Professor Grizzlewick, the reviewer bear, judging held and published articles (common/reviewer.py).
+    "reviewer",
 )
 
 # The operator's assistant (lambdas/ops_agent): every question it answers, on the page or started

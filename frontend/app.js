@@ -244,6 +244,8 @@
     ai_only: "AI only",
     humans: "Humans",
     humans_and_ai: "Humans & AI",
+    // Approved by Professor Grizzlewick, the reviewer bear: an AI, not a person.
+    reviewer: "AI reviewer",
   };
 
   function formatCount(value) {
@@ -897,7 +899,7 @@
       // A bear feeling the musing's mood, where a bullet point would be. It is decorative (the
       // words below say the same), so it has no alt text. A picture that fails to load, or a mood
       // with none, falls back to the plain bear.
-      var mood = window.BloggerMoods.describe(musing.mood);
+      var mood = window.BloggerMoods.describe(musing.mood, musing.character);
       var bear = el("img", {
         className: "musing-bear",
         attrs: { src: mood.image, alt: "", width: "56", height: "56" },
@@ -916,7 +918,7 @@
       }
       if (mood.label) {
         body.appendChild(
-          el("p", { className: "musing-mood", text: "BloggerBear was feeling " + mood.label })
+          el("p", { className: "musing-mood", text: mood.name + " was feeling " + mood.label })
         );
       }
 
@@ -1106,6 +1108,7 @@
     assistant: "Operator assistant",
     vision_triage: "Vision triage",
     model_pricing: "Model pricing",
+    reviewer: "Reviewer bear",
   };
 
   function formatHours(value) {

@@ -57,6 +57,15 @@ CATALOGUE: dict[str, Suggestion] = {
             "The rewrite goes through the reviews again and comes back to the inbox."
         ),
     ),
+    # Professor Grizzlewick approved a financial article (common/reviewer.py): a person checks it.
+    "reviewer_financial_check": Suggestion(
+        action=(
+            "Read the financial article the reviewer bear approved; if it is fine, mark it checked "
+            "(articles checked <id>), and if not, take it down (articles unpublish <id>)"
+        ),
+        arguments="articles get {id}",
+        what_it_does="Shows the article and its full text. Nothing changes.",
+    ),
     "awaiting_review": Suggestion(
         action="Go through the articles waiting for you",
         arguments="approve --source moderation",

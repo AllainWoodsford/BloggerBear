@@ -1035,6 +1035,7 @@ module "admin_api" {
     # marks it rejected, removes its musings, invalidates the CDN cache). See
     # admin_api_handler.py's _unpublish_article and `articles unpublish`.
     "POST /articles/{article_id}/unpublish",
+    "POST /articles/{article_id}/checked",
     # A rewrite steered by what a person says is wrong: takes a published article
     # down first, and the result waits in the inbox. See admin_api_handler.py's
     # _rewrite_article and `articles rewrite`.
@@ -1111,6 +1112,8 @@ module "admin_api" {
     "POST /models/discover",
     "GET /model-catalog-config",
     "PUT /model-catalog-config",
+    "GET /reviewer-config",
+    "PUT /reviewer-config",
     # Pipeline-wide settings (today: the default research interval). See
     # admin_api_handler.py's _*_pipeline_config_route and `admin_cli pipeline-config`.
     "GET /pipeline-config",
@@ -1502,6 +1505,18 @@ data "aws_iam_policy_document" "scheduler_invoke" {
     effect    = "Allow"
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.model_catalog.arn]
+  }
+
+  # Professor Grizzlewick, the reviewer bear: his every-second-day schedule and the one-shot tick
+  # schedules a run creates. Only when he is deployed (var.reviewer_enabled).
+  dynamic "statement" {
+    for_each = var.reviewer_enabled ? [1] : []
+    content {
+      sid       = "InvokeReviewer"
+      effect    = "Allow"
+      actions   = ["lambda:InvokeFunction"]
+      resources = [aws_lambda_function.reviewer[0].arn]
+    }
   }
 
   # The weekly backup snapshot (aws_scheduler_schedule.weekly_backup), run by the admin-api Lambda.
@@ -2124,6 +2139,7 @@ locals {
     "${var.unique_name_prefix}-dev-stats-rollover",
     "${var.unique_name_prefix}-dev-cost-explorer-poll",
     "${var.unique_name_prefix}-dev-model-catalog",
+    "${var.unique_name_prefix}-dev-reviewer",
     "${var.unique_name_prefix}-dev-musing-feedback",
     "${var.unique_name_prefix}-dev-security-events",
     "${var.unique_name_prefix}-dev-sign-in-events",
@@ -2302,6 +2318,7 @@ locals {
     "bears/tummy.svg"       = "image/svg+xml"
     "bears/tummy-happy.svg" = "image/svg+xml"
     "bears/shocked.svg"     = "image/svg+xml"
+    "bears/grizzlewick.svg" = "image/svg+xml" # Professor Grizzlewick, the reviewer bear
     # Static article publishing (docs/project-plan.md §11): the external
     # script the pages rendered by common/static_pages.py load -- must be
     # a real file at the bucket root, not inline, per the CSP comment on
@@ -2592,6 +2609,53 @@ resource "aws_scheduler_schedule" "model_catalog_cycle" {
   }
 }
 
+# Professor Grizzlewick, the reviewer bear (lambdas/reviewer_handler.py, common/reviewer.py,
+# docs/enhancements/reviewer-bear.md): every second day he reviews what the admins have not --
+# content findings, articles held two days or more, the newest published articles, and the
+# financial articles he approved -- a couple of tasks at a time on one-shot tick schedules
+# (`<prefix>-<env>-reviewer-tick-*`, under the role's scheduler_manage grant) five minutes apart,
+# and writes to the musings feed as himself. On by default; var.reviewer_enabled = false (the
+# REVIEWER_ENABLED GitHub variable) deploys none of it. Everything else about him (his tasks,
+# limits, pause flag, whether he may approve) is the `reviewer` row of the model-config table,
+# changed with no deploy (`admin_cli reviewer get|set`). Each tick can
+# make two model calls and start two rewrites, hence the timeout; he imports the admin API's code,
+# hence the memory.
+resource "aws_lambda_function" "reviewer" {
+  function_name = "${var.unique_name_prefix}-dev-reviewer"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
+  count         = var.reviewer_enabled ? 1 : 0
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "reviewer_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 600
+  memory_size   = 512
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+resource "aws_scheduler_schedule" "reviewer" {
+  count                        = var.reviewer_enabled ? 1 : 0
+  name                         = "${var.unique_name_prefix}-dev-reviewer"
+  group_name                   = "default"
+  schedule_expression          = "cron(0 5 1/2 * ? *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.reviewer[0].arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+    input    = jsonencode({ job = "run" })
+  }
+}
+
 # =========================================================================
 # Phase 6 -- Observability & hardening: CloudWatch alarms/dashboard for
 # all 5 pipeline Lambdas + the daily-cycle state machine/DLQ (see
@@ -2606,7 +2670,7 @@ locals {
   # Every pipeline/API Lambda's function_name -- shared by module.observability's alarms/
   # dashboard below and this environment's own log-group retention (aws_cloudwatch_log_group.lambda,
   # Cleanup PR), so the two can never drift out of sync when a function is added or removed.
-  pipeline_lambda_function_names = [
+  pipeline_lambda_function_names = concat([
     aws_lambda_function.research_tick.function_name,
     aws_lambda_function.daily_cycle.function_name,
     aws_lambda_function.admin_api.function_name,
@@ -2619,7 +2683,7 @@ locals {
     aws_lambda_function.model_catalog.function_name,
     aws_lambda_function.security_events.function_name,
     aws_lambda_function.sign_in_events.function_name,
-  ]
+  ], aws_lambda_function.reviewer[*].function_name)
 }
 
 module "observability" {

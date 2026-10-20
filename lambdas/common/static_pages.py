@@ -130,6 +130,8 @@ _PUBLISHED_BY_LABELS = {
     "ai_only": "AI only",
     "humans": "Humans",
     "humans_and_ai": "Humans & AI",
+    # Approved by Professor Grizzlewick, the reviewer bear (common/reviewer.py): an AI, not a person.
+    "reviewer": "AI reviewer",
 }
 
 

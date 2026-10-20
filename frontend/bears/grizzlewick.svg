@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Professor Grizzlewick, the old reviewer bear (lambdas/common/reviewer.py): greying fur, white
+       brows, round spectacles, a handlebar mustache, and the nightcap he was woken in. One picture
+       for all his moods. Replace this file with your own (keep the name). -->
+  <!-- ears, the left one under the nightcap's brim -->
+  <circle cx="15" cy="19" r="8.5" fill="#8f7a66" stroke="#4a3a2c" stroke-width="2"/>
+  <circle cx="49" cy="19" r="8.5" fill="#8f7a66" stroke="#4a3a2c" stroke-width="2"/>
+  <circle cx="49" cy="19" r="3.8" fill="#cdb79c"/>
+  <!-- head -->
+  <circle cx="32" cy="37" r="23" fill="#8f7a66" stroke="#4a3a2c" stroke-width="2"/>
+  <!-- grey at the temples -->
+  <path d="M12.5 33 q2 -6 6 -9" stroke="#d8d2ca" stroke-width="2.4"/>
+  <path d="M51.5 33 q-2 -6 -6 -9" stroke="#d8d2ca" stroke-width="2.4"/>
+  <!-- nightcap, drooping to the left with a pompom -->
+  <path d="M14 22 Q30 2 50 18 Q40 14 30 15 Q20 16 14 22 Z" fill="#3f5a8a" stroke="#26385a" stroke-width="2"/>
+  <path d="M14 22 Q30 15 50 18" stroke="#e9e4da" stroke-width="3.2"/>
+  <path d="M30 8 Q20 4 9 11" stroke="#3f5a8a" stroke-width="5"/>
+  <circle cx="8" cy="12" r="3.4" fill="#e9e4da" stroke="#b9b2a6" stroke-width="1"/>
+  <!-- bushy white brows -->
+  <path d="M19 27 q5 -3.5 10 -0.5" stroke="#efeae2" stroke-width="2.6"/>
+  <path d="M35 26.5 q5 -3 10 0.5" stroke="#efeae2" stroke-width="2.6"/>
+  <!-- muzzle -->
+  <ellipse cx="32" cy="46" rx="12.5" ry="9" fill="#dccab0"/>
+  <!-- spectacles -->
+  <circle cx="24.5" cy="33" r="5.4" fill="#f4f1ea" fill-opacity="0.35" stroke="#2b2b2b" stroke-width="1.8"/>
+  <circle cx="39.5" cy="33" r="5.4" fill="#f4f1ea" fill-opacity="0.35" stroke="#2b2b2b" stroke-width="1.8"/>
+  <path d="M29.9 32.6 q2.1 -1.6 4.2 0" stroke="#2b2b2b" stroke-width="1.6"/>
+  <path d="M19.1 32.4 l-4.6 -1.6 M44.9 32.4 l4.6 -1.6" stroke="#2b2b2b" stroke-width="1.4"/>
+  <!-- eyes, a little heavy-lidded -->
+  <circle cx="24.5" cy="33.6" r="2" fill="#2e1f14"/>
+  <circle cx="39.5" cy="33.6" r="2" fill="#2e1f14"/>
+  <path d="M22 31.6 h5 M37 31.6 h5" stroke="#6e5a48" stroke-width="1.4"/>
+  <!-- nose -->
+  <ellipse cx="32" cy="41.5" rx="3.8" ry="2.8" fill="#2e1f14"/>
+  <!-- handlebar mustache -->
+  <path d="M32 44.5 C28 43.5 24 44 21.5 46.5 C20 48 18 47.6 17.6 46 C18.4 49.5 22.5 50 26 48.2 C28.4 47 30.6 46.4 32 46.4 Z" fill="#efeae2" stroke="#b9b2a6" stroke-width="0.8"/>
+  <path d="M32 44.5 C36 43.5 40 44 42.5 46.5 C44 48 46 47.6 46.4 46 C45.6 49.5 41.5 50 38 48.2 C35.6 47 33.4 46.4 32 46.4 Z" fill="#efeae2" stroke="#b9b2a6" stroke-width="0.8"/>
+  <!-- a slight, dry smile under it -->
+  <path d="M28.5 51.5 q3.5 1.8 7 0" stroke="#2e1f14" stroke-width="1.8"/>
+</svg>

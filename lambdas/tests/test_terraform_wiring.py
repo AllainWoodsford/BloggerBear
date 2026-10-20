@@ -613,13 +613,14 @@ def test_every_schedule_using_the_invoke_role_may_invoke_its_target(env):
     invoke their Lambdas, so neither ever ran. Every target must be in the role's policy."""
     text = _read("environments", env, "main.tf")
     policy = re.search(r'data "aws_iam_policy_document" "scheduler_invoke" \{(.*?)\n\}', text, re.S).group(1)
-    allowed = set(re.findall(r"resources\s*=\s*\[([a-z_.]+)\.arn\]", policy))
+    # A target deployed only on a switch (count) is named with [0]: the reviewer bear.
+    allowed = set(re.findall(r"resources\s*=\s*\[([a-z_.]+)(?:\[0\])?\.arn\]", policy))
 
     targets = []
     for match in re.finditer(r'^resource "aws_scheduler_schedule" "[a-z_]+" \{\n(.*?)^\}', text, re.S | re.M):
         body = match.group(1)
         if re.search(r"role_arn\s*=\s*aws_iam_role\.scheduler_invoke\.arn", body):
-            targets.append(re.search(r"\barn\s*=\s*([a-z_.]+)\.arn", body).group(1))
+            targets.append(re.search(r"\barn\s*=\s*([a-z_.]+)(?:\[0\])?\.arn", body).group(1))
 
     assert len(targets) >= 5  # research ticks are per topic, created at runtime, not here
     assert set(targets) <= allowed, set(targets) - allowed

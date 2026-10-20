@@ -34,9 +34,12 @@ from common.dynamo import (
     get_topic,
     list_failed_executions,
     list_pending_moderation,
+    list_reviewer_flagged_articles,
     list_topics,
 )
 from common.research_schedule import resolve_interval_hours
+from common.reviewer import FINDING_KIND as REVIEWER_FINDING_KIND
+from common.reviewer import FLAG_FIELD as REVIEWER_FLAG_FIELD
 from common.security_events import untrusted_text
 from ops_mcp import topic_match
 from ops_mcp.redact import looks_like_instructions, personal_data_kinds
@@ -275,6 +278,7 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None, si
         findings.extend(found)
     if topic is None:
         findings.extend(_pricing_findings(failures, now))
+        findings.extend(reviewer_flag_findings())
 
     spoken = _health_spoken(rows)
     if sites:
@@ -302,6 +306,29 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None, si
         result["matched_topic"] = matched
         result["spoken"] = topic_match.took(matched) + result["spoken"]
     return result
+
+
+def reviewer_flag_finding(article: dict) -> dict:
+    """The finding for a financial article Professor Grizzlewick approved and flagged for a person
+    (common/reviewer.py). By id, with a command: remembered, and followed up (memory.py)."""
+    topic_id = article.get("topic_id")
+    name = _topic_label(get_topic(topic_id), topic_id) if topic_id else "an unknown topic"
+    return finding(
+        REVIEWER_FINDING_KIND,
+        f"The reviewer bear approved a {name} article on a financial topic: a person should check it",
+        article["article_id"],
+        topic=name,
+        article_id=article["article_id"],
+    )
+
+
+def reviewer_flag_findings() -> list[dict]:
+    """One finding per published article still carrying the reviewer's flag."""
+    return [
+        reviewer_flag_finding(article)
+        for article in list_reviewer_flagged_articles(REVIEWER_FLAG_FIELD)
+        if article.get("status") == "published"
+    ]
 
 
 def _pricing_findings(failures: list[dict], now: datetime) -> list[dict]:

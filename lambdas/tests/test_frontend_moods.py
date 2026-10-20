@@ -70,8 +70,9 @@ def test_every_backend_mood_has_a_bear_picture():
 def test_every_picture_is_a_mood_the_default_or_the_tummy_toys():
     names = {path.stem for path in BEARS.glob("*.svg")}
 
-    # The two tummy pictures belong to the tummy-scratch toy (tummy.js), not to a mood.
-    assert names == set(musings.MOODS) | {"default", "tummy", "tummy-happy"}
+    # The two tummy pictures belong to the tummy-scratch toy (tummy.js), not to a mood; grizzlewick
+    # is Professor Grizzlewick's, the reviewer bear's, one picture for all his musings.
+    assert names == set(musings.MOODS) | {"default", "tummy", "tummy-happy", musings.REVIEWER_CHARACTER}
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -123,21 +124,21 @@ def test_the_page_loads_moods_js_before_app_js():
 def test_a_known_mood_gets_its_own_bear_and_its_word(mood):
     (result,) = _describe(mood)
 
-    assert result == {"label": mood, "image": f"bears/{mood}.svg", "known": True}
+    assert result == {"label": mood, "image": f"bears/{mood}.svg", "known": True, "name": "BloggerBear"}
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_case_and_spaces_do_not_matter():
     (result,) = _describe("  Proud ")
 
-    assert result == {"label": "proud", "image": "bears/proud.svg", "known": True}
+    assert result == {"label": "proud", "image": "bears/proud.svg", "known": True, "name": "BloggerBear"}
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_a_new_mood_with_no_picture_yet_shows_its_word_and_the_plain_bear():
     (result,) = _describe("elated")
 
-    assert result == {"label": "elated", "image": "bears/default.svg", "known": False}
+    assert result == {"label": "elated", "image": "bears/default.svg", "known": False, "name": "BloggerBear"}
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -145,7 +146,7 @@ def test_a_new_mood_with_no_picture_yet_shows_its_word_and_the_plain_bear():
 def test_no_mood_means_no_line_and_the_plain_bear(value):
     (result,) = _describe(value)
 
-    assert result == {"label": None, "image": "bears/default.svg", "known": False}
+    assert result == {"label": None, "image": "bears/default.svg", "known": False, "name": "BloggerBear"}
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -164,4 +165,52 @@ def test_a_mood_that_is_not_plain_words_is_never_shown_or_used_as_a_path(value):
 def test_a_two_word_mood_is_shown_but_never_becomes_a_picture_name():
     (result,) = _describe("over the moon")
 
-    assert result == {"label": "over the moon", "image": "bears/default.svg", "known": False}
+    assert result == {
+        "label": "over the moon",
+        "image": "bears/default.svg",
+        "known": False,
+        "name": "BloggerBear",
+    }
+
+
+# --- Professor Grizzlewick, the reviewer bear ------------------------------------------------------
+
+
+def _describe_as(pairs) -> list[dict]:
+    script = (
+        "const m=require(process.argv[1]);"
+        "const v=JSON.parse(process.argv[2]);"
+        "process.stdout.write(JSON.stringify(v.map(p=>m.describe(p[0],p[1]))))"
+    )
+    result = subprocess.run(
+        [NODE, "-e", script, str(MOODS_JS), json.dumps(pairs)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return json.loads(result.stdout)
+
+
+def test_the_reviewer_bear_has_his_own_portrait_with_glasses_and_a_mustache():
+    root = ET.parse(BEARS / "grizzlewick.svg").getroot()
+    assert root.tag == f"{SVG}svg" and root.get("viewBox") == "0 0 64 64"
+    text = (BEARS / "grizzlewick.svg").read_text(encoding="utf-8")
+    assert "spectacles" in text and "mustache" in text
+    assert musings.REVIEWER_CHARACTER == "grizzlewick"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_his_musings_show_his_portrait_and_name_and_bloggerbears_stay_his_own():
+    stern, unknown_character, plain = _describe_as(
+        [["stern", "grizzlewick"], ["proud", "toString"], ["proud", None]]
+    )
+    assert stern == {
+        "label": "stern",
+        "image": "bears/grizzlewick.svg",
+        "known": True,
+        "name": "Professor Grizzlewick",
+    }
+    # A character the page does not know (even an Object property name) is BloggerBear.
+    assert unknown_character["name"] == "BloggerBear" and unknown_character["image"] == "bears/proud.svg"
+    assert plain == {"label": "proud", "image": "bears/proud.svg", "known": True, "name": "BloggerBear"}

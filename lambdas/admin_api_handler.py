@@ -28,6 +28,7 @@ name, no operator text (rule 1).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import math
 import os
@@ -46,6 +47,7 @@ from common import (
     gear,
     model_catalog,
     model_fleet,
+    reviewer,
     security_events,
     sign_ins,
 )
@@ -97,6 +99,7 @@ from common.dynamo import (
     put_stats_history_row,
     put_topic,
     set_article_feedback_lock,
+    set_article_fields,
     set_musing_text,
     set_prompt_refinement_equipment,
     set_prompt_refinement_fields,
@@ -141,6 +144,10 @@ from common.musings import (
 from common.musings import is_blank as musing_is_blank
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
 from common.review_report import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE, build_review_report
+from common.reviewer import FLAG_FIELD as REVIEWER_FLAG_FIELD
+from common.reviewer import FLAGGED_AT_FIELD as REVIEWER_FLAGGED_AT_FIELD
+from common.reviewer import HELD_FIELD as REVIEWER_HELD_FIELD
+from common.reviewer import REVIEWER_MAY_APPROVE_FIELD
 from common.rewrite import (
     MAX_INSTRUCTIONS_CHARS,
     SENT_BACK_REASON,
@@ -272,10 +279,15 @@ def _topic_changed(action: str, before: dict | None, after: dict) -> None:
     )
 
 
+# Who a moderation decision was made by: "human" (the API is IAM-authenticated), or "reviewer"
+# while one of Professor Grizzlewick's calls below is running (_call sets it).
+_DECIDED_BY: contextvars.ContextVar[str] = contextvars.ContextVar("decided_by", default="human")
+
+
 def _moderation_decision(decision: str, *, topic_id, article_id, queue_id=None, from_status=None) -> None:
-    """One `moderation_decision` line after a person's write: `approved`, `rejected`,
-    `force_published`, `unpublished` or `sent_back`, with the article's status before. Always
-    `by: human` (the API is IAM-authenticated), and never who."""
+    """One `moderation_decision` line after a write: `approved`, `rejected`, `force_published`,
+    `unpublished`, `sent_back` or `held_by_reviewer`, with the article's status before. `by` is
+    `human`, or `reviewer` for Professor Grizzlewick's (_DECIDED_BY), and never who."""
     evidence.emit(
         "moderation_decision",
         topic_id=topic_id,
@@ -283,7 +295,7 @@ def _moderation_decision(decision: str, *, topic_id, article_id, queue_id=None, 
         article_id=article_id,
         decision=decision,
         from_status=from_status,
-        by="human",
+        by=_DECIDED_BY.get(),
     )
 
 
@@ -385,6 +397,9 @@ def _create_topic(event: dict) -> dict:
     force_manual_review = body.get("force_manual_review", False)
     if not isinstance(force_manual_review, bool):
         return _error(400, "'force_manual_review' must be a boolean if provided")
+    reviewer_may_approve = body.get(REVIEWER_MAY_APPROVE_FIELD)
+    if reviewer_may_approve is not None and not isinstance(reviewer_may_approve, bool):
+        return _error(400, f"'{REVIEWER_MAY_APPROVE_FIELD}' must be true, false or null if provided")
     # The same kind of guarantee for imagery: an article of a satellite_vision or rail_access topic
     # is always seen by a person before it is published (common/compliance.py's
     # requires_manual_review; the set is common/adapters/__init__.py's MANUAL_REVIEW_ADAPTERS).
@@ -470,6 +485,9 @@ def _create_topic(event: dict) -> dict:
         "is_financial": is_financial,
         # Stored only when set: every other topic keeps the shape it had.
         **({"force_manual_review": True} if force_manual_review else {}),
+        # Whether Professor Grizzlewick may approve its articles; unset takes his `may_approve`
+        # setting (common/reviewer.py).
+        **({REVIEWER_MAY_APPROVE_FIELD: reviewer_may_approve} if reviewer_may_approve is not None else {}),
         "research_cadence": research_cadence,
         "daily_cadence": daily_cadence,
         "daily_timezone": daily_timezone,
@@ -528,6 +546,7 @@ def _update_topic(event: dict) -> dict:
         GOAL_ROTATION_FIELD,
         "is_financial",
         "force_manual_review",
+        REVIEWER_MAY_APPROVE_FIELD,
         "research_cadence",
         "research_interval_hours",
         "findings_window_hours",
@@ -576,6 +595,11 @@ def _update_topic(event: dict) -> dict:
         updated["is_financial"] = True
     if "force_manual_review" in body and not isinstance(updated["force_manual_review"], bool):
         return _error(400, "'force_manual_review' must be a boolean")
+    if REVIEWER_MAY_APPROVE_FIELD in body:
+        if updated[REVIEWER_MAY_APPROVE_FIELD] is None:
+            updated.pop(REVIEWER_MAY_APPROVE_FIELD)  # back to his `may_approve` setting
+        elif not isinstance(updated[REVIEWER_MAY_APPROVE_FIELD], bool):
+            return _error(400, f"'{REVIEWER_MAY_APPROVE_FIELD}' must be true, false or null")
     if updated["adapter"] in MANUAL_REVIEW_ADAPTERS:
         updated["force_manual_review"] = True
     if "research_cadence" in body and (
@@ -1152,7 +1176,7 @@ def _render_article_page(article: dict, *, published_at: str, published_by: str 
     )
 
 
-def _render_published_page(article: dict, *, published_at: str) -> None:
+def _render_published_page(article: dict, *, published_at: str, published_by: str = "humans") -> None:
     """Regenerate the static article page (docs/project-plan.md §11) and
     generate an article musing for an article that just became published.
 
@@ -1165,9 +1189,11 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
     paths reaching this function needed a moderation-approve or
     force-publish override first, so their musing is always generated with
     compliant=False -- the more measured/thoughtful mood, not the
-    published-cleanly proud one. published_by is "humans" for the same reason.
+    published-cleanly proud one. published_by is "humans" for the same reason, or "reviewer" when
+    Professor Grizzlewick approved it (reviewer_approve below), so the page never says a person
+    checked what he did.
     """
-    _render_article_page(article, published_at=published_at, published_by="humans")
+    _render_article_page(article, published_at=published_at, published_by=published_by)
     generate_and_store_article_musing(
         article_id=article["article_id"],
         topic_id=article["topic_id"],
@@ -1744,7 +1770,9 @@ def _moderation_queue_stats(event: dict) -> dict:
     )
 
 
-def _resolve_moderation_item(event: dict, *, new_status: str, article_status: str) -> dict:
+def _resolve_moderation_item(
+    event: dict, *, new_status: str, article_status: str, published_by: str = "humans"
+) -> dict:
     queue_id = _path_param(event, "queue_id")
     item = get_moderation_item(queue_id)
     if item is None:
@@ -1756,14 +1784,14 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
     published_at = datetime.now(UTC).isoformat() if article_status == "published" else None
     article = get_article(article_id)
     if article_status == "published":
-        # published_by="humans": this only ever reaches "published" via an
-        # operator's moderation-approve action (docs/project-plan.md §11,
-        # PR 2 of 5) -- lineage is untouched, fixed at draft time.
+        # published_by="humans": an operator's moderation-approve action (docs/project-plan.md
+        # §11, PR 2 of 5); "reviewer" when Professor Grizzlewick approved it (common/reviewer.py).
+        # Lineage is untouched, fixed at draft time.
         update_article_status(
-            article_id, article_status, published_at=published_at, published_by="humans"
+            article_id, article_status, published_at=published_at, published_by=published_by
         )
         if article is not None:
-            _render_published_page(article, published_at=published_at)
+            _render_published_page(article, published_at=published_at, published_by=published_by)
     else:
         update_article_status(article_id, article_status, published_at=published_at)
     update_moderation_status(queue_id, new_status)
@@ -1801,6 +1829,128 @@ def _approve_moderation_item(event: dict) -> dict:
 
 def _reject_moderation_item(event: dict) -> dict:
     return _resolve_moderation_item(event, new_status="rejected", article_status="rejected")
+
+
+# --- Professor Grizzlewick, the reviewer bear (common/reviewer.py) --------------------------------
+#
+# The reviewer Lambda (reviewer_handler.py) acts through these, so each of his decisions takes
+# exactly the path an operator's would: the same page rendering, musings, Stats and queue states.
+# Each returns the route's (status code, body). His approvals are published_by "reviewer", never
+# "humans": the page and its fact-check line say an AI reviewer approved it.
+
+REVIEWER_PUBLISHED_BY = "reviewer"
+HELD_BY_REVIEWER_REASON = (
+    "held by Professor Grizzlewick: readers downvoted it with comments after he approved it"
+)
+
+
+def _call(route, path: dict, body: dict | None = None) -> tuple[int, dict]:
+    event = {"pathParameters": path, **({"body": json.dumps(body)} if body is not None else {})}
+    token = _DECIDED_BY.set("reviewer")
+    try:
+        result = route(event)
+    finally:
+        _DECIDED_BY.reset(token)
+    return result["statusCode"], json.loads(result["body"])
+
+
+def reviewer_approve(queue_id: str) -> tuple[int, dict]:
+    def approve(event):
+        return _resolve_moderation_item(
+            event, new_status="approved", article_status="published", published_by=REVIEWER_PUBLISHED_BY
+        )
+
+    return _call(approve, {"queue_id": queue_id})
+
+
+def reviewer_reject(queue_id: str) -> tuple[int, dict]:
+    return _call(_reject_moderation_item, {"queue_id": queue_id})
+
+
+def reviewer_rewrite(article_id: str, instructions: str) -> tuple[int, dict]:
+    """A rewrite steered by his notes, with the topic's own model (resolve_model): a published
+    article stays up until the rewrite is ready, a held one is rewritten where it waits."""
+    return _call(_rewrite_article, {"article_id": article_id}, {"instructions": instructions})
+
+
+def reviewer_regenerate_musings(article_id: str) -> tuple[int, dict]:
+    return _call(_regenerate_article_musings, {"article_id": article_id})
+
+
+def reviewer_replace_body(article_id: str, body: str) -> None:
+    """Put a de-fanged body in place of an article's (common/reviewer.py's task 5), keeping the
+    original beside it as `articles/<id>.before-defang.md`. Nothing else changes: approving it is
+    the next step, as for any held article."""
+    article = get_article(article_id)
+    if article is None:
+        raise ValueError(f"article '{article_id}' not found")
+    s3 = boto3.client("s3")
+    bucket = os.environ["CONTENT_BUCKET"]
+    original = read_article_body(article["body_s3_key"])
+    s3.put_object(
+        Bucket=bucket,
+        Key=f"articles/{article_id}.before-defang.md",
+        Body=original.encode("utf-8"),
+        ContentType="text/markdown",
+    )
+    s3.put_object(
+        Bucket=bucket, Key=article["body_s3_key"], Body=body.encode("utf-8"), ContentType="text/markdown"
+    )
+
+
+def reviewer_hold(article_id: str, reason: str = HELD_BY_REVIEWER_REASON) -> tuple[int, dict]:
+    """Take a published article down and put it back in the inbox, pending, with `reason`: the
+    same clean-up as unpublish (page, musings, CDN cache), but the article is
+    `pending_moderation`, not `rejected`, so `admin_cli` approve, reject and rewrite pick it up."""
+    article = get_article(article_id)
+    if article is None:
+        return 404, {"error": f"article '{article_id}' not found"}
+    if article.get("status") != "published":
+        return 409, {"error": f"article '{article_id}' is '{article.get('status')}', not published"}
+    # The inbox item first: a held article must never be off the site with no item to show it. If a
+    # later step fails, the item is voided and the article stays published as it was.
+    now = datetime.now(UTC).isoformat()
+    item = put_moderation_item(
+        queue_id=str(uuid.uuid4()),
+        article_id=article_id,
+        topic_id=article["topic_id"],
+        reasons=[reason],
+        created_at=now,
+    )
+    try:
+        # His mark on the article itself, for good: a person's rewrite later replaces the item's
+        # reasons, never this (common/reviewer.py's held_by_him).
+        set_article_fields(article_id, {REVIEWER_HELD_FIELD: now})
+        update_article_status(article_id, "pending_moderation")
+    except Exception:
+        update_moderation_status(item["queue_id"], "rejected")
+        raise
+    remove_article_page(article_id, figure_count=len(article.get("figures") or []))
+    token = _DECIDED_BY.set("reviewer")
+    try:
+        _moderation_decision(
+            "held_by_reviewer", topic_id=article.get("topic_id"), article_id=article_id,
+            queue_id=item["queue_id"], from_status="published",
+        )  # fmt: skip
+    finally:
+        _DECIDED_BY.reset(token)
+    traces = _clear_article_traces(article)
+    refresh_articles_snapshot()
+    return 200, {"held": article_id, "queue_id": item["queue_id"], **traces}
+
+
+def _mark_article_checked(event: dict) -> dict:
+    """A person has checked an article Professor Grizzlewick approved and flagged
+    (`admin_cli articles checked <id>`): clear his flag. He stops watching it for downvotes, and
+    the assistant's `reviewer_financial_check` finding is fixed, so its follow-up drops it."""
+    article_id = _path_param(event, "article_id")
+    article = get_article(article_id)
+    if article is None:
+        return _error(404, f"article '{article_id}' not found")
+    if not article.get(REVIEWER_FLAG_FIELD):
+        return _error(409, f"article '{article_id}' has no reviewer flag to clear")
+    set_article_fields(article_id, {REVIEWER_FLAG_FIELD: None, REVIEWER_FLAGGED_AT_FIELD: None})
+    return _response(200, {"checked": article_id})
 
 
 # --- Prompt refinements (Phase 5) ----------------------------------------
@@ -2602,6 +2752,33 @@ def _put_model_catalog_config_route(event: dict) -> dict:
     return _get_model_catalog_config_route(event)
 
 
+# --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/reviewer-bear.md) -----
+#
+# The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
+# switches and limits, his pause flag and whether he may approve. Changed with no deploy.
+
+
+def _get_reviewer_config_route(event: dict) -> dict:
+    return _response(200, reviewer.summary())
+
+
+def _put_reviewer_config_route(event: dict) -> dict:
+    """Set (or, with null, clear) reviewer settings: any of reviewer.SETTINGS. A setting that
+    isn't in the body is left as it is."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if not isinstance(body, dict) or not body:
+        return _error(400, f"send any of: {', '.join(reviewer.SETTINGS)} (null clears a setting)")
+    for name, value in body.items():
+        problem = reviewer.validate_setting(name, value)
+        if problem:
+            return _error(400, problem)
+    update_config_row(reviewer.CONFIG_ID, body)
+    return _get_reviewer_config_route(event)
+
+
 def _start_model_catalog_job(job: str) -> dict:
     run = model_catalog.active_run()
     # A run whose next tick or review is overdue lost its schedule: the job runs that step first,
@@ -2983,6 +3160,7 @@ _ROUTES = {
     "GET /articles/{article_id}": _get_article,
     "POST /articles/{article_id}/publish": _publish_article,
     "POST /articles/{article_id}/unpublish": _unpublish_article,
+    "POST /articles/{article_id}/checked": _mark_article_checked,
     "POST /articles/{article_id}/rewrite": _rewrite_article,
     "GET /review/report": _review_report,
     "GET /lineage/audit": _lineage_audit,
@@ -3022,6 +3200,8 @@ _ROUTES = {
     "POST /models/discover": _discover_models_route,
     "GET /model-catalog-config": _get_model_catalog_config_route,
     "PUT /model-catalog-config": _put_model_catalog_config_route,
+    "GET /reviewer-config": _get_reviewer_config_route,
+    "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /pipeline-config": _get_pipeline_config_route,
     "PUT /pipeline-config": _put_pipeline_config_route,
     "GET /feedback-config": _get_feedback_config_route,
