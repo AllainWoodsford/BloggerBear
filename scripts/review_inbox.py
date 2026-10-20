@@ -8,7 +8,7 @@ Two commands (wired into admin_cli.py):
 
 What needs a person, in BloggerBear:
 
-* Articles in the moderation queue. Financial topics (crypto, the trending digest) always wait
+* Articles in the moderation queue. Financial topics (crypto) always wait
   for you by design. Others land here when the compliance or fresh-data review held them, and
   the reasons are shown.
 * Prompt-change proposals from the weekly reflection. Approving one changes how future articles
@@ -503,7 +503,7 @@ class MockSource(ContentSource):
         self._items = []
         samples = [
             ("Bitcoin Holds Its Range as Ethereum Slips", "finance-crypto-investing", True, False),
-            ("Trending This Week: Agents, Crypto and Policy", "digest", True, False),
+            ("Ethereum Fees Ease Through a Quiet Week", "finance-crypto-investing", True, False),
             ("Cloudflare's Auditor Rides the Wave", "github-trending", False, True),
             ("A Quiet Week for Security Headlines", "security-hacker-news", False, False),
         ]

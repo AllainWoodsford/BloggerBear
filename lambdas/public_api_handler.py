@@ -42,6 +42,7 @@ import boto3
 
 from common import equipment, feedback_limits, feedback_verification, gear, security_events, wear
 from common.attribution import (
+    LEGACY_CROSS_TOPIC_ID,
     clean_sources,
     sources_for_article,
     sources_for_topic,
@@ -56,7 +57,6 @@ from common.comment_screening import (
     SQL,
     screen_comment,
 )
-from common.digest import DIGEST_TOPIC_ID
 from common.dynamo import (
     get_article,
     get_articles_stats_snapshot,
@@ -359,10 +359,9 @@ def _topic_activity(event: dict) -> dict:
 
 
 def _topic_attribution(topic_id: str) -> list[dict]:
-    """The source credit shown under a topic's title: its adapter's declared sources. The digest
-    is not a Topics row and draws on every topic, so its page credits all of their sources (each
-    digest article carries the narrower credit of the topics that actually contributed)."""
-    if topic_id == DIGEST_TOPIC_ID:
+    """The source credit shown under a topic's title: its adapter's declared sources. A legacy
+    digest's page (common/attribution.py's LEGACY_CROSS_TOPIC_ID) credits every topic's."""
+    if topic_id == LEGACY_CROSS_TOPIC_ID:
         return sources_for_topics(list_topics())
     return sources_for_topic(get_topic(topic_id))
 
@@ -865,9 +864,7 @@ def _rss_feed(event: dict) -> dict:
 
     items_xml = []
     for article in articles:
-        attribution = sources_for_article(
-            article, get_topic=topics_by_id.get, list_topics=lambda: topics
-        )
+        attribution = sources_for_article(article, get_topic=topics_by_id.get, list_topics=lambda: topics)
         body = ""
         body_s3_key = article.get("body_s3_key")
         if body_s3_key:

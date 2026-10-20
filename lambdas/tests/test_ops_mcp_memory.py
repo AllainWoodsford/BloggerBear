@@ -1090,7 +1090,7 @@ def test_watch_refuses_a_function_or_table_we_do_not_have_or_never_read(tables, 
 def test_one_follow_up_reads_at_most_a_few_logs_and_leaves_the_rest_open(tables, monkeypatch):
     """One request stops at 30 seconds: past LOG_READS_MAX log reads a row is left open, unchecked
     this time, never taken for calm and never deleted."""
-    functions = ["research-tick", "daily-cycle", "dlq-handler", "trending-digest"]
+    functions = ["research-tick", "daily-cycle", "dlq-handler", "weekly-reflection"]
     for index, function in enumerate(functions):
         found = {"spoken": "x", "findings": [_timeout_finding(5, function=function)]}
         memory.remember(ALICE, found, now=NOW + timedelta(minutes=index))

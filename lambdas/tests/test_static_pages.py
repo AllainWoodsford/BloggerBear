@@ -486,9 +486,12 @@ def test_rendered_page_links_the_site_sections_in_header_and_footer(s3):
     header = html.split("<header", 1)[1].split("</header>", 1)[0]
     footer = html.split('<footer class="site-footer">', 1)[1].split("</footer>", 1)[0]
     for region in (header, footer):
-        assert 'href="/#/topic/digest">Trending Everywhere</a>' in region
         assert 'href="/#/musings">Musings</a>' in region
         assert 'href="/#/stats">Stats</a>' in region
+        assert "/#/topic/digest" not in region and "Trending Everywhere" not in region
+    # The header leads with About; the footer has it once, in its legal row.
+    assert header.index('href="/about.html">About</a>') < header.index('href="/#/musings"')
+    assert footer.count('href="/about.html"') == 1
     assert 'aria-label="Site sections"' in header
     assert 'aria-label="Explore"' in footer and 'aria-label="Legal"' in footer
     for href in ("/privacy.html", "/terms.html", "/about.html"):
@@ -518,7 +521,7 @@ def test_static_page_footer_has_a_paw_between_every_pair_of_links(s3):
 
     explore = footer.split('aria-label="Explore">', 1)[1].split("</nav>", 1)[0]
     legal = footer.split('aria-label="Legal">', 1)[1].split("</nav>", 1)[0]
-    assert explore.count("<a ") == 3 and explore.count('class="paw"') == 2
+    assert explore.count("<a ") == 2 and explore.count('class="paw"') == 1
     assert legal.count("<a ") == 4 and legal.count('class="paw"') == 3
     # Decorative: hidden from screen readers, and glued to the link before it.
     assert explore.count('aria-hidden="true"') == explore.count('class="paw"')

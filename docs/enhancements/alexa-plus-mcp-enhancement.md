@@ -71,7 +71,6 @@ Start with four tools; the last two are extras.
 |---|---|---|
 | `latest_articles(topic?, limit=3)` | `GET /articles` | titles, one-line summaries, dates |
 | `get_article(article_id)` | `GET /articles/{id}` | a ~60-second spoken summary, and the link |
-| `trending_today()` | the Trending Everywhere digest | the cross-topic digest |
 | `spend(period)` | `GET /stats` | AI and AWS spend, by week or month |
 | `list_topics()` | `GET /topics` | the topics BloggerBear writes about |
 | `whats_new(topic)` | `GET /topics/{id}/activity` | what the research tick saw last, and when |

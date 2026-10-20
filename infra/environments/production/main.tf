@@ -449,8 +449,8 @@ data "aws_iam_policy_document" "lambda_exec" {
       # delete_topic. Without these, the admin API's list/delete routes,
       # the entire public API (articles list/detail/RSS all read via
       # list_published_articles), the daily cycle's few-shot/prompt-
-      # refinement lookups, weekly_reflection, and trending_digest would
-      # all fail closed with AccessDeniedException. Never caught by the
+      # refinement lookups, and weekly_reflection would all fail closed
+      # with AccessDeniedException. Never caught by the
       # test suite because moto's mocked DynamoDB doesn't enforce IAM.
       "dynamodb:Scan",
       "dynamodb:DeleteItem",
@@ -1565,19 +1565,9 @@ data "aws_iam_policy_document" "scheduler_invoke" {
     resources = [aws_lambda_function.weekly_reflection.arn]
   }
 
-  # Phase 8: the trending-digest job's single static schedule (see
-  # aws_scheduler_schedule.trending_digest below) -- same pattern as
-  # InvokeWeeklyReflection above, its own separately-listed statement.
-  statement {
-    sid       = "InvokeTrendingDigest"
-    effect    = "Allow"
-    actions   = ["lambda:InvokeFunction"]
-    resources = [aws_lambda_function.trending_digest.arn]
-  }
-
   # Musings: the periodic feedback-musing job's single static schedule (see
   # aws_scheduler_schedule.musing_feedback below) -- same pattern as
-  # InvokeWeeklyReflection/InvokeTrendingDigest above.
+  # InvokeWeeklyReflection above.
   statement {
     sid       = "InvokeMusingFeedback"
     effect    = "Allow"
@@ -2369,7 +2359,6 @@ locals {
     "${var.unique_name_prefix}-production-stats-rollover",
     "${var.unique_name_prefix}-production-cost-explorer-poll",
     "${var.unique_name_prefix}-production-model-catalog",
-    "${var.unique_name_prefix}-production-trending-digest",
     "${var.unique_name_prefix}-production-musing-feedback",
     "${var.unique_name_prefix}-production-security-events",
     "${var.unique_name_prefix}-production-sign-in-events",
@@ -2824,7 +2813,6 @@ locals {
     aws_lambda_function.admin_api.function_name,
     aws_lambda_function.public_api.function_name,
     aws_lambda_function.weekly_reflection.function_name,
-    aws_lambda_function.trending_digest.function_name,
     aws_lambda_function.dlq_handler.function_name,
     aws_lambda_function.musing_feedback.function_name,
     aws_lambda_function.stats_rollover.function_name,
@@ -2906,61 +2894,6 @@ module "observability" {
 }
 
 # =========================================================================
-# Phase 8 -- Stretch: a seventh Lambda (from the same shared deployment
-# package above, sharing the same aws_iam_role.lambda_exec -- it already
-# has everything trending_digest_handler.py needs: read on Topics/
-# Findings, read+write on Articles/ModerationQueue, the content bucket,
-# and Bedrock, all granted since Phase 1/5; no new IAM role or policy
-# resource required) on a single, static, Terraform-managed daily
-# schedule.
-#
-# Same "one global job, not per-topic" pattern as Phase 5's
-# weekly_reflection: this looks across every topic at once, so there's
-# nothing per-topic to configure about its schedule. The "Public read
-# API / RSS" half of Phase 8's scope needed no new code at all -- Phase
-# 4's public API (GET /topics, GET /articles, GET /articles/{id},
-# GET /rss.xml) already covers it; see docs/PROGRESS.md.
-# =========================================================================
-
-resource "aws_lambda_function" "trending_digest" {
-  function_name = "${var.unique_name_prefix}-production-trending-digest"
-  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
-  role          = aws_iam_role.lambda_exec.arn
-  handler       = "trending_digest_handler.handler"
-  runtime       = "python3.11"
-  timeout       = 120
-  memory_size   = 256
-
-  filename         = data.archive_file.lambdas.output_path
-  source_code_hash = data.archive_file.lambdas.output_base64sha256
-
-  environment {
-    variables = local.lambda_env_variables
-  }
-}
-
-# Static daily schedule -- 7am UTC, an hour after the daily-cycle's own
-# default per-topic cadence (cron(0 6 * * ? *), see
-# admin_api_handler.py's _DEFAULT_DAILY_CADENCE), so a typical day's
-# freshly-published articles/findings have a chance to land before the
-# digest synthesizes across them. A fixed literal, not topic-driven
-# config, for the same reason as weekly_reflection's schedule above.
-resource "aws_scheduler_schedule" "trending_digest" {
-  name                = "${var.unique_name_prefix}-production-trending-digest"
-  group_name          = "default"
-  schedule_expression = "cron(0 7 * * ? *)"
-
-  flexible_time_window {
-    mode = "OFF"
-  }
-
-  target {
-    arn      = aws_lambda_function.trending_digest.arn
-    role_arn = aws_iam_role.scheduler_invoke.arn
-  }
-}
-
-# =========================================================================
 # Musings -- BloggerBear's short in-character reflections feed (see
 # common/musings.py, docs). Article musings are generated inline by
 # daily_cycle_handler.py/admin_api_handler.py at publish time -- no new
@@ -2972,7 +2905,7 @@ resource "aws_scheduler_schedule" "trending_digest" {
 # InvokeMusingFeedback scheduler-invoke statement above) covers the other
 # half: a periodic reflection on reader feedback, on its own static
 # schedule, same "one global job, not per-topic" pattern as
-# weekly_reflection/trending_digest.
+# weekly_reflection.
 # =========================================================================
 
 resource "aws_lambda_function" "musing_feedback" {
@@ -2994,8 +2927,8 @@ resource "aws_lambda_function" "musing_feedback" {
 
 # rate(4 days): EventBridge Scheduler's rate expressions natively support a
 # "days" unit, so this needs no cron-arithmetic workaround. A fixed literal,
-# not topic-driven config, for the same reason as weekly_reflection's/
-# trending_digest's schedules above -- this isn't per-topic.
+# not topic-driven config, for the same reason as weekly_reflection's
+# schedule above -- this isn't per-topic.
 resource "aws_scheduler_schedule" "musing_feedback" {
   name                = "${var.unique_name_prefix}-production-musing-feedback"
   group_name          = "default"

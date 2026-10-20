@@ -635,8 +635,7 @@ variable, not with a tfvars edit. Every setting it uses is in
    tile, and writes about one of them a day: [`rail_access` topics](#rail_access-topics), below,
    creates one topic over the four starting cities from a file. Both get `force_manual_review`
    whether you ask or not:
-   every article waits for `admin_cli approve`, and the daily trending digest, which publishes
-   with no person, leaves these topics out (#298). Trigger the first tick by hand
+   every article waits for `admin_cli approve`. Trigger the first tick by hand
    (`topics trigger <id> --pipeline research_tick`); the first scene measured at or above the
    topic's coverage floor is its first observation, reported once, so a Finding, then a held
    article, is what success looks like. The CLI waits only 30 s for the Finding, and a tick that

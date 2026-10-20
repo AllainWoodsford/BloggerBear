@@ -154,9 +154,9 @@ def _summary_cost_label(lineage: dict) -> str:
     couldn't be priced still means there IS a real, larger cost than cost_aud alone, so this says
     "No data" rather than silently understating it by falling back to the authoring figure.
 
-    Falls back to the plain cost label when there's no research tally at all (e.g.
-    trending_digest_handler.py's cross-topic synthesis, which was never split into research vs.
-    authoring in the first place) -- cost_aud there already *is* the whole cost.
+    Falls back to the plain cost label when there's no research tally at all (an article whose
+    lineage was never split into research vs. authoring) -- cost_aud there already *is* the
+    whole cost.
     """
     if "research" in lineage:
         total = lineage.get("total_cost_aud")
@@ -500,12 +500,13 @@ def render_body_html(body_markdown: str) -> str:
 
 
 # The site's own sections, as absolute links because a static article page lives at
-# /articles/<id>.html, not at the SPA's root. Mirrors index.html's header and footer.
-_SITE_SECTIONS = (
-    ("/#/topic/digest", "Trending Everywhere"),
+# /articles/<id>.html, not at the SPA's root. Mirrors index.html's header and footer: the header
+# leads with About, which the footer already has in its legal row.
+_FOOTER_SECTIONS = (
     ("/#/musings", "Musings"),
     ("/#/stats", "Stats"),
 )
+_HEADER_SECTIONS = (("/about.html", "About"), *_FOOTER_SECTIONS)
 
 
 # A paw print after every footer link but the last. The link and its paw sit in one nowrap span,
@@ -523,7 +524,8 @@ def _links_html(links, paws: bool = False) -> str:
 
 
 def _site_sections_links_html(paws: bool = False) -> str:
-    return _links_html(_SITE_SECTIONS, paws)
+    """The header's site sections, or with `paws` the footer's."""
+    return _links_html(_FOOTER_SECTIONS if paws else _HEADER_SECTIONS, paws)
 
 
 _LEGAL_LINKS = (

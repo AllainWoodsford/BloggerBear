@@ -72,7 +72,7 @@ of them is a reason to change the tick; they are constraints on what runs it and
   them on. The worker's own timeout is then the tick's plus a margin (150 s), and the queue's
   visibility timeout six times that, as AWS advises for Lambda consumers.
 - **`force_manual_review` is the tick's and the cycle's business, not the dispatcher's.** The
-  daily cycle holds those articles; the digest leaves those topics out. The dispatcher only
+  daily cycle holds those articles. The dispatcher only
   decides *when*, never *whether to publish*.
 - **Figures and planner notes are on the Finding.** Nothing in the dispatch path touches
   Findings, so the figures path (#288) and the article page are unaffected.

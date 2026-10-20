@@ -183,7 +183,7 @@ def test_an_unsafe_or_malformed_theme_is_refused_by_the_code_rules(bad):
 def test_the_fallback_theme_comes_from_the_topic():
     assert gear.fallback_theme("github-trending") == "Github Trending Lore"
     assert gear.fallback_theme("finance-crypto-investing") == "Finance Crypto Investing Lore"
-    assert gear.fallback_theme("digest") == "Digest Lore"
+    assert gear.fallback_theme("tech-market-news") == "Tech Market News Lore"
 
 
 def test_a_topic_with_nothing_usable_gets_the_plain_fallback():

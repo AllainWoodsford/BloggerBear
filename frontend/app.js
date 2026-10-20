@@ -77,13 +77,10 @@
 
   // --- Nav ------------------------------------------------------------
 
-  // The site's own sections -- Trending Everywhere, Musings, Stats -- are not
-  // topics (nothing to rank, no article_count/researching fields), so they are
-  // fixed links in index.html (header #nav-site and the footer) and never come
-  // from GET /topics. Trending Everywhere is the cross-topic digest (see
-  // trending_digest_handler.py): it links to the same #/topic/{id} route every
-  // topic uses, with topic_id "digest".
-  var DIGEST_TOPIC_ID = "digest";
+  // The site's own sections -- About, Musings, Stats -- are not topics
+  // (nothing to rank, no article_count/researching fields), so they are fixed
+  // links in index.html (header #nav-site and the footer) and never come from
+  // GET /topics.
 
   // Keeps the compact header nav usable regardless of how many topics
   // exist: at most this many real topics ever show there, ranked by
@@ -117,9 +114,9 @@
     return withArticles.slice(0, NAV_TOPIC_LIMIT).concat(researchingOnly);
   }
 
-  // Only the topics are built here. The site's own sections (Trending
-  // Everywhere, Musings, Stats) are plain links in index.html's #nav-site and
-  // footer, so they are there without any JS or API call.
+  // Only the topics are built here. The site's own sections (About, Musings,
+  // Stats) are plain links in index.html's #nav-site and footer, so they are
+  // there without any JS or API call.
   function renderNav(topics) {
     clearChildren(navEl);
     var navTopics = selectNavTopics(topics);
@@ -659,8 +656,7 @@
   // box is about what comes next, so it is shown on the first page only.
   function renderArticleList(topicId, articles, activity, attribution, paging) {
     clearChildren(contentEl);
-    var heading = topicId === DIGEST_TOPIC_ID ? "Trending Everywhere" : topicId;
-    contentEl.appendChild(el("h1", { text: heading }));
+    contentEl.appendChild(el("h1", { text: topicId }));
     var topicCredit = sourceAttribution(attribution);
     if (topicCredit) {
       contentEl.appendChild(topicCredit);

@@ -4,7 +4,7 @@ and that declaration is what readers see credited.
 These are the build-breaking checks: a new adapter with no source, a source that is not a plain
 https link, or a source the About page does not name, fails here. The pages that show the credit
 are tested where they live (test_static_pages.py, test_public_api_handler.py,
-test_trending_digest_handler.py, test_frontend_attribution.py).
+test_frontend_attribution.py).
 """
 
 from __future__ import annotations
@@ -95,15 +95,6 @@ def test_a_topic_carries_its_adapters_sources_and_an_unknown_adapter_carries_non
         assert attribution.sources_for_topic(topic) == []
 
 
-def test_the_union_of_several_topics_lists_each_source_once_in_first_met_order():
-    adapters = ["web_search", "crypto_feed", "web_search", "no_such_adapter"]
-    topics = [{"adapter": adapter} for adapter in adapters]
-    assert [source["label"] for source in attribution.sources_for_topics(topics)] == [
-        "GDELT Project",
-        "CoinGecko API",
-    ]
-
-
 def test_sources_returned_are_copies_so_a_caller_cannot_edit_the_declaration():
     attribution.sources_for_adapter("crypto_feed")[0]["text"] = "changed"
     assert attribution.sources_for_adapter("crypto_feed")[0]["text"] == "Powered by CoinGecko API"
@@ -133,12 +124,22 @@ def test_an_older_article_falls_back_to_its_topics_adapter():
     assert gone == []
 
 
-def test_an_older_digest_credits_every_current_topics_sources():
-    topics = [{"topic_id": "a", "adapter": "github_trending"}, {"topic_id": "b", "adapter": "hacker_news"}]
+def test_a_legacy_digest_with_nothing_stored_credits_every_current_topics_sources_once():
+    """The digest is removed, but its published articles remain; some sources' terms require the
+    credit, so one from before attribution was stored credits too many rather than none."""
+    topics = [
+        {"topic_id": "a", "adapter": "github_trending"},
+        {"topic_id": "b", "adapter": "hacker_news"},
+        {"topic_id": "c", "adapter": "github_trending"},
+    ]
     found = attribution.sources_for_article(
-        {"topic_id": "digest"}, get_topic=_no_lookup, list_topics=lambda: topics
+        {"topic_id": attribution.LEGACY_CROSS_TOPIC_ID}, get_topic=_no_lookup, list_topics=lambda: topics
     )
     assert [source["label"] for source in found] == ["GitHub Trending", "Hacker News"]
+    # A legacy digest that stored its credit keeps it, like any article.
+    stored = [{"text": "Data from X", "label": "X", "url": "https://x.example/"}]
+    article = {"topic_id": "digest", "attribution": stored}
+    assert attribution.sources_for_article(article, get_topic=_no_lookup, list_topics=_no_lookup) == stored
 
 
 @pytest.mark.parametrize(

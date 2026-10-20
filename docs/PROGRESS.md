@@ -949,6 +949,12 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   progress the CLI follows: no new function, queue or table (`lambdas/common/backup.py`,
   `scripts/README.md`, the deployment runsheet's "Keeping dev's content across a teardown")
 
+- [x] The Trending Everywhere digest is removed as a feature: its Lambda, schedule, IAM statement,
+  alarms, handler, `common/digest.py` and every special case for its `digest` topic id; the header's
+  link is now About. Existing digest articles are left in DynamoDB as ordinary articles (pages, RSS,
+  Stats, the review inbox and `admin_cli` all keep working through the generic paths)
+  ([project-plan.md](project-plan.md#removed-the-trending-everywhere-digest-2026-10-20))
+
 ## Backlog / not yet scheduled
 
 *(Freeform — drop ideas here as they occur to you; promote them into a

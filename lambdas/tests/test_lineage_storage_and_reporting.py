@@ -339,8 +339,8 @@ def test_the_summary_line_says_no_data_rather_than_understate_an_unpriced_total(
 
 
 def test_the_summary_line_shows_the_only_cost_figure_when_there_is_no_research_tally_at_all():
-    """trending_digest_handler.py's cross-topic synthesis never tallies research separately --
-    cost_aud there already *is* the whole cost, so the summary line should still show it."""
+    """A lineage with no research tally (one never split into research vs. authoring): cost_aud
+    there already *is* the whole cost, so the summary line should still show it."""
     lineage = costing.build_lineage([_call(ARN)])
     assert "research" not in lineage
 

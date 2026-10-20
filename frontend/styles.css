@@ -179,7 +179,7 @@ header {
   text-decoration: underline;
 }
 
-/* The site's own sections (Trending Everywhere, Musings, Stats) are
+/* The site's own sections (About, Musings, Stats) are
    outlined pills, so they read as "places on the site" next to the plain
    topic links below them. */
 #nav-site {

@@ -244,8 +244,8 @@ def test_every_pipeline_lambda_gets_one_90_day_log_group(env):
     assert 'resource "aws_cloudwatch_log_group" "lambda"' in text
     assert "for_each          = toset(local.lambda_log_group_function_names)" in text
     function_names = re.findall(r"aws_lambda_function\.[a-z_]+\.function_name,", text)
-    assert len(function_names) == 13  # module.observability's list: each function named once
-    assert len(set(function_names)) == 13
+    assert len(function_names) == 12  # module.observability's list: each function named once
+    assert len(set(function_names)) == 12
 
 
 # --- the www redirect, as CloudFront will run it ---------------------------------------------------
