@@ -1,0 +1,666 @@
+{
+  "schema": "bloggerbear.vision-eval/1",
+  "run_id": "2026-10-20-bench-scenes-neoverse-v2-graviton4-cool-1t",
+  "kind": "bench-scenes",
+  "mode": "scenes",
+  "backend": "cool",
+  "started_at": "2026-10-20T11:50:27Z",
+  "finished_at": "2026-10-20T11:51:24Z",
+  "code": {
+    "git_sha": "4582abcdbe5395f35c2990ea2ee1ef4879b4eb3d",
+    "dirty": false
+  },
+  "environment": {
+    "cpu": "Neoverse V2 (Graviton4)",
+    "machine": "aarch64",
+    "python": "3.12.3",
+    "opencv": {
+      "opencv_version": "5.1.0-dev",
+      "build_sha256": "12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4",
+      "arch": "aarch64",
+      "kleidicv": true,
+      "cpu_baseline": "SVE NEON FP16 NEON_DOTPROD NEON_FP16 NEON_BF16",
+      "cpu_dispatch": "requested:                 NEON_DOTPROD NEON_FP16 NEON_BF16",
+      "cpu": "Neoverse V2 (Graviton4)",
+      "cpu_count": 1,
+      "cv2_path": "/opt/cool/python_3.12/site-packages/cv2/python-3.12/cv2.cpython-312-aarch64-linux-gnu.so"
+    },
+    "cpu_count": 4,
+    "affinity": [
+      0
+    ],
+    "threads": 1,
+    "numpy": "2.5.1",
+    "networkx": "3.4.2",
+    "where": "ec2",
+    "host": {
+      "instance_type": "c8g.xlarge",
+      "ami_id": "ami-08dacb72c289c8261",
+      "region": "us-west-2",
+      "architecture": "arm64",
+      "marketplace_product_codes": [
+        "aajkmdd4qo3r7yhqg61a7aah9"
+      ]
+    },
+    "cool": {
+      "product": "aajkmdd4qo3r7yhqg61a7aah9",
+      "version": "3.1",
+      "delivery": "ami",
+      "image_digest": null,
+      "price": null
+    },
+    "libraries": [
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_core.so.5.1.0",
+        "bytes": 4217768,
+        "sha256": "25fa7c8e5bf3f5b244c96fd30ba3bc621ac925d012b550e53f0fc17c8c24ed2b",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_flann.so.5.1.0",
+        "bytes": 527736,
+        "sha256": "e2ee4ffc128b60269c08771563416897c98eabb578b4372ae6f33be5bce7e765",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_geometry.so.5.1.0",
+        "bytes": 1512104,
+        "sha256": "e52d22d9c1a8935b3735c1fb826893dacc6422628fd028ab8c87b0d16b960ba7",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_imgproc.so.5.1.0",
+        "bytes": 7282752,
+        "sha256": "45bcc4a79e07c75c35028745dd2f01ef77606e5ec25b923ebecc3c38858f0475",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_imgcodecs.so.5.1.0",
+        "bytes": 2757600,
+        "sha256": "4a341cf7aae6412be40caabc1ed92b003604bb54793667985ac151fff6698eb5",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_videoio.so.5.1.0",
+        "bytes": 463808,
+        "sha256": "0f67f2acd7fb13e286e8061f45902bf99c56037ead68a7d851e25a624f8d938e",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_dnn.so.5.1.0",
+        "bytes": 11961120,
+        "sha256": "2d915335b526a83de25594e43ff377d17ce6403b2b0b61e0f9ed7eaf1ae4a3cd",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_features.so.5.1.0",
+        "bytes": 664344,
+        "sha256": "5458edfad52cb6afc45147b957fe74f91eadb1eea6aaeead598358ad2a93e73a",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_objdetect.so.5.1.0",
+        "bytes": 1403952,
+        "sha256": "1f23b49b11f6a884c5aef94f8cfc81781fc19c9f9118fe76cb38c6ebab31c7f1",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_stereo.so.5.1.0",
+        "bytes": 265352,
+        "sha256": "c4101d595922b7d9ea7ce42e730db46bfd2b6773230a681b05f40bbace67730e",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_highgui.so.5.1.0",
+        "bytes": 133896,
+        "sha256": "c290ed19e465e136b745e9da12e15d9eb3678da1e207af8a737dc9594262f0e2",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_calib.so.5.1.0",
+        "bytes": 462472,
+        "sha256": "02d54652aab3d5178c2b4fbb1d300b0d4375f0971017deb53742cc809110a528",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_video.so.5.1.0",
+        "bytes": 594960,
+        "sha256": "3ec2a5966b8eef3563d57e3c0a86b62d56e2a844589e8cda32a12c53abe7b256",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_stitching.so.5.1.0",
+        "bytes": 594312,
+        "sha256": "56c973d603f8b94af0efc9ee3a79453c1ed3c019453d6481421c5fdd929d4a23",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_ptcloud.so.5.1.0",
+        "bytes": 725856,
+        "sha256": "5691a6e758b635c94ebe0d772be921b4b4afa15f82aee90e9e89a9e8f492026c",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_photo.so.5.1.0",
+        "bytes": 987504,
+        "sha256": "e35f40d603fe78ab12eb061b207eed4259f996069262f989354b26f73d4c4b5c",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/python_3.12/site-packages/cv2/python-3.12/cv2.cpython-312-aarch64-linux-gnu.so",
+        "bytes": 5283456,
+        "sha256": "8e0cb494f0c5dbfe5c0fc92d3b242d2fad5732de4a81fc3d45a9a537e7711556",
+        "package": "not packaged"
+      }
+    ],
+    "build_lines": [
+      "C++ Compiler:                /usr/bin/c++  (ver 13.3.0)",
+      "C++ flags (Release):         -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden   -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wsuggest-override -Wno-delete-non-virtual-dtor -Wno-comment -Wimplicit-fallthrough=3 -Wno-strict-overflow -fdiagnostics-show-option -pthread -fomit-frame-pointer -ffunction-sections -fdata-sections -flto=auto  -O3 -DNDEBUG  -DNDEBUG",
+      "C++ flags (Debug):           -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden   -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wsuggest-override -Wno-delete-non-virtual-dtor -Wno-comment -Wimplicit-fallthrough=3 -Wno-strict-overflow -fdiagnostics-show-option -pthread -fomit-frame-pointer -ffunction-sections -fdata-sections -flto=auto  -g  -DDEBUG -D_DEBUG",
+      "C Compiler:                  /usr/bin/cc",
+      "C flags (Release):           -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden    -O3 -DNDEBUG  -DNDEBUG",
+      "C flags (Debug):             -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden    -g  -DDEBUG -D_DEBUG",
+      "DNN MLAS:                    YES (SGEMM-only, vendored)",
+      "Custom HAL:                  YES (carotene (ver 0.0.1) KleidiCV (ver 0.7.0))",
+      "Include path:                /home/ubuntu/opencv-5x-cool/3rdparty/include/opencl/1.2"
+    ]
+  },
+  "worker": {
+    "kind": "in-process",
+    "region": null,
+    "code_sha256": "4c46efe55ae1b2dcda5627df346af6aecdfff2e1e13359f6714abb15ad2889cc"
+  },
+  "inputs": {
+    "manifest_sha256": "2aae709e01823f691434830f0593e7f4903902891093886ff0db1dbb56661922",
+    "cache": true,
+    "scenes": [
+      {
+        "name": "botany-bay-2024-01-05",
+        "scene_id": "S2A_56HLH_20240105_0_L2A",
+        "etag_by_asset": {
+          "nir": "91114410bfd7832034d5a86f5cd36f23-21",
+          "green": "ac5bf4f7a0a2c2fd3fdce8fbb1a5a753-21",
+          "scl": "a6a98e904a508f1f863561a7868dd00f"
+        }
+      },
+      {
+        "name": "sydney-rail-2024-01-05",
+        "scene_id": "S2A_56HLH_20240105_0_L2A",
+        "etag_by_asset": {
+          "red": "f168c9842f53be5ff5265dc3c8fd691f-21",
+          "nir": "91114410bfd7832034d5a86f5cd36f23-21",
+          "swir16": "61207d2fc25a41e056f775e59c0857cb-6",
+          "scl": "a6a98e904a508f1f863561a7868dd00f"
+        }
+      },
+      {
+        "name": "sydney-rail-2024-08-26",
+        "scene_id": "S2A_56HLH_20240826_0_L2A",
+        "etag_by_asset": {
+          "red": "869d2f7d1e646fd069142dd51d1d1ec4-18",
+          "nir": "d641bc64ec21fc2d1434071beeb5b63f-18",
+          "swir16": "c18829ea963633eda50d881d5989754d-5",
+          "scl": "1104e55f9c91a600b0596227acd4901d"
+        }
+      }
+    ],
+    "networks": [
+      {
+        "file": "vision_benchmark_networks/sydney.json",
+        "sha256": "bfc3c7f868f52f755eb3c1a8836729bf4dcc5ee079cf466cf51968921fd77eb4"
+      }
+    ],
+    "cache_index_sha256": "7a4c099ad130bc7602b1d535e359e3dd4fc7a6215a5758fc8ba3eb9f4549bd70",
+    "cache_hits": 1965,
+    "cache_misses": 0
+  },
+  "params": {
+    "mode": "scenes",
+    "repeats": 5,
+    "imds": true,
+    "threads": 1,
+    "pin_cpu": null,
+    "backend": "cool",
+    "cool_sha": "12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4",
+    "scenes_file": "scripts/vision_benchmark_scenes.json",
+    "only": null,
+    "manifest": "scripts/vision_eval_manifest.json",
+    "cache": true,
+    "isolate": true,
+    "labels": {
+      "product": "aajkmdd4qo3r7yhqg61a7aah9",
+      "version": "3.1",
+      "delivery": "ami",
+      "image_digest": null,
+      "price": null
+    }
+  },
+  "results": {
+    "botany-bay-2024-01-05": {
+      "ok": true,
+      "error": null,
+      "count": 15,
+      "io": {
+        "requests": 9,
+        "bytes": 5538834,
+        "levels_used": {
+          "nir": 0,
+          "green": 0,
+          "scl": 0
+        }
+      },
+      "stages": {
+        "read": {
+          "runs": 5,
+          "median_ms": 49.7,
+          "p90_ms": 55.8,
+          "min_ms": 49.1
+        },
+        "analyse": {
+          "runs": 5,
+          "median_ms": 10.4,
+          "p90_ms": 17.6,
+          "min_ms": 10.3
+        },
+        "annotate": {
+          "runs": 5,
+          "median_ms": 17.5,
+          "p90_ms": 420.7,
+          "min_ms": 17.5
+        },
+        "total": {
+          "runs": 5,
+          "median_ms": 78.0,
+          "p90_ms": 494.8,
+          "min_ms": 77.2
+        }
+      },
+      "samples_ms": {
+        "read": [
+          55.8,
+          51.0,
+          49.2,
+          49.1,
+          49.7
+        ],
+        "analyse": [
+          17.6,
+          10.4,
+          10.5,
+          10.3,
+          10.4
+        ],
+        "annotate": [
+          420.7,
+          17.5,
+          17.5,
+          17.5,
+          17.5
+        ],
+        "total": [
+          494.8,
+          79.3,
+          77.5,
+          77.2,
+          78.0
+        ]
+      },
+      "metrics": {
+        "count": 15
+      },
+      "metrics_digest": "6ee8a36b3a4c997cf095a065def85314b843303c136e2a9b281fe6e130575905",
+      "image_png_sha256": "856317632c1ee71a64877fe01a6b450ffccb18332b228e7abb611ede70c5ef74",
+      "image_shape": [
+        597,
+        597,
+        3
+      ],
+      "build": {
+        "opencv_version": "5.1.0-dev",
+        "build_sha256": "12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4",
+        "arch": "aarch64",
+        "kleidicv": true,
+        "cpu_baseline": "SVE NEON FP16 NEON_DOTPROD NEON_FP16 NEON_BF16",
+        "cpu_dispatch": "requested:                 NEON_DOTPROD NEON_FP16 NEON_BF16",
+        "cpu": "Neoverse V2 (Graviton4)",
+        "cpu_count": 1
+      },
+      "peak_rss_mb": 117.5,
+      "peak_scope": "scene",
+      "figure": "2026-10-20-bench-scenes-neoverse-v2-graviton4-cool-1t.botany-bay-2024-01-05.png"
+    },
+    "sydney-rail-2024-01-05": {
+      "ok": true,
+      "error": null,
+      "count": null,
+      "io": {
+        "requests": 192,
+        "bytes": 53993897,
+        "levels_used": {
+          "swir16": 0,
+          "red": 1,
+          "nir": 1,
+          "scl": 0
+        }
+      },
+      "stages": {
+        "read": {
+          "runs": 5,
+          "median_ms": 596.3,
+          "p90_ms": 617.0,
+          "min_ms": 595.5
+        },
+        "analyse": {
+          "runs": 5,
+          "median_ms": 3099.6,
+          "p90_ms": 3161.5,
+          "min_ms": 3080.3
+        },
+        "graph": {
+          "runs": 5,
+          "median_ms": 817.3,
+          "p90_ms": 839.4,
+          "min_ms": 815.0
+        },
+        "annotate": {
+          "runs": 5,
+          "median_ms": 617.6,
+          "p90_ms": 637.3,
+          "min_ms": 616.6
+        },
+        "total": {
+          "runs": 5,
+          "median_ms": 4351.2,
+          "p90_ms": 4465.7,
+          "min_ms": 4335.4
+        }
+      },
+      "samples_ms": {
+        "read": [
+          617.0,
+          595.8,
+          595.5,
+          596.4,
+          596.3
+        ],
+        "analyse": [
+          3161.5,
+          3099.6,
+          3083.8,
+          3080.3,
+          3100.5
+        ],
+        "graph": [
+          839.4,
+          819.7,
+          815.0,
+          817.3,
+          815.6
+        ],
+        "annotate": [
+          637.3,
+          617.6,
+          618.2,
+          616.6,
+          616.7
+        ],
+        "total": [
+          4465.7,
+          4351.6,
+          4335.4,
+          4343.9,
+          4351.2
+        ]
+      },
+      "metrics": {
+        "served_share": 0.2639,
+        "desert_km2": 3.112,
+        "built_up_km2": 4.2276,
+        "station_count": 225,
+        "snapped_station_count": 224,
+        "node_count": 448,
+        "edge_count": 491,
+        "components": 4,
+        "hubs": [
+          "s:w1261363035",
+          "s:n1886265379",
+          "s:n1886240917",
+          "s:n1886240868",
+          "s:n6497471265"
+        ],
+        "flags": [
+          [
+            "isolated_high_demand",
+            "s:n1843679382"
+          ],
+          [
+            "isolated_high_demand",
+            "s:n1886240880"
+          ],
+          [
+            "isolated_high_demand",
+            "s:n1886255323"
+          ],
+          [
+            "isolated_high_demand",
+            "s:n6560219252"
+          ],
+          [
+            "isolated_high_demand",
+            "s:n6620581680"
+          ],
+          [
+            "ghost_line",
+            "s:n26428905+s:n5692088706+s:n5692088707"
+          ]
+        ],
+        "suggestions": [
+          "orbital_link:s:n1833786046>s:n634228099",
+          "orbital_link:s:n634228099>s:n6620600145",
+          "feeder_corridor:s:n6620600087>s:n1886265379"
+        ]
+      },
+      "metrics_digest": "19ba94d4f34614f1f07e102281dd51b2f120fcc1107989183658c39b6944c773",
+      "image_png_sha256": "e5e6deb7e1bdd150cfee19e48a4ce29b0e5f84aad37e7f3bd1f09cfd02965217",
+      "image_shape": [
+        1181,
+        1024,
+        3
+      ],
+      "build": {
+        "opencv_version": "5.1.0-dev",
+        "build_sha256": "12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4",
+        "arch": "aarch64",
+        "kleidicv": true,
+        "cpu_baseline": "SVE NEON FP16 NEON_DOTPROD NEON_FP16 NEON_BF16",
+        "cpu_dispatch": "requested:                 NEON_DOTPROD NEON_FP16 NEON_BF16",
+        "cpu": "Neoverse V2 (Graviton4)",
+        "cpu_count": 1
+      },
+      "peak_rss_mb": 1055.4,
+      "peak_scope": "scene",
+      "figure": "2026-10-20-bench-scenes-neoverse-v2-graviton4-cool-1t.sydney-rail-2024-01-05.png"
+    },
+    "sydney-rail-2024-08-26": {
+      "ok": true,
+      "error": null,
+      "count": null,
+      "io": {
+        "requests": 192,
+        "bytes": 57444442,
+        "levels_used": {
+          "swir16": 0,
+          "red": 1,
+          "nir": 1,
+          "scl": 0
+        }
+      },
+      "stages": {
+        "read": {
+          "runs": 5,
+          "median_ms": 573.6,
+          "p90_ms": 593.2,
+          "min_ms": 573.4
+        },
+        "analyse": {
+          "runs": 5,
+          "median_ms": 3497.0,
+          "p90_ms": 3534.9,
+          "min_ms": 3488.8
+        },
+        "graph": {
+          "runs": 5,
+          "median_ms": 819.5,
+          "p90_ms": 837.7,
+          "min_ms": 813.6
+        },
+        "annotate": {
+          "runs": 5,
+          "median_ms": 1180.9,
+          "p90_ms": 1201.0,
+          "min_ms": 1176.5
+        },
+        "total": {
+          "runs": 5,
+          "median_ms": 5289.3,
+          "p90_ms": 5378.3,
+          "min_ms": 5285.1
+        }
+      },
+      "samples_ms": {
+        "read": [
+          593.2,
+          574.6,
+          573.5,
+          573.6,
+          573.4
+        ],
+        "analyse": [
+          3534.9,
+          3498.4,
+          3488.8,
+          3494.5,
+          3497.0
+        ],
+        "graph": [
+          837.7,
+          819.5,
+          814.8,
+          820.1,
+          813.6
+        ],
+        "annotate": [
+          1201.0,
+          1176.5,
+          1184.6,
+          1178.1,
+          1180.9
+        ],
+        "total": [
+          5378.3,
+          5288.4,
+          5285.1,
+          5296.0,
+          5289.3
+        ]
+      },
+      "metrics": {
+        "served_share": 0.3895,
+        "desert_km2": 46.9896,
+        "built_up_km2": 76.9708,
+        "station_count": 225,
+        "snapped_station_count": 224,
+        "node_count": 448,
+        "edge_count": 491,
+        "components": 4,
+        "hubs": [
+          "s:w679354513",
+          "s:w585998416",
+          "s:n6618892734",
+          "s:w740050932",
+          "s:n20163894"
+        ],
+        "flags": [
+          [
+            "ghost_line",
+            "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+          ],
+          [
+            "ghost_line",
+            "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+          ],
+          [
+            "ghost_line",
+            "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+          ],
+          [
+            "ghost_line",
+            "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+          ],
+          [
+            "ghost_line",
+            "s:n1886255320+s:n2130285345+s:n1886255322"
+          ]
+        ],
+        "suggestions": [
+          "orbital_link:s:n1886255320>s:w677568479",
+          "orbital_link:s:n2130285345>s:w677568479",
+          "orbital_link:s:w677568477>s:w677568479"
+        ]
+      },
+      "metrics_digest": "f69859d8627e8fada236083e74ce4e8e848aaf7272567182a35b2d79b99cfd6d",
+      "image_png_sha256": "f4e547e8a385fe5d36a2c55605f9a28273bd7750a59d723643509a83465dab77",
+      "image_shape": [
+        1181,
+        1024,
+        3
+      ],
+      "build": {
+        "opencv_version": "5.1.0-dev",
+        "build_sha256": "12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4",
+        "arch": "aarch64",
+        "kleidicv": true,
+        "cpu_baseline": "SVE NEON FP16 NEON_DOTPROD NEON_FP16 NEON_BF16",
+        "cpu_dispatch": "requested:                 NEON_DOTPROD NEON_FP16 NEON_BF16",
+        "cpu": "Neoverse V2 (Graviton4)",
+        "cpu_count": 1
+      },
+      "peak_rss_mb": 1051.1,
+      "peak_scope": "scene",
+      "figure": "2026-10-20-bench-scenes-neoverse-v2-graviton4-cool-1t.sydney-rail-2024-08-26.png"
+    }
+  },
+  "agent": null,
+  "checks": [],
+  "summary": {
+    "botany-bay-2024-01-05.ok": 1,
+    "botany-bay-2024-01-05.read_ms": 49.7,
+    "botany-bay-2024-01-05.analyse_ms": 10.4,
+    "botany-bay-2024-01-05.annotate_ms": 17.5,
+    "botany-bay-2024-01-05.total_ms": 78.0,
+    "botany-bay-2024-01-05.count": 15,
+    "botany-bay-2024-01-05.peak_rss_mb": 117.5,
+    "sydney-rail-2024-01-05.ok": 1,
+    "sydney-rail-2024-01-05.read_ms": 596.3,
+    "sydney-rail-2024-01-05.analyse_ms": 3099.6,
+    "sydney-rail-2024-01-05.graph_ms": 817.3,
+    "sydney-rail-2024-01-05.annotate_ms": 617.6,
+    "sydney-rail-2024-01-05.total_ms": 4351.2,
+    "sydney-rail-2024-01-05.served_share": 0.2639,
+    "sydney-rail-2024-01-05.desert_km2": 3.112,
+    "sydney-rail-2024-01-05.built_up_km2": 4.2276,
+    "sydney-rail-2024-01-05.station_count": 225,
+    "sydney-rail-2024-01-05.peak_rss_mb": 1055.4,
+    "sydney-rail-2024-08-26.ok": 1,
+    "sydney-rail-2024-08-26.read_ms": 573.6,
+    "sydney-rail-2024-08-26.analyse_ms": 3497.0,
+    "sydney-rail-2024-08-26.graph_ms": 819.5,
+    "sydney-rail-2024-08-26.annotate_ms": 1180.9,
+    "sydney-rail-2024-08-26.total_ms": 5289.3,
+    "sydney-rail-2024-08-26.served_share": 0.3895,
+    "sydney-rail-2024-08-26.desert_km2": 46.9896,
+    "sydney-rail-2024-08-26.built_up_km2": 76.9708,
+    "sydney-rail-2024-08-26.station_count": 225,
+    "sydney-rail-2024-08-26.peak_rss_mb": 1051.1
+  }
+}
