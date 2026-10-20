@@ -71,15 +71,14 @@ The loop is **perception, diff, agent, person**, and each arrow is bounded in co
    return is data, not instructions, and the agent's reason reaches a summary only quoted, as its
    note, not a measurement.
 4. **Person.** The daily cycle writes the week's city up, a different angle each day, and holds
-   every vision article for a person; the daily digest, which publishes with no person, leaves
-   these topics out.
+   every vision article for a person; the AI reviewer, which can publish the text topics' drafts
+   with no person, never touches these topics.
 
 **What is recorded.** The last 12 decisions per city, with each tool's result, are in the running
 state, and every decision is in the logs for 90 days, from the scene to the person's approval; the
 evaluation's replay re-runs a recorded trace on a judge's machine, and its counterfactuals change
 only OpenCV's output, to test whether that alone changes the decision.
-[R2: the headline result, from the report's Appendix B: the trace, the counterfactual's "k of n",
-and the agent's balanced accuracy]
+Measured on 20 October: on 13 labelled cases, five runs each with the live model, a balanced accuracy of 0.95 against 0.50 for simple baselines, with every failure case failing closed; the replayed `sydney-demo` trace, which a judge re-runs with no AWS account; and the gate-level counterfactual, where moving only OpenCV's measured coverage across the floor flipped whether the agent ran and whether a Finding was written, 2 of 2.
 
 ## Best Use of COOL
 
@@ -92,8 +91,7 @@ reads the same bytes; every run file records the CPU, the build fingerprint and 
 mapped during the run, so a COOL row is provably a COOL row; and `compare` gives the speed-up with a
 bootstrap interval and checks the two backends measured the same thing. COOL is benchmarked on
 Graviton4, not deployed ([Appendix A](technical-report.md#appendix-a-best-use-of-cool)).
-[R2: the headline speed-up on one core with its interval, and "parity: pass", from the report's
-Appendix A]
+Measured on 20 October on a `c8g.xlarge`: COOL 3.1 gave identical results to stock OpenCV 5.0 (parity pass) at 1.028 times the speed on one core (95 % interval 0.964 to 1.037): no measurable speed-up on this workload, where OpenCV is about 11 % of the CPU time; with two or more threads COOL aborted on the rail scenes, bisected to `connectedComponentsWithStats`.
 
 ## Links
 

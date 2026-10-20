@@ -52,7 +52,6 @@ PACKAGE_DOCS = (
     HACKATHON / "technical-report.md",
     HACKATHON / "REPRODUCE.md",
     HACKATHON / "dependencies.md",
-    HACKATHON / "video-script.md",
     HACKATHON / "opencv-2026-submission.md",
     HACKATHON / "devpost-checklist.md",
 )

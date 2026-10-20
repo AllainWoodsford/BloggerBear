@@ -1,0 +1,468 @@
+{
+  "schema": "bloggerbear.vision-eval/1",
+  "run_id": "2026-10-20-eval-failures-amd64-opencv",
+  "kind": "eval-failures",
+  "mode": "failures",
+  "backend": "opencv",
+  "started_at": "2026-10-20T13:29:48Z",
+  "finished_at": "2026-10-20T13:33:32Z",
+  "code": {
+    "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+    "dirty": false
+  },
+  "environment": {
+    "cpu": "AMD64",
+    "machine": "AMD64",
+    "python": "3.13.3",
+    "opencv": {
+      "opencv_version": "5.0.0",
+      "build_sha256": "ce2f2890911cf9cf8d7c54cfbc8ccd4fb073cc2b53be1f4c7cbae8e5fd294e1c",
+      "arch": "AMD64",
+      "kleidicv": false,
+      "cpu_baseline": "SSE SSE2 SSE3",
+      "cpu_dispatch": "SSE4_1 SSE4_2 AVX FP16 AVX2 AVX512_SKX",
+      "cpu": "AMD64",
+      "cpu_count": 12,
+      "cv2_path": "~/AppData/Local/Temp/claude/D--BloggerBear-BloggerBear/1a8cc82d-8a00-4065-af57-068e79244287/scratchpad/vision/cv2/__init__.py"
+    },
+    "cpu_count": 12,
+    "affinity": null,
+    "threads": 12,
+    "numpy": "2.4.4",
+    "networkx": "3.4.2",
+    "where": "windows",
+    "host": null,
+    "cool": null,
+    "libraries": null
+  },
+  "worker": {
+    "kind": "in-process",
+    "region": null,
+    "code_sha256": "f53225476c23af68d99328b459d5543d119506f8f3da44ae8bc35b6acd754c3f"
+  },
+  "inputs": {
+    "manifest_sha256": "bf5d8bec12334a201160e5f380e41a67fed6f2ef64cb4f3892629398f4bb6bfa",
+    "cache": true,
+    "scenes": [
+      {
+        "name": "sydney-2024-01-05",
+        "scene_id": "S2A_56HLH_20240105_0_L2A",
+        "etag_by_asset": {
+          "red": "f168c9842f53be5ff5265dc3c8fd691f-21",
+          "nir": "91114410bfd7832034d5a86f5cd36f23-21",
+          "swir16": "61207d2fc25a41e056f775e59c0857cb-6",
+          "scl": "a6a98e904a508f1f863561a7868dd00f"
+        }
+      },
+      {
+        "name": "sydney-2024-02-28",
+        "scene_id": "S2A_56HLH_20240228_0_L2A",
+        "etag_by_asset": {
+          "red": "4fad713f245d6e2ab0bde82e32c349c0-23",
+          "nir": "219358901135eed7d922b2881d5c1c1e-22",
+          "swir16": "511194a0e37a3e2d2c08c3059d12c24d-6",
+          "scl": "3384195253252459c533f6835bce73d5"
+        }
+      },
+      {
+        "name": "sydney-2024-08-21a",
+        "scene_id": "S2B_56HLH_20240821_0_L2A",
+        "etag_by_asset": {
+          "red": "58f2b24c7c47826c030018b653c69cd5-5",
+          "nir": "c3a3f7a31e861f636e1dd814afd0ec67-6",
+          "swir16": "21adef5980d7346cb267dcbb68a080ab-2",
+          "scl": "d87d511fcd101bc64d9975e13e202f30"
+        }
+      },
+      {
+        "name": "sydney-2019-12-26-smoke",
+        "scene_id": "S2B_56HLH_20191226_0_L2A",
+        "etag_by_asset": {
+          "red": "523d17956d0826c1cb528c5bf9bc69be-24",
+          "nir": "6c9d1e0f9361426fb34fa080055632af-24",
+          "swir16": "20be6796d530733ad9337eb6c1249893-6",
+          "scl": "6927ad1bd70fbddcb6533a71094e7ae1"
+        }
+      },
+      {
+        "name": "sydney-2024-08-26",
+        "scene_id": "S2A_56HLH_20240826_0_L2A",
+        "etag_by_asset": {
+          "red": "869d2f7d1e646fd069142dd51d1d1ec4-18",
+          "nir": "d641bc64ec21fc2d1434071beeb5b63f-18",
+          "swir16": "c18829ea963633eda50d881d5989754d-5",
+          "scl": "1104e55f9c91a600b0596227acd4901d"
+        }
+      }
+    ],
+    "networks": [
+      {
+        "file": "scripts/vision_benchmark_networks/sydney.json",
+        "sha256": "bfc3c7f868f52f755eb3c1a8836729bf4dcc5ee079cf466cf51968921fd77eb4"
+      }
+    ],
+    "cache_index_sha256": "557b6a09a013da3533d7843cf9bd46cd86cab7e365b587409b4a13271cbf6f2b"
+  },
+  "params": {
+    "only": null,
+    "collect": false,
+    "cache": true
+  },
+  "results": {
+    "cloud": {
+      "input": "sydney-2024-01-05",
+      "expected": "measured directly, the low_coverage flag at a coverage of about 0.145, and never chosen by the search; a scene the search does pick under the floor (sydney-2024-02-28) is kept out by the adapter: below the floor, no model call, never a first observation",
+      "tests": [
+        "lambdas/tests/test_rail_access_adapter.py::test_low_coverage_is_never_material_and_never_baseline",
+        "lambdas/tests/test_rail_access_adapter.py::test_the_first_observation_and_a_cloudy_first_scene_each_get_their_code",
+        "lambdas/tests/test_vision_rail_core.py::test_low_coverage_and_no_network_are_flagged_not_crashes"
+      ],
+      "elsewhere": null,
+      "real": "cloud",
+      "ran": true,
+      "got": {
+        "measured": {
+          "code": null,
+          "coverage": 0.1467,
+          "quality_flags": [
+            "low_coverage",
+            "no_stops_layer"
+          ]
+        },
+        "chosen_by_the_search": false,
+        "gate": {
+          "scene": "sydney-2024-02-28",
+          "picked_by_the_search": true,
+          "codes": [
+            "below_floor"
+          ],
+          "coverage": 0.4891,
+          "model_calls": 0,
+          "first_observed_at": null,
+          "changed": false
+        }
+      },
+      "pass": true
+    },
+    "swath_nodata": {
+      "input": "sydney-2024-08-21a",
+      "expected": "not chosen by the search (its footprint misses the site's box); measured directly, the low_coverage flag at about 0.09",
+      "tests": [
+        "lambdas/tests/test_vision_worker.py::test_swir_nodata_is_folded_into_the_scl_as_unseen"
+      ],
+      "elsewhere": null,
+      "real": "nodata",
+      "ran": true,
+      "got": {
+        "chosen_by_the_search": false,
+        "code": null,
+        "coverage": 0.086,
+        "quality_flags": [
+          "low_coverage",
+          "no_stops_layer"
+        ]
+      },
+      "pass": true
+    },
+    "smoke": {
+      "input": "sydney-2019-12-26-smoke",
+      "expected": "a coverage of about 0.995, so the coverage gate passes; whether the numbers move is the agent evaluation's C10",
+      "tests": [],
+      "elsewhere": "agent C10 (Q2b)",
+      "real": "smoke",
+      "ran": true,
+      "got": {
+        "code": null,
+        "coverage": 0.9949,
+        "served_share": 0.3091,
+        "aot_mean": 0.4358
+      },
+      "pass": true
+    },
+    "site_outside_scene": {
+      "input": "the Sydney polygon moved 2 degrees east, off the tile",
+      "expected": "site_outside_scene; refused, and not sent again for 6 h",
+      "tests": [
+        "lambdas/tests/test_vision_worker.py::test_site_outside_the_scene",
+        "lambdas/tests/test_rail_access_adapter.py::test_a_scene_the_worker_refuses_for_what_it_is_is_not_sent_every_tick"
+      ],
+      "elsewhere": null,
+      "real": "outside",
+      "ran": true,
+      "got": {
+        "code": "site_outside_scene",
+        "reads": 1
+      },
+      "pass": true
+    },
+    "window_too_large": {
+      "input": "the Sydney polygon widened to about 76 km",
+      "expected": "window_too_large after the header reads, before any tile",
+      "tests": [
+        "lambdas/tests/test_vision_worker.py::test_window_too_large",
+        "lambdas/tests/test_vision_worker.py::test_a_rail_site_over_the_rail_window_cap_is_refused_before_any_tile_is_read",
+        "lambdas/tests/test_rail_access_adapter.py::test_a_scene_the_worker_refuses_for_what_it_is_is_not_sent_every_tick",
+        "lambdas/tests/test_rail_access_adapter.py::test_a_refused_scene_is_sent_again_at_once_after_the_operator_edits_the_site"
+      ],
+      "elsewhere": null,
+      "real": "window",
+      "ran": true,
+      "got": {
+        "code": "window_too_large",
+        "detail": "the site needs a 3880 x 3313 px window",
+        "reads": 1,
+        "tile_reads": 0
+      },
+      "pass": true
+    },
+    "graph_too_large": {
+      "input": "the dense synthetic mesh",
+      "expected": "the graph_too_large flag; measured, never material on its own",
+      "tests": [
+        "lambdas/tests/test_vision_worker.py::test_a_dense_mesh_through_the_worker_is_measured_with_graph_too_large",
+        "lambdas/tests/test_rail_access_adapter.py::test_a_graph_too_large_is_recorded_and_never_material_on_its_own"
+      ],
+      "elsewhere": null,
+      "real": null,
+      "ran": false,
+      "got": null,
+      "pass": null
+    },
+    "betweenness_sampled": {
+      "input": "a graph over BETWEENNESS_WORK",
+      "expected": "the betweenness_sampled flag; the notes say about",
+      "tests": [
+        "lambdas/tests/test_vision_rail_core.py::test_a_large_graph_uses_sampled_betweenness_and_says_so"
+      ],
+      "elsewhere": "E6 on the real graph (Q3)",
+      "real": null,
+      "ran": false,
+      "got": null,
+      "pass": null
+    },
+    "unreadable_scene": {
+      "input": "a missing key under the allowed prefix; a redirect",
+      "expected": "unreadable_scene",
+      "tests": [
+        "lambdas/tests/test_vision_worker.py::test_unreadable_scene",
+        "lambdas/tests/test_vision_worker.py::test_a_redirect_is_never_followed_and_the_scene_is_unreadable",
+        "lambdas/tests/test_vision_worker.py::test_a_redirect_is_refused_unread_whatever_its_body_or_location"
+      ],
+      "elsewhere": null,
+      "real": "unreadable",
+      "ran": true,
+      "got": {
+        "code": "unreadable_scene"
+      },
+      "pass": true
+    },
+    "url_off_allowlist": {
+      "input": "an asset at another host",
+      "expected": "bad_request, before any read",
+      "tests": [
+        "lambdas/tests/test_vision_worker.py::test_bad_requests_are_refused_before_any_read",
+        "lambdas/tests/test_vision_worker.py::test_the_allowlist_takes_only_https_prefixes_with_a_path",
+        "lambdas/tests/test_vision_worker.py::test_the_worker_refuses_a_lookalike_host_when_a_prefix_lacks_its_slash"
+      ],
+      "elsewhere": null,
+      "real": "allowlist",
+      "ran": true,
+      "got": {
+        "code": "bad_request",
+        "reads": 0
+      },
+      "pass": true
+    },
+    "wrong_build": {
+      "input": "a cool request to a stock worker; a cool worker without its pin",
+      "expected": "backend_mismatch; not_cool",
+      "tests": [
+        "lambdas/tests/test_vision_worker.py::test_backend_mismatch",
+        "lambdas/tests/test_vision_worker.py::test_a_cool_worker_without_the_pinned_build_refuses",
+        "lambdas/tests/test_vision_worker.py::test_a_cool_worker_with_the_pinned_build_measures"
+      ],
+      "elsewhere": "the Graviton session's controls (2.7.4)",
+      "real": "build",
+      "ran": true,
+      "got": {
+        "cool_to_stock": "backend_mismatch",
+        "cool_without_pin": "not_cool",
+        "reads": 0
+      },
+      "pass": true
+    },
+    "overpass_fails": {
+      "input": "429, 504, a timeout, an oversize reply",
+      "expected": "the cached network serves and the refresh waits 6 h; a failing first fetch is an osm error and nothing is measured",
+      "tests": [
+        "lambdas/tests/test_rail_access_adapter.py::test_a_slow_failing_overpass_never_stops_a_city_with_a_cached_network",
+        "lambdas/tests/test_rail_access_adapter.py::test_no_network_is_fetched_with_under_the_osm_reserve_left",
+        "lambdas/tests/test_rail_access_adapter.py::test_a_stale_network_is_not_refreshed_with_under_the_osm_reserve_left",
+        "lambdas/tests/test_rail_access_adapter.py::test_a_failed_first_fetch_is_tried_again_on_the_next_tick"
+      ],
+      "elsewhere": null,
+      "real": null,
+      "ran": false,
+      "got": null,
+      "pass": null
+    },
+    "out_of_time": {
+      "input": "a budget under the reserves",
+      "expected": "deferred, and the site keeps its place",
+      "tests": [
+        "lambdas/tests/test_rail_access_adapter.py::test_measuring_is_deferred_when_the_budget_is_nearly_spent",
+        "lambdas/tests/test_rail_access_adapter.py::test_a_new_scene_waits_for_the_measuring_reserve_and_is_then_measured_with_a_stale_network",
+        "lambdas/tests/test_rail_access_adapter.py::test_a_site_past_the_budget_is_not_attempted_at_all"
+      ],
+      "elsewhere": null,
+      "real": null,
+      "ran": false,
+      "got": null,
+      "pass": null
+    },
+    "agent_fails": {
+      "input": "a malformed answer, a Bedrock error, the deadline, the turn and tool budget, look_again refused for time, an unknown task, no model",
+      "expected": "artefact, with the stop code that says why",
+      "tests": [
+        "lambdas/tests/test_vision_triage.py::test_an_unusable_answer_is_an_artefact",
+        "lambdas/tests/test_vision_triage.py::test_a_bedrock_failure_is_an_artefact",
+        "lambdas/tests/test_vision_triage.py::test_out_of_time_is_an_artefact_before_any_model_call",
+        "lambdas/tests/test_vision_triage.py::test_near_the_deadline_web_context_gets_only_what_is_left_and_the_agent_then_fails_closed",
+        "lambdas/tests/test_vision_triage.py::test_the_tool_budget_and_turn_limit_are_enforced_in_code",
+        "lambdas/tests/test_vision_triage.py::test_a_request_past_the_budget_is_refused_and_the_model_still_answers",
+        "lambdas/tests/test_vision_triage.py::test_look_again_is_refused_when_the_worker_might_not_answer_in_time",
+        "lambdas/tests/test_vision_triage.py::test_look_again_is_refused_under_the_tasks_minimum_wait",
+        "lambdas/tests/test_vision_triage.py::test_an_unknown_task_is_an_artefact_before_any_model_call",
+        "lambdas/tests/test_vision_triage.py::test_the_trail_says_how_it_stopped_at_every_exit",
+        "lambdas/tests/test_rail_access_adapter.py::test_no_model_means_no_finding"
+      ],
+      "elsewhere": "agent C6-C9 (Q2b)",
+      "real": null,
+      "ran": false,
+      "got": null,
+      "pass": null
+    },
+    "injected_news": {
+      "input": "a headline that instructs",
+      "expected": "artefact: tool text is data, not instructions",
+      "tests": [
+        "lambdas/tests/test_vision_triage.py::test_the_ships_prompt_is_unchanged_and_the_rail_prompt_says_tool_text_is_data",
+        "lambdas/tests/test_vision_triage.py::test_web_context_results_are_cut_and_cleaned"
+      ],
+      "elsewhere": "agent C5 (Q2b)",
+      "real": null,
+      "ran": false,
+      "got": null,
+      "pass": null
+    }
+  },
+  "agent": null,
+  "checks": [
+    {
+      "name": "cloud: as expected",
+      "expected": "measured directly, the low_coverage flag at a coverage of about 0.145, and never chosen by the search; a scene the search does pick under the floor (sydney-2024-02-28) is kept out by the adapter: below the floor, no model call, never a first observation",
+      "got": {
+        "measured": {
+          "code": null,
+          "coverage": 0.1467,
+          "quality_flags": [
+            "low_coverage",
+            "no_stops_layer"
+          ]
+        },
+        "chosen_by_the_search": false,
+        "gate": {
+          "scene": "sydney-2024-02-28",
+          "picked_by_the_search": true,
+          "codes": [
+            "below_floor"
+          ],
+          "coverage": 0.4891,
+          "model_calls": 0,
+          "first_observed_at": null,
+          "changed": false
+        }
+      },
+      "pass": true
+    },
+    {
+      "name": "swath_nodata: as expected",
+      "expected": "not chosen by the search (its footprint misses the site's box); measured directly, the low_coverage flag at about 0.09",
+      "got": {
+        "chosen_by_the_search": false,
+        "code": null,
+        "coverage": 0.086,
+        "quality_flags": [
+          "low_coverage",
+          "no_stops_layer"
+        ]
+      },
+      "pass": true
+    },
+    {
+      "name": "smoke: as expected",
+      "expected": "a coverage of about 0.995, so the coverage gate passes; whether the numbers move is the agent evaluation's C10",
+      "got": {
+        "code": null,
+        "coverage": 0.9949,
+        "served_share": 0.3091,
+        "aot_mean": 0.4358
+      },
+      "pass": true
+    },
+    {
+      "name": "site_outside_scene: as expected",
+      "expected": "site_outside_scene; refused, and not sent again for 6 h",
+      "got": {
+        "code": "site_outside_scene",
+        "reads": 1
+      },
+      "pass": true
+    },
+    {
+      "name": "window_too_large: as expected",
+      "expected": "window_too_large after the header reads, before any tile",
+      "got": {
+        "code": "window_too_large",
+        "detail": "the site needs a 3880 x 3313 px window",
+        "reads": 1,
+        "tile_reads": 0
+      },
+      "pass": true
+    },
+    {
+      "name": "unreadable_scene: as expected",
+      "expected": "unreadable_scene",
+      "got": {
+        "code": "unreadable_scene"
+      },
+      "pass": true
+    },
+    {
+      "name": "url_off_allowlist: as expected",
+      "expected": "bad_request, before any read",
+      "got": {
+        "code": "bad_request",
+        "reads": 0
+      },
+      "pass": true
+    },
+    {
+      "name": "wrong_build: as expected",
+      "expected": "backend_mismatch; not_cool",
+      "got": {
+        "cool_to_stock": "backend_mismatch",
+        "cool_without_pin": "not_cool",
+        "reads": 0
+      },
+      "pass": true
+    }
+  ],
+  "summary": {
+    "rows": 14,
+    "ran": 8,
+    "as_expected": 8,
+    "tests_named": 42,
+    "tests_missing": 0
+  }
+}

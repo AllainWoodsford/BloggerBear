@@ -1,0 +1,3897 @@
+{
+  "schema": "bloggerbear.vision-eval/1",
+  "run_id": "2026-10-20-eval-counterfactual-amd64-opencv-bedrock",
+  "kind": "eval-counterfactual",
+  "mode": "counterfactual",
+  "backend": "opencv",
+  "started_at": "2026-10-20T14:18:46Z",
+  "finished_at": "2026-10-20T14:35:21Z",
+  "code": {
+    "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+    "dirty": true
+  },
+  "environment": {
+    "cpu": "AMD64",
+    "machine": "AMD64",
+    "python": "3.13.3",
+    "opencv": {
+      "opencv_version": "5.0.0",
+      "build_sha256": "ce2f2890911cf9cf8d7c54cfbc8ccd4fb073cc2b53be1f4c7cbae8e5fd294e1c",
+      "arch": "AMD64",
+      "kleidicv": false,
+      "cpu_baseline": "SSE SSE2 SSE3",
+      "cpu_dispatch": "SSE4_1 SSE4_2 AVX FP16 AVX2 AVX512_SKX",
+      "cpu": "AMD64",
+      "cpu_count": 12,
+      "cv2_path": "~/AppData/Local/Temp/claude/D--BloggerBear-BloggerBear/1a8cc82d-8a00-4065-af57-068e79244287/scratchpad/vision/cv2/__init__.py"
+    },
+    "cpu_count": 12,
+    "affinity": null,
+    "threads": 12,
+    "numpy": "2.4.4",
+    "networkx": "3.4.2",
+    "where": "windows",
+    "host": null,
+    "cool": null,
+    "libraries": null
+  },
+  "worker": {
+    "kind": "deployed",
+    "region": "us-west-2",
+    "code_sha256": "TB+SfKGu7Q5dOQ3I2he4qs4PCNYA1km6OXmswNiILYI="
+  },
+  "inputs": {
+    "manifest_sha256": "bf5d8bec12334a201160e5f380e41a67fed6f2ef64cb4f3892629398f4bb6bfa",
+    "cache": true,
+    "scenes": [
+      {
+        "name": "sydney-2024-06-27",
+        "scene_id": "S2A_56HLH_20240627_0_L2A",
+        "etag_by_asset": {
+          "red": "0ad20c01f901f02f457600d0df2f78e3-18",
+          "nir": "b0df2684fe73df9fd3d17f8f5c5a767a-15",
+          "swir16": "6e7c027528b7834ac503c0659722d9ef-4",
+          "scl": "7d5537a43bf477b8f65c2b1969a4491f"
+        }
+      },
+      {
+        "name": "sydney-2024-08-21b",
+        "scene_id": "S2B_56HLH_20240821_1_L2A",
+        "etag_by_asset": {
+          "red": "3bf11b3bb423746edf5de5c244959533-18",
+          "nir": "fa402a35086cede0f963d3bcd815580a-19",
+          "swir16": "d3f191912359449c026b2172ff890487-5",
+          "scl": "c992f966fea1bd6155aadf77193ae855"
+        }
+      },
+      {
+        "name": "sydney-2024-08-26",
+        "scene_id": "S2A_56HLH_20240826_0_L2A",
+        "etag_by_asset": {
+          "red": "869d2f7d1e646fd069142dd51d1d1ec4-18",
+          "nir": "d641bc64ec21fc2d1434071beeb5b63f-18",
+          "swir16": "c18829ea963633eda50d881d5989754d-5",
+          "scl": "1104e55f9c91a600b0596227acd4901d"
+        }
+      },
+      {
+        "name": "sydney-2024-08-31",
+        "scene_id": "S2B_56HLH_20240831_0_L2A",
+        "etag_by_asset": {
+          "red": "30711dfc024265cff34d0f9995215481-19",
+          "nir": "e270558ef1c1666231f5f9f0ad0bf4e8-20",
+          "swir16": "fc700e786544e23e87080b7d6b77d4d3-5",
+          "scl": "5b5942b856553fac50165a259b73d403"
+        }
+      },
+      {
+        "name": "sydney-2024-05-28",
+        "scene_id": "S2A_56HLH_20240528_0_L2A",
+        "etag_by_asset": {
+          "red": "d9657e681d724038850969db1c964b31-18",
+          "nir": "9e4d020dd10cca97e1c8ca16911d718a-18",
+          "swir16": "ca1a7fef0428f190c330c7e334f26dc2-4",
+          "scl": "0f0619fb2de9389544b23163254a1a65"
+        }
+      },
+      {
+        "name": "sydney-2024-07-17",
+        "scene_id": "S2A_56HLH_20240717_0_L2A",
+        "etag_by_asset": {
+          "red": "f352d23363dc5dfad786089d875338c4-20",
+          "nir": "3d9f4f7773006ee92d185fcc64396bb8-21",
+          "swir16": "722584566e4e50110d312f714464ecfb-5",
+          "scl": "1b59dbfc5860c850b3c2cffc201cf238"
+        }
+      },
+      {
+        "name": "sydney-2024-08-11",
+        "scene_id": "S2B_56HLH_20240811_0_L2A",
+        "etag_by_asset": {
+          "red": "ac0b7471808a651326bae7c87c9de4e9-19",
+          "nir": "f73ed448cef7861072422df5f449b2fc-18",
+          "swir16": "41c8088637cbce44048cbced3de5cb24-5",
+          "scl": "872270e5473a2460cbe29d292acb430a"
+        }
+      },
+      {
+        "name": "sydney-2019-11-01",
+        "scene_id": "S2A_56HLH_20191101_0_L2A",
+        "etag_by_asset": {
+          "red": "9808a5de80f66bb0ee6868982258097e-23",
+          "nir": "9cdb7b0f36344b35e6645b351c2b2847-24",
+          "swir16": "fd76ace577096e9fb49a855b96a60f3a-6",
+          "scl": "cffc56b5de30c2ed8abfe5768a0bdaa7"
+        }
+      },
+      {
+        "name": "sydney-2019-11-06",
+        "scene_id": "S2B_56HLH_20191106_0_L2A",
+        "etag_by_asset": {
+          "red": "ae53f9708296c05ee640d8f6392b4c44-23",
+          "nir": "48b9b537d875b762ea53741f0e5bf395-23",
+          "swir16": "bdcced0916a85d0094a404b2b7139552-6",
+          "scl": "bf50b0f1bad50131f9fbd0b53e7a750b"
+        }
+      },
+      {
+        "name": "sydney-2019-12-21",
+        "scene_id": "S2A_56HLH_20191221_0_L2A",
+        "etag_by_asset": {
+          "red": "25bff800e07b4885e3f8f0271621e4bd-21",
+          "nir": "51e456f8891c6d41001b85f7270ef632-22",
+          "swir16": "f80f5f21fdd853478358039607b3b139-6",
+          "scl": "8235713a1753f2531f30c69018c6480f"
+        }
+      },
+      {
+        "name": "sydney-2019-12-26-smoke",
+        "scene_id": "S2B_56HLH_20191226_0_L2A",
+        "etag_by_asset": {
+          "red": "523d17956d0826c1cb528c5bf9bc69be-24",
+          "nir": "6c9d1e0f9361426fb34fa080055632af-24",
+          "swir16": "20be6796d530733ad9337eb6c1249893-6",
+          "scl": "6927ad1bd70fbddcb6533a71094e7ae1"
+        }
+      }
+    ],
+    "networks": [
+      {
+        "file": "scripts/vision_benchmark_networks/sydney.json",
+        "sha256": "bfc3c7f868f52f755eb3c1a8836729bf4dcc5ee079cf466cf51968921fd77eb4"
+      }
+    ],
+    "cache_index_sha256": "9ae1f58be6bf816f641cf509e4c888cc2d2cf88f7b9f02b27c0e684e8d715b56"
+  },
+  "params": {
+    "cases": [
+      "C1",
+      "C4",
+      "C10"
+    ],
+    "repeats": 5,
+    "arms": [
+      "a",
+      "b"
+    ],
+    "gate_coverages": {
+      "above": 0.62,
+      "below": 0.58
+    },
+    "synthetic": false,
+    "frozen_clock": false,
+    "script": null
+  },
+  "results": {
+    "cases": {
+      "C1": {
+        "case": "C1",
+        "gate": "reported",
+        "included": true,
+        "agent": {
+          "gate": "reported",
+          "included": true,
+          "baseline": {
+            "served_share": 0.3895,
+            "desert_km2": 46.9896,
+            "station_count": 225
+          },
+          "moved": [
+            "station_count"
+          ],
+          "arms": {
+            "measured": [
+              {
+                "case": "C1",
+                "repeat": 0,
+                "kind": "task",
+                "expected": "real",
+                "expected_stop": null,
+                "driven_by": "network",
+                "code": "reported",
+                "agent_called": true,
+                "finding": true,
+                "verdict": "real",
+                "stop": "answered",
+                "reason": "Web context confirms a new five-station rail line opened this week; station count increased by exactly 5 (225\u2192230), matching the reported opening.",
+                "tools": [
+                  "previous_scene",
+                  "web_context",
+                  "site_history"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 7,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20240826_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 1,
+                      "dated": 1
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 6523,
+                "deadline_left_s": 59.18,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10134,
+                "output_tokens": 228,
+                "cost_usd": 0.011274,
+                "cost_aud": 0.016911,
+                "measured": {
+                  "served_share": 0.3877,
+                  "desert_km2": 49.8808,
+                  "built_up_km2": 81.4688,
+                  "station_count": 230,
+                  "snapped_station_count": 229,
+                  "node_count": 453,
+                  "edge_count": 495,
+                  "components": 5,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                    ]
+                  ],
+                  "suggestions": [
+                    "orbital_link:s:n1886255320>s:w677568479",
+                    "orbital_link:s:n2130285345>s:w677568479",
+                    "orbital_link:s:w677568477>s:w677568479"
+                  ],
+                  "coverage": 0.9998
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C1",
+                "repeat": 1,
+                "kind": "task",
+                "expected": "real",
+                "expected_stop": null,
+                "driven_by": "network",
+                "code": "reported",
+                "agent_called": true,
+                "finding": true,
+                "verdict": "real",
+                "stop": "answered",
+                "reason": "A five-station rail line opened on 28 August 2024, matching the +5 station count increase measured in the scene captured on 31 August. The news report confirms the new line serves previously unserved suburbs, consistent with the observed network expansion.",
+                "tools": [
+                  "web_context",
+                  "previous_scene",
+                  "site_history"
+                ],
+                "steps": [
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 1,
+                      "dated": 1
+                    }
+                  },
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20240826_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 5460,
+                "deadline_left_s": 61.553,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10133,
+                "output_tokens": 177,
+                "cost_usd": 0.011018,
+                "cost_aud": 0.016527,
+                "measured": {
+                  "served_share": 0.3877,
+                  "desert_km2": 49.8808,
+                  "built_up_km2": 81.4688,
+                  "station_count": 230,
+                  "snapped_station_count": 229,
+                  "node_count": 453,
+                  "edge_count": 495,
+                  "components": 5,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                    ]
+                  ],
+                  "suggestions": [
+                    "orbital_link:s:n1886255320>s:w677568479",
+                    "orbital_link:s:n2130285345>s:w677568479",
+                    "orbital_link:s:w677568477>s:w677568479"
+                  ],
+                  "coverage": 0.9998
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C1",
+                "repeat": 2,
+                "kind": "task",
+                "expected": "real",
+                "expected_stop": null,
+                "driven_by": "network",
+                "code": "reported",
+                "agent_called": true,
+                "finding": true,
+                "verdict": "real",
+                "stop": "answered",
+                "reason": "A new five-station rail line opened on 2024-08-28, confirmed by news reports, and the OSM network was updated before this scene was processed on 2024-08-31. The +5 station count directly reflects this infrastructure opening.",
+                "tools": [
+                  "site_history",
+                  "web_context",
+                  "previous_scene"
+                ],
+                "steps": [
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 1,
+                      "dated": 1
+                    }
+                  },
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20240826_0_L2A",
+                      "figure": true
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 9025,
+                "deadline_left_s": 58.423,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10162,
+                "output_tokens": 496,
+                "cost_usd": 0.012642,
+                "cost_aud": 0.018963,
+                "measured": {
+                  "served_share": 0.3877,
+                  "desert_km2": 49.8808,
+                  "built_up_km2": 81.4688,
+                  "station_count": 230,
+                  "snapped_station_count": 229,
+                  "node_count": 453,
+                  "edge_count": 495,
+                  "components": 5,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                    ]
+                  ],
+                  "suggestions": [
+                    "orbital_link:s:n1886255320>s:w677568479",
+                    "orbital_link:s:n2130285345>s:w677568479",
+                    "orbital_link:s:w677568477>s:w677568479"
+                  ],
+                  "coverage": 0.9998
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C1",
+                "repeat": 3,
+                "kind": "task",
+                "expected": "real",
+                "expected_stop": null,
+                "driven_by": "network",
+                "code": "reported",
+                "agent_called": true,
+                "finding": true,
+                "verdict": "real",
+                "stop": "answered",
+                "reason": "A new five-station rail line opened in Sydney between 26 and 31 August 2024, matching the measured increase of 5 stations. Web context confirms the opening occurred within the measurement period, and all prior baseline scenes consistently showed 225 stations before this event.",
+                "tools": [
+                  "previous_scene",
+                  "web_context",
+                  "site_history"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20240826_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 1,
+                      "dated": 1
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 12194,
+                "deadline_left_s": 55.088,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10147,
+                "output_tokens": 194,
+                "cost_usd": 0.011117,
+                "cost_aud": 0.016675,
+                "measured": {
+                  "served_share": 0.3877,
+                  "desert_km2": 49.8808,
+                  "built_up_km2": 81.4688,
+                  "station_count": 230,
+                  "snapped_station_count": 229,
+                  "node_count": 453,
+                  "edge_count": 495,
+                  "components": 5,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                    ]
+                  ],
+                  "suggestions": [
+                    "orbital_link:s:n1886255320>s:w677568479",
+                    "orbital_link:s:n2130285345>s:w677568479",
+                    "orbital_link:s:w677568477>s:w677568479"
+                  ],
+                  "coverage": 0.9998
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C1",
+                "repeat": 4,
+                "kind": "task",
+                "expected": "real",
+                "expected_stop": null,
+                "driven_by": "network",
+                "code": "reported",
+                "agent_called": true,
+                "finding": true,
+                "verdict": "real",
+                "stop": "answered",
+                "reason": "A new five-station rail line opened on August 28, 2024, three days before this scene was captured, accounting for the +5 station count increase and the expansion of desert area entering the network.",
+                "tools": [
+                  "previous_scene",
+                  "site_history",
+                  "web_context"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20240826_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 1,
+                      "dated": 1
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 6882,
+                "deadline_left_s": 60.554,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10131,
+                "output_tokens": 313,
+                "cost_usd": 0.011696,
+                "cost_aud": 0.017544,
+                "measured": {
+                  "served_share": 0.3877,
+                  "desert_km2": 49.8808,
+                  "built_up_km2": 81.4688,
+                  "station_count": 230,
+                  "snapped_station_count": 229,
+                  "node_count": 453,
+                  "edge_count": 495,
+                  "components": 5,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                    ]
+                  ],
+                  "suggestions": [
+                    "orbital_link:s:n1886255320>s:w677568479",
+                    "orbital_link:s:n2130285345>s:w677568479",
+                    "orbital_link:s:w677568477>s:w677568479"
+                  ],
+                  "coverage": 0.9998
+                },
+                "measured_ok": true,
+                "error": null
+              }
+            ],
+            "baseline": [
+              {
+                "case": "C1",
+                "repeat": 0,
+                "kind": "task",
+                "expected": "real",
+                "expected_stop": null,
+                "driven_by": "network",
+                "code": "reported",
+                "agent_called": true,
+                "finding": true,
+                "verdict": "real",
+                "stop": "answered",
+                "reason": "Station count increased by exactly 5, matching a confirmed opening of a five-station rail line that opened on 2024-08-28, three days before this scene capture.",
+                "tools": [
+                  "site_history",
+                  "web_context",
+                  "previous_scene"
+                ],
+                "steps": [
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 1,
+                      "dated": 1
+                    }
+                  },
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20240826_0_L2A",
+                      "figure": true
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 8487,
+                "deadline_left_s": 55.259,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10132,
+                "output_tokens": 382,
+                "cost_usd": 0.012042,
+                "cost_aud": 0.018063,
+                "measured": {
+                  "served_share": 0.3877,
+                  "desert_km2": 49.8808,
+                  "built_up_km2": 81.4688,
+                  "station_count": 230,
+                  "snapped_station_count": 229,
+                  "node_count": 453,
+                  "edge_count": 495,
+                  "components": 5,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                    ]
+                  ],
+                  "suggestions": [
+                    "orbital_link:s:n1886255320>s:w677568479",
+                    "orbital_link:s:n2130285345>s:w677568479",
+                    "orbital_link:s:w677568477>s:w677568479"
+                  ],
+                  "coverage": 0.9998
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C1",
+                "repeat": 1,
+                "kind": "task",
+                "expected": "real",
+                "expected_stop": null,
+                "driven_by": "network",
+                "code": "reported",
+                "agent_called": true,
+                "finding": true,
+                "verdict": "real",
+                "stop": "answered",
+                "reason": "A new five-station line opened to passengers on 28 August 2024, matching the exact +5 station count change measured in the 31 August scene.",
+                "tools": [
+                  "site_history",
+                  "web_context",
+                  "previous_scene"
+                ],
+                "steps": [
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 1,
+                      "dated": 1
+                    }
+                  },
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20240826_0_L2A",
+                      "figure": true
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 6425,
+                "deadline_left_s": 60.953,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10137,
+                "output_tokens": 235,
+                "cost_usd": 0.011312,
+                "cost_aud": 0.016968,
+                "measured": {
+                  "served_share": 0.3877,
+                  "desert_km2": 49.8808,
+                  "built_up_km2": 81.4688,
+                  "station_count": 230,
+                  "snapped_station_count": 229,
+                  "node_count": 453,
+                  "edge_count": 495,
+                  "components": 5,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                    ]
+                  ],
+                  "suggestions": [
+                    "orbital_link:s:n1886255320>s:w677568479",
+                    "orbital_link:s:n2130285345>s:w677568479",
+                    "orbital_link:s:w677568477>s:w677568479"
+                  ],
+                  "coverage": 0.9998
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C1",
+                "repeat": 2,
+                "kind": "task",
+                "expected": "real",
+                "expected_stop": null,
+                "driven_by": "network",
+                "code": "reported",
+                "agent_called": true,
+                "finding": true,
+                "verdict": "real",
+                "stop": "answered",
+                "reason": "Web context confirms a five-station rail line opened in Sydney during the interval between scenes, matching the +5 station count change exactly. The network expansion is real.",
+                "tools": [
+                  "previous_scene",
+                  "web_context",
+                  "site_history"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20240826_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 1,
+                      "dated": 1
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 7424,
+                "deadline_left_s": 60.08,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10127,
+                "output_tokens": 377,
+                "cost_usd": 0.012012,
+                "cost_aud": 0.018018,
+                "measured": {
+                  "served_share": 0.3877,
+                  "desert_km2": 49.8808,
+                  "built_up_km2": 81.4688,
+                  "station_count": 230,
+                  "snapped_station_count": 229,
+                  "node_count": 453,
+                  "edge_count": 495,
+                  "components": 5,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                    ]
+                  ],
+                  "suggestions": [
+                    "orbital_link:s:n1886255320>s:w677568479",
+                    "orbital_link:s:n2130285345>s:w677568479",
+                    "orbital_link:s:w677568477>s:w677568479"
+                  ],
+                  "coverage": 0.9998
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C1",
+                "repeat": 3,
+                "kind": "task",
+                "expected": "real",
+                "expected_stop": null,
+                "driven_by": "network",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "bedrock_error",
+                "reason": "triage unavailable (ServiceUnavailableException)",
+                "tools": [
+                  "previous_scene",
+                  "site_history",
+                  "web_context"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20240826_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 1,
+                      "dated": 1
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 24712,
+                "deadline_left_s": 42.678,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 1,
+                "input_tokens": 3864,
+                "output_tokens": 97,
+                "cost_usd": 0.004349,
+                "cost_aud": 0.006523,
+                "measured": {
+                  "served_share": 0.3877,
+                  "desert_km2": 49.8808,
+                  "built_up_km2": 81.4688,
+                  "station_count": 230,
+                  "snapped_station_count": 229,
+                  "node_count": 453,
+                  "edge_count": 495,
+                  "components": 5,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                    ]
+                  ],
+                  "suggestions": [
+                    "orbital_link:s:n1886255320>s:w677568479",
+                    "orbital_link:s:n2130285345>s:w677568479",
+                    "orbital_link:s:w677568477>s:w677568479"
+                  ],
+                  "coverage": 0.9998
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C1",
+                "repeat": 4,
+                "kind": "task",
+                "expected": "real",
+                "expected_stop": null,
+                "driven_by": "network",
+                "code": "reported",
+                "agent_called": true,
+                "finding": true,
+                "verdict": "real",
+                "stop": "answered",
+                "reason": "A new five-station rail line opened on 2024-08-28, confirmed by recent news; the +5 station count change measured on 2024-08-31 reflects this infrastructure addition.",
+                "tools": [
+                  "site_history",
+                  "web_context"
+                ],
+                "steps": [
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 1,
+                      "dated": 1
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 8379,
+                "deadline_left_s": 59.338,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 8327,
+                "output_tokens": 243,
+                "cost_usd": 0.009542,
+                "cost_aud": 0.014313,
+                "measured": {
+                  "served_share": 0.3877,
+                  "desert_km2": 49.8808,
+                  "built_up_km2": 81.4688,
+                  "station_count": 230,
+                  "snapped_station_count": 229,
+                  "node_count": 453,
+                  "edge_count": 495,
+                  "components": 5,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                    ]
+                  ],
+                  "suggestions": [
+                    "orbital_link:s:n1886255320>s:w677568479",
+                    "orbital_link:s:n2130285345>s:w677568479",
+                    "orbital_link:s:w677568477>s:w677568479"
+                  ],
+                  "coverage": 0.9998
+                },
+                "measured_ok": true,
+                "error": null
+              }
+            ]
+          },
+          "score": {
+            "repeats": {
+              "measured": 5,
+              "baseline": 5
+            },
+            "called_look_again": {
+              "measured": 0,
+              "baseline": 0
+            },
+            "labels": {
+              "measured": {
+                "real": 5
+              },
+              "baseline": {
+                "real": 4,
+                "failed_closed": 1
+              }
+            },
+            "pairs": 0,
+            "flips": 0,
+            "flip_rate": null
+          }
+        },
+        "gate_level": {
+          "above": {
+            "target": 0.62,
+            "coverage": 0.62,
+            "clouded": {
+              "target": 0.62,
+              "coverage_before": 0.9998,
+              "coverage_after": 0.62,
+              "pixels_clouded": 3957537
+            },
+            "measured": true,
+            "error": null,
+            "at_target": true,
+            "code": "reported",
+            "agent_called": true,
+            "model_calls": 2,
+            "verdict": "real",
+            "finding": true
+          },
+          "below": {
+            "target": 0.58,
+            "coverage": 0.58,
+            "clouded": {
+              "target": 0.58,
+              "coverage_before": 0.9998,
+              "coverage_after": 0.58,
+              "pixels_clouded": 4374390
+            },
+            "measured": true,
+            "error": null,
+            "at_target": true,
+            "code": "below_floor",
+            "agent_called": false,
+            "model_calls": 0,
+            "verdict": null,
+            "finding": false
+          },
+          "measured": true,
+          "flipped": true,
+          "finding_flipped": true
+        },
+        "error": null,
+        "history": [
+          {
+            "scene": "sydney-2024-06-27",
+            "network": "A",
+            "code": "first_observation"
+          },
+          {
+            "scene": "sydney-2024-08-21b",
+            "network": "A",
+            "code": "reported"
+          },
+          {
+            "scene": "sydney-2024-08-26",
+            "network": "A",
+            "code": "within_range"
+          }
+        ],
+        "networks": {
+          "A": {
+            "sha256": "c0d4ed7b773b1fe02b662a973501b7073069fcffdf3a25bcbd7c51d93ed08aae",
+            "fetched_at": "2026-10-16T23:09:21.194021+00:00",
+            "counts": {
+              "ways": 3483,
+              "stations": 225,
+              "pois": 2150,
+              "points": 24891,
+              "stops": 0
+            },
+            "change": null
+          },
+          "B": {
+            "sha256": "36bac2d7cce0f833cb25b55431147ef84c9b6106097176c2400831c86b2ca918",
+            "fetched_at": "2026-10-17T23:09:21.194021+00:00",
+            "counts": {
+              "ways": 3484,
+              "stations": 230,
+              "pois": 2150,
+              "points": 24896,
+              "stops": 0
+            },
+            "change": {
+              "recipe": "add_line",
+              "added_stations": [
+                "eval-line-1",
+                "eval-line-2",
+                "eval-line-3",
+                "eval-line-4",
+                "eval-line-5"
+              ],
+              "removed_stations": [],
+              "added_ways": [
+                "eval-line-way"
+              ],
+              "removed_ways": [],
+              "anchor": [
+                151.21333,
+                -34.01817
+              ],
+              "construction": "vision_eval_driver.with_new_line"
+            }
+          }
+        }
+      },
+      "C10": {
+        "case": "C10",
+        "gate": "artefact",
+        "included": true,
+        "agent": {
+          "gate": "artefact",
+          "included": true,
+          "baseline": {
+            "served_share": 0.3618,
+            "desert_km2": 86.8924,
+            "station_count": 225
+          },
+          "moved": [
+            "served_share",
+            "desert_km2"
+          ],
+          "arms": {
+            "measured": [
+              {
+                "case": "C10",
+                "repeat": 0,
+                "kind": "task",
+                "expected": "artefact",
+                "expected_stop": null,
+                "driven_by": "imagery",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "answered",
+                "reason": "The previous measurement had 94.2% cloud cover, severely masking built-up areas and inflating desert_km2. The current 14.7% cloud cover reveals the actual built-up pattern, with network unchanged and no infrastructure openings or closures reported.",
+                "tools": [
+                  "site_history",
+                  "web_context",
+                  "previous_scene"
+                ],
+                "steps": [
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 0,
+                      "dated": 0
+                    }
+                  },
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 6,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20191221_0_L2A",
+                      "figure": true
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 10681,
+                "deadline_left_s": 54.332,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10698,
+                "output_tokens": 502,
+                "cost_usd": 0.013208,
+                "cost_aud": 0.019812,
+                "measured": {
+                  "served_share": 0.3091,
+                  "desert_km2": 218.0628,
+                  "built_up_km2": 315.6344,
+                  "station_count": 225,
+                  "snapped_station_count": 224,
+                  "node_count": 448,
+                  "edge_count": 491,
+                  "components": 4,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n1830303527+s:n1886265376+s:n4887412745+s:n1829323375+s:n1692720118+s:w1261363035+s:w1255912088"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n26400030+s:n2689168291+s:n6544860724+s:n1886240917+s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:n26391583+s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6497471265+s:n6553012213+s:w677568469+s:n1886240861+s:n1886240875+s:n1886265349+s:n4329364693+s:n6624452584+s:w1435822999+s:w677568471+s:w677568472+s:w677568473"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n60024038+s:n60024116+s:n60024133"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6620581683+s:n634228099+s:n6620581680+s:n6620581678+s:n6620600087"
+                    ]
+                  ],
+                  "suggestions": [
+                    "feeder_corridor:s:w1435822999>s:w740050932",
+                    "feeder_corridor:s:n20918030>s:w585998416",
+                    "feeder_corridor:s:n1886265349>s:w740050932"
+                  ],
+                  "coverage": 0.9949
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C10",
+                "repeat": 1,
+                "kind": "task",
+                "expected": "artefact",
+                "expected_stop": null,
+                "driven_by": "imagery",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "answered",
+                "reason": "Previous scene had 94.2% cloud cover versus 14.7% in the latest scene; the dramatic shift in built-up area (halved) and desert area is due to improved atmospheric clarity revealing the true landscape, not real infrastructure changes. No recent rail openings or closures are reported.",
+                "tools": [
+                  "previous_scene",
+                  "web_context",
+                  "site_history"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20191221_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 0,
+                      "dated": 0
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 16891,
+                "deadline_left_s": 51.632,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10655,
+                "output_tokens": 568,
+                "cost_usd": 0.013495,
+                "cost_aud": 0.020243,
+                "measured": {
+                  "served_share": 0.3091,
+                  "desert_km2": 218.0628,
+                  "built_up_km2": 315.6344,
+                  "station_count": 225,
+                  "snapped_station_count": 224,
+                  "node_count": 448,
+                  "edge_count": 491,
+                  "components": 4,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n1830303527+s:n1886265376+s:n4887412745+s:n1829323375+s:n1692720118+s:w1261363035+s:w1255912088"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n26400030+s:n2689168291+s:n6544860724+s:n1886240917+s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:n26391583+s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6497471265+s:n6553012213+s:w677568469+s:n1886240861+s:n1886240875+s:n1886265349+s:n4329364693+s:n6624452584+s:w1435822999+s:w677568471+s:w677568472+s:w677568473"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n60024038+s:n60024116+s:n60024133"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6620581683+s:n634228099+s:n6620581680+s:n6620581678+s:n6620600087"
+                    ]
+                  ],
+                  "suggestions": [
+                    "feeder_corridor:s:w1435822999>s:w740050932",
+                    "feeder_corridor:s:n20918030>s:w585998416",
+                    "feeder_corridor:s:n1886265349>s:w740050932"
+                  ],
+                  "coverage": 0.9949
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C10",
+                "repeat": 2,
+                "kind": "task",
+                "expected": "artefact",
+                "expected_stop": null,
+                "driven_by": "imagery",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "answered",
+                "reason": "The Dec 21 baseline scene has 94.2% cloud cover, which inflated built-up detection; Dec 26 shows improvement (14.7% cloud) but remains above November baselines, indicating residual seasonal or atmospheric effects on the spectral built-up index rather than real urban change.",
+                "tools": [
+                  "previous_scene",
+                  "web_context",
+                  "site_history"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20191221_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 0,
+                      "dated": 0
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 15062,
+                "deadline_left_s": 53.068,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 3,
+                "input_tokens": 16855,
+                "output_tokens": 721,
+                "cost_usd": 0.02046,
+                "cost_aud": 0.03069,
+                "measured": {
+                  "served_share": 0.3091,
+                  "desert_km2": 218.0628,
+                  "built_up_km2": 315.6344,
+                  "station_count": 225,
+                  "snapped_station_count": 224,
+                  "node_count": 448,
+                  "edge_count": 491,
+                  "components": 4,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n1830303527+s:n1886265376+s:n4887412745+s:n1829323375+s:n1692720118+s:w1261363035+s:w1255912088"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n26400030+s:n2689168291+s:n6544860724+s:n1886240917+s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:n26391583+s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6497471265+s:n6553012213+s:w677568469+s:n1886240861+s:n1886240875+s:n1886265349+s:n4329364693+s:n6624452584+s:w1435822999+s:w677568471+s:w677568472+s:w677568473"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n60024038+s:n60024116+s:n60024133"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6620581683+s:n634228099+s:n6620581680+s:n6620581678+s:n6620600087"
+                    ]
+                  ],
+                  "suggestions": [
+                    "feeder_corridor:s:w1435822999>s:w740050932",
+                    "feeder_corridor:s:n20918030>s:w585998416",
+                    "feeder_corridor:s:n1886265349>s:w740050932"
+                  ],
+                  "coverage": 0.9949
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C10",
+                "repeat": 3,
+                "kind": "task",
+                "expected": "artefact",
+                "expected_stop": null,
+                "driven_by": "imagery",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "answered",
+                "reason": "The previous scene had 94.2% cloud cover inflating built-up detection through cloud masking; the latest scene's 14.7% cloud cover reveals the true built-up distribution. The apparent change is a cloud artifact clearing, not a real change in the city.",
+                "tools": [
+                  "previous_scene",
+                  "site_history",
+                  "web_context"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20191221_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 0,
+                      "dated": 0
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 9913,
+                "deadline_left_s": 58.526,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10657,
+                "output_tokens": 567,
+                "cost_usd": 0.013492,
+                "cost_aud": 0.020238,
+                "measured": {
+                  "served_share": 0.3091,
+                  "desert_km2": 218.0628,
+                  "built_up_km2": 315.6344,
+                  "station_count": 225,
+                  "snapped_station_count": 224,
+                  "node_count": 448,
+                  "edge_count": 491,
+                  "components": 4,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n1830303527+s:n1886265376+s:n4887412745+s:n1829323375+s:n1692720118+s:w1261363035+s:w1255912088"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n26400030+s:n2689168291+s:n6544860724+s:n1886240917+s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:n26391583+s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6497471265+s:n6553012213+s:w677568469+s:n1886240861+s:n1886240875+s:n1886265349+s:n4329364693+s:n6624452584+s:w1435822999+s:w677568471+s:w677568472+s:w677568473"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n60024038+s:n60024116+s:n60024133"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6620581683+s:n634228099+s:n6620581680+s:n6620581678+s:n6620600087"
+                    ]
+                  ],
+                  "suggestions": [
+                    "feeder_corridor:s:w1435822999>s:w740050932",
+                    "feeder_corridor:s:n20918030>s:w585998416",
+                    "feeder_corridor:s:n1886265349>s:w740050932"
+                  ],
+                  "coverage": 0.9949
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C10",
+                "repeat": 4,
+                "kind": "task",
+                "expected": "artefact",
+                "expected_stop": null,
+                "driven_by": "imagery",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "answered",
+                "reason": "Cloud cover difference (94% vs 15%) between two Sentinel-2 scenes 5 days apart caused atmospheric effects and NDBI miscalibration, not real urban change; no network modifications reported and station count unchanged.",
+                "tools": [
+                  "previous_scene",
+                  "web_context",
+                  "site_history"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20191221_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 0,
+                      "dated": 0
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 14473,
+                "deadline_left_s": 54.028,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10666,
+                "output_tokens": 686,
+                "cost_usd": 0.014096,
+                "cost_aud": 0.021144,
+                "measured": {
+                  "served_share": 0.3091,
+                  "desert_km2": 218.0628,
+                  "built_up_km2": 315.6344,
+                  "station_count": 225,
+                  "snapped_station_count": 224,
+                  "node_count": 448,
+                  "edge_count": 491,
+                  "components": 4,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n1830303527+s:n1886265376+s:n4887412745+s:n1829323375+s:n1692720118+s:w1261363035+s:w1255912088"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n26400030+s:n2689168291+s:n6544860724+s:n1886240917+s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:n26391583+s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6497471265+s:n6553012213+s:w677568469+s:n1886240861+s:n1886240875+s:n1886265349+s:n4329364693+s:n6624452584+s:w1435822999+s:w677568471+s:w677568472+s:w677568473"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n60024038+s:n60024116+s:n60024133"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6620581683+s:n634228099+s:n6620581680+s:n6620581678+s:n6620600087"
+                    ]
+                  ],
+                  "suggestions": [
+                    "feeder_corridor:s:w1435822999>s:w740050932",
+                    "feeder_corridor:s:n20918030>s:w585998416",
+                    "feeder_corridor:s:n1886265349>s:w740050932"
+                  ],
+                  "coverage": 0.9949
+                },
+                "measured_ok": true,
+                "error": null
+              }
+            ],
+            "baseline": [
+              {
+                "case": "C10",
+                "repeat": 0,
+                "kind": "task",
+                "expected": "artefact",
+                "expected_stop": null,
+                "driven_by": "imagery",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "answered",
+                "reason": "The 94.2% cloud cover in the previous scene caused cloud reflectance to be misclassified as built-up area, artificially inflating the built-up and desert measurements. The clearer scene (14.7% cloud cover) shows the true distribution, not a real change in the city or network.",
+                "tools": [
+                  "previous_scene",
+                  "site_history",
+                  "web_context"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20191221_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 0,
+                      "dated": 0
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 13777,
+                "deadline_left_s": 54.866,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10651,
+                "output_tokens": 626,
+                "cost_usd": 0.013781,
+                "cost_aud": 0.020672,
+                "measured": {
+                  "served_share": 0.3091,
+                  "desert_km2": 218.0628,
+                  "built_up_km2": 315.6344,
+                  "station_count": 225,
+                  "snapped_station_count": 224,
+                  "node_count": 448,
+                  "edge_count": 491,
+                  "components": 4,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n1830303527+s:n1886265376+s:n4887412745+s:n1829323375+s:n1692720118+s:w1261363035+s:w1255912088"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n26400030+s:n2689168291+s:n6544860724+s:n1886240917+s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:n26391583+s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6497471265+s:n6553012213+s:w677568469+s:n1886240861+s:n1886240875+s:n1886265349+s:n4329364693+s:n6624452584+s:w1435822999+s:w677568471+s:w677568472+s:w677568473"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n60024038+s:n60024116+s:n60024133"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6620581683+s:n634228099+s:n6620581680+s:n6620581678+s:n6620600087"
+                    ]
+                  ],
+                  "suggestions": [
+                    "feeder_corridor:s:w1435822999>s:w740050932",
+                    "feeder_corridor:s:n20918030>s:w585998416",
+                    "feeder_corridor:s:n1886265349>s:w740050932"
+                  ],
+                  "coverage": 0.9949
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C10",
+                "repeat": 1,
+                "kind": "task",
+                "expected": "artefact",
+                "expected_stop": null,
+                "driven_by": "imagery",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "answered",
+                "reason": "The 21 December scene has 94% cloud cover versus 15% on 26 December; heavy cloud haze in the earlier scene caused false positive built-up detection. The re-measurement with clear skies reveals the true urban extent.",
+                "tools": [
+                  "site_history",
+                  "web_context",
+                  "previous_scene"
+                ],
+                "steps": [
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 0,
+                      "dated": 0
+                    }
+                  },
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20191221_0_L2A",
+                      "figure": true
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 15587,
+                "deadline_left_s": 52.718,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10663,
+                "output_tokens": 498,
+                "cost_usd": 0.013153,
+                "cost_aud": 0.01973,
+                "measured": {
+                  "served_share": 0.3091,
+                  "desert_km2": 218.0628,
+                  "built_up_km2": 315.6344,
+                  "station_count": 225,
+                  "snapped_station_count": 224,
+                  "node_count": 448,
+                  "edge_count": 491,
+                  "components": 4,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n1830303527+s:n1886265376+s:n4887412745+s:n1829323375+s:n1692720118+s:w1261363035+s:w1255912088"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n26400030+s:n2689168291+s:n6544860724+s:n1886240917+s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:n26391583+s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6497471265+s:n6553012213+s:w677568469+s:n1886240861+s:n1886240875+s:n1886265349+s:n4329364693+s:n6624452584+s:w1435822999+s:w677568471+s:w677568472+s:w677568473"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n60024038+s:n60024116+s:n60024133"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6620581683+s:n634228099+s:n6620581680+s:n6620581678+s:n6620600087"
+                    ]
+                  ],
+                  "suggestions": [
+                    "feeder_corridor:s:w1435822999>s:w740050932",
+                    "feeder_corridor:s:n20918030>s:w585998416",
+                    "feeder_corridor:s:n1886265349>s:w740050932"
+                  ],
+                  "coverage": 0.9949
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C10",
+                "repeat": 2,
+                "kind": "task",
+                "expected": "artefact",
+                "expected_stop": null,
+                "driven_by": "imagery",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "answered",
+                "reason": "The 43% desert area decrease and 44% built-up area drop over 5 days, combined with the previous scene's 94% cloud cover versus 15% in the current scene, indicate atmospheric and seasonal vegetation masking rather than real urban change. No network openings or closures are reported.",
+                "tools": [
+                  "previous_scene",
+                  "web_context",
+                  "site_history",
+                  "look_again"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20191221_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 0,
+                      "dated": 0
+                    }
+                  },
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "look_again",
+                    "ok": false,
+                    "ms": 0,
+                    "result": {
+                      "code": "budget"
+                    }
+                  }
+                ],
+                "look_again_failed": true,
+                "elapsed_ms": 15972,
+                "deadline_left_s": 52.38,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 3,
+                "input_tokens": 17283,
+                "output_tokens": 662,
+                "cost_usd": 0.020593,
+                "cost_aud": 0.03089,
+                "measured": {
+                  "served_share": 0.3091,
+                  "desert_km2": 218.0628,
+                  "built_up_km2": 315.6344,
+                  "station_count": 225,
+                  "snapped_station_count": 224,
+                  "node_count": 448,
+                  "edge_count": 491,
+                  "components": 4,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n1830303527+s:n1886265376+s:n4887412745+s:n1829323375+s:n1692720118+s:w1261363035+s:w1255912088"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n26400030+s:n2689168291+s:n6544860724+s:n1886240917+s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:n26391583+s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6497471265+s:n6553012213+s:w677568469+s:n1886240861+s:n1886240875+s:n1886265349+s:n4329364693+s:n6624452584+s:w1435822999+s:w677568471+s:w677568472+s:w677568473"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n60024038+s:n60024116+s:n60024133"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6620581683+s:n634228099+s:n6620581680+s:n6620581678+s:n6620600087"
+                    ]
+                  ],
+                  "suggestions": [
+                    "feeder_corridor:s:w1435822999>s:w740050932",
+                    "feeder_corridor:s:n20918030>s:w585998416",
+                    "feeder_corridor:s:n1886265349>s:w740050932"
+                  ],
+                  "coverage": 0.9949
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C10",
+                "repeat": 3,
+                "kind": "task",
+                "expected": "artefact",
+                "expected_stop": null,
+                "driven_by": "imagery",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "answered",
+                "reason": "Fluctuating desert area measurements reflect seasonal vegetation changes and varying cloud cover (14.7% in latest scene versus 94.2% in prior scene) rather than real infrastructure changes; station count unchanged and no network modifications reported.",
+                "tools": [
+                  "site_history",
+                  "web_context",
+                  "previous_scene"
+                ],
+                "steps": [
+                  {
+                    "tool": "site_history",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "scenes": 4
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 0,
+                      "dated": 0
+                    }
+                  },
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20191221_0_L2A",
+                      "figure": true
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 15542,
+                "deadline_left_s": 52.825,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10659,
+                "output_tokens": 495,
+                "cost_usd": 0.013134,
+                "cost_aud": 0.019701,
+                "measured": {
+                  "served_share": 0.3091,
+                  "desert_km2": 218.0628,
+                  "built_up_km2": 315.6344,
+                  "station_count": 225,
+                  "snapped_station_count": 224,
+                  "node_count": 448,
+                  "edge_count": 491,
+                  "components": 4,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n1830303527+s:n1886265376+s:n4887412745+s:n1829323375+s:n1692720118+s:w1261363035+s:w1255912088"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n26400030+s:n2689168291+s:n6544860724+s:n1886240917+s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:n26391583+s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6497471265+s:n6553012213+s:w677568469+s:n1886240861+s:n1886240875+s:n1886265349+s:n4329364693+s:n6624452584+s:w1435822999+s:w677568471+s:w677568472+s:w677568473"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n60024038+s:n60024116+s:n60024133"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6620581683+s:n634228099+s:n6620581680+s:n6620581678+s:n6620600087"
+                    ]
+                  ],
+                  "suggestions": [
+                    "feeder_corridor:s:w1435822999>s:w740050932",
+                    "feeder_corridor:s:n20918030>s:w585998416",
+                    "feeder_corridor:s:n1886265349>s:w740050932"
+                  ],
+                  "coverage": 0.9949
+                },
+                "measured_ok": true,
+                "error": null
+              },
+              {
+                "case": "C10",
+                "repeat": 4,
+                "kind": "task",
+                "expected": "artefact",
+                "expected_stop": null,
+                "driven_by": "imagery",
+                "code": "artefact",
+                "agent_called": true,
+                "finding": false,
+                "verdict": "artefact",
+                "stop": "answered",
+                "reason": "Previous scene had 94.2% cloud cover vs. 14.7% in latest; cloud and vegetation shadows were misclassified as built-up area, artificially inflating metrics in the heavily obscured scene. The latest clear-sky scene reveals the true built-up distribution.",
+                "tools": [
+                  "previous_scene",
+                  "web_context"
+                ],
+                "steps": [
+                  {
+                    "tool": "previous_scene",
+                    "ok": true,
+                    "ms": 1,
+                    "result": {
+                      "scene_id": "S2A_56HLH_20191221_0_L2A",
+                      "figure": true
+                    }
+                  },
+                  {
+                    "tool": "web_context",
+                    "ok": true,
+                    "ms": 0,
+                    "result": {
+                      "results": 0,
+                      "dated": 0
+                    }
+                  }
+                ],
+                "look_again_failed": false,
+                "elapsed_ms": 10747,
+                "deadline_left_s": 57.842,
+                "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_calls": 2,
+                "input_tokens": 10254,
+                "output_tokens": 660,
+                "cost_usd": 0.013554,
+                "cost_aud": 0.020331,
+                "measured": {
+                  "served_share": 0.3091,
+                  "desert_km2": 218.0628,
+                  "built_up_km2": 315.6344,
+                  "station_count": 225,
+                  "snapped_station_count": 224,
+                  "node_count": 448,
+                  "edge_count": 491,
+                  "components": 4,
+                  "hubs": [
+                    "s:w679354513",
+                    "s:w585998416",
+                    "s:w740050932",
+                    "s:n20163894",
+                    "s:n630744637"
+                  ],
+                  "flags": [
+                    [
+                      "ghost_line",
+                      "s:n1830303527+s:n1886265376+s:n4887412745+s:n1829323375+s:n1692720118+s:w1261363035+s:w1255912088"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n26400030+s:n2689168291+s:n6544860724+s:n1886240917+s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:n26391583+s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6497471265+s:n6553012213+s:w677568469+s:n1886240861+s:n1886240875+s:n1886265349+s:n4329364693+s:n6624452584+s:w1435822999+s:w677568471+s:w677568472+s:w677568473"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n60024038+s:n60024116+s:n60024133"
+                    ],
+                    [
+                      "ghost_line",
+                      "s:n6620581683+s:n634228099+s:n6620581680+s:n6620581678+s:n6620600087"
+                    ]
+                  ],
+                  "suggestions": [
+                    "feeder_corridor:s:w1435822999>s:w740050932",
+                    "feeder_corridor:s:n20918030>s:w585998416",
+                    "feeder_corridor:s:n1886265349>s:w740050932"
+                  ],
+                  "coverage": 0.9949
+                },
+                "measured_ok": true,
+                "error": null
+              }
+            ]
+          },
+          "score": {
+            "repeats": {
+              "measured": 5,
+              "baseline": 5
+            },
+            "called_look_again": {
+              "measured": 0,
+              "baseline": 1
+            },
+            "labels": {
+              "measured": {
+                "artefact": 5
+              },
+              "baseline": {
+                "artefact": 5
+              }
+            },
+            "pairs": 0,
+            "flips": 0,
+            "flip_rate": null
+          }
+        },
+        "gate_level": {
+          "above": {
+            "target": 0.62,
+            "coverage": 0.62,
+            "clouded": {
+              "target": 0.62,
+              "coverage_before": 0.9949,
+              "coverage_after": 0.62,
+              "pixels_clouded": 3907076
+            },
+            "measured": true,
+            "error": null,
+            "at_target": true,
+            "code": "artefact",
+            "agent_called": true,
+            "model_calls": 2,
+            "verdict": "artefact",
+            "finding": false
+          },
+          "below": {
+            "target": 0.58,
+            "coverage": 0.58,
+            "clouded": {
+              "target": 0.58,
+              "coverage_before": 0.9949,
+              "coverage_after": 0.58,
+              "pixels_clouded": 4323929
+            },
+            "measured": true,
+            "error": null,
+            "at_target": true,
+            "code": "below_floor",
+            "agent_called": false,
+            "model_calls": 0,
+            "verdict": null,
+            "finding": false
+          },
+          "measured": true,
+          "flipped": true,
+          "finding_flipped": false
+        },
+        "error": null,
+        "history": [
+          {
+            "scene": "sydney-2019-11-01",
+            "network": "A",
+            "code": "first_observation"
+          },
+          {
+            "scene": "sydney-2019-11-06",
+            "network": "A",
+            "code": "reported"
+          },
+          {
+            "scene": "sydney-2019-12-21",
+            "network": "A",
+            "code": "reported"
+          }
+        ],
+        "networks": {
+          "A": {
+            "sha256": "c0d4ed7b773b1fe02b662a973501b7073069fcffdf3a25bcbd7c51d93ed08aae",
+            "fetched_at": "2026-10-16T23:09:21.194021+00:00",
+            "counts": {
+              "ways": 3483,
+              "stations": 225,
+              "pois": 2150,
+              "points": 24891,
+              "stops": 0
+            },
+            "change": null
+          }
+        }
+      }
+    },
+    "arms": [
+      "a",
+      "b"
+    ],
+    "not_measured": []
+  },
+  "agent": {
+    "mode": "bedrock",
+    "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "region": "ap-southeast-2",
+    "price": "the built-in price table (common/model_pricing.py); AUD at common/costing.USD_TO_AUD_RATE",
+    "responses": [
+      {
+        "case": "C1",
+        "repeat": 0,
+        "arm": "measured",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll check the previous scene and web context to determine if this station count change is real or an artifact."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_tdf2TcbYcCsDcaYAkAq9uT",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_KaL0aN7wDkxIrkrNz3rnW9",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_oSYGCDfmln6MqeQrEFopCP",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 97,
+              "totalTokens": 3961
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The web context confirms a real infrastructure change: a five-station rail line opened between 26 August and 31 August 2024. The station count increased from 225 to 230 (exactly +5), matching the newly opened stations reported in transit news. The flag count and hub changes also align with network expansion rather than measurement error.\n\n```json\n{\n  \"verdict\": \"real\",\n  \"reason\": \"Web context confirms a new five-station rail line opened this week; station count increased by exactly 5 (225\u2192230), matching the reported opening.\"\n}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6270,
+              "outputTokens": 131,
+              "totalTokens": 6401
+            }
+          }
+        ]
+      },
+      {
+        "case": "C1",
+        "repeat": 1,
+        "arm": "measured",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll check the recent context for Sydney rail network changes to determine if this station count increase is real."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_xDAYn4XExwKvLvTRSs9we0",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_L4SgemdRE0gvEwTOF5BTls",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_AqUm7PamGEuQlkD38tqflt",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 96,
+              "totalTokens": 3960
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "```json\n{\n  \"verdict\": \"real\",\n  \"reason\": \"A five-station rail line opened on 28 August 2024, matching the +5 station count increase measured in the scene captured on 31 August. The news report confirms the new line serves previously unserved suburbs, consistent with the observed network expansion.\"\n}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6269,
+              "outputTokens": 81,
+              "totalTokens": 6350
+            }
+          }
+        ]
+      },
+      {
+        "case": "C1",
+        "repeat": 2,
+        "arm": "measured",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll analyze this measured change systematically. The flagged issue is a +5 station count, but the served_share actually decreased slightly (-0.0018) despite lower desert area. Let me check the site history and recent context."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_rw9lwZVnb2WKf2q0Pl39E1",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_FMQVZ2jna0gbPnXAtGcslc",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_DraQ3RBMOxp2Q3KQMCnC0z",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 125,
+              "totalTokens": 3989
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The web context confirms a key fact: \"The line opened this week with five stations\" on 2024-08-28, and the latest scene is from 2024-08-31, just 3 days after the opening. This directly explains the +5 station count in the measured data.\n\nComparing the two scenes:\n- **Previous (2024-08-26)**: 225 stations, served_share 0.3895, desert_km2 46.9896, built-up 76.97 km\u00b2\n- **Latest (2024-08-31)**: 230 stations, served_share 0.3877, desert_km2 49.8808, built-up 81.47 km\u00b2\n\nThe station count increase is verified as real by the news report of an actual line opening. However, the served_share decreased despite more stations, which appears counterintuitive. This is likely because:\n1. The new 5 stations were added to OpenStreetMap after the opening\n2. The built-up area estimate increased (+4.5 km\u00b2), but the served area only grew modestly (+1.6 km\u00b2)\n3. The desert area also increased (+2.9 km\u00b2), suggesting some measurement variance between scenes\n\nThe station count change is **REAL** and verifiable.\n\n```json\n{\"verdict\": \"real\", \"reason\": \"A new five-station rail line opened on 2024-08-28, confirmed by news reports, and the OSM network was updated before this scene was processed on 2024-08-31. The +5 station count directly reflects this infrastructure opening.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6298,
+              "outputTokens": 371,
+              "totalTokens": 6669
+            }
+          }
+        ]
+      },
+      {
+        "case": "C1",
+        "repeat": 3,
+        "arm": "measured",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll investigate this measured change in Sydney's rail access. Let me check the previous scene and recent web context to determine if the station count increase is real or an artifact."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_VQNCP6GRLVlnteK4rvOFXJ",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_jnaq3hJRMxRJ3GIJYyDZ1c",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_yeKX4UscHEVq49QdgZG8Wo",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 110,
+              "totalTokens": 3974
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "```json\n{\n  \"verdict\": \"real\",\n  \"reason\": \"A new five-station rail line opened in Sydney between 26 and 31 August 2024, matching the measured increase of 5 stations. Web context confirms the opening occurred within the measurement period, and all prior baseline scenes consistently showed 225 stations before this event.\"\n}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6283,
+              "outputTokens": 84,
+              "totalTokens": 6367
+            }
+          }
+        ]
+      },
+      {
+        "case": "C1",
+        "repeat": 4,
+        "arm": "measured",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll investigate this measured change to determine if the station count increase is real or an artifact."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_khTYY9zns1J9NvWgeFaGNZ",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_x19R132jQ6Jv01V1vawuL5",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_6kSCmEFP0e2yYXZie8018i",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 94,
+              "totalTokens": 3958
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The web context confirms that a new five-station rail line opened on August 28, 2024, just three days before the latest scene was captured. This aligns perfectly with the measured change:\n\n- Station count increased by exactly 5 (from 225 to 230)\n- The latest scene was captured on August 31, 2024\n- Desert area increased by 2.89 km\u00b2 (new line likely serves areas previously without coverage)\n- Served share remained essentially stable (-0.18% change)\n\nThe five flagged \"ghost line\" stations in the latest measurement are artifacts from the OpenStreetMap mapping process, but the underlying change\u2014five new stations\u2014is real and documented by recent news.\n\n```json\n{\"verdict\": \"real\", \"reason\": \"A new five-station rail line opened on August 28, 2024, three days before this scene was captured, accounting for the +5 station count increase and the expansion of desert area entering the network.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6267,
+              "outputTokens": 219,
+              "totalTokens": 6486
+            }
+          }
+        ]
+      },
+      {
+        "case": "C1",
+        "repeat": 0,
+        "arm": "baseline",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll analyze this measured change by checking the site history and recent context for Sydney's rail network."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_iDXiEH3DAWT48S6tMdhzrZ",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_W1vWbKwiPiUlaqzTjN62ZD",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_e0wAzvhNQrF8BhQDEjFvik",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 95,
+              "totalTokens": 3959
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The evidence strongly indicates a **real change**:\n\n1. **Station count increased by exactly 5** (225 \u2192 230), matching the web context headline: \"New five-station rail line opens to passengers\" dated 2024-08-28, just 3 days before this scene was captured (2024-08-31).\n\n2. **Timing alignment**: The scene was captured 3 days after the reported opening, and the site history shows the previous scene on 2024-08-26 had 225 stations, confirming the 5-station addition is reflected in this latest measurement.\n\n3. **The current measurement differs from baseline** (225 stations) by exactly 5 stations\u2014a precise match to the opening reported.\n\n4. **Scene quality is high**: 99.98% coverage with only 1.6% cloud cover, and the change in desert_km2 (+2.89 km\u00b2) and served_share (\u22120.18%) are within expected noise for genuine infrastructure changes.\n\n```json\n{\n  \"verdict\": \"real\",\n  \"reason\": \"Station count increased by exactly 5, matching a confirmed opening of a five-station rail line that opened on 2024-08-28, three days before this scene capture.\"\n}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6268,
+              "outputTokens": 287,
+              "totalTokens": 6555
+            }
+          }
+        ]
+      },
+      {
+        "case": "C1",
+        "repeat": 1,
+        "arm": "baseline",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll check the recent history and web context for Sydney rail to determine if this station count change is real or an artifact."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_rPnsk0v0GVY7PrGTJeCdKH",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_LK09rPgusqqFKB0xffdiDs",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_leKGChC9EJBQsLhiEE9vRJ",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 100,
+              "totalTokens": 3964
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The data is clear: station count increased from 225 to 230 (a gain of 5 stations) between 26 August and 31 August 2024. Web context confirms a five-station rail line opened to passengers on 28 August 2024, just before the latest measurement. The timing and magnitude match perfectly.\n\n```json\n{\n  \"verdict\": \"real\",\n  \"reason\": \"A new five-station line opened to passengers on 28 August 2024, matching the exact +5 station count change measured in the 31 August scene.\"\n}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6273,
+              "outputTokens": 135,
+              "totalTokens": 6408
+            }
+          }
+        ]
+      },
+      {
+        "case": "C1",
+        "repeat": 2,
+        "arm": "baseline",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll check this change by examining the previous scene and recent network activity."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_FAZyrDTciasUWlzzE2Y75c",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_Ne7hUqH4iwmWPJZM6Lf0Dy",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_ReI7ikXbR8GQmxcUUyTDMm",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 90,
+              "totalTokens": 3954
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The data confirms a real change. Comparing the latest scene (2024-08-31) to the previous one (2024-08-26) five days earlier:\n\n- **Station count**: increased from 225 to 230 (+5 stations)\n- **Web context**: confirms a new five-station rail line opened in the last week\n- **Built-up area measured**: increased from 76.97 km\u00b2 to 81.47 km\u00b2 (+4.5 km\u00b2), suggesting either real urban growth detection or a seasonal/atmospheric shift\n- **Desert area**: increased from 46.99 km\u00b2 to 49.88 km\u00b2 (+2.89 km\u00b2)\n\nThe station count increase of exactly 5 matches the headline report of a five-station line opening. The change in measured built-up area and desert area between scenes five days apart (despite near-identical cloud cover: 0.38% vs 0.16%) suggests some seasonal vegetation or atmospheric effect, but the network change (stations) is confirmed as real by the news report.\n\n```json\n{\"verdict\": \"real\", \"reason\": \"Web context confirms a five-station rail line opened in Sydney during the interval between scenes, matching the +5 station count change exactly. The network expansion is real.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6263,
+              "outputTokens": 287,
+              "totalTokens": 6550
+            }
+          }
+        ]
+      },
+      {
+        "case": "C1",
+        "repeat": 3,
+        "arm": "baseline",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll check this Sydney rail access measurement by examining the previous scene, site history, and recent web context."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_APVsxX4G7OFydk2OiIcg96",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_Hfq2BYywOP467LQLqMfsHW",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_RAq8ttdYJjK8hqcQWdWpmK",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 97,
+              "totalTokens": 3961
+            }
+          }
+        ]
+      },
+      {
+        "case": "C1",
+        "repeat": 4,
+        "arm": "baseline",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll check this Sydney rail access measurement by examining the site history and recent web context to determine if the station count change is real."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_J3Ruf6IX43ULF6kG91itAU",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_LTYttPNzQtPATCqRtopqJo",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 83,
+              "totalTokens": 3947
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The web context confirms the station count change is real: a new five-station rail line opened on 2024-08-28, just three days before the satellite measurement on 2024-08-31. The site history shows the station count was stable at 225 through three previous scenes, then jumped to 230 (a +5 change) in the latest measurement. This aligns perfectly with the web news report.\n\n```json\n{\n  \"verdict\": \"real\",\n  \"reason\": \"A new five-station rail line opened on 2024-08-28, confirmed by recent news; the +5 station count change measured on 2024-08-31 reflects this infrastructure addition.\"\n}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 4463,
+              "outputTokens": 160,
+              "totalTokens": 4623
+            }
+          }
+        ]
+      },
+      {
+        "case": "C10",
+        "repeat": 0,
+        "arm": "measured",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I need to examine this change more carefully. The data shows significant shifts in served share (-5.27%), desert area (+151%), but station count unchanged. The scene is flagged for multiple \"ghost lines\" and has 14.67% cloud cover. Let me check the site history and recent context."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_jrOud2bJcuQ7vc8VMiA7hK",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_oMC3CAwJ2uOaMEBQWMSEDD",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_pmn33XzsXieEAObzfWsob8",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 4165,
+              "outputTokens": 138,
+              "totalTokens": 4303
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "Examining the comparison closely:\n\n**Previous scene (2019-12-21)**: 94.2% cloud cover, desert_km2 = 385.05, served_share = 0.3048\n- Visibly heavy cloud obscuring much of the scene (yellowed-out areas indicating dense haze/cloud)\n\n**Current scene (2019-12-26)**: 14.7% cloud cover, desert_km2 = 218.06, served_share = 0.3091\n- Much clearer; extensive yellow (built-up) now visible\n\nThe data clearly shows this is a cloud and haze artifact. The previous scene had 94% cloud cover, which severely inflated the desert_km2 measurement and compressed the visible built-up detection. The current scene, only 5 days later with 14.7% cloud cover, reveals the true built-up pattern previously obscured. The served_share actually improved (+0.0043), which is consistent with better cloud clearance revealing accurately-classified built-up areas near stations. The network didn't change (same 225 stations), no infrastructure opened or closed per web search, and comparing the two image figures shows the difference is purely atmospheric clarity\u2014the same yellow built-up clusters are now simply visible rather than obscured.\n\n```json\n{\"verdict\": \"artefact\", \"reason\": \"The previous measurement had 94.2% cloud cover, severely masking built-up areas and inflating desert_km2. The current 14.7% cloud cover reveals the actual built-up pattern, with network unchanged and no infrastructure openings or closures reported.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6533,
+              "outputTokens": 364,
+              "totalTokens": 6897
+            }
+          }
+        ]
+      },
+      {
+        "case": "C10",
+        "repeat": 1,
+        "arm": "measured",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll check the previous scene and web context to determine if this change is real or an artifact."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_R0KjQZdu4efarPTVVBHjTU",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_PDpmEbyN8zB30flFVauvPo",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_z8U0BOdOzxJooD8ia9g92U",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 4165,
+              "outputTokens": 95,
+              "totalTokens": 4260
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "Looking at the data:\n\n**Comparison between latest (2019-12-26) and previous (2019-12-21) scene:**\n- Latest: served_share 0.3091, built_up 315.6 km\u00b2, desert 218.1 km\u00b2\n- Previous: served_share 0.3048, built_up 553.9 km\u00b2, desert 385.0 km\u00b2\n\n**Key observations:**\n\n1. **Built-up area halved dramatically** (553.9 \u2192 315.6 km\u00b2) in just 5 days\u2014physically impossible for a real change.\n\n2. **Desert area decreased significantly** (385.0 \u2192 218.1 km\u00b2) while built-up decreased, which is contradictory.\n\n3. **Scene cloud cover difference is extreme**: Previous scene had 94.2% cloud cover (heavily clouded), while latest has only 14.7% cloud cover. The previous scene was almost entirely obscured by clouds, resulting in massive areas of undetected built-up area.\n\n4. **Historical baseline context**: Earlier November scenes show desert_km2 values of ~72\u201387 km\u00b2, consistent with the latest (218 km\u00b2 is still higher but far more realistic than the 385 km\u00b2 from the heavily clouded December 21 scene).\n\n5. **Web context shows no recent infrastructure changes** in Sydney's rail network.\n\nThe shift from the cloudy 2019-12-21 scene to the clear 2019-12-26 scene is purely a **cloud and atmospheric artefact**. The heavy clouds in the previous acquisition severely underestimated built-up area and overestimated desert area. The latest clearer scene provides a more accurate measurement.\n\n```json\n{\"verdict\": \"artefact\", \"reason\": \"Previous scene had 94.2% cloud cover versus 14.7% in the latest scene; the dramatic shift in built-up area (halved) and desert area is due to improved atmospheric clarity revealing the true landscape, not real infrastructure changes. No recent rail openings or closures are reported.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6490,
+              "outputTokens": 473,
+              "totalTokens": 6963
+            }
+          }
+        ]
+      },
+      {
+        "case": "C10",
+        "repeat": 2,
+        "arm": "measured",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll analyze this measured change for Sydney's rail access. Let me start by examining the previous scene and web context to understand what might have caused these changes."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_L0OSlQ2MkLkJrAIxS4L6tt",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_kuOIDhwKss0jwlz5nhDcUz",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 4165,
+              "outputTokens": 88,
+              "totalTokens": 4253
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "Now let me examine the key differences between these two scenes more carefully. The critical issue is the dramatic change in built-up area detected: the latest scene shows 315.6 km\u00b2 built-up compared to 553.9 km\u00b2 in the previous scene (5 days earlier). This is a 43% decrease. Let me look at scene parameters to understand if this could be a measurement artifact."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_tmScjvFBzvXm8l6ZjsE1kt",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 6098,
+              "outputTokens": 122,
+              "totalTokens": 6220
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The analysis is now clear:\n\n**Comparing the scenes (5 days apart, Dec 21 to Dec 26):**\n- Previous scene (Dec 21): built_up_km2 = 553.9, desert_km2 = 385.0, served_share = 0.3048, cloud_cover = 94.2%\n- Latest scene (Dec 26): built_up_km2 = 315.6, desert_km2 = 218.1, served_share = 0.3091, cloud_cover = 14.7%\n\n**The critical observations:**\n\n1. **Extreme cloud cover difference**: The Dec 21 scene has 94.2% cloud cover vs. 14.7% for Dec 26. This is a 79.5 percentage point difference\u2014massive.\n\n2. **Built-up area tracking**: The Nov 1-6 scenes (early November) show desert_km2 of ~80-86 km\u00b2, which is the low baseline. Dec 21 shows 385 km\u00b2 (extreme inflation from clouds), and Dec 26 shows 218 km\u00b2 (improvement but still inflated compared to November).\n\n3. **Served_share stability**: Despite the wild swings in measured built-up area, served_share remains relatively stable (0.37\u21920.36\u21920.30\u21920.31), suggesting the built-up detection is the primary issue.\n\n4. **No network changes**: Web context returned no recent rail openings/closings, and station count remained constant at 225.\n\nThe dramatic December 21 cloud cover (94.2%) saturated the NDBI (normalized difference built-up index) measurements, causing false detection of urban area. The Dec 26 scene is clearer but still affected by lingering seasonal effects or residual atmospheric interference that's inflating the desert area compared to November baselines.\n\n```json\n{\"verdict\": \"artefact\", \"reason\": \"The Dec 21 baseline scene has 94.2% cloud cover, which inflated built-up detection; Dec 26 shows improvement (14.7% cloud) but remains above November baselines, indicating residual seasonal or atmospheric effects on the spectral built-up index rather than real urban change.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6592,
+              "outputTokens": 511,
+              "totalTokens": 7103
+            }
+          }
+        ]
+      },
+      {
+        "case": "C10",
+        "repeat": 3,
+        "arm": "measured",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll check the previous scene and site history to understand whether this change is real or an artefact."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_JrxPImRXcfosG3J7UNZSYB",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_HQaZ6ig6rhCY8vpaQAo44y",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_JyOGf53AhGjw0XtTW0lIi2",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 4165,
+              "outputTokens": 97,
+              "totalTokens": 4262
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "Now I'll examine the two images more carefully. The key observation is comparing the latest scene (2019-12-26, cloud cover 14.7%) with the previous scene (2019-12-21, cloud cover 94.2%).\n\nLooking at the data:\n- **Previous scene (2019-12-21)**: built_up_km2 = 553.87, desert_km2 = 385.05, served_share = 0.3048, cloud cover = 94.2%\n- **Latest scene (2019-12-26)**: built_up_km2 = 315.63, desert_km2 = 218.06, served_share = 0.3091, cloud cover = 14.7%\n\nThe previous scene had extremely high cloud cover (94.2%), which would have obscured the built-up areas and caused the NDVI-based built-up detection to misidentify cloud/vegetation as non-built-up. The latest scene is much clearer (14.7% cloud).\n\nVisual comparison of the two figures shows:\n- The latest scene shows much less yellow/orange (built-up density) across the entire area, particularly in the western regions\n- The previous scene had the built-up detection inflated by cloud cover\n- The desert_km2 nearly doubled (from 385 to 218 km\u00b2 baseline area minus measured area), and served_share actually improved slightly (+0.0043 from baseline despite the flagged decrease)\n\nThe decrease in served_share (-0.0527 from baseline) is a direct consequence of the built-up mask being more accurate when clouds are removed. The areas previously masked as cloud/non-measurable are now correctly identified as non-built-up.\n\n```json\n{\"verdict\": \"artefact\", \"reason\": \"The previous scene had 94.2% cloud cover inflating built-up detection through cloud masking; the latest scene's 14.7% cloud cover reveals the true built-up distribution. The apparent change is a cloud artifact clearing, not a real change in the city.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6492,
+              "outputTokens": 470,
+              "totalTokens": 6962
+            }
+          }
+        ]
+      },
+      {
+        "case": "C10",
+        "repeat": 4,
+        "arm": "measured",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll analyze this measured change for Sydney's rail access. Let me check the previous scene and recent context to understand what might be driving these metric changes."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_8JUdaMcRJBKINtCG3fAOae",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_lz1t30bsOEXvRPxRCrssgz",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_si6xcnSufu9DS8CTDYhIEv",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 4165,
+              "outputTokens": 106,
+              "totalTokens": 4271
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "Now let me examine the figures more carefully. Comparing the two scenes captured 5 days apart (Dec 21 and Dec 26, 2019):\n\n**Key observations:**\n\n1. **Built-up area detection shift**: The latest scene shows 315.6 km\u00b2 built-up vs. 553.9 km\u00b2 in the previous scene (Dec 21) \u2014 a dramatic drop of 238 km\u00b2. This is highly suspicious.\n\n2. **Desert area swing**: Desert increased from 385.0 km\u00b2 to 218.1 km\u00b2, then to 218.1 km\u00b2 \u2014 showing massive volatility. The baseline median is only 86.9 km\u00b2, so this is far outside normal range.\n\n3. **Visual comparison**: The Dec 21 scene (previous) shows much more extensive yellow/warm built-up density across the entire mapped area, particularly visible in the western and southern suburbs. The Dec 26 scene shows dramatically less built-up detection, with more dark/purple areas.\n\n4. **Served share paradox**: Despite detecting far less built-up area, the served share actually *increased* slightly (0.3048 \u2192 0.3091), not decreased as the summary states. The change in \"served_km2\" is dramatic (168.8 \u2192 97.6 km\u00b2).\n\n5. **Cloud cover**: Dec 21 had 94.2% cloud cover; Dec 26 had only 14.7%. This is the key factor.\n\n6. **No network changes**: Web context returned no recent openings/closings; the station count remained constant at 225; no new infrastructure was built.\n\nThe dramatic reduction in detected built-up area between the two scenes is almost certainly due to **cloud/atmospheric haze difference**, not real change. The Dec 21 scene was heavily clouded (94.2% cloud cover), yet it detected MORE built-up area. When clouds clear (14.7% on Dec 26), the NDBI algorithm appears to be detecting less built-up density \u2014 likely due to different atmospheric conditions, seasonal vegetation effects, or sensor calibration between Sentinel-2A and 2B. The massive \"desert\" fluctuation (71-385 km\u00b2) confirms this is atmospheric/sensor artifact, not urban change.\n\n```json\n{\n  \"verdict\": \"artefact\",\n  \"reason\": \"Cloud cover difference (94% vs 15%) between two Sentinel-2 scenes 5 days apart caused atmospheric effects and NDBI miscalibration, not real urban change; no network modifications reported and station count unchanged.\"\n}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6501,
+              "outputTokens": 580,
+              "totalTokens": 7081
+            }
+          }
+        ]
+      },
+      {
+        "case": "C10",
+        "repeat": 0,
+        "arm": "baseline",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll analyze this measured change to determine if it's real or an artifact."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_8txk7orCIsCFLASc8Bty2n",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_YRs96vxkPmrXLVljPWZmkO",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_5VC8y0re0HpkG4qIBg5HzP",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 4165,
+              "outputTokens": 91,
+              "totalTokens": 4256
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "Now let me examine the figures and data more closely. The key observation is comparing the two consecutive scenes (5 days apart):\n\n**Previous scene (2019-12-21):**\n- built_up_km2: 553.87\n- served_km2: 168.82\n- desert_km2: 385.05\n- served_share: 0.3048\n- High cloud cover: 94.2%\n\n**Latest scene (2019-12-26):**\n- built_up_km2: 315.63\n- served_km2: 97.57\n- desert_km2: 218.06\n- served_share: 0.3091\n- Lower cloud cover: 14.7%\n\nThe critical clue is the **massive difference in cloud cover**: the previous scene had 94.2% cloud cover (very cloudy), while the latest has only 14.7% (mostly clear). \n\nComparing the figures visually:\n- The previous scene shows extensive bright yellow/gold built-up density across the western suburbs and inland areas\n- The latest scene shows much less built-up area in those same regions - appearing darker/blacker\n\nThis is a classic case of **cloud and haze masking built-up density**. The 2019-12-21 scene was heavily clouded, and cloud reflectance was misclassified as built-up area by the NDBI algorithm, inflating the built-up measurement to 553.87 km\u00b2. The 2019-12-26 scene, being much clearer, correctly identifies less apparent built-up density (315.63 km\u00b2).\n\nThe served_share actually stayed nearly flat (0.3048 \u2192 0.3091), which makes sense if the same underlying network exists. The desert_km2 swing (385.05 \u2192 218.06) reflects differences in cloud masking and seasonal vegetation, not real infrastructure change. Web_context shows no recent station openings or closures.\n\n```json\n{\"verdict\": \"artefact\", \"reason\": \"The 94.2% cloud cover in the previous scene caused cloud reflectance to be misclassified as built-up area, artificially inflating the built-up and desert measurements. The clearer scene (14.7% cloud cover) shows the true distribution, not a real change in the city or network.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6486,
+              "outputTokens": 535,
+              "totalTokens": 7021
+            }
+          }
+        ]
+      },
+      {
+        "case": "C10",
+        "repeat": 1,
+        "arm": "baseline",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll analyze this measured change to Sydney's rail access metrics. Let me check the site history and web context to understand what's happening."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_kZjAPQwonvA7llFi4R9ROY",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_dPg7Q92dIo8glFNaRmbStV",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_yYEerRW9KS138eydTSPibd",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 4165,
+              "outputTokens": 103,
+              "totalTokens": 4268
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "Comparing the two scenes (26 Dec vs 21 Dec 2019, five days apart):\n\n**Key observations:**\n- The previous scene (21 Dec) has very high cloud cover (94.2%) with 385 km\u00b2 desert (unmeasured), while the latest scene (26 Dec) has lower cloud cover (14.7%) with 218 km\u00b2 desert\n- The built-up area detected changes dramatically: 553.9 km\u00b2 \u2192 315.6 km\u00b2 (43% decrease)\n- Served share actually *improves* slightly: 0.3048 \u2192 0.3091 (not a real decline)\n- Station count remains constant at 225; no network changes in web context\n- The three historical scenes show desert area ranging from 71\u2013385 km\u00b2 (high variability typical of seasonal/weather effects)\n\n**Analysis of the figures:**\nThe previous scene shows heavy yellow/orange built-up coverage across western Sydney that appears washed out by pervasive cloud haze. The latest scene shows cleaner, more refined built-up detection with darker, sharper boundaries and better contrast between urban and non-urban areas. The apparent \"change\" is a dramatic artifact: the previous scene's 94% cloud cover masked the true built-up pattern, causing overestimation. When the same area is re-measured with 15% cloud cover five days later, the algorithm correctly identifies less hazy pixels as built-up.\n\n```json\n{\"verdict\": \"artefact\", \"reason\": \"The 21 December scene has 94% cloud cover versus 15% on 26 December; heavy cloud haze in the earlier scene caused false positive built-up detection. The re-measurement with clear skies reveals the true urban extent.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6498,
+              "outputTokens": 395,
+              "totalTokens": 6893
+            }
+          }
+        ]
+      },
+      {
+        "case": "C10",
+        "repeat": 2,
+        "arm": "baseline",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll check this measured change to Sydney's rail access metrics. Let me start by examining the previous scene and looking for any recent context about the rail network."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_Pz8KdY9wdTPWhbWyLp19M4",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_ub9YLj8M1aQVvKDBHK49Kc",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_Yr1DBqyNVy28DLpmrGIJNp",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 4165,
+              "outputTokens": 107,
+              "totalTokens": 4272
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "Now let me analyze the images more carefully by examining different processing settings to understand what changed in the built-up area detection:"
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_XBvTgFaBkb1OQPhQlSKrVj",
+                      "name": "look_again",
+                      "input": {
+                        "ndvi_max": 0.4
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 6502,
+              "outputTokens": 84,
+              "totalTokens": 6586
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "Based on my analysis of the available data:\n\n**Key observations:**\n\n1. **Scene comparison**: Between the 2019-12-21 and 2019-12-26 scenes (5 days apart), the latest scene shows dramatically different built-up detection: 315.6 km\u00b2 vs 553.9 km\u00b2 in the previous scene\u2014a sharp decrease despite being only 5 days apart.\n\n2. **Desert area swing**: The desert_km\u00b2 jumped from 385.0 to 218.1 (a 43% decrease), which is inconsistent with real urban/natural area changes over 5 days. The latest measurement shows 218 km\u00b2 desert vs a baseline median of 87 km\u00b2\u2014a 2.5x deviation.\n\n3. **Cloud cover difference**: The previous scene had very high cloud cover (94.2%) while the latest scene is clearer (14.7%), suggesting atmospheric conditions are the primary driver.\n\n4. **Figure analysis**: Comparing the two images, the previous scene shows much warmer (more yellow/orange) built-up density throughout western and southwestern Sydney, while the latest scene appears darker with less detected built-up area. This is consistent with high cloud cover obscuring built-up areas.\n\n5. **No network changes**: Web context shows no recent station or line openings/closings, and the station count remained constant at 225.\n\nThe dramatic swings in built-up area, desert area, and served share within 5 days\u2014coupled with the massive difference in cloud cover (94% vs 15%)\u2014indicate the previous scene's high cloud cover created a vegetation/cloud artifact, while the latest clearer scene more accurately reflects actual conditions but shows less built-up area due to seasonal vegetation differences.\n\n```json\n{\"verdict\": \"artefact\", \"reason\": \"The 43% desert area decrease and 44% built-up area drop over 5 days, combined with the previous scene's 94% cloud cover versus 15% in the current scene, indicate atmospheric and seasonal vegetation masking rather than real urban change. No network openings or closures are reported.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6616,
+              "outputTokens": 471,
+              "totalTokens": 7087
+            }
+          }
+        ]
+      },
+      {
+        "case": "C10",
+        "repeat": 3,
+        "arm": "baseline",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll investigate this measured change to Sydney's rail access metrics. Let me check the historical data and recent network changes."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_ROGJc0xzexsHX9Ixp45JZy",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_nUcpbdVu90xzWXuam20Jjg",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_eK4vY737VnQD1gPsi2Kg8a",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 4165,
+              "outputTokens": 99,
+              "totalTokens": 4264
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The data shows a clear pattern: comparing the latest scene (2019-12-26) with the previous scene five days earlier (2019-12-21), there is a significant fluctuation in the measured desert area (218.06 km\u00b2 vs 385.05 km\u00b2 in the prior scene) and served share (0.3091 vs 0.3048). \n\nLooking at the historical sequence:\n- Nov 1: desert_km2 = 86.89\n- Nov 6: desert_km2 = 71.37 (stable)\n- Dec 21: desert_km2 = 385.05 (sharp spike)\n- Dec 26: desert_km2 = 218.06 (partial recovery)\n\nThe web context returned no recent station or line changes. The dramatic fluctuation in the desert area measurement coincides with a shift from 9.4% cloud cover in the previous scene to 14.7% cloud cover in the latest scene. The previous scene (Dec 21) had very high cloud cover (94.2%), which explains the extreme desert_km2 reading of 385 km\u00b2.\n\nThe key observation: these measurements are consistent with **seasonal vegetation changes and cloud/haze effects** rather than actual network changes. The station count remained constant at 225, and no infrastructure changes were reported. The \"desert area\" metric appears highly sensitive to vegetation seasonality between November and late December in the Sydney region, and cloud patterns are introducing additional noise.\n\n```json\n{\"verdict\": \"artefact\", \"reason\": \"Fluctuating desert area measurements reflect seasonal vegetation changes and varying cloud cover (14.7% in latest scene versus 94.2% in prior scene) rather than real infrastructure changes; station count unchanged and no network modifications reported.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6494,
+              "outputTokens": 396,
+              "totalTokens": 6890
+            }
+          }
+        ]
+      },
+      {
+        "case": "C10",
+        "repeat": 4,
+        "arm": "baseline",
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll analyze this change systematically. Let me start by reviewing the previous scene and checking for recent network changes."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_sVqPEKs76MlWnkbI2XWhxG",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_XUw23rKjT7lnbvLTLgGQdm",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 4165,
+              "outputTokens": 79,
+              "totalTokens": 4244
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "Now let me examine the key differences:\n\n**Comparison between scenes:**\n- **Previous (2019-12-21)**: built_up = 553.9 km\u00b2, served = 168.8 km\u00b2, served_share = 0.3048, desert = 385.0 km\u00b2, cloud cover = 94.2%\n- **Latest (2019-12-26)**: built_up = 315.6 km\u00b2, served = 97.6 km\u00b2, served_share = 0.3091, desert = 218.1 km\u00b2, cloud cover = 14.7%\n\n**Key observations:**\n\n1. **Dramatic cloud cover difference**: Previous scene has 94.2% cloud cover vs. 14.7% in latest. The previous scene was heavily obscured.\n\n2. **Built-up area change appears reversed**: The latest scene shows *less* total built-up area (315.6 vs 553.9 km\u00b2) despite the same network and 5 days later. This is the opposite of expected urban growth.\n\n3. **Desert area increase**: Desert measured at 218.1 km\u00b2 (latest) vs 385.0 km\u00b2 (previous) - but this also goes down, not up.\n\n4. **Served share paradox**: Despite lower built-up and served areas, served_share increased slightly (0.3048 to 0.3091) - this suggests the ratio is being differently calculated.\n\n5. **Visual comparison**: The previous image shows extensive yellow/orange built-up areas throughout, particularly in western Sydney. The latest scene shows much less built-up density visible, with more dark areas.\n\n**Diagnosis**: The massive difference in cloud cover (94.2% \u2192 14.7%) is the critical factor. The previous scene was heavily cloud-obscured, causing the NDVI-based built-up mask to misidentify vegetation and cloud shadows as built environment. The latest scene, with clear skies, shows the *true* built-up distribution, which is actually more concentrated. The \"change\" is primarily an artifact of cloud clearing, not actual urban change over 5 days.\n\nThe web_context returned no recent station or line changes, supporting this finding.\n\n```json\n{\n  \"verdict\": \"artefact\",\n  \"reason\": \"Previous scene had 94.2% cloud cover vs. 14.7% in latest; cloud and vegetation shadows were misclassified as built-up area, artificially inflating metrics in the heavily obscured scene. The latest clear-sky scene reveals the true built-up distribution.\"\n}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6089,
+              "outputTokens": 581,
+              "totalTokens": 6670
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "checks": [
+    {
+      "name": "C1: measured either side of the floor",
+      "expected": {
+        "above": 0.62,
+        "below": 0.58
+      },
+      "got": {
+        "above": 0.62,
+        "below": 0.58
+      },
+      "pass": true
+    },
+    {
+      "name": "C1: no model below the floor",
+      "expected": true,
+      "got": true,
+      "pass": true
+    },
+    {
+      "name": "C10: measured either side of the floor",
+      "expected": {
+        "above": 0.62,
+        "below": 0.58
+      },
+      "got": {
+        "above": 0.62,
+        "below": 0.58
+      },
+      "pass": true
+    },
+    {
+      "name": "C10: no model below the floor",
+      "expected": true,
+      "got": true,
+      "pass": true
+    }
+  ],
+  "summary": {
+    "agent_pairs": 0,
+    "agent_called_look_again": 1,
+    "agent_flips": 0,
+    "gate_pairs": 2,
+    "gate_flips": 2
+  }
+}

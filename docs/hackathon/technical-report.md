@@ -40,9 +40,9 @@ here is typed from memory.
 | Kind | What it means here | State on 17 October |
 |---|---|---|
 | **Live** | measured and decided by the deployed system on dev, read back from its logs and state | Dev was deployed with the vision worker on 15 October, and again on 16 October with the rotating topic (#331). The first rail topic's first ticks found three defects, now fixed (§6, "Failures observed in the deployment"). The rotating topic, `rail-cities`, has been seeded and switched to a city a week (#338) with three goals in turn (#335); no live triage has run yet. [R2: the live run's dates and counts, from the evidence export] |
-| **Replayed** | the real adapter and worker code driven over pinned real scenes, tick by tick, with the real model or its recorded answers | Built (`vision_eval.py replay`, #336), not yet run on real data. [R2: the replay's run files] |
+| **Replayed** | the real adapter and worker code driven over pinned real scenes, tick by tick, with the real model or its recorded answers | Run on 20 October: three sequences (`sydney-demo`, `sydney-winter`, `sydney-c1`) with the deployed worker and the real model, each then re-run with no AWS account and reproduced exactly ([the agentic evidence](evidence/agentic-vision/RESULTS.md)). |
 | **Benchmarked** | a script's run on pinned inputs, written to a run file with its code, machine, build and inputs | The coverage of all 46 pinned Sydney scenes (§6), and the Graviton session's 20 run files of 20 October: stock OpenCV 5.0 and 4.14 against COOL on one Graviton4 instance (E9, E10, Appendix A). |
-| **Constructed** | inputs built to exercise one path: a failure case, a labelled agent case | The unit tests (§6, "Tests"); the agent's 13 labelled cases are built (`scripts/vision_eval_cases/`, #337), not yet run against the model. [R2: the case set's run file] |
+| **Constructed** | inputs built to exercise one path: a failure case, a labelled agent case | The unit tests (§6, "Tests"); the agent's 13 labelled cases (`scripts/vision_eval_cases/`, #337), run against the live model on 20 October, five repeats each (§6, Appendix B). |
 
 ---
 
@@ -56,7 +56,8 @@ pipeline that measures the same thing the same way every time, says when somethi
 what it could not see, and never publishes a number without a person reading it.
 
 BloggerBear is already that pipeline for text feeds: topics, a diff-first research tick, a daily
-authoring cycle, reviews, a moderation queue and a static site. The Rail Access Monitor gives it
+authoring cycle, reviews, a moderation queue, an AI reviewer for drafts a person has not reached
+on the text topics (never the vision ones: §8) and a static site. The Rail Access Monitor gives it
 eyes. One topic watches four cities (Sydney, Melbourne, Singapore and Boston) and writes about one
 a week, each in turn: on the Monday a reading of the city's newest clear scene, then an article a
 day from it, each from a different angle (access, the network's flags, the simulated links).
@@ -431,10 +432,12 @@ one network fixture, the false-material count and rate with its Wilson 95 % inte
 spread of served share, desert area and built-up area; the built-up mask's IoU between consecutive
 scenes; the Jaccard of hubs and flags]
 
-**E5: the access method against the yardstick** (benchmarked). [R2: from the `access-baseline`
-run file on one clear scene: the production distance transform against `DIST_MASK_PRECISE` and
-against a straight-line buffer of discs, the difference in served share, the IoU of the served
-mask, and the times]
+**E5: the access method against the yardstick** (benchmarked). On `sydney-2024-08-26`, the
+production distance transform gives a served share of 0.3895; `DIST_MASK_PRECISE` and a
+straight-line buffer of discs both give 0.3901 (+0.06 points), with an IoU of 0.991 between their
+served mask and production's. The production method is the slowest of the three here (223 ms against
+65 and 7 ms on an x86 laptop) because it also labels each pixel's nearest station, which the others
+do not ([`2026-10-20-eval-access-baseline-amd64-opencv.json`](evidence/agentic-vision/runs/2026-10-20-eval-access-baseline-amd64-opencv.json)).
 
 **E8: the built-up proxy against a reference** (benchmarked). [R2: from the `builtup-check` run
 file: IoU, precision and recall against ESA WorldCover 2021 class 50 on one clear Sydney scene, and
@@ -460,7 +463,11 @@ Sydney graph, and raster snapping against the vector map; or "not run"]
 | The agent fails | malformed answer, Bedrock error, deadline, turn and tool budget, `look_again` refused for time, no model | `artefact`, with the stop code |
 | Injected news | a headline that instructs | `artefact`: tool results are data, not instructions |
 
-[R2: each row's test node ids and real-run results, from the `failures` run file]
+Run on 20 October ([`2026-10-20-eval-failures-amd64-opencv.json`](evidence/agentic-vision/runs/2026-10-20-eval-failures-amd64-opencv.json)):
+the eight rows that run on real scenes (cloud, swath no-data, smoke, a site outside the scene, a
+window too large, an unreadable scene, a URL off the allowlist, the wrong build) all ended as
+expected. The other six are held by the 42 tests the catalogue names, which CI runs; that pytest
+collects them was checked by CI, not on the Windows machine the run was made on (`--no-collect`).
 
 **Failures observed in the deployment** (live). Before the evidence lines existed, the first rail
 topic on dev (`trains-sydney`, created on 16 October) measured nothing on its first day, and its
@@ -484,18 +491,40 @@ scene in a fresh interpreter, five repeats, stock OpenCV 5.0: the Sydney rail sc
 build container, where two runs differed by up to 40 %
 ([vision.md §7](../enhancements/archive/vision.md#7-measured)), are indicative only.
 
-**The agent** (constructed cases, the live model). [R2: from the `agent` run file: the case set
-(four `real` cases, three to five `artefact` cases, each labelled by how it was built and which
-input moved), five repeats each; per-class recall, balanced accuracy and the confusion matrix (with
-failed-closed runs as their own column) for the agent, numeric-only and always-artefact; stability
-across repeats; tool use; latency p50 and p95; tokens and cost in AUD and USD; at least one of the
-agent's mistakes, quoted as "the agent's note"]
+**The agent** (constructed cases, the live model). The 13 cases of the
+[evidence README](evidence/README.md#the-agents-cases), five repeats each, Claude Haiku 4.5 on
+Bedrock with the deployed worker, on 20 October
+([`2026-10-20-eval-agent-amd64-opencv-bedrock.json`](evidence/agentic-vision/runs/2026-10-20-eval-agent-amd64-opencv-bedrock.json)):
 
-**The counterfactuals** (A2's cause, not only its sequence). [R2: from the `counterfactual` run
-file: (a) the agent level, live, five repeats per arm with only `look_again`'s returned numbers
-changed (arm (ii) a constructed tool output, said so): how many repeats called `look_again`, and
-"the verdict changed in k of n repeats"; (b) the gate level, the same scene with its coverage just
-above (0.62) and just below (0.58) the floor: the agent called or not, a Finding or none]
+| | Said real | Said artefact | Failed closed |
+|---|---:|---:|---:|
+| `real` cases (C1, C1c, C1d, C1e: 20 runs) | 18 | 2 | 0 |
+| `artefact` cases (C2, C3, C4, C5, C10: 25 runs) | 0 | 25 | 0 |
+| failure cases (C7, C8, C9: 15 runs) | 0 | 0 | 15 |
+
+Recall of `real` 0.90 (Wilson 95 % 0.70 to 0.97), of `artefact` 1.00 (0.87 to 1.00): a balanced
+accuracy of **0.95**, against 0.50 for numeric-only (every numeric change is real) and 0.50 for
+always-artefact. Every failure case failed closed as required; C6 (every `look_again` refused) is
+reported as observed: five `real`. Stability across repeats 0.97. The 50 runs that reached the model
+made 142 tool calls, about 2.8 each: `web_context` in all 50, `look_again` in none. Latency p50 8.9 s, p95 11.6 s; 8,330 tokens a
+run; USD 0.63 (AUD 0.94) for all 65 runs. Both mistakes called a real network change an artefact by
+reading the imagery's numbers against it; C1c's note (model text): "the simultaneous decrease in
+served_share and increase in desert area despite adding stations indicates the built-up density
+mask shifted due to seasonal vegetation or atmospheric differences between scenes".
+
+**The counterfactuals** (A2's cause, not only its sequence), on 20 October
+([`2026-10-20-eval-counterfactual-amd64-opencv-bedrock.json`](evidence/agentic-vision/runs/2026-10-20-eval-counterfactual-amd64-opencv-bedrock.json)):
+
+- **(b) The gate level: 2 of 2 flipped.** The same scene, with OpenCV's measured coverage just above
+  the floor (0.62) and just below it (0.58), nothing else changed. C1: above, the agent was called
+  and a Finding would be written; below, `below_floor`, no agent and no Finding. C10: above, the
+  agent was called and judged it an artefact; below, no agent. OpenCV's output alone decided
+  whether the agent ran and whether anything was reported.
+- **(a) The agent level: not shown.** Five repeats per arm with only `look_again`'s returned
+  numbers changed (the `baseline` arm a constructed tool output). The agent called `look_again` in
+  1 of 20 runs, so no pair both called it and the arm measures nothing: C1 was `real` in 5 of 5
+  (measured) and 4 of 5 (baseline, one failed closed), C10 `artefact` in all 10. This is not
+  evidence that the re-measurement is ignored; it is evidence that the agent rarely asks for one.
 
 **Human control and observability** (live). [R2: from the export's `summary.json`, the demo topic
 apart: the share of vision articles published by a person (expected 100 %); the person's
@@ -512,11 +541,17 @@ the bucket (its `vision_measure` line); the research tick's wall time with and w
 (E11); the endpoint's article (one of Sydney's week, 19 to 25 October, written from its weekly
 reading or its first observation: measured but not triaged, as §7 says) and its `editorial_goal`]
 
-**The trace: OpenCV's output changing a later decision.** [R2: the headline trace, rendered by
-`vision_decisions.trace` from the replay of the `sydney-demo` sequence
-(`evidence/replay/sydney-demo.md`), and the live demo topic's trace if its two-tick triage ran
-(the export's `trace`), each labelled live or replayed; see
-[Appendix B](#appendix-b-agentic-vision)]
+**The trace: OpenCV's output changing a later decision** (replayed). The
+[`sydney-demo` trace](evidence/agentic-vision/replay/sydney-demo.md), rendered by `vision_decisions.trace`: four
+winter 2024 scenes, the deployed worker and the real model, the demo topic's thresholds of 0
+(disclosed). Tick 1 is the first observation; in ticks 2 to 4 OpenCV's numbers moved (in tick 2 the
+built-up area beyond reach by 17.9 km², 46 %), so each was sent to the agent, which read the site's
+history, the news and the previous scene, and judged each an artefact, citing those numbers: "the
+simultaneous 48% jump in built-up area and 46% increase in desert area are contradictory and
+symptomatic of cloud-corrupted NDBI detection". So no Finding was written. Re-run with no AWS
+account, every decision and every measurement reproduced within the parity tolerances (the
+`-recorded` run files). The live demo topic's two-tick triage (O3) has not run. See
+[Appendix B](#appendix-b-agentic-vision).
 
 **Tests.** The suite never touches the network: moto for S3 and DynamoDB, scripted fakes for the
 worker, the model and every source, and synthetic scenes built in the tests. At 4a3d1b8 the 20
@@ -550,8 +585,11 @@ REPRODUCE.md]
 - **A suggestion is a simulation.** An orbital link is an edge added to a graph, 1.2 times the
   straight line, with no cost, land or engineering behind it.
 - **The agent is bounded, not omniscient.** Three tool calls, a deadline and a strict answer: when
-  unsure it says "artefact", so a real change waits for the next clear scene.
-  [R2: the agent's measured mistakes, quoted from the `agent` run file]
+  unsure it says "artefact", so a real change waits for the next clear scene. Measured: 2 of 20
+  real changes were called artefacts, each by reading the imagery's numbers against a real network
+  change (§6). And it almost never asks OpenCV to re-measure: `look_again` was called once in the
+  whole evaluation (one of the counterfactual's 20 runs; none of the cases' 50 model runs or the
+  replays' six), so the active-perception tool is offered but rarely used.
 - **What the evaluation found.** [R2: E3's false-alarm rate against the thresholds; E8's
   agreement, or "the built-up proxy has not been validated against a reference"; E6's sampling and
   E7's snap misses, if run]
@@ -584,14 +622,20 @@ REPRODUCE.md]
 **A person approves every vision article.**
 
 - `force_manual_review` is forced on for every `rail_access` and `satellite_vision` topic, at
-  create and at update (`MANUAL_REVIEW_ADAPTERS`, `lambdas/admin_api_handler.py:376-377` and
-  `:549-550`), and cannot be unset.
+  create and at update (`MANUAL_REVIEW_ADAPTERS`, `lambdas/admin_api_handler.py:405-406` and
+  `:603-604`), and cannot be unset.
 - The daily cycle adds the manual-review reason to every such draft's hold reasons
-  (`lambdas/daily_cycle_handler.py:429-430`), whatever the compliance review says.
-- The daily cross-topic digest, the one other path that publishes with no person, leaves these
-  topics out (`lambdas/trending_digest_handler.py:239-241`).
-- Every publish of a held article is `published_by="humans"`: approving one, or force-publishing
-  it, is an operator's act (`lambdas/admin_api_handler.py:1131`, `:1218`, `:1736`).
+  (`lambdas/daily_cycle_handler.py:554-555`), whatever the compliance review says.
+- The one path that publishes with no person, the AI reviewer (Professor Grizzlewick, built on 20
+  October for the text topics: [reviewer-bear.md](../enhancements/reviewer-bear.md)), never plans a
+  task of any kind for a topic with `force_manual_review`, published or held, and may never approve
+  for one (`lambdas/common/reviewer.py:221-225`, `:505-506`). Every vision article therefore still
+  waits for a person, however long it waits.
+- An operator's publish of a held article, approving it or force-publishing it, is
+  `published_by="humans"` (`lambdas/admin_api_handler.py:1271`, `:1773-1794`); the reviewer's is
+  `published_by="reviewer"`, and the page says "AI reviewer", never a person. His decisions are
+  logged in his own log group, so the evidence trail's count of what a person decided cannot include
+  them.
 - The evidence trail records *that* a person decided, and when (approved, rejected, unpublished,
   sent back), never *who*; a topic change that switches the agent or the news off is logged by key,
   never by content (`moderation_decision`, `topic_changed`).
@@ -641,7 +685,8 @@ network"; or leave it out of the published article]
 - The assistant scrubs untrusted text and shows it only in "(unverified)" columns on the page,
   never to a voice caller; `vision_evidence` carries no untrusted text at all, and every evidence
   reader parses each line rather than trusting it.
-- [R2: the injected-news case's result (C5), from the `agent` run file]
+- C5, a headline whose title is an instruction to the model, on top of C2's artefact: `artefact` in
+  5 of 5 runs (§6).
 
 **Licences and credits.**
 
@@ -781,17 +826,23 @@ tool call (for `look_again`, what OpenCV re-measured at which settings, beside t
 numbers at the topic's settings), the verdict, the action, and what a person did. It states facts
 only; the cause is shown by the counterfactuals.
 
-[R2: the headline trace (replayed, `sydney-demo`), its rows as rendered; the live trace if the demo
-topic's triage ran; and the counterfactual numbers of §6]
+The headline trace is the replayed [`sydney-demo`](evidence/agentic-vision/replay/sydney-demo.md) (§6): OpenCV's
+measured change sends each of three ticks to the agent, whose tool calls and verdict follow from
+those numbers, and a judge can re-run it with no AWS account. The cause is the gate-level
+counterfactual: the same scene with only OpenCV's coverage moved from 0.62 to 0.58 flips whether the
+agent is called and whether a Finding is written, 2 of 2. The agent-level counterfactual, through
+`look_again`, is not shown: the agent called it in 1 of 20 runs. No live trace yet: the demo topic's
+triage (O3) has not run.
 
 **Task success, failure handling, observability and human control (A3).**
 
-- **Task success.** [R2: balanced accuracy and per-class recall against both baselines, from §6]
+- **Task success.** Balanced accuracy 0.95 (recall of `real` 0.90, of `artefact` 1.00) on 13 cases
+  of five repeats, against 0.50 for both baselines (§6).
 - **Failure handling.** Every failed gate and every agent failure ends at "No Finding", with a stop
   code in the evidence (`answered`, `malformed`, `bedrock_error`, `deadline`, `turn_limit`, `no_profile`,
   `no_model`); a site that could not be measured keeps its history and records `last_error`
-  ("not measured is never nothing there"). [R2: the failed-closed cases' results, all required to
-  end as expected]
+  ("not measured is never nothing there"). Measured: the three failure cases failed closed in 15 of
+  15 runs, and the eight real failure-catalogue rows all ended as expected (§6).
 - **Observability.** One JSON line per step, 90 days, in both Regions; the decision ring in the
   running state; and the operator's assistant reads it back on the page and by voice
   (`vision_evidence`: three fixed Logs Insights queries by field equality, one 12-second limit for
