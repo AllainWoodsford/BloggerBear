@@ -1,4 +1,5 @@
-"""Planner notes: the rail network's flags and simulated links as sentences a reader can follow.
+"""Planner notes: the rail network's flags and theoretical simulations as sentences a reader can
+follow.
 
 vision/rail_analyse.py flags stations (`flag_stations`: a single point of failure, isolated high
 demand, a possible ghost line) and simulates changes to the network (`suggest`: an orbital link
@@ -10,21 +11,33 @@ the adapter that imports it is imported by every pipeline Lambda.
 
 The rules, which the tests hold:
 - every sentence is written here from measured values, and says what the measure is;
-- flags are called flags and simulations simulations. Both are hypotheses from proxies (built-up
-  density from imagery, straight-line reach, OpenStreetMap's topology), not ridership, cost or
-  recommendations;
+- flags are called flags and simulations theoretical: a simulated link is a what-if on the mapped
+  graph and straight lines, justified by its numbers (both ends' distance to a hub by rail, the
+  fall in the mean distance to a hub) and qualified by what its straight line crosses (water,
+  ground the scene could not see), never a route, an alignment or a recommendation. Both are
+  hypotheses from proxies (built-up density from imagery, straight-line reach, OpenStreetMap's
+  topology), not ridership, cost or recommendations;
+- the stops are proxies like the rest: a station's feeder coverage is the share of its hinterland
+  (built-up ground beyond its own reach) within straight-line reach of a mapped bus, tram or ferry
+  stop, and its multimodal isolation weight is the rail isolation weight times (1 - that
+  coverage). A note quotes both, named as what they are, where they were measured; it gives no
+  journey, travel or waiting time;
+- a constructive register: what the measures show and what a theoretical link would change, never
+  a complaint, blame, or a cost, political or resource-allocation view;
 - a value that was not measured (None, missing, not a finite number) drops the clause that needs
   it, never prints "None"; so does a figure that rounds to nothing as printed (a change of 0 %,
   0.0 km, 0 m), and a simulation whose one claim rounds to nothing is not written at all; a note
   whose station has no name to show is dropped whole; a figure read from betweenness the analysis
-  estimated from a sample says "about";
+  estimated from a sample says "about"; a link whose crossing was not measured is not called dry;
 - every station name is OpenStreetMap's, crowd-sourced, and reaches the summary model's prompt: it
   is written in double quotation marks, as one line without controls or bidi overrides (but with
   the two joiners Persian and Indic names are spelt with), so it reads as a quoted name and
   nothing else;
-- the order is fixed (flags: single point of failure, isolated high demand by isolation weight,
-  ghost line longest first; simulations: orbital links by the fall in distance to a hub, feeder
-  corridors by isolation weight), so the same entry always reads the same.
+- the order is fixed (flags: single point of failure, isolated high demand by the multimodal
+  isolation weight where measured, else the rail weight, ghost line longest first; simulations:
+  orbital links by the fall in distance to a hub, those mostly over water or whose crossing was
+  not measured after the dry ones, as the analysis ranks them, then feeder corridors by the same
+  weight as the flags), so the same entry always reads the same.
 """
 
 from __future__ import annotations
@@ -42,11 +55,15 @@ MAX_NOTES = MAX_FLAGS + MAX_SIMULATIONS
 # vision.rail_analyse.ORBITAL_DETOUR (1.2). The worker does not echo it, and rail_analyse imports
 # networkx, so it is copied here and a test holds the two equal.
 ORBITAL_DETOUR_PERCENT = 20
+# A theoretical link whose straight line has at least this share of its pixels over water is
+# "mostly over water", and is ranked after the links known to be dry: vision.rail_analyse's
+# MOSTLY_WATER (0.5), copied here as ORBITAL_DETOUR_PERCENT is, and a test holds the two equal.
+MOSTLY_WATER = 0.5
 # The quality flag by which vision/rail_analyse.py says the betweenness was estimated from a seeded
 # sample of source nodes (a large graph): a ratio or a share read from it is then "about" that.
 SAMPLED_BETWEENNESS_FLAG = "betweenness_sampled"
 # What the notes are introduced with wherever they are shown as one text.
-NOTES_LEAD = "Rule-based flags and simulations (proxies, not recommendations): "
+NOTES_LEAD = "Rule-based flags and theoretical simulations (proxies, not recommendations): "
 
 
 def planner_notes(
@@ -137,7 +154,14 @@ def _isolated_high_demand(flag: dict, rows: dict, entry: dict) -> tuple[list[str
         parts.append(f"{degree} track direction{'' if degree == 1 else 's'}")
     if d_hub_km is not None:
         parts.append(f"{d_hub_km} km by rail to the nearest hub")
-    return _ids(station), f"{name} has {_and(parts)}: the pipeline flags it as isolated high demand."
+    text = f"{name} has {_and(parts)}: the pipeline flags it as isolated high demand"
+    # The flag's condition is on the rail weight, as documented; where the stops were measured
+    # it is ranked by the multimodal weight, so the note quotes both. Without one (no stops layer,
+    # or no hinterland to cover), the sentence is the one written before the stops were measured.
+    weights = _two_weights(flag, row)
+    if weights is not None:
+        text += f" ({weights})"
+    return _ids(station), text + "."
 
 
 def _ghost_line(flag: dict, rows: dict, entry: dict) -> tuple[list[str], str] | None:
@@ -176,13 +200,29 @@ def _orbital_link(suggestion: dict, rows: dict, entry: dict) -> tuple[list[str],
     length = _shown(simulated_km, 1)
     link = f"{_a_or_an(length)} {length} km link" if length is not None else "a link"
     text = (
-        f"Simulation: {link} between {a_name} and {b_name} (the straight line plus "
-        f"{ORBITAL_DETOUR_PERCENT} %) would bring the mapped network's stations {fall} m closer to a hub on "
-        "average by rail"
+        f"Theoretical link (a simulation on the mapped graph, not a route or a recommendation): {link} "
+        f"between {a_name} and {b_name} would bring the mapped network's stations {fall} m closer to a hub "
+        "on average by rail"
     )
     share = _top_hub_share_change(suggestion, rows, entry)
     if share:  # a change that rounds to 0 % is no change to report
         text += f", and change the busiest hub's share of shortest paths by {_about(entry)}{share:+d} %"
+    # Why the pair was tried: the analysis pairs stations in the top quarter of distance to a hub,
+    # so the sentence holds for every link; each end's distance is quoted where it was measured.
+    # One sentence still (a capitalised word inside a note would read as a name to the compliance
+    # check), and nothing before the stations' names that is not in the findings.
+    ends = [
+        f"{name} {km} km"
+        for name, km in ((a_name, _hub_km(suggestion, "from_d_hub_m", rows, a)),
+                         (b_name, _hub_km(suggestion, "to_d_hub_m", rows, b)))
+        if km is not None
+    ]  # fmt: skip
+    text += "; picked because both sit in the farthest quarter from a hub"
+    if ends:
+        text += f" ({', '.join(ends)} by rail)"
+    crossed = _crossed(suggestion, straight_km)
+    if crossed is not None:
+        text += f"; its straight line crosses {crossed}, so it stands for a corridor, not an alignment"
     return _ids(a, b), text + "."
 
 
@@ -194,15 +234,74 @@ def _feeder_corridor(suggestion: dict, rows: dict, entry: dict) -> tuple[list[st
     # The hub is the station's nearest by construction, so an unnamed one is still described.
     hub_name = _name(rows, hub, suggestion.get("hub_name")) or "its nearest hub"
     row = rows.get(station) or {}
-    weight = _shown(_number(row.get("isolation_weight")), 1)
+    # Both weights where the stops were measured; else the rail weight alone, as before them.
+    weights = _two_weights(suggestion, row)
+    if weights is None:
+        rail = _shown(_measured(suggestion, row, "isolation_weight"), 1)
+        weights = f"isolation weight {rail}" if rail is not None else None
     length_km = _km(_first(suggestion.get("length_m"), row.get("d_hub_m")))
-    text = f"Simulation: {name} is among the most isolated stations for the size of its catchment"
-    if weight is not None:
-        text += f" (isolation weight {weight})"
+    text = (
+        f"Theoretical feeder corridor (a simulation, not a route): {name} is among the most isolated "
+        "stations for the size of its catchment"
+    )
+    if weights is not None:
+        text += f" ({weights})"
     text += f"; a feeder corridor, such as an express bus, to {hub_name}"
     if length_km is not None:
         text += f", {length_km} km away by rail today,"
     return _ids(station, hub), text + " is the link the pipeline's rules point to."
+
+
+def _two_weights(item: dict, row: dict) -> str | None:
+    """"isolation weight 6.1 by rail; 2.4 once the bus, tram and ferry stops covering 60 % of its
+    hinterland count": the station's rail isolation weight and its multimodal one (the rail weight
+    times 1 - its feeder coverage), as the flag or suggestion carries them, else its station row.
+    None unless all three figures were measured and print as more than nothing: without a stops
+    layer, where the stops cover none of the hinterland (the two weights would be one figure
+    twice) or all of it (a multimodal weight of 0.0), the caller writes what it wrote before the
+    stops were measured."""
+    rail = _shown(_measured(item, row, "isolation_weight"), 1)
+    multimodal = _shown(_measured(item, row, "multimodal_isolation_weight"), 1)
+    coverage = _measured(item, row, "feeder_coverage")
+    covered = _shown(coverage * 100 if coverage is not None else None, 0)
+    if rail is None or multimodal is None or covered is None:
+        return None
+    return (
+        f"isolation weight {rail} by rail; {multimodal} once the bus, tram and ferry stops covering "
+        f"{covered} % of its hinterland count"
+    )
+
+
+def _hub_km(suggestion: dict, key: str, rows: dict, station: str | None) -> str | None:
+    """One end's distance to a hub by rail, in km: as the suggestion carries it (`from_d_hub_m`,
+    `to_d_hub_m`), else as the station's row has it (`d_hub_m`, the same figure, for an entry from
+    before a suggestion carried its own); None when neither was measured or it rounds to 0.0 km."""
+    return _km(_first(suggestion.get(key), (rows.get(station) or {}).get("d_hub_m")))
+
+
+def _crossed(suggestion: dict, straight_km: float | None) -> str | None:
+    """"1.2 km of water and 0.3 km the scene could not see": what the link's straight line crosses,
+    from `water_km` (else `water_share` of the straight line) and `unmeasured_share` of it. A part
+    that was not measured, or rounds to 0.0 km, is left out; None when nothing is left, and the
+    note then claims nothing about the crossing (a line whose crossing was not measured is not
+    called dry)."""
+    water_km = _first(
+        _number(suggestion.get("water_km")), _share_km(suggestion.get("water_share"), straight_km)
+    )
+    water = _shown(water_km, 1)
+    unseen = _shown(_share_km(suggestion.get("unmeasured_share"), straight_km), 1)
+    parts = []
+    if water is not None:
+        parts.append(f"{water} km of water")
+    if unseen is not None:
+        parts.append(f"{unseen} km the scene could not see")
+    return _and(parts) if parts else None
+
+
+def _share_km(share, straight_km: float | None) -> float | None:
+    """`share` of the straight line's length, in km; None unless both were measured."""
+    value = _number(share)
+    return value * straight_km if value is not None and straight_km is not None else None
 
 
 def _top_hub_share_change(suggestion: dict, rows: dict, entry: dict) -> int | None:
@@ -227,9 +326,15 @@ def _single_point_order(flag: dict, rows: dict) -> tuple:
 
 
 def _isolation_order(item: dict, rows: dict) -> tuple:
-    """Highest isolation weight first (the item's own, else its station row's), unmeasured last."""
+    """Highest weight first: the multimodal isolation weight where the item or its station row has
+    one, else the rail isolation weight (one scale, the analysis's own ranking rule: the multimodal
+    weight is the rail weight less the feeder cover that was measured, and a station without one
+    had nothing measured to discount by); unmeasured last."""
     station = _id(item.get("station"))
-    weight = _measured(item, rows.get(station) or {}, "isolation_weight")
+    row = rows.get(station) or {}
+    weight = _first(
+        _measured(item, row, "multimodal_isolation_weight"), _measured(item, row, "isolation_weight")
+    )
     return (weight is None, -(weight or 0.0), _sort_id(station))
 
 
@@ -239,8 +344,14 @@ def _ghost_order(flag: dict, rows: dict) -> tuple:
 
 
 def _orbital_order(suggestion: dict, rows: dict) -> tuple:
+    """The largest fall in distance to a hub first among the links known to be dry (a water share
+    below MOSTLY_WATER), then the rest in the same order (mostly over water, or a crossing that was
+    not measured), as the analysis ranks them; a link without the fall last (it is not written)."""
     closer = _number(suggestion.get("delta_mean_d_hub_m"))
-    return (closer is None, closer or 0.0, _sort_id(suggestion.get("from")), _sort_id(suggestion.get("to")))
+    water_share = _number(suggestion.get("water_share"))
+    dry = water_share is not None and water_share < MOSTLY_WATER
+    ids = (_sort_id(suggestion.get("from")), _sort_id(suggestion.get("to")))
+    return (closer is None, not dry, closer or 0.0, *ids)
 
 
 # Type -> (sort key, sentence), in the order the types are shown.

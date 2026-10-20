@@ -22,7 +22,7 @@ The rail access task (docs/enhancements/archive/rail-access-monitor.md) adds, on
 - network.py      OpenStreetMap rail ways rasterised, thinned and read back as a graph (networkx)
 - rail_analyse.py the whole pass for one city: heat, reach, graph measures, flags, suggestions
 - rail_annotate.py the figure: heat over the scene, deserts, lines, stations, hubs, flags,
-                   simulated links, and the caption and a legend in a strip under it
+                   theoretical links, and the caption and a legend in a strip under it
 
 Imported only by the vision worker (and its tests): the shared pipeline zip has no OpenCV.
 """

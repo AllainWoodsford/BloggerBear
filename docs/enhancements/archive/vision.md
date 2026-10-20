@@ -203,7 +203,8 @@ inside the worker, a `ValueError` from the analysis included, is `internal` and 
  "params": {"reach_m": 1000}, "coverage_floor": 0.6, "image": true,
  "network": {"ways": [{"id": "w123", "points": [[151.2, -33.89], …], "tunnel": false, "name": "…"}],
              "stations": [{"id": "n456", "name": "Redfern", "lon": 151.198, "lat": -33.892, "kind": "station"}],
-             "pois": [{"id": "n789", "lon": 151.2, "lat": -33.89, "kind": "bus_stop"}],
+             "pois": [{"id": "n789", "lon": 151.2, "lat": -33.89, "kind": "ferry_terminal"}],
+             "stops": {"bus": [[151.2, -33.89], …], "tram": [[151.21, -33.88], …]},
              "fetched_at": "2026-10-10T03:00:00+00:00"}}
 ```
 
@@ -222,15 +223,24 @@ inside the worker, a `ValueError` from the analysis included, is `internal` and 
   any tile.
 - **`network`.** Required for rail and refused for ships: the shape `common/osm.py` returns, checked
   by `validate_network` against `NETWORK_LIMITS` (60,000 way points in all, 5,000 ways, 2,000
-  stations, 5,000 points of interest, names cut at 80 characters), every lon/lat checked as a
-  polygon's points are, ids of at most `MAX_NETWORK_ID_CHARS` (32), `fetched_at` a string of at
-  most `MAX_FETCHED_AT_CHARS` (64). Only `ways`, `stations`, `pois` and `fetched_at` are sent; the
-  adapter keeps the rest. The client sends the request as UTF-8 (names are not escaped): a city's
-  network at the caps is about 2.6 to 3 MB of JSON, under Lambda's 6 MB synchronous payload.
+  stations, 5,000 points of interest, 40,000 stops across modes, names cut at 80 characters),
+  every lon/lat checked as a polygon's points are, ids of at most `MAX_NETWORK_ID_CHARS` (32),
+  `fetched_at` a string of at most `MAX_FETCHED_AT_CHARS` (64). `stops` is optional: `{"bus":
+  [[lon, lat], ...], "tram": [...]}` (`STOP_MODES`; ferry terminals stay in `pois`), bare points
+  with no ids or names, at most `NETWORK_LIMITS["stops"]` across modes, the figure `osm.cap_network`
+  thins to (one stop per mode per 20 m cell, no tram stop in a station's cell, the cell doubled up
+  to four times over the cap, then an even cut per mode; `MAX_STOPS` is the same 40,000). A network
+  stored before the layer existed has no `stops` and validates as before: the worker then reports
+  every stop measure as None under the quality flag `no_stops_layer`, and such a network's bus
+  stops, kept as `pois` of kind `bus_stop`, still count in `intermodal`. Only `ways`, `stations`,
+  `pois`, `stops` and `fetched_at` are sent; the adapter keeps the rest. The client sends the
+  request as UTF-8 (names are not escaped): a city's network at the caps is about 2.6 to 3 MB of
+  JSON, plus about 1 MB for a full stops layer, under Lambda's 6 MB synchronous payload.
 
 **Rail parameters** a request may set: every field of `vision.rail_analyse.RailParams`, within the
 contract's `RAIL_PARAM_LIMITS` (a test holds the two equal). The adapter always sends `reach_m`
-from the topic's config, with the topic's `params` laid over it.
+from the topic's config, with the topic's `params` laid over it; a `reach_m` over the feeder reach
+is refused as `bad_request`, each read against the other's default (`DEFAULT_FEEDER_M`).
 
 | Parameter | Default | Limits | Meaning |
 |---|---|---|---|
@@ -245,26 +255,34 @@ from the topic's config, with the topic's `params` laid over it.
 | `min_desert_km2` | 0.5 | 0.01 to 100 | A built-up patch beyond reach is reported as a desert from this size up. |
 | `visibility_ndvi_max` | 0.35 | 0 to 1 | A corridor pixel with NDVI below this shows bare ground or track, not canopy. |
 | `max_orbital_km` | 5.0 | 1 to 20 | Orbital links are simulated only between stations this close in a straight line. |
+| `stop_reach_m` | 400 | 100 to 2000 | Walking reach of a bus, tram or ferry stop, straight line (5 minutes at the contract's `WALK_M_PER_MIN`, 80 m a minute). Reported, never material, and outside the baseline key (`STOP_PARAMS`). |
+| `feeder_reach_m` | 2000 | 500 to 10000, at least `reach_m` | How far beyond a station's own reach its hinterland is read for feeder coverage. Outside the baseline key too. |
 
 **The rail reply** has the same envelope as above, with `"task": "rail_access"`, `timings_ms` that
-adds `graph` (the rasterise, thin, snap and build stage, part of `analyse`), and these `metrics`
-(floats to 4 decimal places, coordinates to 5, never NaN or infinity):
+adds `graph` (the rasterise, thin, snap and build stage, part of `analyse`; `annotate` covers both
+figures), with a stops layer a second figure under `figures_png_b64` (`{"modes": <base64 PNG>}`,
+the transit-reach map, `FIGURE_NAMES`; absent without the layer), and these `metrics` (floats to 4
+decimal places, coordinates to 5, never NaN or infinity):
 
 | Key | What it is |
 |---|---|
 | `task`, `coverage` | `"rail_access"`; the share of the site's pixels the scene could see. |
 | `built_up_km2`, `served_km2`, `desert_km2`, `served_share` | Built-up area, the part within reach of a station, the part beyond it, and served over built up (0 when nothing is built up). |
+| `stops` | Received stop counts, `{"bus", "tram", "ferry"}`: bus and tram from the network's `stops` layer, ferry from the `ferry_terminal` points of interest. Null without the layer, as every row below until `station_count`. |
+| `stop_served_share`, `stop_served_km2`, `stop_served_share_by_mode` | Built-up area within `stop_reach_m` of any mapped stop, as a share and in km², and the share per mode (`bus`, `tram`, `ferry`). Straight-line reach, as a station's. |
+| `any_mode_served_share`, `any_mode_served_km2`, `any_mode_desert_km2`, `stops_only_km2` | Within reach of a station or a stop; beyond both; beyond station reach but within stop reach. |
+| `stop_coverage_km2_per_100`, `stop_overlap_share` | The mapped stops' efficiency: built-up km² within stop reach per 100 received stops of the three modes (null with no stops), and the part of the stop-served ground already within station reach (null when nothing is stop-served). |
 | `station_count`, `snapped_station_count` | Stations in the network, and those snapped to a drawn line within `snap_m`. |
 | `node_count`, `edge_count`, `components` | The graph's size and its connected pieces. |
 | `hubs`, `interchanges` | Station node ids (`s:<osm id>`): the top `hub_count` by betweenness among stations with activity at or above the median; stations of degree 3 or more. |
-| `stations[]` | At most 2,000 rows: `id`, `name`, `kind`, `lon`, `lat`, `snapped`, `degree`, `betweenness`, `activity` (null when the catchment was not seen), `catchment_coverage`, `d_hub_m` (null with no path to a hub), `isolation_weight`, `intermodal` (`bus_stop_near`, `bus_station_near`, `ferry_terminal_far`, `park_ride_far`). |
-| `flags[]` | `isolated_high_demand` (`station`, `name`, `activity`, `degree`, `isolation_weight`), `single_point_of_failure` (`station`, `name`, `ratio`, null when the second station's betweenness is 0), `ghost_line` (`stations`, `names`). |
-| `suggestions[]` | `orbital_link` (`from`, `to`, `from_name`, `to_name`, `straight_km`, `delta_top_hub_betweenness`, `delta_mean_d_hub_m`), at most three; `feeder_corridor` (`station`, `name`, `hub`, `hub_name`, `length_m`), at most three. |
-| `deserts[]` | The ten largest: `lon`, `lat`, `area_km2`, `nearest_station`, `nearest_station_m` (both null when no station lies in the window). |
+| `stations[]` | At most 2,000 rows: `id`, `name`, `kind`, `lon`, `lat`, `snapped`, `degree`, `betweenness`, `activity` (null when the catchment was not seen), `catchment_coverage`, `d_hub_m` (null with no path to a hub), `isolation_weight`, `feeder_coverage` (the share of the station's built-up hinterland between `reach_m` and `feeder_reach_m`, in its cell, within stop reach; null without the layer or without such ground), `multimodal_isolation_weight` (`isolation_weight` × (1 − `feeder_coverage`); null when either is), `intermodal` (`bus_stop_near`, `bus_station_near`, `ferry_terminal_far`, `park_ride_far`). |
+| `flags[]` | `isolated_high_demand` (`station`, `name`, `activity`, `degree`, `isolation_weight`, and the station's `feeder_coverage` and `multimodal_isolation_weight`; the condition stays on the rail weight), `single_point_of_failure` (`station`, `name`, `ratio`, null when the second station's betweenness is 0), `ghost_line` (`stations`, `names`). |
+| `suggestions[]` | Every one `"theoretical": true` (a what-if on the mapped graph and straight lines, never a route or a recommendation). `orbital_link` (`from`, `to`, `from_name`, `to_name`, `straight_km`, `delta_top_hub_betweenness`, `delta_mean_d_hub_m`; its justification `from_d_hub_m`, `to_d_hub_m` and `stations_closer`; what its straight line crosses, `water_share`, `unmeasured_share`, `built_share` (each null when no pixel of the line is in the grid) and `water_km`), at most three, the links under `MOSTLY_WATER` (0.5) first by the fall in mean hub distance, then the rest in the same order; `feeder_corridor` (`station`, `name`, `hub`, `hub_name`, `length_m`, `isolation_weight`, `multimodal_isolation_weight`, `feeder_coverage`), at most three. Both ranked by the multimodal weight where a station has one, else its rail weight. |
+| `deserts[]` | The ten largest: `lon`, `lat`, `area_km2`, `nearest_station`, `nearest_station_m` (both null when no station lies in the window), `stop_covered_share` (the patch's share within stop reach; null without the layer). |
 | `edges[]`, `truncated` | At most 5,000 edges (`from`, `to`, `length_m`, `betweenness`, `corridor_visibility`, null where over half is tunnel, `tunnel`), kept by betweenness; how many were cut. |
-| `quality_flags` | Any of `empty_site`, `low_coverage`, `no_network`, `few_stations_snapped` (under half), `graph_fragmented` (more than max(3, stations / 10) components), `graph_too_large` (no graph was built: over `MAX_GRAPH_NODES`), `betweenness_sampled` (below). |
-| `warnings` | Elements skipped (coordinates not on Earth, repeated ids), stations merged, odd runs. |
-| `network` | What was received: `ways`, `stations`, `pois`, `points`, `fetched_at`. |
+| `quality_flags` | Any of `empty_site`, `low_coverage`, `no_network`, `few_stations_snapped` (under half), `graph_fragmented` (more than max(3, stations / 10) components), `graph_too_large` (no graph was built: over `MAX_GRAPH_NODES`), `betweenness_sampled` (below), `no_stops_layer` (the network carried no `stops`: every stop measure is null, and there is no second figure; an empty layer measures as 0 with no flag). |
+| `warnings` | Elements skipped (coordinates not on Earth, repeated ids), stations merged, odd runs; last, `modes_figure_dropped` when the handler's reply-size guard dropped the transit-reach figure (a serialised reply over `REPLY_BYTES_BUDGET`, 5 MiB, would be an `invoke` error at Lambda's 6 MB; the map and the measures are never dropped). |
+| `network` | What was received: `ways`, `stations`, `pois`, `points`, `stops` (the layer's bus and tram points; null without it), `fetched_at`. |
 | `params` | `pixel_size_m`, `coverage_floor` and every `RailParams` field, as measured with. |
 
 Two bounds keep a contract-valid but pathological network inside the worker's time.
@@ -548,25 +566,42 @@ band where the scene was usable and a slate tint where it was not; deserts outli
 graph's edges in pale cyan, thicker the more paths run through them; stations as white rings, larger
 the busier the catchment, with a thicker ring in the top quarter of isolation weight; hubs as green
 diamonds; a flagged station with a second, red ring; a ghost line as a red line through its
-stations; simulated links dashed in green. Its words are in a dark strip under the map, so they
+stations; theoretical links dashed in green, or in azure when a link's straight line is mostly
+over water. Its words are in a dark strip under the map, so they
 never cover a station: three caption lines ("Processed imagery - BloggerBear", "Contains modified
 Copernicus Sentinel data {year}", "Map data (c) OpenStreetMap contributors"; Hershey fonts have no
 ©), a 1 px rule, and a legend in one to three columns by width, on every figure at least 256 px
 wide. The legend's entries (`LEGEND_ENTRIES`): "station, larger = busier catchment, thick ring =
 high isolation weight", "hub", "flagged (isolated high demand, single point of failure, ghost
-line)", "simulated link" (#298; "simulated", as the caption and the planner notes say, never
-"suggested") and "beyond walking reach". The PNG is written at zlib's level 9 and kept within a
+line)", "theoretical link" (a what-if on the mapped graph, as the planner notes and the articles
+say, never "suggested"; #298 had it as "simulated link"), "beyond walking reach" and, last,
+"theoretical link (mostly over water)" (an orbital link with `water_share` of 0.5 or more, dashed
+in azure). The PNG is written at zlib's level 9 and kept within a
 2 MiB budget by drawing it again at 0.8 times the size, down to a 512 px map (the client refuses a
 figure over 3 MiB). The page caption (at most 400 characters, `figures.MAX_CAPTION_CHARS`) is:
 
 > Rail access in {name}, Sentinel-2 {date}: built-up density (warm colours), areas beyond {reach}
 > of a station (outlined), OpenStreetMap rail lines and stations, flagged stations (red rings) and
-> simulated links (dashed). Processed imagery; contains modified Copernicus Sentinel data {year};
+> theoretical links (dashed). Processed imagery; contains modified Copernicus Sentinel data {year};
 > map data © OpenStreetMap contributors.
 
 and its alt text "Processed satellite map of {name} showing rail lines, stations, flagged stations,
-simulated links and built-up areas beyond walking reach of a station". A long site name is cut
+theoretical links and built-up areas beyond walking reach of a station". A long site name is cut
 (and marked) so the credits always fit.
+
+The transit-reach figure (`annotate_modes`, with a stops layer; stored as `<scene>-modes.png`) is
+the same scene in grey with the slate tint and three translucent fills over built-up ground only:
+aqua within a station's reach, orange beyond that but within a stop's, violet with a pale outline
+beyond both; thin white lines and small white rings for the network; the same three caption lines
+and its own legend, which names each reach in metres and in walking minutes at `WALK_M_PER_MIN`
+("within 1 km (about 12 min walk) of a station", "beyond that, within 400 m (5 min walk) of a bus,
+tram or ferry stop", "beyond both (outlined)"). It has its own 512 KiB budget
+(`MODES_FIGURE_BYTE_BUDGET`: flat fills compress well) with the same shrink. Its page caption
+(through the adapter's `figures`) is "Transit reach in {name}, Sentinel-2 {date}: built-up area
+within {reach} (about {n} min walk) of a rail station, beyond that but within {stop reach} ({m}
+min) of a mapped bus, tram or ferry stop, and beyond both (outlined). Straight-line reach over
+OpenStreetMap stops. Processed imagery; contains modified Copernicus Sentinel data {year}; map
+data © OpenStreetMap contributors.", within the same limits.
 
 ### 6.7 Rail access: what is measured and what is not
 
@@ -608,16 +643,27 @@ without controls, markup or bidi overrides:
   than any other station".)
 - "{name} has one of the busiest catchments in the city by built-up density (activity {a}, top
   quarter), {n} track directions and {d} km by rail to the nearest hub: the pipeline flags it as
-  isolated high demand."
+  isolated high demand." With a stops layer the sentence also gives the two weights: "(isolation
+  weight {w} by rail; {m} once the bus, tram and ferry stops covering {c} % of its hinterland
+  count)".
 - "{n} connected stations, among them {first} and {last}, sit in the quietest quarter of built-up
   density along the network: the pipeline flags the stretch as a possible ghost line, where track
   runs through little built-up area."
-- "Simulation: a {km} km link between {a} and {b} (the straight line plus 20 %) would bring the
-  mapped network's stations {m} m closer to a hub on average by rail, and change the busiest hub's
-  share of shortest paths by {±p} %."
-- "Simulation: {name} is among the most isolated stations for the size of its catchment (isolation
-  weight {w}); a feeder corridor, such as an express bus, to {hub}, {d} km away by rail today, is
-  the link the pipeline's rules point to."
+- "Theoretical link (a simulation on the mapped graph, not a route or a recommendation): a {km} km
+  link between {a} and {b} would bring the mapped network's stations {m} m closer to a hub on
+  average by rail, and change the busiest hub's share of shortest paths by {±p} %; picked because
+  both sit in the farthest quarter from a hub ({a} {d1} km, {b} {d2} km by rail); its straight line
+  crosses {x} km of water and {y} km the scene could not see, so it stands for a corridor, not an
+  alignment." (The named length is the straight line plus 20 %, as before; the crossing clause is
+  left out when the line crosses neither.)
+- "Theoretical feeder corridor (a simulation, not a route): {name} is among the most isolated
+  stations for the size of its catchment (isolation weight {w} by rail; {m} once the bus, tram and
+  ferry stops covering {c} % of its hinterland count); a feeder corridor, such as an express bus,
+  to {hub}, {d} km away by rail today, is the link the pipeline's rules point to." (One weight,
+  as before, without a stops layer.)
+
+The notes are introduced as "Rule-based flags and theoretical simulations (proxies, not
+recommendations):".
 
 The honesty rules, which the tests hold: every sentence comes from measured values and says what
 the measure is; flags are called flags and simulations simulations, hypotheses from proxies

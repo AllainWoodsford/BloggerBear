@@ -142,8 +142,12 @@ FUNCTION_FIELDS = (
 RUNNING_STATE_KEY = "snapshots/{topic_id}/running-state.json"
 # A figure's key as vision_sites.store_image writes it.
 FIGURE_KEY = re.compile(r"^vision/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_.:-]{1,128}\.png$")
-# The network fixture's fields (scripts/vision_benchmark.py fetch-network, common/osm.fetch_network).
-NETWORK_FIELDS = ("ways", "stations", "pois", "fetched_at", "source", "endpoint", "query_url", "counts")
+# The network fixture's fields (scripts/vision_benchmark.py fetch-network, common/osm.fetch_network):
+# `stops` is the bus and tram stops layer and `bytes` the Overpass body's size, both from networks
+# fetched since the layer; an older network lacks them and its fixture does too (fixture_of).
+NETWORK_FIELDS = (
+    "ways", "stations", "pois", "stops", "fetched_at", "source", "endpoint", "query_url", "counts", "bytes",
+)  # fmt: skip
 NOTE_LABEL = "the agent's note (unverified, model text)"
 HOSTS_LABEL = "the news hosts the agent read (unverified, third-party text)"
 SUMMARY_LABEL = "the Finding's summary (unverified, model text)"
@@ -1177,13 +1181,27 @@ def history_of(state: dict | None) -> dict:
     return out
 
 
-def figure_key_of(state: dict | None, site_id: str, scene_id: str) -> str | None:
+# A scene's figures as its history entry names them: the rail map (`image_key`, the figure the
+# labels and traces point at) and, since the stops layer, the transit reach map (`modes_image_key`),
+# written beside it with this suffix on its file name.
+FIGURE_SUFFIXES = (("image_key", ""), ("modes_image_key", "-modes"))
+
+
+def figure_keys_of(state: dict | None, site_id: str, scene_id: str) -> list[tuple[str, str]]:
+    """[(suffix, key)] of the scene's figures in the content bucket, the rail map first, from the
+    site's newest history entry for the scene; a key that is not a figure key is left out, and a
+    scene with no entry or no figure gives []."""
     record = (((state or {}).get("sites") or {}).get(site_id)) or {}
     for entry in reversed(record.get("history") or []):
         if isinstance(entry, dict) and entry.get("scene_id") == scene_id:
-            key = entry.get("image_key")
-            return key if isinstance(key, str) and FIGURE_KEY.match(key) else None
-    return None
+            keys = [(suffix, entry.get(field)) for field, suffix in FIGURE_SUFFIXES]
+            return [(suffix, key) for suffix, key in keys if isinstance(key, str) and FIGURE_KEY.match(key)]
+    return []
+
+
+def figure_key_of(state: dict | None, site_id: str, scene_id: str) -> str | None:
+    """The scene's rail map's key, or None."""
+    return next((key for suffix, key in figure_keys_of(state, site_id, scene_id) if suffix == ""), None)
 
 
 # --- networks (--networks) -----------------------------------------------------------------------------
@@ -2349,26 +2367,30 @@ def export(
     candidates = sorted(candidates, key=lambda r: r.get("at") or "", reverse=True)  # newest first
     candidates = sorted(candidates, key=lambda r: not r.get("triage"))  # stable: the triaged ones first
     for record in candidates[: args.figures or 0]:
-        key = figure_key_of(data["states"].get(record["topic_id"]), record["site_id"], record["scene_id"])
-        if key is None:
-            continue
-        try:
-            response = aws.s3().get_object(Bucket=data["names"]["bucket"], Key=key)
-            body = response["Body"].read()
-        except Exception as exc:  # noqa: BLE001 - a figure not read is said, never raised
-            figure_provenance[key] = {"error": _error_code(exc)}
-            continue
-        name = "figures/" + _file_name(record["topic_id"], record["site_id"], record["scene_id"]) + ".png"
-        path = out_dir / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(body)
-        written.append(path)
-        figures[(record["topic_id"], record["site_id"], record["scene_id"])] = name
-        figure_provenance[name] = {
-            "key": key,
-            "etag": str(response.get("ETag") or "").strip('"') or None,
-            "last_modified": _iso(response["LastModified"]) if response.get("LastModified") else None,
-        }
+        state = data["states"].get(record["topic_id"])
+        scene_keys = figure_keys_of(state, record["site_id"], record["scene_id"])
+        # Both of a scene's figures (the rail map and, since the stops layer, the transit reach map,
+        # with FIGURE_SUFFIXES' suffix on its name) count as the one figure --figures allows.
+        for suffix, key in scene_keys:
+            try:
+                response = aws.s3().get_object(Bucket=data["names"]["bucket"], Key=key)
+                body = response["Body"].read()
+            except Exception as exc:  # noqa: BLE001 - a figure not read is said, never raised
+                figure_provenance[key] = {"error": _error_code(exc)}
+                continue
+            stem = _file_name(record["topic_id"], record["site_id"], record["scene_id"])
+            name = f"figures/{stem}{suffix}.png"
+            path = out_dir / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+            written.append(path)
+            if suffix == "":
+                figures[(record["topic_id"], record["site_id"], record["scene_id"])] = name
+            figure_provenance[name] = {
+                "key": key,
+                "etag": str(response.get("ETag") or "").strip('"') or None,
+                "last_modified": _iso(response["LastModified"]) if response.get("LastModified") else None,
+            }
     data["figure_provenance"] = figure_provenance
     for record in data["decisions"]:
         if record["kept"] and (record.get("triage") or {}).get("verdict") in VERDICTS:

@@ -15,6 +15,7 @@ lives in common/vision_sites.py. What a topic watches is configuration, not code
                                                            # inside one Sentinel-2 tile
       "backend": "opencv",                                 # or "cool"
       "params": {...},                                     # vision.rail_analyse.RailParams overrides
+                                                           # (stop_reach_m, feeder_reach_m among them)
       "reach_m": 1000,                                     # walking reach of a station, straight line
       "osm_ttl_days": 30,                                  # how long the cached network is used
       "max_cloud_cover": 40, "lookback_days": 20,
@@ -98,7 +99,18 @@ and nothing about the other three until one of them changed.
 
 **What is honest.** The heat is a built-up density proxy from imagery, not population; walking
 reach is straight-line distance; the network is OpenStreetMap's (ODbL, credited) and the imagery
-only verifies and scores it. The summary prompt says so, and says what was not measured.
+only verifies and scores it. The stops are proxies the same way: reach of a stop is the straight-line
+distance to the nearest mapped bus, tram or ferry stop, and every minutes figure is a reach restated
+at the contract's stated pace (vision_contract.WALK_M_PER_MIN, 80 m a minute), never a journey,
+travel or waiting time. Every simulated link is theoretical: a what-if on the mapped graph and
+straight lines, justified by its numbers and qualified by what its straight line crosses (water,
+ground the scene could not see), never a route, an alignment or a recommendation; and the register
+is constructive: what the measures show and what a theoretical link would change, never a
+complaint, blame, cost, political or resource-allocation view. The summary prompt and
+`drafting_guidance` say so, and say what was not measured. A network cached before the stops layer
+existed has none: the stop measures are then None with the quality flag `no_stops_layer`, the
+summary lines leave their clause out and there is no second figure, until the network is refreshed
+at its TTL or prefetched.
 
 **State between ticks.** `keeps_running_state`: the research tick keeps the state after a
 no-change tick too, so the baseline includes every scene measured and the network is fetched once
@@ -113,9 +125,10 @@ reads whichever wrote last. The site's record keeps only what readers need witho
 counts), and a history entry its `network_fetched_at`, so the decision ring's `network_changed`
 compares copies without reading any. A state written before kept each network inline: the first
 tick moves it to the object (`_move_inline_network`) and keeps it inline until that has worked, so
-it is never lost. The figure for each scene is stored in the content bucket under
-`vision/<topic>/<site>/<scene>.png`; the state holds only its key, and `figures` hands the newest to
-the article (common/figures.py). The network is in its object and the worker request, and nowhere a
+it is never lost. The figures for each scene are stored in the content bucket under
+`vision/<topic>/<site>/<scene>.png` (the rail map) and `<scene>-modes.png` (the transit reach map,
+when the network had a stops layer); the state holds only their keys, and `figures` hands the
+newest to the article (common/figures.py). The network is in its object and the worker request, and nowhere a
 prompt, a reviewer or the running state would see it. Only the newest history entry keeps the
 per-scene lists (NEWEST_ONLY_KEYS); with the networks out of it, the state of MAX_RAIL_SITES cities
 is well within what the research tick's 512 MB can load.
@@ -233,6 +246,16 @@ NETWORK_RETRY_HOURS = 6
 REFUSED_SCENE_CODES = ("window_too_large", "site_outside_scene", "bad_request")
 # The longest a cached network may serve before it is due again: a year of OpenStreetMap edits.
 MAX_OSM_TTL_DAYS = 365.0
+# RailParams' default walking reach of a bus, tram or ferry stop (vision/rail_analyse.py: 400 m, the
+# usual stop-reach rule, five minutes at the contract's WALK_M_PER_MIN). The worker echoes the stop
+# reach each scene was measured with, so this is read only for an entry from before the stops
+# layer (no such param echoed), whose lines carry no stop clause anyway. A topic sets another
+# through `params` (stop_reach_m); there is no config key of its own, as the contract checks it.
+DEFAULT_STOP_REACH_M = 400.0
+# A reported desert (one of the ten largest built-up patches beyond a station's reach) counts as
+# mostly within reach of a stop from this share of its pixels up: the summary says how many of the
+# patches are, so the transit angle can name what the stops cover without a number per patch.
+MOSTLY_STOP_COVERED = 0.5
 # A topic watches at most this many cities: a week of one city a day, and one more. The research
 # tick (512 MB) loads the running state whole, deep-copies it site by site and writes it back; each
 # network is in its own object (NETWORK_FIELDS), read only for the site visited. Measured
@@ -256,8 +279,11 @@ _MANDATE_LEAD = "Report only what was measured"
 SUBJECT_STYLE = (
     "a plain report of what the rail access measurements show for {label}: the share of its built-up "
     "area within walking reach of a rail station, the built-up area beyond it, the station count, the "
-    "scene's capture date and coverage, and the rule-based flags and simulations, as proxies measured "
-    "from satellite imagery and OpenStreetMap."
+    "multimodal reach where the mapped bus, tram and ferry stops were measured (the share within reach "
+    "of any stop or station, the area beyond all, the built-up ground the stops cover per 100 stops), "
+    "the scene's capture date and coverage, and the rule-based flags and theoretical simulations "
+    "(what-ifs on the mapped graph, never routes or recommendations), as proxies measured from "
+    "satellite imagery and OpenStreetMap, in a constructive register."
 )
 
 # A week rota (common/day_subject.py, `rotation_period` "week"): the week a city's record was last
@@ -278,13 +304,30 @@ DEFERRED = "deferred"
 NETWORK_FIELDS = ("network_key", "network_fetched_at", "network_site_key", "network_counts")
 
 # A history entry keeps each station's row cut to these fields (the worker's rows also carry
-# `kind`, `snapped` and `catchment_coverage`), at most this many: about 2000 rows of ten fields
+# `kind`, `snapped` and `catchment_coverage`), at most this many: about 2000 rows of a dozen fields
 # (some 600 KB of JSON) is what the running state can carry for the newest scene (docs §5 risk 2).
+# `feeder_coverage` and `multimodal_isolation_weight` (the rail isolation weight discounted by the
+# share of the station's hinterland the stops cover; None without a stops layer) are what the
+# planner notes quote beside the rail weight (common/rail_notes.py).
 STATION_FIELDS = (
     "id", "name", "lon", "lat", "degree", "betweenness", "activity", "d_hub_m", "isolation_weight",
-    "intermodal",
+    "intermodal", "feeder_coverage", "multimodal_isolation_weight",
 )  # fmt: skip
 MAX_HISTORY_STATIONS = 2000
+# The stop measures a history entry keeps from the worker's metrics, each None (not measured, never
+# nothing there) when the network had no stops layer (quality flag `no_stops_layer`): the stops
+# received by mode, the share and area within stop reach (by mode too), within reach of any mode
+# and beyond both, the stops-only area, and the transport efficiency of the mapped stops (built-up
+# km² within stop reach per 100 stops, the share of stop-served ground already within station
+# reach). Reported, never material: `assess` and `_judge` read none of them.
+STOP_MEASURE_KEYS = (
+    "stops", "stop_served_share", "stop_served_share_by_mode", "any_mode_served_share",
+    "any_mode_served_km2", "any_mode_desert_km2", "stops_only_km2", "stop_coverage_km2_per_100",
+    "stop_overlap_share",
+)  # fmt: skip
+# The suffix of the transit reach map's key beside the rail map's (vision_sites.store_image):
+# vision/<topic>/<site>/<scene>-modes.png holds the worker's "modes" figure (contract.FIGURE_NAMES).
+MODES_SUFFIX = "-modes"
 # Only the newest history entry keeps these lists: the figure, the review evidence and the agent's
 # brief (and planner notes built on them) read them from it alone. An older entry keeps the scalars
 # and counts the material rules, `site_history` and `previous_scene` read (`flag_count` among them),
@@ -318,6 +361,11 @@ DECISION_VOCABULARY = {
         "built_up_km2": {"label": "built-up area", "unit": "km²", "scale": 1},
         "station_count": {"label": "stations", "unit": "", "scale": 1},
         "flag_count": {"label": "flagged stations", "unit": "", "scale": 1},
+        # Kept in the ring when the scene had a stops layer (vision_decisions reads the measures
+        # generically, numbers only); never a reason for a Finding, so not in `moved` or `sources`.
+        "any_mode_served_share": {
+            "label": "built-up area within reach of any mode", "unit": "%", "scale": 100,
+        },  # fmt: skip
     },
     "moved": {
         "served_share": "the served share",
@@ -341,6 +389,8 @@ DECISION_VOCABULARY = {
         "min_desert_km2": {"label": "smallest desert counted", "unit": "km²"},
         "visibility_ndvi_max": {"label": "corridor vegetation ceiling", "unit": ""},
         "max_orbital_km": {"label": "longest orbital link", "unit": "km"},
+        "stop_reach_m": {"label": "stop reach", "unit": "m"},
+        "feeder_reach_m": {"label": "feeder reach", "unit": "m"},
     },
 }
 
@@ -386,14 +436,27 @@ def subject_style(label: str) -> str:
 
 
 def worker_params(config: dict) -> dict:
-    """What the worker is asked to measure with: the topic's reach, under any explicit override."""
-    return {"reach_m": config["reach_m"], **config["params"]}
+    """What the worker is asked to measure with: the topic's reach, under any explicit override,
+    and the feeder reach lifted to that reach when it is past the worker's default feeder reach
+    and `params` set none. The contract refuses a feeder reach under the station reach, each read
+    against the other's default (contract.DEFAULT_FEEDER_M), so a topic whose reach_m is over
+    2 km (the config allows 5 km) would otherwise be refused every tick as a bad request. With the
+    two equal the station's hinterland is empty and its feeder coverage is not measured (None):
+    honest, and a topic that wants it sets `feeder_reach_m` in `params`. The lift is the
+    contract's (`with_feeder_reach`), so the triage agent's `look_again` takes it too."""
+    return contract.with_feeder_reach({"reach_m": config["reach_m"], **config["params"]})
 
 
 def worker_network(network: dict) -> dict:
     """The part of a cached network the worker contract takes (the fetch's `source`, `endpoint`,
-    `query_url` and `counts` stay in the state)."""
-    return {key: network.get(key) for key in ("ways", "stations", "pois", "fetched_at")}
+    `query_url`, `counts` and `bytes` stay in the state): the ways, stations, points of interest
+    and fetch time, and the `stops` layer only when the network has one. A network cached before
+    the layer existed sends none, and the worker reports the stop measures as not measured; a
+    layer sent as None would mean the same, so it is left out rather than sent."""
+    sent = {key: network.get(key) for key in ("ways", "stations", "pois", "fetched_at")}
+    if network.get("stops") is not None:
+        sent["stops"] = network["stops"]
+    return sent
 
 
 def first_fetch_seconds(remaining: float) -> float:
@@ -412,6 +475,18 @@ class RailAccessAdapter(Adapter):
     uses_vision_worker = True
     config_by_hand = True
     sources = (COPERNICUS_SOURCE, AWS_OPEN_DATA_SOURCE, osm.OSM_SOURCE)
+    # What every article from this adapter does, whatever the day's goal says (Adapter.drafting_guidance:
+    # the drafting prompt through fresh_review.writing_rules, and the Re-Write and review rules): the
+    # constructive register, the theoretical framing of every simulated link, and the minutes rule
+    # (a reach restated at the contract's pace, never a travel time).
+    drafting_guidance = (
+        "Write in a constructive register: say what the measures show and what each theoretical link "
+        "would change, never a complaint, blame, cost, funding, political or resource-allocation view. "
+        "Call every simulated link theoretical: a what-if on the mapped graph and straight lines, with "
+        "what its straight line crosses; never a route, an alignment or a recommendation. Minutes are "
+        f"walking time at {contract.WALK_M_PER_MIN:g} m a minute over straight-line distance; give no "
+        "rail or bus travel time."
+    )
 
     # Injected by tests; the defaults talk to Earth Search, Overpass, the worker, S3, the news
     # search and Bedrock.
@@ -611,6 +686,16 @@ class RailAccessAdapter(Adapter):
                 entry["image_key"] = self.store_image(topic_id, site["id"], scene["id"], result.image_png)
             except Exception as exc:  # noqa: BLE001 - a lost figure doesn't lose the measurement
                 print(f"rail_access: could not store the figure for {site['id']}: {exc!r}")
+        # The transit reach map, when the network had a stops layer and the worker's reply-size
+        # guard kept it (result.figures is empty otherwise): stored beside the rail map.
+        modes = result.figures.get("modes")
+        if modes:
+            try:
+                entry["modes_image_key"] = self.store_image(
+                    topic_id, site["id"], scene["id"], modes, suffix=MODES_SUFFIX
+                )
+            except Exception as exc:  # noqa: BLE001 - a lost second figure loses nothing else
+                print(f"rail_access: could not store the transit reach map for {site['id']}: {exc!r}")
         record["history"] = _slim_history([*record["history"], entry][-config["history_size"] :])
         record.pop("last_error", None)
         record.pop("failed_scene", None)
@@ -703,9 +788,12 @@ class RailAccessAdapter(Adapter):
         never by the hourly heartbeat; it changes no running state, Finding or research time. One
         result per site, in the configured order:
 
-            {"site_id", "status": "stored", "fetched_at", "counts", "truncated"}
+            {"site_id", "status": "stored", "fetched_at", "counts", "truncated", "bytes"}
             {"site_id", "status": "failed", "code", "detail"}   (osm.OsmError codes, or "fetch")
             {"site_id", "status": "deferred"}                   (too little time left: trigger again)
+
+        `bytes` is the Overpass body's size (osm.fetch_network records it; None from a fetch that
+        did not), so the prefetch log says how close a real city's reply came to the client's cap.
         """
         config = parse_config(topic_config.get("adapter_config"))
         topic_id = topic_config.get("topic_id", "topic")
@@ -742,6 +830,7 @@ class RailAccessAdapter(Adapter):
                     "fetched_at": network.get("fetched_at"),
                     "counts": network.get("counts"),
                     "truncated": network.get("truncated"),
+                    "bytes": network.get("bytes"),
                 }
             )
         return results
@@ -803,6 +892,9 @@ class RailAccessAdapter(Adapter):
                 "desert_km2": _km2(latest),
                 "station_count": latest.get("station_count"),
                 "reach_m": _reach_m(latest),
+                # The stops layer's measures the summary line names (None without a layer); the
+                # rules below read none of them.
+                **_transit_fields(latest),
                 # The scene before was measured another way (an edited reach, polygon or parameter).
                 "params_changed": bool(earlier) and not _comparable(earlier[-1], latest),
             }
@@ -893,6 +985,7 @@ class RailAccessAdapter(Adapter):
             "desert_km2": _km2(latest),
             "station_count": latest.get("station_count"),
             "reach_m": _reach_m(latest),
+            **_transit_fields(latest),
         }
 
     def _stamp_week(self, new_state: dict, reported: list[dict]) -> None:
@@ -1040,43 +1133,78 @@ class RailAccessAdapter(Adapter):
         return measured
 
     def figures(self, new_state: dict) -> list[dict]:
-        """One figure per scene the diff summary reported that has one (`_reported_scenes`): the
-        worker's heat map, with a caption that says what the colours, outlines and lines are and
-        carries the two credits, and alt text for a screen reader."""
+        """The figures of each scene the diff summary reported (`_reported_scenes`), each with a
+        caption that says what its colours, outlines and lines are and carries the two credits, and
+        alt text for a screen reader: the worker's heat map (the rail map), then, when the scene has
+        one (the network had a stops layer and the worker's reply-size guard kept it), its transit
+        reach map, whose caption names the three fills and each reach in walking minutes at the
+        contract's stated pace. A scene whose rail map was lost still gives its transit reach map."""
         figures = []
         for site_id, latest in self._reported_scenes(new_state):
-            if not latest.get("image_key"):
+            if not latest.get("image_key") and not latest.get("modes_image_key"):
                 continue
             record = (new_state.get("sites") or {}).get(site_id) or {}
             name = record.get("name") or site_id
             captured_at = latest.get("captured_at") or ""
             date = captured_at[:10] or "(date unknown)"
             year = captured_at[:4] or (new_state.get("fetched_at") or "")[:4]
-            reach = _reach_text(_reach_m(latest))
+            reach_m, stop_m = _reach_m(latest), _stop_reach_m(latest)
+            reach, stop_reach = _reach_text(reach_m), _reach_text(stop_m)
+            minutes, stop_minutes = _minutes_text(reach_m), _minutes_text(stop_m)
 
-            # The figure's symbols, as PR H draws them: heat, outlined deserts, the network,
-            # flagged stations in red rings and simulated links dashed.
+            # The rail map's symbols, as PR H draws them: heat, outlined deserts, the network,
+            # flagged stations in red rings and theoretical links dashed (azure when mostly over water).
             def caption(site_name: str) -> str:
                 return (
                     f"Rail access in {site_name}, Sentinel-2 {date}: built-up density (warm colours), "
                     f"areas beyond {reach} of a station (outlined), OpenStreetMap rail lines and stations, "
-                    "flagged stations (red rings) and simulated links (dashed). Processed imagery; contains "
+                    "flagged stations (red rings) and theoretical links (dashed). Processed imagery; "
+                    "contains "
                     f"modified Copernicus Sentinel data {year}; map data © OpenStreetMap contributors."
                 )
 
             def alt(site_name: str) -> str:
                 return (
                     f"Processed satellite map of {site_name} showing rail lines, stations, flagged stations, "
-                    "simulated links and built-up areas beyond walking reach of a station"
+                    "theoretical links and built-up areas beyond walking reach of a station"
                 )
 
-            figures.append(
-                {
-                    "key": latest["image_key"],
-                    "caption": _within(MAX_CAPTION_CHARS, caption, name),
-                    "alt": _within(MAX_ALT_CHARS, alt, name),
-                }
-            )
+            # The transit reach map's fills, as vision/rail_annotate.py draws them over built-up
+            # ground (STATION_FILL aqua, STOP_FILL orange, BEYOND_FILL violet with BEYOND_OUTLINE
+            # round every residual patch, so the residual reads without colour), with each reach
+            # as walking minutes at the stated pace: a straight-line reach restated, never a time.
+            def modes_caption(site_name: str) -> str:
+                return (
+                    f"Transit reach in {site_name}, Sentinel-2 {date}: built-up area within {reach} "
+                    f"({minutes} walk) of a rail station (aqua), beyond that but within {stop_reach} "
+                    f"({stop_minutes}) of a mapped bus, tram or ferry stop (orange), and beyond both "
+                    "(violet, outlined). Straight-line reach over OpenStreetMap stops. Processed imagery; "
+                    f"contains modified Copernicus Sentinel data {year}; map data © OpenStreetMap "
+                    "contributors."
+                )
+
+            def modes_alt(site_name: str) -> str:
+                return (
+                    f"Processed satellite map of {site_name} showing built-up areas within walking reach of "
+                    "a rail station, within reach of a bus, tram or ferry stop only, and beyond both"
+                )
+
+            if latest.get("image_key"):
+                figures.append(
+                    {
+                        "key": latest["image_key"],
+                        "caption": _within(MAX_CAPTION_CHARS, caption, name),
+                        "alt": _within(MAX_ALT_CHARS, alt, name),
+                    }
+                )
+            if latest.get("modes_image_key"):
+                figures.append(
+                    {
+                        "key": latest["modes_image_key"],
+                        "caption": _within(MAX_CAPTION_CHARS, modes_caption, name),
+                        "alt": _within(MAX_ALT_CHARS, modes_alt, name),
+                    }
+                )
         return figures
 
     def source_refs(self, new_state: dict) -> list[dict]:
@@ -1127,6 +1255,15 @@ class RailAccessAdapter(Adapter):
                     "reach_m": _reach_m(last),
                     "coverage": last.get("coverage"),
                     "flag_count": last.get("flag_count", len(last.get("flags") or [])),
+                    # The stops layer's measures an article may quote: None each when the scene's
+                    # network had no layer (not measured), with the stop reach it was measured with.
+                    "any_mode_served_share": last.get("any_mode_served_share"),
+                    "any_mode_desert_km2": last.get("any_mode_desert_km2"),
+                    "stop_reach_m": _stop_reach_m(last),
+                    "stops": last.get("stops"),
+                    "stop_coverage_km2_per_100": last.get("stop_coverage_km2_per_100"),
+                    # [how many, of how many] reported deserts are mostly within reach of a stop.
+                    "deserts_mostly_stop_covered": _deserts_mostly_covered(last),
                     "previous_served_shares": [e.get("served_share") for e in history[:-1]],
                 }
         return render_review_evidence({"task": TASK, "sites": latest, **_evidence_notes(latest_state)})
@@ -1139,13 +1276,17 @@ class RailAccessAdapter(Adapter):
             f'the topic "{name}".\n\n'
             f"What was measured: {diff_summary}\n\n"
             "The figures are proxies: built-up density from Sentinel-2 reflectance at 20 m, walking "
-            "reach as straight-line distance to the nearest station, and network measures from "
-            "OpenStreetMap's rail lines; none is ridership, patronage or journey time. Write 2-4 "
-            "plain sentences describing only these observations: station and line names exactly as "
-            "given, the served share, the built-up area beyond reach, the capture date, and what was "
-            "not measured (ridership, service frequency, planned works). Give no cause, forecast, "
-            "political, planning or investment view; do not say any area is well or badly served in "
-            "absolute terms; do not invent place names or numbers that are not given above."
+            "reach as straight-line distance to the nearest station, reach of a stop as the same "
+            "straight-line distance to the nearest mapped bus, tram or ferry stop, and minutes as that "
+            "distance at a stated walking pace, with network measures from OpenStreetMap's rail lines; "
+            "none is ridership, patronage or journey time. Write 2-4 plain sentences describing only "
+            "these observations: station and line names exactly as given, the served share, the "
+            "built-up area beyond reach, the capture date, and what was not measured (ridership, "
+            "service frequency, planned works). Describe what the measures show and what a theoretical "
+            "link would change; give no complaint, blame, cost, political or resource-allocation view. "
+            "Give no cause, forecast, political, planning or investment view; do not say any area is "
+            "well or badly served in absolute terms; do not invent place names or numbers that are not "
+            "given above."
         )
         return _with_notes_rule(prompt, diff_summary)
 
@@ -1505,9 +1646,12 @@ def _slim(entry):
 
 def _param_values(entry: dict) -> tuple:
     """The parameters an entry was measured with, as the worker echoed them: every RailParams
-    field (the worker contract's RAIL_PARAM_LIMITS keys), the reach among them."""
+    field (the worker contract's RAIL_PARAM_LIMITS keys) but the stops layer's
+    (contract.STOP_PARAMS), the reach among them. The stop and feeder reaches are left out because
+    their measures are reported, never material: an edited one starts no new baseline, and an entry
+    from before the layer (no such param echoed) stays comparable with one measured since."""
     params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
-    return tuple(params.get(key) for key in contract.RAIL_PARAM_LIMITS)
+    return tuple(params.get(key) for key in contract.RAIL_PARAM_LIMITS if key not in contract.STOP_PARAMS)
 
 
 def _comparable(entry: dict, latest: dict) -> bool:
@@ -1521,7 +1665,8 @@ def _history_entry(
     scene: dict, result: vision_client.VisionResult, network: dict, polygon_key: str, network_stale: bool
 ) -> dict:
     """One scene's measurement as the history keeps it while it is the newest: the metrics an
-    article or the agent may use, the station rows cut to STATION_FIELDS and capped (these and the
+    article or the agent may use (the stops layer's among them, STOP_MEASURE_KEYS, None each when
+    the network had no layer), the station rows cut to STATION_FIELDS and capped (these and the
     other NEWEST_ONLY_KEYS lists go when a newer scene arrives), the build and timings for
     reproducibility, the scene's assets for `look_again`, the polygon's `site_key` and whether the
     network was past its TTL. VisionError "reply" if anything in it would not survive JSON (a NaN
@@ -1557,6 +1702,10 @@ def _history_entry(
         "build_sha256": (result.reply.get("build") or {}).get("build_sha256"),
         "timings_ms": result.reply.get("timings_ms"),
         "image_key": None,
+        # The stops layer's measures, as the worker gave them (metrics.get: None when absent).
+        **{key: metrics.get(key) for key in STOP_MEASURE_KEYS},
+        # The transit reach map's key (MODES_SUFFIX), set when it was stored; None without one.
+        "modes_image_key": None,
         # For the agent's look_again: the same bands, re-measured with other settings.
         "assets": scene["assets"],
         "network_fetched_at": network.get("fetched_at"),
@@ -1588,11 +1737,66 @@ def _reach_m(entry: dict) -> float:
         return float(DEFAULTS["reach_m"])
 
 
+def _stop_reach_m(entry: dict) -> float:
+    """The stop reach a history entry was measured with, from the worker's echoed params
+    (DEFAULT_STOP_REACH_M for an entry from before the stops layer, which echoed none)."""
+    params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+    try:
+        return float(params.get("stop_reach_m", DEFAULT_STOP_REACH_M))
+    except (TypeError, ValueError):
+        return DEFAULT_STOP_REACH_M
+
+
+def _transit_fields(entry: dict) -> dict:
+    """What a verdict carries of the stops layer for the summary lines (`_transit_clause`): the
+    share of built-up area within reach of any mode, the area beyond all, the stops received by
+    mode and the built-up km² within stop reach per 100 stops, None each when the scene's network
+    had no layer (so the clause is left out), and the stop reach the scene was measured with. The
+    material rules read none of them."""
+    return {
+        "any_mode_served_share": entry.get("any_mode_served_share"),
+        "any_mode_desert_km2": entry.get("any_mode_desert_km2"),
+        "stops": entry.get("stops"),
+        "stop_coverage_km2_per_100": entry.get("stop_coverage_km2_per_100"),
+        "stop_reach_m": _stop_reach_m(entry),
+        "deserts_mostly_stop_covered": _deserts_mostly_covered(entry),
+    }
+
+
+def _deserts_mostly_covered(entry: dict) -> list[int] | None:
+    """[how many, of how many] of the entry's reported deserts (the largest built-up patches beyond
+    a station's reach, the newest entry's list) have at least MOSTLY_STOP_COVERED of their pixels
+    within reach of a stop (`stop_covered_share`); None when no desert carries the share (no stops
+    layer, an older entry without its list, a state from before the layer)."""
+    deserts = entry.get("deserts") if isinstance(entry.get("deserts"), list) else []
+    shares = [d.get("stop_covered_share") for d in deserts if isinstance(d, dict)]
+    shares = [s for s in shares if _number(s)]
+    if not shares:
+        return None
+    return [sum(1 for s in shares if s >= MOSTLY_STOP_COVERED), len(shares)]
+
+
 def _reach_text(reach_m: float) -> str:
     """"1 km" for a whole number of kilometres, else metres: how the summaries name the reach."""
     if reach_m >= 1000 and reach_m % 1000 == 0:
         return f"{reach_m / 1000:g} km"
     return f"{reach_m:g} m"
+
+
+def _minutes_text(metres: float, unit: str = "min") -> str:
+    """"about 12 min" or "5 min" ("about 12 minutes" / "5 minutes" with `unit` "minutes", as the
+    summaries say it): a straight-line reach restated as walking minutes at the contract's
+    WALK_M_PER_MIN, "about" when they are not whole, never a journey time. The figure's legend says
+    the same (vision/rail_annotate.py's _walk_text), so the caption and the strip cannot differ."""
+    minutes = metres / contract.WALK_M_PER_MIN
+    whole = max(1, round(minutes))
+    about = "" if minutes == whole else "about "
+    return f"{about}{whole} {unit}"
+
+
+def _number(value) -> bool:
+    """Whether `value` is a measured number (a bool is not one; None is not measured)."""
+    return isinstance(value, int | float) and not isinstance(value, bool)
 
 
 def _pct(share: float) -> str:
@@ -1624,12 +1828,49 @@ def _within(limit: int, render, name: str) -> str:
     return render(name[:cut].rstrip() + "…")
 
 
+def _transit_clause(v: dict) -> str:
+    """The summary clause of the stops layer's measures, appended to a line only when the verdict
+    carries them (`any_mode_served_share` a number; None means the scene's network had no layer,
+    and the line is byte for byte what it was before the layer): the share of built-up area within
+    reach of any mapped stop or station, each reach restated as walking minutes at the stated pace,
+    the area beyond all, how many of the largest patches beyond a station's reach are mostly within
+    reach of a stop (MOSTLY_STOP_COVERED), the stops mapped by mode, and the transport efficiency of
+    the mapped stops
+    as built-up ground within stop reach per 100 stops (left out with no stops: nothing to divide
+    by). Never a journey time, and no number that was not measured."""
+    share = v.get("any_mode_served_share")
+    if not _number(share):
+        return ""
+    stop_m, reach_m = v.get("stop_reach_m", DEFAULT_STOP_REACH_M), v["reach_m"]
+    text = (
+        f"; with bus, tram and ferry stops: {_pct(share)} of built-up area within {_reach_text(stop_m)} "
+        f"({_minutes_text(stop_m, 'minutes')}' walk at {contract.WALK_M_PER_MIN:g} m a minute) of a stop "
+        f"or {_reach_text(reach_m)} ({_minutes_text(reach_m, 'minutes')}) of a station"
+    )
+    if _number(v.get("any_mode_desert_km2")):
+        text += f", {_area(v['any_mode_desert_km2'])} beyond all"
+    covered = v.get("deserts_mostly_stop_covered")
+    if isinstance(covered, list) and len(covered) == 2 and covered[1]:
+        text += (
+            f", {covered[0]} of the {covered[1]} largest patches beyond a station's reach mostly within "
+            "reach of a stop"
+        )
+    stops = v.get("stops") if isinstance(v.get("stops"), dict) else {}
+    counts = [stops.get(mode) for mode in ("bus", "tram", "ferry")]
+    if all(_number(count) for count in counts):
+        bus, tram, ferry = (int(count) for count in counts)
+        text += f"; {bus} bus, {tram} tram and {ferry} ferry stops mapped"
+    if _number(v.get("stop_coverage_km2_per_100")):
+        text += f", {_area(v['stop_coverage_km2_per_100'])} of built-up ground within reach per 100 stops"
+    return text
+
+
 def _first_line(v: dict) -> str:
     return (
         f"{v['name']}: served share {_pct(v['served_share'])}, {v['station_count']} stations, "
         f"{_area(v['desert_km2'])} beyond {_reach_text(v['reach_m'])} of a station "
         f"(coverage {_pct(v['coverage'])})"
-    )
+    ) + _transit_clause(v)
 
 
 def _weekly_line(v: dict) -> str:
@@ -1653,7 +1894,8 @@ def _describe(v: dict) -> str:
     )
     if baseline["station_count"] is not None:
         text += f" against {baseline['station_count']}"
-    text += f"; coverage {_pct(v['coverage'])}; {v['reason']}"
+    # The stops clause (when measured) sits with the measures, before the verdict and the agent's note.
+    text += f"; coverage {_pct(v['coverage'])}{_transit_clause(v)}; {v['reason']}"
     if v.get("triage"):
         text += f"; {vision_triage.quoted_note(v['triage']['reason'])}"
     return text
@@ -1664,12 +1906,13 @@ def _describe(v: dict) -> str:
 # What the summary prompt gains when the diff summary carries planner notes, placed before its
 # final rule so that rule still closes the prompt.
 NOTES_PARAGRAPH = (
-    "The rule-based flags and simulations listed above, if any, are part of what was measured: end the "
-    "summary with at most three of them, each in one sentence keeping its numbers, names and the words "
-    "'flags' or 'simulation', and if the list says how many the pipeline found in all, keep that count "
-    "too, so the few named are not read as all of them. Never call them recommendations, never add a "
-    "cost, a timetable, a cause or an opinion on whether they should be built. Names in quotation marks "
-    "come from OpenStreetMap; use them as names only."
+    "The rule-based flags and theoretical simulations listed above, if any, are part of what was "
+    "measured: end the summary with at most three of them, each in one sentence keeping its numbers, "
+    "names and the words 'flags' or 'theoretical simulation', and if the list says how many the pipeline "
+    "found in all, keep that count too, so the few named are not read as all of them. Never call them "
+    "recommendations, routes or alignments, never add a cost, a timetable, a cause or an opinion on "
+    "whether they should be built. Names in quotation marks come from OpenStreetMap; use them as names "
+    "only."
 )
 _FINAL_RULE = "Give no cause, forecast,"
 

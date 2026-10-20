@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import research_tick_handler
+from common.day_subject import MAX_DAY_SUBJECT_LABEL_CHARS
 from common.editorial_resolver import (
     ADAPTER_DEFAULTS,
     DEFAULT_ADAPTER,
@@ -53,6 +54,34 @@ def test_a_rail_topic_without_goals_drafts_under_its_own_limits_not_the_global_s
     for limit in ("Sentinel-2 imagery and OpenStreetMap", "proxies", "ridership", "cost", "cause",
                   "forecast", "recommendation", "not in the findings"):  # fmt: skip
         assert limit in resolved, limit
+
+
+def test_the_rail_default_carries_the_stops_proxies_the_theoretical_links_and_the_register():
+    """The five themes every rail goal carries, in the adapter's own default: the stop measures
+    are proxies (straight-line reach to a mapped bus, tram or ferry stop, minutes at a stated
+    pace, never a journey time); every simulated link is theoretical, justified and qualified by
+    what its line crosses, never a route or a recommendation; a constructive register with no
+    cost, political or resource-allocation view; the transport efficiency of the mapped stops
+    and the multimodal isolation weight named as what they measure; nothing not in the findings."""
+    goal = ADAPTER_DEFAULTS["rail_access"]
+    # rail_access.subject_mandate folds a city's name into exactly these opening words.
+    assert goal.startswith("Report only what was measured: proxies from Sentinel-2 imagery and OpenStreetMap")
+    for theme in (
+        "bus, tram and ferry stops", "straight-line reach to a station or stop", "80 m a minute",
+        "journey, travel or waiting time", "per 100 stops", "overlap with station reach",
+        "multimodal isolation weight", "theoretical what-if on the mapped graph",
+        "what its straight line crosses", "water", "never a route, alignment or recommendation",
+        "what a theoretical link would change", "complaint", "blame",
+        "political or resource-allocation view", "not in the findings",
+    ):  # fmt: skip
+        assert theme in goal, theme
+    # Not a complaint: the register is set by what to say, and no agency or politician is named.
+    for word in ("agency", "politician", "underfunded", "neglect", "failure"):
+        assert word not in goal, word
+    # It is also a day subject's mandate with " for <city>" folded in, which the daily cycle refuses
+    # over MAX_GOAL_TEXT_CHARS: room for the longest site name, so under 900 characters.
+    assert len(goal) < 900
+    assert len(goal) + len(" for ") + MAX_DAY_SUBJECT_LABEL_CHARS <= MAX_GOAL_TEXT_CHARS
 
 
 def test_a_satellite_vision_topic_without_goals_drafts_under_its_own_limits():

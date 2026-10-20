@@ -1566,8 +1566,12 @@ def scene_site_analysis(scene: dict, polygon: list, network: dict, fetch, reach_
             scl = bands["scl"].copy()
             scl[missing] = 0
             bands["scl"] = scl
+    # The feeder reach lifted to the reach when the reach is past the worker's default feeder
+    # reach, as the adapter's worker_params does: RailParams refuses a feeder reach under the
+    # station reach, and --reach-m may go to 5000 (PARAM_LIMITS) against a 2000 m default.
+    params = RailParams(reach_m=reach_m, feeder_reach_m=max(reach_m, RailParams.feeder_reach_m))
     analysis = analyse_rail_access(bands, [site.polygon_px], site.pixel_size_m, site.transform, site.epsg,
-                                   network, RailParams(reach_m=reach_m), rail_rule()[0])  # fmt: skip
+                                   network, params, rail_rule()[0])  # fmt: skip
     return analysis, site
 
 
