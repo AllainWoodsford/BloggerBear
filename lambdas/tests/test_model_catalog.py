@@ -90,7 +90,7 @@ class FakeLookup:
     def lookup(self, row):
         self.asked.append(row["model_id"])
         found = self.prices.get(row["model_id"])
-        if found is None or found == catalog.UNCHANGED:
+        if found is None or found in (catalog.UNCHANGED, catalog.LOOKUP_FAILED):
             return found
         return catalog.Price(found[0], found[1], "price-list")
 
@@ -136,6 +136,9 @@ def test_every_setting_has_a_default_and_invalid_values_fall_back_to_it():
         ("review_after_hours", [0]),
         ("review_tolerance_pct", True),
         ("max_change_factor", 1),
+        ("discover_max_added", 6),
+        ("reprice_max_queued", 51),
+        ("max_models", 0),
         ("reprice_weekday", "WED"),  # the days are the schedules' (Terraform), not a setting
         ("not_a_setting", 1),
     ],
@@ -288,7 +291,22 @@ def test_web_searches_stop_at_the_budget_and_a_failed_search_prices_nothing():
         raise RuntimeError("gateway down")
 
     failing = catalog.WebPrices(REGION, budget=None, diff_first=True, search=boom, ask=lambda p: ANSWER)
-    assert failing.price({"model_id": "a", "display_name": "A"}) is None
+    assert failing.price({"model_id": "a", "display_name": "A"}) == catalog.LOOKUP_FAILED
+
+
+def test_a_model_call_that_errors_is_a_failed_lookup_not_a_missing_price():
+    def unavailable(prompt):
+        raise RuntimeError("ServiceUnavailableException")
+
+    web = catalog.WebPrices(REGION, budget=None, diff_first=False, search=lambda q: RESULTS, ask=unavailable)
+    assert web.price({"model_id": "a", "display_name": "A"}) == catalog.LOOKUP_FAILED
+
+
+def test_a_pricing_ticks_lookup_only_has_the_searches_its_run_has_left():
+    assert catalog.PriceLookup(REGION, SETTINGS, web_used=8, price_list=object()).web._budget == 2
+    assert catalog.PriceLookup(REGION, SETTINGS, web_used=30, price_list=object()).web._budget == 0
+    review = catalog.PriceLookup(REGION, SETTINGS, review=True, web_used=30, price_list=object())
+    assert review.web._budget is None
 
 
 # --- a pricing run ------------------------------------------------------------------------------
@@ -361,12 +379,77 @@ def test_a_run_whose_reviews_could_not_be_scheduled_still_opens(aws, monkeypatch
     assert start_run(aws, {"m1": (0.0012, 0.006)})["status"] == "reviewing"
 
 
-def test_no_change_opens_no_run_and_frees_the_slot(aws):
+def test_no_change_closes_the_run_at_once_and_frees_the_slot(aws):
     put_model(aws, "m1", 0.001, 0.005)
     result = start_run(aws, {"m1": (0.001, 0.005)})
     assert result["status"] == "no_change"
     assert active(aws) is None
     assert "active_run_id" not in (config_row(aws, catalog.STATE_ID) or {})
+    run = config_row(aws, f"{catalog.RUN_PREFIX}{result['run_id']}")
+    assert run["status"] == "no_change"
+    assert "pass" not in run and "snapshot_key" not in run
+    assert SCHEDULER.created == []
+
+
+def test_a_reprice_queues_at_most_its_cap_oldest_looked_up_first_and_ticks_through_them(aws, monkeypatch):
+    for n in range(12):
+        put_model(aws, f"m{n:02}", 0.001, 0.005, price_checked_at=f"2026-10-{n + 1:02}T00:00:00+00:00")
+    put_model(aws, "new")  # just discovered: never looked up, so first
+    settings = {**SETTINGS, "reprice_max_queued": 10}
+    prices = {f"m{n:02}": (0.001, 0.005) for n in range(12)} | {"new": (0.002, 0.01)}
+    lookup = FakeLookup(prices)
+
+    first = catalog.reprice("schedule", settings, NOW, lookup=lookup)
+
+    assert (first["queued"], first["checked"], first["left"], first["status"]) == (10, 5, 5, "pricing")
+    assert lookup.asked == ["new", "m00", "m01", "m02", "m03"]
+    assert model(aws, "m04").get("price_attempted_at") is None
+    [tick] = SCHEDULER.created
+    assert tick["Name"] == f"bloggerbear-dev-price-tick-{first['run_id']}-p-2"
+    assert tick["ScheduleExpression"] == "at(2026-10-20T18:05:00)"
+    event = json.loads(tick["Target"]["Input"])
+    assert event == {"job": "tick", "run_id": first["run_id"], "pass": "p", "tick": 2}
+    assert catalog.summary()["under_review"]["pass"] == {
+        "pass": "p",
+        "left": 5,
+        "next_tick_at": "2026-10-20T18:05:00+00:00",
+    }
+
+    next_lookup = FakeLookup(prices)
+    monkeypatch.setattr(catalog, "PriceLookup", lambda *a, **k: next_lookup)
+    second = catalog.handle(event, NOW + timedelta(minutes=5))["tick"]
+
+    assert next_lookup.asked == ["m04", "m05", "m06", "m07", "m08"]
+    assert (second["status"], second["left"]) == ("reviewing", 0)
+    assert (second["changed"], second["confirmed"]) == (1, 9)
+    assert [c["model_id"] for c in active(aws)["changes"]] == ["new"]
+    assert "pass" not in active(aws)
+    # The two left out are the ones looked up longest ago now; the next run starts with them.
+    assert [m["model_id"] for m in catalog.queue_order(catalog.dynamo.list_models())][:2] == ["m09", "m10"]
+
+
+def test_a_tick_that_is_stale_or_early_does_nothing(aws):
+    for n in range(7):
+        put_model(aws, f"m{n}", 0.001, 0.005)
+    run_id = start_run(aws, {})["run_id"]
+    event = {"job": "tick", "run_id": run_id, "pass": "p", "tick": 2}
+    later = NOW + timedelta(minutes=5)
+    assert catalog.handle(event, NOW)["tick"]["status"] == "not_due"
+    assert catalog.handle({**event, "tick": 3}, later)["tick"]["status"] == "stale"
+    assert catalog.handle({**event, "run_id": "other"}, later)["tick"]["status"] == "stale"
+    assert catalog.handle({**event, "pass": "r1"}, later)["tick"]["status"] == "stale"
+    assert active(aws)["pass"]["queue"] == ["m5", "m6"]
+
+
+def test_a_failed_lookup_while_pricing_leaves_the_price_and_is_counted(aws):
+    put_model(aws, "m1", 0.001, 0.005)
+    put_model(aws, "m2")
+    result = start_run(aws, {"m1": catalog.LOOKUP_FAILED, "m2": catalog.LOOKUP_FAILED})
+    assert (result["status"], result["lookup_errors"], result["unpriced"]) == ("no_change", 2, ["m2"])
+    row = model(aws, "m1")
+    assert row["input_price_usd_per_1k_tokens"] == Decimal("0.001")
+    assert row["price_attempted_at"] == NOW.isoformat()
+    assert "price_checked_at" not in row
 
 
 def test_locked_and_non_token_models_are_never_repriced(aws):
@@ -479,6 +562,113 @@ def test_a_price_that_moved_too_far_fails_even_when_confirmed(aws):
     assert result["reverted"] == ["m1"]
     cause = aws.Table("FailedExecutions").scan()["Items"][0]["error"]["Cause"]
     assert "moved more than 10x" in cause
+
+
+def test_a_review_whose_lookup_errors_defers_the_model_instead_of_failing_it(aws):
+    put_model(aws, "m1", 0.001, 0.005)
+    put_model(aws, "m2", 0.002, 0.008)
+    start_run(aws, {"m1": (0.0012, 0.006), "m2": (0.0021, 0.0084)})
+
+    first = catalog.review(
+        active(aws),
+        SETTINGS,
+        NOW + timedelta(hours=1),
+        lookup=FakeLookup({"m1": catalog.LOOKUP_FAILED, "m2": (0.0021, 0.0084)}),
+    )
+    assert (first["status"], first["deferred"], first["passed"], first["reverted"]) == (
+        "reviewing",
+        ["m1"],
+        1,
+        [],
+    )
+    assert model(aws, "m1")["input_price_usd_per_1k_tokens"] == Decimal("0.0012")  # still on probation
+
+    # Unavailable again at the last review: m1 was never confirmed, so it goes back, quietly;
+    # m2, confirmed at the first review, keeps its new price although its lookup errored too.
+    errored = FakeLookup({"m1": catalog.LOOKUP_FAILED, "m2": catalog.LOOKUP_FAILED})
+    second = catalog.review(active(aws), SETTINGS, NOW + timedelta(hours=2), lookup=errored)
+    assert (second["status"], second["deferred"]) == ("partly_reverted", ["m1", "m2"])
+    assert model(aws, "m1")["input_price_usd_per_1k_tokens"] == Decimal("0.001")
+    assert model(aws, "m2")["input_price_usd_per_1k_tokens"] == Decimal("0.0021")
+    assert aws.Table("FailedExecutions").scan()["Items"] == []
+    run = config_row(aws, f"{catalog.RUN_PREFIX}{second['run_id']}")
+    assert [u["model_id"] for u in run["unconfirmed"]] == ["m1"]
+    assert run["reviews_done"][1]["deferred"] == 2
+    assert active(aws) is None
+
+
+def test_a_review_of_many_models_ticks_through_them(aws, monkeypatch):
+    for n in range(7):
+        put_model(aws, f"m{n}", 0.001, 0.005)
+    prices = {f"m{n}": (0.0012, 0.006) for n in range(7)}
+    run_id = start_run(aws, prices)["run_id"]  # 5 now, 2 at the next tick
+    monkeypatch.setattr(catalog, "PriceLookup", lambda *a, **k: FakeLookup(prices))
+    catalog.handle({"job": "tick", "run_id": run_id, "pass": "p", "tick": 2}, NOW + timedelta(minutes=5))
+    SCHEDULER.created.clear()
+
+    when = NOW + timedelta(hours=1, minutes=5)
+    first = catalog.review(active(aws), SETTINGS, when, lookup=FakeLookup(prices))
+    assert (first["review"], first["checked"], first["left"], first["passed"]) == (1, 5, 2, 5)
+    assert SCHEDULER.created[0]["Name"] == f"bloggerbear-dev-price-tick-{run_id}-r1-2"
+    busy = catalog.handle({"job": "review", "run_id": run_id}, NOW + timedelta(hours=2))
+    assert busy["review"]["status"] == "busy"
+
+    rest = catalog.advance(active(aws), SETTINGS, when + timedelta(minutes=5), lookup=FakeLookup(prices))
+    assert (rest["status"], rest["passed"], rest["left"]) == ("reviewing", 7, 0)
+    assert len(active(aws)["reviews_done"]) == 1
+
+
+def test_a_review_that_fell_due_during_the_last_one_starts_next_tick(aws):
+    put_model(aws, "m1", 0.001, 0.005)
+    run_id = start_run(aws, {"m1": (0.0012, 0.006)})["run_id"]
+    SCHEDULER.created.clear()
+    # Review 1 runs late, after review 2 was due (its schedule fired while busy and did nothing).
+    late = NOW + timedelta(hours=2, minutes=10)
+    catalog.review(active(aws), SETTINGS, late, lookup=FakeLookup({"m1": (0.0012, 0.006)}))
+    run = active(aws)
+    assert (run["pass"]["kind"], run["pass"]["number"]) == ("review", 2)
+    assert SCHEDULER.created[0]["Name"] == f"bloggerbear-dev-price-tick-{run_id}-r2-1"
+
+
+def test_a_saturated_review_is_skipped_but_never_the_last(aws):
+    put_model(aws, "m1", 0.001, 0.005)
+    put_model(aws, "m2", 0.002, 0.008)
+    prices = {"m1": (0.0012, 0.006), "m2": (0.0021, 0.0084)}
+    settings = {**SETTINGS, "reprice_max_queued": 4}  # skip a review of 2 models or more
+    run_id = catalog.reprice("admin", settings, NOW, lookup=FakeLookup(prices))["run_id"]
+    lookup = FakeLookup(prices)
+
+    first = catalog.review(active(aws), settings, NOW + timedelta(hours=1), lookup=lookup)
+
+    assert first == {"status": "reviewing", "run_id": run_id, "review": 1, "skipped": True}
+    assert lookup.asked == []  # nothing queued
+    assert active(aws)["reviews_done"][0]["skipped"] == 2
+    second = catalog.review(active(aws), settings, NOW + timedelta(hours=2), lookup=lookup)
+    assert (second["review"], second["status"], second["passed"]) == (2, "passed", 2)
+    assert sorted(lookup.asked) == ["m1", "m2"]
+
+
+def test_a_review_under_the_saturation_mark_runs(aws):
+    put_model(aws, "m1", 0.001, 0.005)
+    settings = {**SETTINGS, "reprice_max_queued": 4}
+    prices = {"m1": (0.0012, 0.006)}
+    catalog.reprice("admin", settings, NOW, lookup=FakeLookup(prices))
+    first = catalog.review(active(aws), settings, NOW + timedelta(hours=1), lookup=FakeLookup(prices))
+    assert (first["review"], first["passed"]) == (1, 1)
+    assert catalog.review_skip_at(SETTINGS) == 25
+
+
+def test_a_saturated_review_that_fell_due_meanwhile_is_skipped_too(aws):
+    for n in range(3):
+        put_model(aws, f"m{n}", 0.001, 0.005)
+    prices = {f"m{n}": (0.0012, 0.006) for n in range(3)}
+    settings = {**SETTINGS, "reprice_max_queued": 4, "review_after_hours": [1, 2, 3]}
+    catalog.reprice("admin", settings, NOW, lookup=FakeLookup(prices))
+    # Review 1 runs a day late: it and review 2 are skipped, and the last one starts at once.
+    late = catalog.review(active(aws), settings, NOW + timedelta(days=1), lookup=FakeLookup(prices))
+    assert (late["review"], late["status"], late["passed"]) == (3, "passed", 3)
+    run = config_row(aws, f"{catalog.RUN_PREFIX}{late['run_id']}")
+    assert [r.get("skipped") for r in run["reviews_done"]] == [3, 3, None]
 
 
 def test_a_price_changed_by_hand_since_is_left_alone(aws):
@@ -603,28 +793,49 @@ def test_account_models_are_every_providers_models_callable_on_demand_or_by_prof
     assert "apac.old.model-v1" not in found
 
 
-def test_discover_adds_new_models_disabled_and_prices_them(aws):
-    put_model(aws, "amazon.nova-lite-v1:0", 0.00006, 0.00024, enabled=True)
-    lookup = FakeLookup({"au.anthropic.claude-haiku-4-5-20251001-v1:0": (0.0011, 0.0055)})
+def test_discover_adds_at_most_its_cap_disabled_and_unpriced_text_models_first(aws):
+    put_model(
+        aws, "amazon.nova-lite-v1:0", 0.00006, 0.00024, enabled=True, price_checked_at=NOW.isoformat()
+    )
 
-    result = catalog.discover("schedule", SETTINGS, NOW, bedrock=FakeBedrock(), lookup=lookup)
+    result = catalog.discover("schedule", {**SETTINGS, "discover_max_added": 3}, NOW, bedrock=FakeBedrock())
 
-    assert result["added"] == 5
-    # Only the new token-priced ones are priced; the image and embedding models are listed only.
-    assert sorted(lookup.asked) == [
+    assert (result["status"], result["added"], result["not_added"]) == ("done", 3, 2)
+    assert result["added_ids"] == [
         "apac.meta.llama3-3-70b-instruct-v1:0",
         "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "amazon.titan-embed-text-v2:0",
     ]
-    image = model(aws, "stability.sd3-large-v1:0")
-    assert (image["enabled"], image["pricing_unit"], image["provider"]) == (False, "other", "stability ai")
-    assert "input_price_usd_per_1k_tokens" not in image
     row = model(aws, "au.anthropic.claude-haiku-4-5-20251001-v1:0")
-    assert row["enabled"] is False
-    assert row["region"] == REGION
-    assert row["pricing_unit"] == "tokens"
-    assert row["input_price_usd_per_1k_tokens"] == Decimal("0.0011")
+    assert (row["enabled"], row["region"], row["pricing_unit"]) == (False, REGION, "tokens")
+    assert "input_price_usd_per_1k_tokens" not in row  # the reprice that follows prices it
+    assert model(aws, "amazon.titan-embed-text-v2:0")["pricing_unit"] == "other"
     assert model(aws, "amazon.nova-lite-v1:0")["enabled"] is True  # untouched
-    assert result["pricing"]["status"] == "reviewing"
+    assert active(aws) is None  # no pricing run
+
+    # The next reprice looks the new text models up first.
+    queue = [m["model_id"] for m in catalog.queue_order(catalog.dynamo.list_models())]
+    assert queue == [
+        "apac.meta.llama3-3-70b-instruct-v1:0",
+        "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "amazon.nova-lite-v1:0",
+    ]
+
+
+def test_discover_never_adds_past_the_cap(aws):
+    # A full registry is pruned instead: test_model_fleet.py.
+    for n in range(4):
+        put_model(aws, f"m{n}")
+    result = catalog.discover("schedule", {**SETTINGS, "max_models": 6}, NOW, bedrock=FakeBedrock())
+    assert result["added"] == 2
+    assert len(catalog.dynamo.list_models()) == 6
+
+
+def test_discover_finding_nothing_new_is_a_normal_result(aws):
+    for found in catalog.account_models(REGION, FakeBedrock()):
+        put_model(aws, found["model_id"])
+    result = catalog.discover("schedule", SETTINGS, NOW, bedrock=FakeBedrock())
+    assert (result["status"], result["added_ids"], result["not_added"]) == ("done", [], 0)
 
 
 # --- invocations --------------------------------------------------------------------------------
@@ -706,10 +917,27 @@ def test_a_job_first_runs_the_reviews_whose_schedules_were_lost(aws, monkeypatch
 
     result = catalog.handle({"job": "reprice"}, NOW + timedelta(days=1))
 
-    assert reviewed == [1, 2]
-    assert [r["status"] for r in result["overdue_reviews"]] == ["reviewing", "passed"]
-    assert active(aws) is None
+    # Review 2 was due by then too: it starts at the next tick, on its own schedule.
+    assert reviewed == [1]
+    assert [r["status"] for r in result["overdue_steps"]] == ["reviewing"]
+    run = active(aws)
+    assert (run["pass"]["kind"], run["pass"]["number"]) == ("review", 2)
+    assert SCHEDULER.created[-1]["Name"].endswith("-r2-1")
     assert not catalog.is_overdue(None, NOW)
+
+
+def test_a_job_first_runs_a_tick_whose_schedule_was_lost(aws, monkeypatch):
+    for n in range(7):
+        put_model(aws, f"m{n}", 0.001, 0.005)
+    start_run(aws, {})
+    monkeypatch.setattr(catalog, "PriceLookup", lambda *a, **k: FakeLookup({}))
+    monkeypatch.setattr(catalog, "reprice", lambda trigger, s, now: {"status": "review_pending"})
+
+    result = catalog.handle({"job": "reprice", "trigger": "schedule"}, NOW + timedelta(hours=1))
+
+    [caught_up] = result["overdue_steps"]
+    assert (caught_up["checked"], caught_up["status"]) == (2, "no_change")
+    assert active(aws) is None
 
 
 def test_a_slot_left_by_a_run_that_died_is_freed_after_an_hour(aws, monkeypatch):

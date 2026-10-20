@@ -64,7 +64,7 @@ from common.costing import USD_TO_AUD_RATE, call_cost_usd, pricing_for
 from common.dynamo import (
     increment_current_stats,
     list_all_articles,
-    list_models,
+    list_priced_models,
     list_stats_history_weeks,
     list_topics,
     put_articles_stats_snapshot,
@@ -567,7 +567,7 @@ def refresh_articles_snapshot() -> None:
     try:
         # Taken before the scan: see put_articles_stats_snapshot.
         started_at = datetime.now(UTC).isoformat()
-        stats = build_stats(list_all_articles(), list_topics(), list_models())
+        stats = build_stats(list_all_articles(), list_topics(), list_priced_models())
         put_articles_stats_snapshot(json.dumps(stats), started_at)
     except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a publish
         print(f"stats_tracking: could not refresh the articles snapshot: {exc!r}")

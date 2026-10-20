@@ -685,6 +685,7 @@ field() { python -c 'import json, sys; v = json.load(open("scripts/rail_topics.e
 python scripts/admin_cli.py topics create --topic-id "$(field topic_id)" --name "$(field name)" \
     --adapter rail_access --config-json "$(field adapter_config)" \
     --editorial-goals-json "$(field editorial_goals)" \
+    --goal-rotation-json "$(field editorial_goal_rotation)" \
     --daily-cadence "$(field daily_cadence)" --daily-timezone "$(field daily_timezone)" \
     --findings-window-hours "$(field findings_window_hours)"
 python scripts/admin_cli.py topics get rail-cities
@@ -692,8 +693,14 @@ python scripts/admin_cli.py topics get rail-cities
 
 The answer shows `"force_manual_review": true`, which was not sent: the admin API forces it for
 this adapter. The example's editorial goal names no city: it asks for the measured figures of "the
-day's city", the capture date and the coverage, and rules out ridership, cost, recommendations and
-causes; each day's mandate names the city (below). A rail topic created without a goal is drafted
+day's city", the capture date and the coverage, with reach to a stop as the same straight-line
+proxy as reach to a station and minutes as that distance at 80 m a minute; it calls every
+simulated link theoretical, justified by its numbers and by what its straight line crosses; and
+it rules out ridership, journey time, cost, recommendations, causes and any complaint, political
+or resource-allocation view. Its `editorial_goal_rotation` carries the four angles (access,
+network, simulations, transit) taken in turn on a city's Findings
+([RailVisionSeeding.md §3 and §7](RailVisionSeeding.md#3-the-editorial-goal)); each day's mandate
+names the city (below). A rail topic created without a goal is drafted
 under the adapter's own (`ADAPTER_DEFAULTS` in `lambdas/common/editorial_resolver.py`, #298), which
 restates the summary prompt's limits (only what was measured, with the capture dates; no
 ridership, journey time, cost, cause, forecast or recommendation). A topic's own goal wins over it.
@@ -857,10 +864,41 @@ old network is still measured against; run the prefetch again to replace it. If 
 is too big for Overpass to answer: shrink the polygon (it starts a new baseline, and a new network
 is fetched for it).
 
-**Where things land.** In the content bucket, `<prefix>-<env>-content`: the figure as the worker
-drew it, `vision/<topic>/<site>/<scene>.png` (for example
-`vision/rail-cities/sydney/S2A_56HLH_20240105_0_L2A.png`); each city's network, its only copy,
-`vision/<topic>/<site>/network.json`, written by the tick's fetches and by `network_prefetch` alike
+**After deploying the stops layer** (every bus and tram stop in the network, the stop measures and
+the transit-reach map): a network stored before it carries no `stops`, so the city's Findings keep
+reporting `no_stops_layer`, with no stop measures and no second map, until the network is
+refreshed at its TTL (30 days) or replaced. Once the deploy is green, run the prefetch once:
+
+```bash
+python scripts/admin_cli.py topics trigger rail-cities --pipeline network_prefetch
+```
+
+Each city's `network_prefetch` line carries the Overpass body's size as `bytes` beside its
+`counts` (which gain `stops` and `stops_by_mode`); read it against the client's 20 MB cap
+(`MAX_RESPONSE_BYTES` in `lambdas/common/osm.py`): a big city's bus stops add a few MB to its rail
+query (Sydney's rail reply alone was 5.5 MB), and a city near the cap is a polygon to shrink. A
+`deferred` city is seeded by its next research ticks, as above. Then push the goals, whose text
+changed with the layer (every simulated link theoretical with what it crosses, minutes as walking
+time at 80 m a minute, a constructive register, and the fourth rotating goal, `transit`): write
+them out from [RailVisionSeeding.md §3 and §7](RailVisionSeeding.md#3-the-editorial-goal) and send
+both in one update, which changes nothing else of the topic:
+
+```bash
+python scripts/admin_cli.py topics update rail-cities --goal-rotation-json "$(cat rail_goal_rotation.json)" --editorial-goals-json "$(cat goals.json)"
+```
+
+Until the rows are pushed, the adapter's own default mandate and drafting guidance already carry
+the framing. The benchmark's committed networks (`scripts/vision_benchmark_networks/*.json`)
+predate the layer too and keep working without it (their runs report `no_stops_layer`); refetch
+one with `python scripts/vision_benchmark.py fetch-network --scene <name>` on a machine that can
+reach Overpass ([scripts/README.md](../scripts/README.md)), which prints the file's counts and
+`bytes`.
+
+**Where things land.** In the content bucket, `<prefix>-<env>-content`: the figures as the worker
+drew them, the rail map `vision/<topic>/<site>/<scene>.png` (for example
+`vision/rail-cities/sydney/S2A_56HLH_20240105_0_L2A.png`) and, once the city's network carries
+its stops, the transit-reach map `vision/<topic>/<site>/<scene>-modes.png`; each city's network,
+its only copy, `vision/<topic>/<site>/network.json`, written by the tick's fetches and by `network_prefetch` alike
 and kept outside `snapshots/` (whose objects the bucket expires after 21 days); the running state,
 rewritten every tick, `snapshots/<topic>/running-state.json`; and each Finding's own snapshot,
 `snapshots/<topic>/<captured_at>.json`. The running state holds, per city, the history (the newest
@@ -873,7 +911,7 @@ the page shows it under the credits with its caption.
 
 ```bash
 aws s3 cp s3://<prefix>-dev-content/snapshots/rail-cities/running-state.json - | python -m json.tool | less
-aws s3 cp s3://<prefix>-dev-content/vision/rail-cities/sydney/network.json - | python -c 'import json, sys; n = json.load(sys.stdin); print(n["fetched_at"], n["counts"])'
+aws s3 cp s3://<prefix>-dev-content/vision/rail-cities/sydney/network.json - | python -c 'import json, sys; n = json.load(sys.stdin); print(n["fetched_at"], n["counts"], n.get("bytes"))'
 ```
 
 **Reading the agent's trail.** From the second clear scene of a city on, a numeric change goes to

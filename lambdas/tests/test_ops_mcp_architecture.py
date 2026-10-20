@@ -189,10 +189,15 @@ def test_the_apis_and_log_groups_are_named_as_the_terraform_names_them():
 def test_the_model_catalogs_two_schedules_are_the_ones_the_catalogue_gives():
     dev = _read("environments", "dev", "main.tf")
     runs = dict(_of_kind("function")["model-catalog"].details)["Runs"]
-    assert "Tuesdays and Wednesdays 03:00 Sydney time" in runs
-    for job, day in (("discover", "TUE"), ("reprice", "WED")):
+    assert "every second day, discover at 02:00 and reprice at 03:00 Sydney time" in runs
+    assert "the rotation cycle Fridays 04:00 Sydney time" in runs
+    for job, expression in (
+        ("discover", "cron(0 2 1/2 * ? *)"),
+        ("reprice", "cron(0 3 1/2 * ? *)"),
+        ("cycle", "cron(0 4 ? * FRI *)"),
+    ):
         block = _blocks(dev, "aws_scheduler_schedule")[f"model_catalog_{job}"]
-        assert f'schedule_expression          = "cron(0 3 ? * {day} *)"' in block
+        assert f'schedule_expression          = "{expression}"' in block
         assert 'schedule_expression_timezone = "Australia/Sydney"' in block
         assert f'jsonencode({{ job = "{job}", trigger = "schedule" }})' in block
 

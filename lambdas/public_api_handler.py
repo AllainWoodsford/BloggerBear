@@ -67,9 +67,9 @@ from common.dynamo import (
     get_view_count,
     increment_view_count,
     list_all_articles,
-    list_models,
     list_musings,
     list_pending_moderation_for_topic,
+    list_priced_models,
     list_prompt_refinements,
     list_published_articles,
     list_recent_findings,
@@ -754,7 +754,7 @@ def _articles_stats() -> dict:
     deploy, before the first run)."""
     snapshot = get_articles_stats_snapshot()
     if snapshot is None:
-        return build_stats(list_all_articles(), list_topics(), list_models())
+        return build_stats(list_all_articles(), list_topics(), list_priced_models())
     stats = json.loads(snapshot)
     stats["daily"] = rewindow_daily(stats.get("daily") or [])
     return stats

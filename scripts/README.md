@@ -254,14 +254,15 @@ python scripts/admin_cli.py topics update github-trending --model-candidates ""
 
 **The Rail Access Monitor's topic.** One `rail_access` topic, `rail-cities`, over the four
 starting cities (Sydney, Melbourne, Singapore and Boston, each with its box; the reach, an editorial
-goal that names no city, and a `rotation` that writes about one city a day, with a 192-hour
-`findings_window_hours`, so each city's article drafts every Finding about it since its last one)
+goal that names no city with its four rotating angles (`editorial_goal_rotation`), and a `rotation`
+that writes about one city a day, with a 192-hour `findings_window_hours`, so each city's article
+drafts every Finding about it since its last one)
 is a complete admin API topic body in [`rail_topics.example.json`](rail_topics.example.json).
 `topics create` takes a topic as flags, not a file:
 [docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics)
 has the lines that read each field out of the file, and how to add a city and check its box.
 The file gives each city weekdays; the live `rail-cities` was switched to a city a week
-(Melbourne, Singapore, Boston, Sydney) with a weekly reading and three goals taken in turn:
+(Melbourne, Singapore, Boston, Sydney) with a weekly reading and four goals taken in turn:
 [docs/RailVisionSeeding.md §7](../docs/RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides).
 
 Setting the registry up on a new deployment, with a sample `model-config` item, is in
@@ -754,7 +755,14 @@ four cities' networks (`sydney`, `melbourne`, `singapore` and `boston`) were com
 file's row: where and when it was fetched, and its sha256. A fresh capture is step 5 of
 [the COOL benchmark runsheet](../docs/cool-benchmark-runsheet.md): from the deployed city's network
 object, or `fetch-network`, which asks Overpass for the scene's polygon through
-`lambdas/common/osm.py`, the same client the adapter uses. Without the file, the rail scenes' rows
+`lambdas/common/osm.py`, the same client the adapter uses, and writes what its `fetch_network`
+returned: the ways, stations and points of interest, the `stops` layer (every bus and tram stop in
+the polygon as bare `[lon, lat]` points per mode, thinned to the 20 m grid and capped at 40,000),
+`counts` (with `stops` and `stops_by_mode`) and `bytes`, the Overpass body's size; the run prints
+`wrote <path>: {counts} bytes=N`, so a city's reply can be read against the client's 20 MB cap.
+The four committed networks predate the stops layer and carry no `stops`, which the worker
+reports as the quality flag `no_stops_layer` (every stop measure null, no transit-reach figure);
+they keep working, and a refetch gives them the layer. Without the file, the rail scenes' rows
 read `error: network_file missing`. Overpass is not reachable from the build containers, so a new
 file is captured on a machine that can reach it, checked with `pii_denylist_check.py --staged`, and
 committed, so later reports say (`fetched_at`, and the file's sha256 in `inputs.networks`) which

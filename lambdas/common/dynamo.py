@@ -2005,6 +2005,70 @@ def set_model_fields(model_id: str, updates: dict, *, expected: dict) -> bool:
     return True
 
 
+def delete_model(model_id: str) -> None:
+    """Delete a Models row (the model fleet's pruning, common/model_fleet.py)."""
+    get_table(os.environ["MODELS_TABLE"]).delete_item(Key={"model_id": model_id})
+
+
+def set_topic_model_fields(topic_id: str, updates: dict) -> None:
+    """Set (a value) or remove (None) fields of an existing Topic, leaving every other attribute
+    alone: the model fleet's rotation edits (`model_id_candidates`, `model_id`,
+    `fallback_model_id`). Fails rather than creating a Topic that no longer exists."""
+    if not updates:
+        return
+    names, values, sets, removes = {}, {}, [], []
+    for index, (name, value) in enumerate(updates.items()):
+        names[f"#f{index}"] = name
+        if value is None:
+            removes.append(f"#f{index}")
+        else:
+            sets.append(f"#f{index} = :v{index}")
+            values[f":v{index}"] = _floats_to_decimal(value)
+    clauses = []
+    if sets:
+        clauses.append("SET " + ", ".join(sets))
+    if removes:
+        clauses.append("REMOVE " + ", ".join(removes))
+    expression = " ".join(clauses)
+    kwargs = {"ExpressionAttributeValues": values} if values else {}
+    get_table(os.environ["TOPICS_TABLE"]).update_item(
+        Key={"topic_id": topic_id},
+        UpdateExpression=expression,
+        ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeNames=names,
+        **kwargs,
+    )
+
+
+# One more config row: the prices of the models the fleet pruned, so an article that used one is
+# still priced on the Stats page (list_priced_models), and discovery never adds it back.
+_MODEL_ARCHIVE_ID = "model-archive"
+
+
+def get_model_archive() -> dict[str, dict]:
+    """{model_id: {display_name, provider, input/output price, pruned_at}} for every pruned model."""
+    return (get_config_row(_MODEL_ARCHIVE_ID) or {}).get("models") or {}
+
+
+def archive_models(entries: dict[str, dict]) -> None:
+    """Add (or replace) entries in the pruned-model archive."""
+    if entries:
+        put_config_row({"config_id": _MODEL_ARCHIVE_ID, "models": {**get_model_archive(), **entries}})
+
+
+def list_priced_models() -> list[dict]:
+    """list_models(), plus the archived price of every pruned model the registry no longer holds
+    (as a row with `archived: true`): what the Stats page prices past articles with."""
+    models = list_models()
+    held = {model["model_id"] for model in models}
+    archived = [
+        {**entry, "model_id": model_id, "archived": True}
+        for model_id, entry in get_model_archive().items()
+        if model_id not in held
+    ]
+    return models + archived
+
+
 # --- Feedback limits (see common/feedback_limits.py) ---------------------------------------
 #
 # The settings live as one more row in the same config table as the pipeline settings, so they

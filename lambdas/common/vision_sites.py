@@ -266,9 +266,22 @@ def _s3():
     return boto3.client("s3", config=S3_CONFIG)
 
 
-def store_image(topic_id: str, site_id: str, scene_id: str, png: bytes) -> str:
-    """The worker's figure for one scene, kept in the content bucket; returns its key."""
-    key = f"vision/{topic_id}/{site_id}/{scene_id}.png"
+# What may follow the scene id in a figure's key, so a scene's second figure sits beside its map
+# ("<scene>-modes.png" next to "<scene>.png", rail_access). The characters common/figures.py's
+# _KEY takes, less "/" (a suffix never adds a path segment), and short, so the key stays well
+# under _KEY's 200.
+IMAGE_SUFFIX = re.compile(r"[A-Za-z0-9_.-]{0,16}")
+
+
+def store_image(topic_id: str, site_id: str, scene_id: str, png: bytes, suffix: str = "") -> str:
+    """The worker's figure for one scene, kept in the content bucket; returns its key,
+    vision/<topic>/<site>/<scene><suffix>.png. `suffix` tells a further figure of the scene from
+    its map (rail_access stores the transit-reach map under "-modes"); ValueError when it is not
+    IMAGE_SUFFIX, or would put ".." in the key (".png" follows it, so a suffix ending in "." would
+    too), so a key that common/figures.py would refuse is never written."""
+    if not isinstance(suffix, str) or not IMAGE_SUFFIX.fullmatch(suffix) or ".." in suffix + ".":
+        raise ValueError(f"not a figure key suffix: {suffix!r}")
+    key = f"vision/{topic_id}/{site_id}/{scene_id}{suffix}.png"
     _s3().put_object(
         Bucket=os.environ["CONTENT_BUCKET"], Key=key, Body=png, ContentType="image/png"
     )

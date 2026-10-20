@@ -2,13 +2,17 @@
 diffs.
 
 The order is the data's: site mask, built-up mask and coverage, the heat map, the network
-projected into the scene's pixels, distances to stations (served area, deserts, catchments),
-the ways rasterised, thinned and read back as a graph, then the graph measures (betweenness,
-hubs, distance to the nearest hub, an isolation weight), the station flags and the simulated
-links. Everything in `metrics` is JSON-able (no NaN or infinity), rounded, and carries the
-parameters it was made with. What was not measured is said: coverage, each station's catchment
-coverage, snapped stations, graph components, truncated lists and the quality flags, never a
-quiet zero. networkx is imported here and in network.py, both worker-only.
+projected into the scene's pixels, distances to stations (served area, catchments), distances
+to the bus, tram and ferry stops (the deserts and what the stops cover of them, reach by any
+mode, each station's feeder coverage), the ways rasterised, thinned and read back as a graph,
+then the graph measures (betweenness, hubs, distance to the nearest hub, an isolation weight
+and its multimodal form), the station flags and the theoretical links with what their straight
+lines cross. Everything in `metrics` is JSON-able (no NaN or infinity), rounded, and carries
+the parameters it was made with. What was not measured is said: coverage, each station's
+catchment coverage, snapped stations, graph components, truncated lists and the quality flags,
+never a quiet zero; a network without a stops layer gets None for every stop measure and the
+flag no_stops_layer, where an empty layer measures as nothing within reach. networkx is
+imported here and in network.py, both worker-only.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import cv2
 import networkx as nx
 import numpy as np
 
@@ -38,8 +43,16 @@ PARAM_LIMITS = {
     "min_desert_km2": (0.01, 100.0),
     "visibility_ndvi_max": (0.0, 1.0),
     "max_orbital_km": (1.0, 20.0),
+    "stop_reach_m": (100.0, 2000.0),
+    "feeder_reach_m": (500.0, 10000.0),
 }
 WHOLE_NUMBER_PARAMS = ("hub_count",)
+# The modes the stop measures are read for: the stops layer's bus and tram (the contract's
+# STOP_MODES, bare [lon, lat] points) and the ferry terminals among the points of interest.
+MODES = ("bus", "tram", "ferry")
+# A theoretical link whose straight line has at least this share of its pixels over water is
+# "mostly over water": reported after the dry links and dashed in its own colour on the map.
+MOSTLY_WATER = 0.5
 # Caps on the lists in the metrics, so a reply stays a few hundred KB for the largest city.
 MAX_STATIONS, MAX_EDGES, MAX_DESERTS = 2000, 5000, 10
 # Betweenness costs one Dijkstra pass per source node, each about (nodes + edges) steps, and a
@@ -70,7 +83,11 @@ MIN_BETWEENNESS_SAMPLES, BETWEENNESS_SAMPLES, BETWEENNESS_SEED = 20, 200, 0
 # with its figure, through lambda_handler: at most 37.5 s and 1.69 GB at 4096 px, at most 25.5 s and
 # 1.32 GB at 3,584 px. Before the check (the cap was 20,000 and only skipped the measures), a
 # 2,632-point mesh of crossing ways on a 3,300 px window made 435,596 nodes: 20 s and 1.4 GB in
-# build_graph, 55 s for the pass (four cores).
+# build_graph, 55 s for the pass (four cores). The stops stage (access.distance_to_points over
+# every stop, then one transform per mode, no labels) with a layer at the contract's cap of 40,000
+# points adds 1.0-1.3 s at 3,584 px: the same two networks' whole pass with both figures took
+# 14.0 s (comb_and_diagonals) and 15.3 s (serpentine_and_bar) on the four cores, at a peak of
+# 1.24 GB RSS in the test process (tests/test_vision_rail_core.py's VISION_PERF run).
 MAX_GRAPH_NODES = 10_000
 # A station's activity is floored here in the isolation weight, so an empty catchment far from
 # a hub is "very isolated" rather than infinitely so.
@@ -110,6 +127,12 @@ class RailParams:
     visibility_ndvi_max: float = 0.35
     # Orbital links are only simulated between stations this close in a straight line.
     max_orbital_km: float = 5.0
+    # Walking reach of a bus, tram or ferry stop, straight-line: the usual 400 m (five minutes
+    # at the contract's WALK_M_PER_MIN) of the stop-spacing rule of thumb.
+    stop_reach_m: float = 400.0
+    # How far beyond a station's own reach its hinterland is read for feeder coverage: the
+    # built-up ground between reach_m and this, in the station's cell, that a feeder would serve.
+    feeder_reach_m: float = 2000.0
 
     def __post_init__(self):
         for name, (low, high) in PARAM_LIMITS.items():
@@ -121,13 +144,16 @@ class RailParams:
                 raise ValueError(f"{name} must be a whole number")
         if self.intermodal_far_m < self.intermodal_near_m:
             raise ValueError("intermodal_far_m must be at least intermodal_near_m")
+        if self.feeder_reach_m < self.reach_m:
+            raise ValueError("feeder_reach_m must be at least reach_m")
 
 
 @dataclass
 class RailAnalysis:
-    """`metrics` is what the worker returns (JSON-able). `layers` are the arrays the figure is
-    drawn from (`heat`, `built`, `desert`, `unusable`, `water`, `usable`, `skeleton`), the
-    `graph`, the projected `stations_px`, the `hubs` and the stage `timings` (ms); never sent."""
+    """`metrics` is what the worker returns (JSON-able). `layers` are the arrays the figures are
+    drawn from (`heat`, `built`, `desert`, `unusable`, `water`, `usable`, `skeleton` and
+    `stop_reach`, a uint8 0/255 mask that is all zeros without a stops layer), the `graph`, the
+    projected `stations_px`, the `hubs` and the stage `timings` (ms); never sent."""
 
     metrics: dict
     layers: dict
@@ -137,14 +163,23 @@ def project_network(network: dict, epsg: int, transform: Sequence[float], shape:
     """The network's lon/lat geometry in the scene: `ways_px` and `tunnels_px` (float (n, 2)
     pixel arrays, surface and tunnel ways apart), `stations` (the station dicts with `x`, `y`
     pixel coordinates, `easting`, `northing` and `inside` the image), `stations_px` (an (x, y)
-    per station, None outside the image), `stations_xy_m`, `pois_xy_m`, `poi_kinds` and
-    `warnings`. Pixel coordinates are of pixel centres, so rounding them gives the pixel index.
-    A vertex, station or point of interest whose coordinates are not finite or not on Earth is
-    skipped and counted in a warning, never a crash; a repeated station id keeps one entry (the
-    first inside the window, else the first) and is counted in a warning too."""
+    per station, None outside the image), `stations_xy_m`, `pois_xy_m`, `poi_kinds`,
+    `stops_px`, `stops_xy_m` and `warnings`. Pixel coordinates are of pixel centres, so
+    rounding them gives the pixel index. A vertex, station, point of interest or stop whose
+    coordinates are not finite or not on Earth is skipped and counted in a warning, never a
+    crash; a repeated station id keeps one entry (the first inside the window, else the first)
+    and is counted in a warning too.
+
+    With a `stops` layer in the network, `stops_px` is {mode: [(x, y) | None]} and `stops_xy_m`
+    {mode: (n, 2) UTM array} for every mode in MODES: bus and tram from the layer (a mode the
+    layer lacks is empty), ferry from the pois of kind ferry_terminal. The layer's bus stops are
+    appended to the POI arrays as kind bus_stop, and the pois of that kind are then left out,
+    so `access.intermodal_counts` counts each stop once whichever way it came: a network cached
+    before the layer existed carries its bus stops in `pois` and no `stops`, and that old path
+    still counts. Without the layer both are None: the stops were not measured."""
     zone, south = geo.utm_zone_from_epsg(epsg)
     h, w = shape
-    skipped = {"way vertices": 0, "stations": 0, "points of interest": 0}
+    skipped = {"way vertices": 0, "stations": 0, "points of interest": 0, "bus stops": 0, "tram stops": 0}
 
     def project(points, what):
         rows = []
@@ -187,17 +222,43 @@ def project_network(network: dict, epsg: int, transform: Sequence[float], shape:
         stations_px.append((x, y) if inside else None)
         stations_xy.append((e, n))
 
-    pois_xy, poi_kinds = [], []
+    stops = network.get("stops")
+    layered = isinstance(stops, dict)
+    pois_xy, poi_kinds, ferries = [], [], []
     for poi in network.get("pois", ()):
+        kind = str(poi.get("kind", ""))
+        if layered and kind == "bus_stop":
+            continue  # the layer carries the bus stops; counting these too would count them twice
         projected = project([(poi.get("lon"), poi.get("lat"))], "points of interest")
         if not len(projected):
             continue
         pois_xy.append(projected[0, 2:])
-        poi_kinds.append(str(poi.get("kind", "")))
+        poi_kinds.append(kind)
+        if kind == "ferry_terminal":
+            ferries.append(projected[0])
+
+    stops_px = stops_xy = None
+    if layered:
+        stops_px, stops_xy = {}, {}
+        for mode in MODES:
+            if mode == "ferry":
+                points = np.asarray(ferries, np.float64).reshape(-1, 4)
+            else:
+                points = project(stops.get(mode) or (), f"{mode} stops")
+            cols, rows_ = np.round(points[:, 0]), np.round(points[:, 1])
+            inside = (0 <= cols) & (cols < w) & (0 <= rows_) & (rows_ < h)
+            pixels = zip(points[:, :2], inside, strict=True)
+            stops_px[mode] = [(x, y) if ok else None for (x, y), ok in pixels]
+            stops_xy[mode] = points[:, 2:].copy()
+            if mode == "bus":
+                pois_xy.extend(points[:, 2:])
+                poi_kinds.extend(["bus_stop"] * len(points))
 
     warnings = [f"{n} {what} with coordinates not on Earth skipped" for what, n in skipped.items() if n]
     if repeated:
         warnings.append(f"{repeated} repeated station ids dropped: one entry kept for each")
+    if stops is not None and not layered:
+        warnings.append("the stops layer is not an object: the stops were not measured")
     return {
         "ways_px": ways_px,
         "tunnels_px": tunnels_px,
@@ -206,6 +267,8 @@ def project_network(network: dict, epsg: int, transform: Sequence[float], shape:
         "stations_xy_m": np.asarray(stations_xy, np.float64).reshape(-1, 2),
         "pois_xy_m": np.asarray(pois_xy, np.float64).reshape(-1, 2),
         "poi_kinds": poi_kinds,
+        "stops_px": stops_px,
+        "stops_xy_m": stops_xy,
         "warnings": warnings,
     }
 
@@ -236,7 +299,8 @@ def analyse_rail_access(
     """Measure one city. `bands` holds `red`, `nir`, `swir16` and `scl` on one grid of
     `pixel_size_m` pixels with the north-up `transform` in UTM `epsg`; `polygon_px` outlines
     the site; `network` is the OpenStreetMap network (ways with lon/lat points and a `tunnel`
-    flag, stations, points of interest)."""
+    flag, stations, points of interest, and the optional `stops` layer of bus and tram points:
+    without it every stop measure is None and the quality flag no_stops_layer says so)."""
     params = params or RailParams()
     if pixel_size_m <= 0:
         raise ValueError("pixel_size_m must be positive")
@@ -263,7 +327,7 @@ def analyse_rail_access(
     heat = urban.heat_map(built, params.heat_sigma_m / pixel_size_m, usable=usable)
     lap("masks")
 
-    # Stations: distances, served area, deserts, catchments.
+    # Stations: distances, served area, catchments.
     projected = project_network(network, epsg, transform, shape)
     stations, stations_px = projected["stations"], projected["stations_px"]
     reach_px = params.reach_m / pixel_size_m
@@ -272,7 +336,38 @@ def analyse_rail_access(
     station_labels = access.label_of_station(labels, stations_px)
     served = access.served_stats(built, dist_px, reach_px, pixel_km2)
     desert = access.desert_mask(built, dist_px, reach_px)
-    clusters = access.desert_clusters(desert, params.min_desert_km2 / pixel_km2, top=MAX_DESERTS)
+    activity, catchment_coverage = access.catchment_activity(
+        heat, labels, dist_px, reach_px, station_labels, usable=usable
+    )
+    lap("access")
+
+    # Stops: every mode's points in one raster for the stop reach (the plain transform, no labels),
+    # then one transform per mode for its share; the deserts are read here because each says how
+    # much of it the stops cover; then what the stops add to the stations and each station's
+    # feeder coverage. Without the layer the measures are None and the mask is empty.
+    stops_px = projected["stops_px"]
+    layered = stops_px is not None
+    stop_reach_px = params.stop_reach_m / pixel_size_m
+    stop_reach = np.zeros(shape, np.uint8)
+    share_by_mode: dict[str, float | None] = dict.fromkeys(MODES)
+    stop_stats: dict[str, float | None] = dict.fromkeys(
+        ("stop_served_share", "stop_served_km2", "any_mode_served_share", "any_mode_served_km2",
+         "any_mode_desert_km2", "stops_only_km2", "stop_overlap_share")
+    )  # fmt: skip
+    if layered:
+        every = [point for mode in MODES for point in stops_px[mode]]
+        stop_reach[access.distance_to_points(access.station_raster(shape, every)) <= stop_reach_px] = 255
+        for mode in MODES:
+            if any(point is not None for point in stops_px[mode]):
+                mode_dist = access.distance_to_points(access.station_raster(shape, stops_px[mode]))
+                by_mode = access.served_stats(built, mode_dist, stop_reach_px, pixel_km2)
+                share_by_mode[mode] = by_mode["served_share"]
+            else:
+                share_by_mode[mode] = 0.0  # the layer is there and holds no stop of this mode in the window
+        stop_stats = access.stop_stats(built, dist_px, reach_px, stop_reach, pixel_km2)
+    clusters = access.desert_clusters(
+        desert, params.min_desert_km2 / pixel_km2, top=MAX_DESERTS, within=stop_reach if layered else None
+    )
     first_station_of_label = {}
     for index, label in enumerate(station_labels):
         if label > 0:  # label 0 is a station outside the window, which is nobody's nearest
@@ -291,12 +386,14 @@ def analyse_rail_access(
                 "area_km2": round(cluster["area_px"] * pixel_km2, 4),
                 "nearest_station": rail_network.station_node_id(stations[nearest]) if found else None,
                 "nearest_station_m": round(float(dist_px[row, col]) * pixel_size_m, 1) if found else None,
+                "stop_covered_share": round(cluster["within_share"], 4) if layered else None,
             }
         )
-    activity, catchment_coverage = access.catchment_activity(
-        heat, labels, dist_px, reach_px, station_labels, usable=usable
-    )
-    lap("access")
+    feeder = access.feeder_coverage(
+        built, usable, labels, dist_px, stop_reach if layered else None, reach_px,
+        params.feeder_reach_m / pixel_size_m, station_labels,
+    )  # fmt: skip
+    lap("modes")
 
     # The network as a graph.
     surface = rail_network.rasterise_ways(shape, projected["ways_px"])
@@ -329,6 +426,7 @@ def analyse_rail_access(
         sid = rail_network.station_node_id(station)
         node = node_of_station[sid]
         d_hub = measures["d_hub_m"].get(node)
+        weight = _isolation_weight(d_hub, activity[index])
         rows.append(
             {
                 "id": sid,
@@ -342,13 +440,17 @@ def analyse_rail_access(
                 "activity": None if activity[index] is None else round(activity[index], 4),
                 "catchment_coverage": round(catchment_coverage[index], 4),
                 "d_hub_m": None if d_hub is None else round(d_hub, 1),
-                "isolation_weight": _isolation_weight(d_hub, activity[index]),
+                "isolation_weight": weight,
+                "feeder_coverage": None if feeder[index] is None else round(feeder[index], 4),
+                "multimodal_isolation_weight": _multimodal_weight(weight, feeder[index]),
                 "intermodal": intermodal[index],
             }
         )
     adjacency = rail_network.station_adjacency(graph)
     flags = flag_stations(rows, adjacency)
-    suggestions = suggest(graph, rows, measures, adjacency, pixel_size_m, params.max_orbital_km)
+    suggestions = suggest(
+        graph, rows, measures, adjacency, pixel_size_m, params.max_orbital_km, water, unusable, built
+    )
     edges = []
     for u, v, data in graph.edges(data=True):
         a, b = sorted((u, v))
@@ -391,7 +493,11 @@ def analyse_rail_access(
         quality_flags.append("graph_too_large")
     elif measures["approximate"]:
         quality_flags.append("betweenness_sampled")
+    if not layered:
+        quality_flags.append("no_stops_layer")
 
+    stops = network.get("stops") if layered else None
+    by_mode = {mode: _rounded(share_by_mode[mode]) for mode in MODES} if layered else None
     metrics = {
         "task": "rail_access",
         "coverage": round(coverage, 4),
@@ -399,6 +505,23 @@ def analyse_rail_access(
         "served_km2": round(served["served_km2"], 4),
         "desert_km2": round(served["desert_km2"], 4),
         "served_share": round(served["served_share"], 4),
+        # The stops: what was received per mode, the built-up ground within their reach, by any
+        # mode (a station or a stop) and beyond both, and how far the mapped stops go: built-up
+        # km2 within reach per 100 stops, and the part of it the stations already reach.
+        "stops": None if stops is None else {
+            "bus": len(stops.get("bus") or ()),
+            "tram": len(stops.get("tram") or ()),
+            "ferry": sum(1 for poi in network.get("pois", ()) if poi.get("kind") == "ferry_terminal"),
+        },  # fmt: skip
+        "stop_served_share": _rounded(stop_stats["stop_served_share"]),
+        "stop_served_km2": _rounded(stop_stats["stop_served_km2"]),
+        "stop_served_share_by_mode": by_mode,
+        "any_mode_served_share": _rounded(stop_stats["any_mode_served_share"]),
+        "any_mode_served_km2": _rounded(stop_stats["any_mode_served_km2"]),
+        "any_mode_desert_km2": _rounded(stop_stats["any_mode_desert_km2"]),
+        "stops_only_km2": _rounded(stop_stats["stops_only_km2"]),
+        "stop_coverage_km2_per_100": _per_hundred(stop_stats["stop_served_km2"], stops, network),
+        "stop_overlap_share": _rounded(stop_stats["stop_overlap_share"]),
         "station_count": len(stations),
         "snapped_station_count": snapped_count,
         "node_count": graph.number_of_nodes(),
@@ -420,6 +543,7 @@ def analyse_rail_access(
             "stations": len(network.get("stations", ())),
             "pois": len(network.get("pois", ())),
             "points": sum(len(way.get("points", ())) for way in network.get("ways", ())),
+            "stops": None if stops is None else sum(len(points or ()) for points in stops.values()),
             "fetched_at": network.get("fetched_at"),
         },
         "params": {
@@ -435,6 +559,7 @@ def analyse_rail_access(
         "unusable": unusable,
         "water": water,
         "usable": usable,
+        "stop_reach": stop_reach,
         "skeleton": skeleton,
         "graph": graph,
         "stations_px": stations_px,
@@ -446,6 +571,21 @@ def analyse_rail_access(
 
 def _is_station(graph: nx.Graph, edge: dict) -> bool:
     return any(graph.nodes[n].get("kind") == "station" for n in (edge["from"], edge["to"]) if n in graph)
+
+
+def _rounded(value: float | None, places: int = 4) -> float | None:
+    """`value` rounded for the metrics; None stays None (not measured)."""
+    return None if value is None else round(float(value), places)
+
+
+def _per_hundred(stop_served_km2: float | None, stops: dict | None, network: dict) -> float | None:
+    """Built-up km2 within stop reach per 100 mapped stops (the received bus, tram and ferry
+    points together): how far the mapped stops go. None without the layer or without a stop."""
+    if stops is None or stop_served_km2 is None:
+        return None
+    count = sum(len(stops.get(mode) or ()) for mode in ("bus", "tram"))
+    count += sum(1 for poi in network.get("pois", ()) if poi.get("kind") == "ferry_terminal")
+    return round(100.0 * stop_served_km2 / count, 4) if count else None
 
 
 def _betweenness_sample(graph: nx.Graph) -> dict:
@@ -528,7 +668,8 @@ def flag_stations(rows: Sequence[dict], adjacency: dict[str, list[str]]) -> list
     """The station flags, from the per-station rows of the metrics:
 
     - `isolated_high_demand`: activity in the top quarter, degree at most 2, isolation weight in
-      the top quarter (among stations with one);
+      the top quarter (among stations with one); the condition is on the rail weight, and the
+      flag quotes the station's `feeder_coverage` and `multimodal_isolation_weight` beside it;
     - `single_point_of_failure`: the station whose betweenness is at least twice the next;
     - `ghost_line`: three or more consecutive stations (next along a line, through junctions)
       each with activity in the bottom quarter.
@@ -559,6 +700,8 @@ def flag_stations(rows: Sequence[dict], adjacency: dict[str, list[str]]) -> list
                     "activity": row["activity"],
                     "degree": row["degree"],
                     "isolation_weight": w,
+                    "feeder_coverage": row["feeder_coverage"],
+                    "multimodal_isolation_weight": row["multimodal_isolation_weight"],
                 }
             )
 
@@ -636,18 +779,29 @@ def suggest(
     adjacency: dict[str, list[str]],
     pixel_size_m: float,
     max_orbital_km: float,
+    water: np.ndarray,
+    unusable: np.ndarray,
+    built: np.ndarray,
 ) -> list[dict]:
-    """Simulated changes to the network, deterministic for a given graph:
+    """Theoretical changes to the network (every one carries `"theoretical": true`: a what-if on
+    the mapped graph and straight lines, never a route or a recommendation), deterministic for
+    a given graph:
 
     - `orbital_link`: among pairs of stations both in the top quarter of distance to a hub,
       within `max_orbital_km` of each other in a straight line and not already next along a
-      line, the `MAX_ORBITAL_CANDIDATES` with the largest product of isolation weights are each
-      tried on a copy of the graph with an edge `ORBITAL_DETOUR` times the straight line and
-      ranked by the fall in the mean distance to a hub (Dijkstra alone); a link that brings
-      nobody closer is dropped; the top `TOP_SUGGESTIONS` are kept and only they get the change
-      in the top hub's betweenness, so betweenness runs a few times, not a dozen;
-    - `feeder_corridor`: the `TOP_SUGGESTIONS` stations with the largest isolation weight, each
-      to its nearest hub.
+      line, the `MAX_ORBITAL_CANDIDATES` with the largest product of weights (`_ranking_weight`)
+      are each tried on a copy of the graph with an edge `ORBITAL_DETOUR` times the straight
+      line and ranked by the fall in the mean distance to a hub (Dijkstra alone); a link that
+      brings nobody closer is dropped; the top `TOP_SUGGESTIONS` are kept and only they get the
+      change in the top hub's betweenness, so betweenness runs a few times, not a dozen. Each
+      says what its straight line crosses (`water_share`, `unmeasured_share`, `built_share` of
+      the line's pixels over the `water`, `unusable` and `built` layers, and `water_km`), both
+      ends' distance to a hub before it (`from_d_hub_m`, `to_d_hub_m`) and how many stations it
+      brings closer to a hub (`stations_closer`). A link with `water_share` of `MOSTLY_WATER` or
+      more (a harbour crossing) is ranked after every drier one, never dropped;
+    - `feeder_corridor`: the `TOP_SUGGESTIONS` stations with the largest weight, each to its
+      nearest hub, with the station's `isolation_weight`, `multimodal_isolation_weight` and
+      `feeder_coverage`.
     """
     suggestions: list[dict] = []
     hubs = measures["hubs"]
@@ -667,7 +821,7 @@ def suggest(
                 straight_m = _pixel_distance(graph, a["id"], b["id"]) * pixel_size_m
                 if straight_m > max_orbital_km * 1000.0:
                     continue
-                product = a["isolation_weight"] * b["isolation_weight"]
+                product = _ranking_weight(a) * _ranking_weight(b)
                 candidates.append((-product, a["id"], b["id"], straight_m))
         candidates.sort()
         reachable = [n for n, d in measures["d_hub_m"].items() if d is not None and n in by_id]
@@ -680,29 +834,42 @@ def suggest(
             after_mean = float(np.mean([distances[n] for n in reachable])) if reachable else 0.0
             delta = round(after_mean - before_mean, 1)
             if delta < 0:  # a link that brings nobody closer to a hub is not a suggestion
-                tried.append((delta, a_id, b_id, straight_m, trial))
-        tried.sort(key=lambda t: t[:3])
+                before = measures["d_hub_m"]
+                closer = sum(1 for n in reachable if round(distances[n], 1) < round(before[n], 1))
+                crossing = _crossing(graph, a_id, b_id, water, unusable, built)
+                tried.append((delta, a_id, b_id, straight_m, trial, closer, crossing))
+        # The dry links first, by the fall in mean hub distance; then, in the same order, those
+        # mostly over water (a crossing whose line left the grid is not known to be dry).
+        tried.sort(key=lambda t: (not _is_dry(t[6]["water_share"]), t[0], t[1], t[2]))
         before_top = max(measures["betweenness"].get(h, 0.0) for h in hubs)
         base_sample = _betweenness_sample(graph)  # the estimator before_top came from
-        for delta, a_id, b_id, straight_m, trial in tried[:TOP_SUGGESTIONS]:
+        for delta, a_id, b_id, straight_m, trial, closer, crossing in tried[:TOP_SUGGESTIONS]:
             # Nodes only (the edges' are never read), sampled exactly as the base graph was.
             trial_betweenness = node_betweenness(trial, sample=base_sample)
             after_top = max(trial_betweenness.get(h, 0.0) for h in hubs)
+            straight_km = round(straight_m / 1000.0, 4)
+            water_share = crossing["water_share"]
             suggestions.append(
                 {
                     "type": "orbital_link",
+                    "theoretical": True,
                     "from": a_id,
                     "to": b_id,
                     "from_name": by_id[a_id]["name"],
                     "to_name": by_id[b_id]["name"],
-                    "straight_km": round(straight_m / 1000.0, 4),
+                    "straight_km": straight_km,
                     "delta_top_hub_betweenness": round(after_top - before_top, 4),
                     "delta_mean_d_hub_m": delta,
+                    "from_d_hub_m": by_id[a_id]["d_hub_m"],
+                    "to_d_hub_m": by_id[b_id]["d_hub_m"],
+                    "stations_closer": closer,
+                    **crossing,
+                    "water_km": None if water_share is None else round(water_share * straight_km, 4),
                 }
             )
 
     isolated = [row for row in rows if row["isolation_weight"] and row["id"] in graph]
-    isolated.sort(key=lambda row: (-row["isolation_weight"], row["id"]))
+    isolated.sort(key=lambda row: (-_ranking_weight(row), row["id"]))
     for row in isolated[:TOP_SUGGESTIONS]:
         hub = measures["hub_of"].get(row["id"])
         if hub is None:
@@ -710,14 +877,65 @@ def suggest(
         suggestions.append(
             {
                 "type": "feeder_corridor",
+                "theoretical": True,
                 "station": row["id"],
                 "name": row["name"],
                 "hub": hub,
                 "hub_name": by_id[hub]["name"] if hub in by_id else None,
                 "length_m": row["d_hub_m"],
+                "isolation_weight": row["isolation_weight"],
+                "multimodal_isolation_weight": row["multimodal_isolation_weight"],
+                "feeder_coverage": row["feeder_coverage"],
             }
         )
     return suggestions
+
+
+def _ranking_weight(row: dict) -> float:
+    """The weight `suggest` ranks a station by: its multimodal isolation weight where it has one
+    (the rail weight discounted by the share of its hinterland the stops cover), else its rail
+    weight. The two are one scale, not two: the multimodal weight is the rail weight times (1 -
+    coverage), and a station without one either has no stops layer (nothing to discount by) or
+    no built-up ground beyond its reach in its cell (nothing for a stop to cover, so no
+    discount), so each station is ranked by its rail weight less the feeder cover that was
+    measured. Ranking by the multimodal weight only when every station had one would fall back
+    to the rail weight in every city with a dense core, whose stations' cells end inside their
+    own reach. Deterministic either way; the suggestion quotes both weights."""
+    weight = row["multimodal_isolation_weight"]
+    return row["isolation_weight"] if weight is None else weight
+
+
+def _is_dry(water_share: float | None) -> bool:
+    return water_share is not None and water_share < MOSTLY_WATER
+
+
+def _crossing(
+    graph: nx.Graph, a: str, b: str, water: np.ndarray, unusable: np.ndarray, built: np.ndarray
+) -> dict[str, float | None]:
+    """What the straight line between nodes `a` and `b` crosses: the shares of its pixels (a 1 px
+    `cv2.line` between the two node pixels, drawn into a blank mask of the line's part of the
+    grid) that are water, unmeasured (unusable) and built up, 4 dp. Every share None when no
+    pixel of the line is in the grid: not measured, which is not "dry"."""
+    h, w = water.shape
+    ax, ay = round(graph.nodes[a]["x"]), round(graph.nodes[a]["y"])
+    bx, by = round(graph.nodes[b]["x"]), round(graph.nodes[b]["y"])
+    x0, x1 = max(0, min(ax, bx)), min(w - 1, max(ax, bx))
+    y0, y1 = max(0, min(ay, by)), min(h - 1, max(ay, by))
+    none: dict[str, float | None] = {"water_share": None, "unmeasured_share": None, "built_share": None}
+    if x0 > x1 or y0 > y1:
+        return none
+    mask = np.zeros((y1 - y0 + 1, x1 - x0 + 1), np.uint8)
+    cv2.line(mask, (ax - x0, ay - y0), (bx - x0, by - y0), 255, 1)
+    on = mask > 0
+    count = int(np.count_nonzero(on))
+    if count == 0:
+        return none
+    region = (slice(y0, y1 + 1), slice(x0, x1 + 1))
+    return {
+        "water_share": round(int(np.count_nonzero(on & (water[region] > 0))) / count, 4),
+        "unmeasured_share": round(int(np.count_nonzero(on & (unusable[region] > 0))) / count, 4),
+        "built_share": round(int(np.count_nonzero(on & (built[region] > 0))) / count, 4),
+    }
 
 
 def _isolation_weight(d_hub_m: float | None, activity: float | None) -> float | None:
@@ -725,6 +943,15 @@ def _isolation_weight(d_hub_m: float | None, activity: float | None) -> float | 
     if d_hub_m is None or activity is None:
         return None
     return round((d_hub_m / 1000.0) / max(activity, MIN_ACTIVITY), 4)
+
+
+def _multimodal_weight(isolation_weight: float | None, feeder_coverage: float | None) -> float | None:
+    """The isolation weight times (1 - the feeder coverage): the rail weight discounted by the
+    share of the station's hinterland that bus, tram or ferry stops already cover; None when
+    either was not measured."""
+    if isolation_weight is None or feeder_coverage is None:
+        return None
+    return round(isolation_weight * (1.0 - feeder_coverage), 4)
 
 
 def _pixel_distance(graph: nx.Graph, a: str, b: str) -> float:

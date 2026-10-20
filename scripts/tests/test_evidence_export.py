@@ -1498,10 +1498,11 @@ def test_networks_come_from_each_sites_object_or_a_legacy_inline_copy(monkeypatc
     import os
 
     monkeypatch.delenv("CONTENT_BUCKET", raising=False)
-    stored = {  # a network object as the tick stores it
+    stored = {  # a network object as the tick stores it, fetched since the stops layer
         "ways": [{"id": "w1", "points": [[151.0, -33.8], [151.1, -33.8]]}], "stations": [], "pois": [],
+        "stops": {"bus": [[151.05, -33.81]], "tram": []},
         "fetched_at": "2026-10-16T00:00:00+00:00", "source": "overpass", "site_key": "abc",
-        "truncated": False,
+        "truncated": False, "bytes": 2048,
     }  # fmt: skip
     state = {
         "sites": {
@@ -1524,8 +1525,12 @@ def test_networks_come_from_each_sites_object_or_a_legacy_inline_copy(monkeypatc
     ]
     assert asked == [(CITIES, "melbourne", BUCKET), (CITIES, "sydney", BUCKET)]
     assert "CONTENT_BUCKET" not in os.environ  # put back as it was
-    fields = ("ways", "stations", "pois", "fetched_at", "source")
+    fields = ("ways", "stations", "pois", "stops", "fetched_at", "source", "bytes")
     assert ee.fixture_of(stored) == {key: stored[key] for key in fields}
+    # A network fetched before the stops layer has neither `stops` nor `bytes`, and nor does its
+    # fixture: the fields are kept, never filled in.
+    older = {key: value for key, value in stored.items() if key not in ("stops", "bytes")}
+    assert ee.fixture_of(older) == {key: stored[key] for key in fields if key not in ("stops", "bytes")}
     # A key no config could hold (it would name a file outside the folder) is passed over; a read
     # that fails is said, never raised.
     state["sites"]["../../escape"] = {"network": stored}
@@ -1543,3 +1548,30 @@ def test_networks_come_from_each_sites_object_or_a_legacy_inline_copy(monkeypatc
         "melbourne": {"from": f"vision/{CITIES}/melbourne/network.json", "error": "AccessDenied"},
         "sydney": {"from": f"vision/{CITIES}/sydney/network.json", "error": "AccessDenied"},
     }
+
+
+def test_a_scenes_figures_are_both_its_maps_from_its_history_entry():
+    """Since the stops layer a reported scene has two figures: the rail map (`image_key`, the one
+    the labels and traces point at) and the transit reach map (`modes_image_key`), exported
+    beside it with the "-modes" suffix on its file name; a key that is not a figure key is left
+    out, and a scene without an entry gives nothing."""
+    state = {
+        "sites": {
+            "sydney": {
+                "history": [
+                    {"scene_id": "S1", "image_key": "vision/t/sydney/S1.png"},
+                    {"scene_id": "S2", "image_key": "vision/t/sydney/S2.png",
+                     "modes_image_key": "vision/t/sydney/S2-modes.png"},
+                    {"scene_id": "S3", "image_key": "../x.png", "modes_image_key": None},
+                ]
+            }
+        }
+    }  # fmt: skip
+    assert ee.figure_keys_of(state, "sydney", "S2") == [
+        ("", "vision/t/sydney/S2.png"), ("-modes", "vision/t/sydney/S2-modes.png"),
+    ]  # fmt: skip
+    assert ee.figure_keys_of(state, "sydney", "S1") == [("", "vision/t/sydney/S1.png")]
+    assert ee.figure_keys_of(state, "sydney", "S3") == [] and ee.figure_key_of(state, "sydney", "S3") is None
+    assert ee.figure_key_of(state, "sydney", "S2") == "vision/t/sydney/S2.png"
+    assert ee.figure_keys_of(None, "sydney", "S2") == [] and ee.figure_keys_of(state, "boston", "S2") == []
+    assert ee.FIGURE_SUFFIXES == (("image_key", ""), ("modes_image_key", "-modes"))
