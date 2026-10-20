@@ -137,6 +137,10 @@ class FakeHands:
         return [call[0] for call in self.calls]
 
 
+OK_READ = json.dumps({"verdict": "ok", "rewrite_instructions": ""})
+BAD_READ = json.dumps({"verdict": "rewrite", "rewrite_instructions": "It gives investment advice."})
+
+
 def verdicts(*real, instructions=""):
     return json.dumps(
         {
@@ -176,15 +180,20 @@ def test_held_reasons_split_into_faults_majors_and_minors():
     item = {
         "reasons": [
             "financial topic - routed to manual moderation regardless of content",
+            "this topic's articles are always reviewed by a person before publishing",
             "draft truncated: the model stopped early",
             "PII: the article names release dates",
             "sent back by a person for a rewrite: tighten it",
+            "NOTE: the tone is a little breathless",
+            "FABRICATED flagged but not held: a figure the sources do not give",
         ]
     }
     found = reviewer.held_issues(
         item,
         {
             "review": {
+                "mode": "enforce",
+                "status": "reviewed",
                 "claims": [
                     {"claim": "BTC at 60k", "problem": "now 58k", "severity": "major"},
                     {"claim": "launched Tuesday", "problem": "Wednesday", "severity": "minor"},
@@ -195,7 +204,11 @@ def test_held_reasons_split_into_faults_majors_and_minors():
     )
     assert found.faults == ["draft truncated: the model stopped early"]
     assert found.majors == ["PII: the article names release dates", "BTC at 60k: now 58k", "no severity: ?"]
-    assert found.minors == ["launched Tuesday: Wednesday"]
+    assert found.minors == [
+        "NOTE: the tone is a little breathless",
+        "FABRICATED flagged but not held: a figure the sources do not give",
+        "launched Tuesday: Wednesday",
+    ]
 
 
 def test_a_major_the_model_says_nothing_about_counts_as_real_and_a_non_answer_is_none():
@@ -253,16 +266,16 @@ def test_nothing_waiting_two_days_means_he_was_not_woken(aws):
 # --- held articles ------------------------------------------------------------------------------
 
 
-def test_a_draft_rewritten_three_times_is_rejected_with_his_musing_just_before(aws):
+def test_a_draft_still_wrong_after_its_last_rewrite_is_rejected_with_his_musing_just_before(aws):
     put_topic(aws)
-    put_held(aws, "q", "a", rewrites=[{"n": 1}, {"n": 2}, {"n": 3}])
-    hands = FakeHands()
+    put_held(aws, "q", "a", reasons=["PII: a private address"], rewrites=[{"n": 1}, {"n": 2}, {"n": 3}])
+    hands = FakeHands([verdicts(True)])
 
     outcome = reviewer.do_task({"task": "held", "queue_id": "q"}, hands.build(), NOW, joke=2)
 
     assert outcome == "rejected"
-    assert hands.names() == ["reject", "rejection_musing"]
-    said = hands.calls[1][1]
+    assert hands.names() == ["ask", "reject", "rejection_musing"]
+    said = hands.calls[2][1]
     assert said["topic_name"] == "Topic wow" and said["joke_index"] == 2
     assert said["created_at"] < NOW.isoformat()
 
@@ -279,11 +292,11 @@ def test_a_pipeline_fault_is_sent_for_a_rewrite_without_asking_the_model(aws):
 def test_majors_that_are_not_real_problems_get_approved_and_tagged(aws):
     put_topic(aws)
     put_held(aws, "q", "a", reasons=["PII: the article lists beta test dates"])
-    hands = FakeHands([verdicts(False)])
+    hands = FakeHands([verdicts(False), OK_READ])
 
     assert reviewer.do_task({"task": "held", "queue_id": "q"}, hands.build(), NOW) == "approved"
 
-    assert hands.names() == ["ask", "approve"]
+    assert hands.names() == ["ask", "ask", "approve"]
     assert hands.calls[0][1] == "model-for-wow"  # the topic's own model
     assert article(aws, "a")[reviewer.REVIEWED_FIELD] == NOW.isoformat()
     assert reviewer.FLAG_FIELD not in article(aws, "a")
@@ -315,8 +328,9 @@ def test_an_unreadable_answer_or_a_topic_he_may_not_approve_waits_for_a_person(a
 def test_financial_no_majors_is_approved_and_flagged_majors_that_dont_matter_wait(aws):
     put_topic(aws, "crypto", is_financial=True)
     put_held(aws, "q", "a", topic_id="crypto", reasons=["financial topic - routed to manual moderation"])
-    hands = FakeHands()
+    hands = FakeHands([OK_READ])
     assert reviewer.do_task({"task": "held", "queue_id": "q"}, hands.build(), NOW) == "approved_flagged"
+    assert hands.names() == ["ask", "approve"]  # read whole before it goes out
     flagged = article(aws, "a")
     assert flagged[reviewer.FLAG_FIELD] == reviewer.FLAG_FINANCIAL
     assert flagged[reviewer.FLAGGED_AT_FIELD] == NOW.isoformat()
@@ -568,12 +582,12 @@ def test_articles_past_the_defang_threshold_go_to_task_five_younger_ones_to_task
 def test_a_plausible_cut_removes_only_the_quoted_sentences_and_publishes(aws):
     put_topic(aws)
     put_held(aws, "q", "a", created_at=LONG_AGO, reasons=["PII: names a private person's address"])
-    hands = DefangHands([defang_answer()])
+    hands = DefangHands([defang_answer(), OK_READ])
 
     assert reviewer.do_task({"task": "defang", "queue_id": "q"}, hands.build(), NOW) == "defanged"
 
-    assert hands.names() == ["ask", "replace_body", "approve"]
-    new_body = hands.calls[1][2]
+    assert hands.names() == ["ask", "ask", "replace_body", "approve"]
+    new_body = hands.calls[2][2]
     assert CUT not in new_body and "- Raids get a new boss." in new_body
     assert "- \n" not in new_body and "\n\n\n" not in new_body
     assert article(aws, "a")[reviewer.DEFANGED_FIELD]["removed"] == 1
@@ -587,7 +601,7 @@ def test_a_cut_that_does_not_stand_is_rejected_and_nothing_real_is_just_approved
     assert hands.names() == ["ask", "reject", "rejection_musing"]
 
     put_held(aws, "q2", "a2", created_at=LONG_AGO, reasons=["PII: release dates"])
-    hands = DefangHands([defang_answer(real=(False,), remove=())])
+    hands = DefangHands([defang_answer(real=(False,), remove=()), OK_READ])
     assert reviewer.do_task({"task": "defang", "queue_id": "q2"}, hands.build(), NOW) == "approved"
     assert "replace_body" not in hands.names()
 
@@ -613,7 +627,7 @@ def test_task_five_never_publishes_where_he_may_not_and_a_fault_is_rejected(aws)
     put_topic(aws, "vision", force_manual_review=True)
     put_held(aws, "q1", "a1", topic_id="vision", created_at=LONG_AGO, reasons=["PII: x"])
     hands = DefangHands()
-    assert reviewer.do_task({"task": "defang", "queue_id": "q1"}, hands.build(), NOW) == "left_for_human"
+    assert reviewer.do_task({"task": "defang", "queue_id": "q1"}, hands.build(), NOW) == "skipped"
     assert hands.names() == []
 
     put_topic(aws)
@@ -625,7 +639,7 @@ def test_task_five_never_publishes_where_he_may_not_and_a_fault_is_rejected(aws)
 def test_a_financial_article_published_by_task_five_is_flagged_for_a_person(aws):
     put_topic(aws, "crypto", is_financial=True)
     put_held(aws, "q", "a", topic_id="crypto", created_at=LONG_AGO, reasons=["advice: says buy"])
-    hands = DefangHands([defang_answer()])
+    hands = DefangHands([defang_answer(), OK_READ])
     assert reviewer.do_task({"task": "defang", "queue_id": "q"}, hands.build(), NOW) == "defanged"
     assert article(aws, "a")[reviewer.FLAG_FIELD] == reviewer.FLAG_FINANCIAL
 
@@ -647,9 +661,9 @@ def test_a_paused_reviewer_skips_his_scheduled_run(aws):
 
 def test_his_limits_come_from_the_settings(aws, monkeypatch):
     put_topic(aws)
-    put_held(aws, "q", "a", rewrites=[{"n": 1}])
+    put_held(aws, "q", "a", reasons=["PII: a private address"], rewrites=[{"n": 1}])
     settings = {**reviewer.effective_settings(None), "max_rewrites": 1}
-    hands = FakeHands()
+    hands = FakeHands([verdicts(True)])
     task = {"task": "held", "queue_id": "q"}
     assert reviewer.do_task(task, hands.build(), NOW, settings=settings) == "rejected"
 
@@ -662,3 +676,120 @@ def test_his_limits_come_from_the_settings(aws, monkeypatch):
     first = reviewer_handler.handle({"job": "run"}, "arn", NOW, hands=FakeHands().build())
     assert first["left"] == 2  # five held (q is still pending: the fake reject changed nothing), three a tick
     assert reviewer.get_state()["next_tick_at"] == (NOW + timedelta(minutes=12)).isoformat()
+
+
+# --- the Ultra Review's findings on #365 -------------------------------------------------------------
+
+
+def test_a_financial_article_is_never_approved_unread_and_a_bad_read_is_a_rewrite(aws):
+    """Compliance makes no model call for a financial topic, so "no majors" means nobody read it."""
+    put_topic(aws, "crypto", is_financial=True)
+    put_held(aws, "q", "a", topic_id="crypto", reasons=["financial topic - routed to manual moderation"])
+    hands = FakeHands([BAD_READ])
+    assert reviewer.do_task({"task": "held", "queue_id": "q"}, hands.build(), NOW) == "rewrite"
+    assert "approve" not in hands.names()
+    assert reviewer.FLAG_FIELD not in article(aws, "a")
+
+    put_held(aws, "q2", "b", topic_id="crypto", reasons=["financial topic - routed to manual moderation"])
+    hands = FakeHands(["cannot say"])
+    assert reviewer.do_task({"task": "held", "queue_id": "q2"}, hands.build(), NOW) == "left_for_human"
+
+
+def test_a_topic_that_always_waits_for_a_person_is_never_his_in_any_task(aws):
+    put_topic(aws, "rail", force_manual_review=True)
+    put_held(aws, "q", "held-rail", topic_id="rail", reasons=["PII: x"], created_at=OLD)
+    eleven_days = (NOW - timedelta(days=11)).isoformat()
+    put_held(aws, "q-long", "long-rail", topic_id="rail", reasons=["PII: x"], created_at=eleven_days)
+    put_article(aws, "pub-rail", topic_id="rail", published_at=FRESH)
+    findings = [{"kind": "title_markup", "id": "pub-rail"}]
+    planned = reviewer.plan(NOW, content_findings=findings)
+    assert planned["tasks"] == [] and planned["woken"] is False
+    hands = FakeHands()
+    for task in ({"task": "held", "queue_id": "q"}, {"task": "published", "article_id": "pub-rail"}):
+        assert reviewer.do_task(task, hands.build(), NOW) == "skipped"
+    assert hands.names() == []
+
+
+def test_a_persons_rewrite_that_never_landed_is_left_for_that_person(aws):
+    put_topic(aws)
+    put_held(aws, "q", "a", reasons=["sent back by a person for a rewrite"])
+    hands = FakeHands([OK_READ])
+    assert reviewer.do_task({"task": "held", "queue_id": "q"}, hands.build(), NOW) == "left_for_human"
+    assert hands.names() == []
+    put_held(aws, "q2", "b", reasons=["PII: x"])
+    aws.Table("ModerationQueue").update_item(
+        Key={"queue_id": "q2"}, UpdateExpression="SET last_rewrite_error = :e",
+        ExpressionAttributeValues={":e": "the rewrite could not be trusted"},
+    )  # fmt: skip
+    assert reviewer.do_task({"task": "held", "queue_id": "q2"}, FakeHands().build(), NOW) == "left_for_human"
+
+
+def test_an_article_he_held_stays_a_persons_after_its_reasons_are_rewritten(aws):
+    put_topic(aws)
+    put_held(aws, "q", "a", reasons=["PII: new reasons after a person's rewrite"])
+    dynamo.set_article_fields("a", {reviewer.HELD_FIELD: OLD})
+    assert reviewer.plan(NOW, content_findings=[])["tasks"] == []
+    hands = FakeHands([verdicts(False), OK_READ])
+    assert reviewer.do_task({"task": "held", "queue_id": "q"}, hands.build(), NOW) == "skipped"
+    assert hands.names() == []
+
+
+def test_a_rewrite_that_fixed_things_at_the_limit_is_approved_not_rejected(aws):
+    put_topic(aws)
+    put_held(aws, "q", "a", reasons=["PII: dates of a beta"], rewrites=[{"n": 1}, {"n": 2}, {"n": 3}])
+    hands = FakeHands([verdicts(False), OK_READ])
+    assert reviewer.do_task({"task": "held", "queue_id": "q"}, hands.build(), NOW) == "approved"
+    assert "reject" not in hands.names()
+
+
+def test_a_financial_marker_alone_is_never_a_reason_to_reject(aws):
+    put_topic(aws, "crypto", is_financial=True)
+    put_held(
+        aws, "q", "a", topic_id="crypto", reasons=["financial topic - routed"],
+        rewrites=[{"n": 1}, {"n": 2}, {"n": 3}],
+    )  # fmt: skip
+    hands = FakeHands([OK_READ])
+    assert reviewer.do_task({"task": "held", "queue_id": "q"}, hands.build(), NOW) == "approved_flagged"
+
+
+def test_shadow_or_stale_review_claims_are_not_majors():
+    claims = [{"claim": "BTC 60k", "problem": "58k", "severity": "major"}]
+    shadow = {"review": {"mode": "shadow", "status": "reviewed", "claims": claims}}
+    assert reviewer.held_issues({"reasons": []}, shadow).majors == []
+    stale = {
+        "review": {
+            "mode": "enforce",
+            "status": "reviewed",
+            "claims": claims,
+            "evidence_as_of": "2026-10-01T00:00:00+00:00",
+        },
+        "rewrites": [{"requested_at": "2026-10-05T00:00:00+00:00"}],
+    }
+    assert reviewer.held_issues({"reasons": []}, stale).majors == []
+    current = {**stale, "review": {**stale["review"], "evidence_as_of": "2026-10-05T00:01:00+00:00"}}
+    assert reviewer.held_issues({"reasons": []}, current).majors == ["BTC 60k: 58k"]
+
+
+def test_the_financial_flag_is_written_before_the_approve_and_taken_off_if_it_fails(aws):
+    put_topic(aws, "crypto", is_financial=True)
+    put_held(aws, "q", "a", topic_id="crypto", reasons=["financial topic - routed"])
+    seen = []
+    hands = FakeHands([OK_READ])
+    built = hands.build()
+
+    def approve(queue_id):
+        seen.append(article(aws, "a").get(reviewer.FLAG_FIELD))
+        return 500, {"error": "boom"}
+
+    built.approve = approve
+    assert reviewer.do_task({"task": "held", "queue_id": "q"}, built, NOW) == "skipped"
+    assert seen == [reviewer.FLAG_FINANCIAL]  # on the article while the approve ran
+    assert reviewer.FLAG_FIELD not in article(aws, "a")  # and off again once it failed
+
+
+def test_task_five_reads_the_cut_before_publishing_it_and_rejects_a_bad_one(aws):
+    put_topic(aws)
+    put_held(aws, "q", "a", created_at=LONG_AGO, reasons=["PII: names a private person's address"])
+    hands = DefangHands([defang_answer(), BAD_READ])
+    assert reviewer.do_task({"task": "defang", "queue_id": "q"}, hands.build(), NOW) == "defang_rejected"
+    assert "replace_body" not in hands.names()

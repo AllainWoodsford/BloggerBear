@@ -597,7 +597,7 @@ not, and writes to the Musings page as himself.
 
 **On his first run he works through the backlog as it stands.** Every article that has waited in the
 inbox two days or more is his to decide: he may **approve** it (financial ones too, each flagged for
-you to check), **send it back for a rewrite**, or **reject** one already rewritten three times. If
+you to check), **send it back for a rewrite**, or **reject** one still wrong after three rewrites. If
 you want to decide some yourself first, do so before his first run (he skips anything no longer
 waiting), or turn his approvals off (`reviewer set --may-approve off`, or per topic). Anything that
 has already waited 10 days or more goes to the de-fanged publish (task 5) instead.

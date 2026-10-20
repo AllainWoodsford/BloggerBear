@@ -146,6 +146,7 @@ from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_e
 from common.review_report import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE, build_review_report
 from common.reviewer import FLAG_FIELD as REVIEWER_FLAG_FIELD
 from common.reviewer import FLAGGED_AT_FIELD as REVIEWER_FLAGGED_AT_FIELD
+from common.reviewer import HELD_FIELD as REVIEWER_HELD_FIELD
 from common.reviewer import REVIEWER_MAY_APPROVE_FIELD
 from common.rewrite import (
     MAX_INSTRUCTIONS_CHARS,
@@ -1906,21 +1907,33 @@ def reviewer_hold(article_id: str, reason: str = HELD_BY_REVIEWER_REASON) -> tup
         return 404, {"error": f"article '{article_id}' not found"}
     if article.get("status") != "published":
         return 409, {"error": f"article '{article_id}' is '{article.get('status')}', not published"}
-    remove_article_page(article_id, figure_count=len(article.get("figures") or []))
-    update_article_status(article_id, "pending_moderation")
-    token = _DECIDED_BY.set("reviewer")
+    # The inbox item first: a held article must never be off the site with no item to show it. If a
+    # later step fails, the item is voided and the article stays published as it was.
+    now = datetime.now(UTC).isoformat()
     item = put_moderation_item(
         queue_id=str(uuid.uuid4()),
         article_id=article_id,
         topic_id=article["topic_id"],
         reasons=[reason],
-        created_at=datetime.now(UTC).isoformat(),
+        created_at=now,
     )
-    _moderation_decision(
-        "held_by_reviewer", topic_id=article.get("topic_id"), article_id=article_id,
-        queue_id=item["queue_id"], from_status="published",
-    )  # fmt: skip
-    _DECIDED_BY.reset(token)
+    try:
+        # His mark on the article itself, for good: a person's rewrite later replaces the item's
+        # reasons, never this (common/reviewer.py's held_by_him).
+        set_article_fields(article_id, {REVIEWER_HELD_FIELD: now})
+        update_article_status(article_id, "pending_moderation")
+    except Exception:
+        update_moderation_status(item["queue_id"], "rejected")
+        raise
+    remove_article_page(article_id, figure_count=len(article.get("figures") or []))
+    token = _DECIDED_BY.set("reviewer")
+    try:
+        _moderation_decision(
+            "held_by_reviewer", topic_id=article.get("topic_id"), article_id=article_id,
+            queue_id=item["queue_id"], from_status="published",
+        )  # fmt: skip
+    finally:
+        _DECIDED_BY.reset(token)
     traces = _clear_article_traces(article)
     refresh_articles_snapshot()
     return 200, {"held": article_id, "queue_id": item["queue_id"], **traces}

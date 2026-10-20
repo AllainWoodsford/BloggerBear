@@ -22,17 +22,28 @@ tasks, in order:
    instruction. A musing that went out with no text: written again. The assistant's own follow-up
    then sees each one acted on (`actioned`) and, once fixed, drops it.
 2. **Held articles that have waited two days or more.**
-   - An article rewritten three times already is **rejected** (the backoff).
    - A fault the pipeline wrote itself (draft truncated, a title that reads like a refusal, a
      rewrite that could not be saved) is sent for a **rewrite**.
-   - Otherwise the **minor** fresh-data claims are ignored and the **majors** (each reason the
-     compliance review held it for, each major fresh-data claim) are read by the topic's model as
-     a skeptic: is it really a problem? A date is personal data only when it is tied to an
-     identifiable person, so Wow Forever's beta windows and test dates are not. Any real major:
-     **rewrite**, with his notes. None: **approve**, if he may (below). A model answer he cannot
-     read leaves it for a person: he never approves on a non-answer.
-   - **Financial topics:** no majors at all, he **approves** and flags it for a person; a real
-     major, **rewrite**; majors that turned out not to matter, it **waits for a person**.
+   - Otherwise the **minors** are ignored: minor fresh-data claims, and the compliance review's
+     notes (`NOTE: ...`, `... flagged but not held: ...`), which by its own rule never hold an
+     article. The **majors** (each reason the compliance review held it for, and each major claim
+     of an *enforced* fresh-data review made of the text as it is now; a shadow review is
+     record-only, and one older than the last rewrite is about text that is gone) are read by the
+     topic's model as a skeptic: is it really a problem? A date is personal data only when it is
+     tied to an identifiable person, so Wow Forever's beta windows and test dates are not. Any real
+     major: **rewrite**, with his notes.
+   - **The backoff is judged, not counted:** an article that has had `max_rewrites` (3) rewrites is
+     **rejected** only if a real problem is still there; a rewrite that fixed things is approved.
+   - **Nothing of his is approved unread.** With nothing real left, the topic's model reads the
+     whole article (the published-review check: advice, a private person's details, a plainly
+     wrong claim, broken text) before he **approves** it, if he may. A read that finds a problem is
+     a rewrite (or the rejection, at the limit); one that cannot say leaves it for a person.
+   - **Financial topics:** no majors at all and a passing read, he **approves** and flags it for a
+     person; a real major, **rewrite**; majors that turned out not to matter, it **waits for a
+     person**. (Compliance makes no model call for a financial topic, so the read is the only one
+     his approval rests on.)
+   - **A person's rewrite that never landed** (the item still says "sent back by a person", or has
+     `last_rewrite_error`) is left for that person: its text is the one they turned down.
 3. **Newly published articles**, at most five a run: the newest he has not reviewed, skipping the
    ones he tagged (`reviewer_reviewed_at`) and looking further back. Fine: tagged. Not: sent for a
    rewrite, and the tag taken off, since it needs reviewing again.
@@ -40,8 +51,10 @@ tasks, in order:
    checks its feedback since he approved it: a downvote whose comment got through screening, and
    he **takes it down and puts it back in the inbox**, shocked (`reviewer_hold`), for a person to
    review or rewrite. He only checks *that* a downvote carried a comment; the text is never read.
-   An article he took down this way is **never his to decide again**: however long it waits, it is
-   left for a person.
+   An article he took down this way is **never his to decide again**: `reviewer_held_at` on the
+   article says so for good (a person's rewrite replaces the queue item's reasons, never this).
+   The hold writes the inbox item before it takes the article down, and voids the item if it
+   cannot, so a held article always has an item to show it.
 
 5. **Articles held ten days or more: the de-fanged publish.** These have waited for a person who
    never came (a financial article whose majors did not matter, an answer he could not read). A
@@ -60,6 +73,9 @@ tasks, in order:
    Never for a topic he may not approve for. A financial one is flagged for a person, like any
    approval of his. Articles under the threshold go to task 2 as before.
 
+**Never a person's topic.** A topic with `force_manual_review` (every vision topic) is never his:
+no task of any kind is planned for its articles, published or held.
+
 ## How he acts
 
 Through the admin API's own functions (`reviewer_approve`, `reviewer_reject`, `reviewer_rewrite`,
@@ -67,7 +83,15 @@ Through the admin API's own functions (`reviewer_approve`, `reviewer_reject`, `r
 the same page rendering, musings, Stats refresh and queue states. Each is logged as a
 `moderation_decision` with `by: reviewer`.
 
-**Honest about who decided.** His approvals are `published_by: "reviewer"`: the page's lineage line
+**Where his decisions are logged.** His `moderation_decision` lines (`by: reviewer`) are printed
+by his own Lambda, so they are in `/aws/lambda/<prefix>-<env>-reviewer`, not the admin API's log
+group. That is deliberate: the readers that count what a *person* decided (the vision evidence,
+`evidence_export`'s human-control counts) read the admin API's group, and his decisions are not a
+person's. They cannot go stale either, since he never touches a vision topic.
+
+**Honest about who decided.** His tag and (financial) his flag are written *before* the approve,
+and taken off again if it fails, so a published financial approval of his can never lack the flag
+that asks a person to check it. His approvals are `published_by: "reviewer"`: the page's lineage line
 says "AI reviewer", and the fact-check line says "reviewed by our AI reviewer before publishing",
 never "a person". A held-for-downvotes article goes back to `pending_moderation` with the reason
 "held by Professor Grizzlewick: readers downvoted it with comments after he approved it", where

@@ -271,3 +271,46 @@ def test_the_cli_sends_each_reviewer_setting_as_the_api_takes_it():
         args.func(args)
     expected = {"may_approve": False, "defang_held": None, "max_rewrites": 4, "tick_minutes": None}
     assert sent == [("PUT", "/reviewer-config", expected)]
+
+
+def test_his_hold_marks_the_article_for_good_and_writes_the_inbox_item_first():
+    _put_article(status="published")
+    order = []
+    real_put = admin_api_handler.put_moderation_item
+    real_status = admin_api_handler.update_article_status
+
+    def put(**kwargs):
+        order.append("item")
+        return real_put(**kwargs)
+
+    def status(*args, **kwargs):
+        order.append("status")
+        return real_status(*args, **kwargs)
+
+    with (
+        patch("admin_api_handler.put_moderation_item", put),
+        patch("admin_api_handler.update_article_status", status),
+        patch("admin_api_handler.remove_article_page", lambda *a, **k: order.append("page")),
+        patch("admin_api_handler._clear_article_traces", return_value={}),
+        patch("admin_api_handler.refresh_articles_snapshot"),
+    ):
+        assert admin_api_handler.reviewer_hold("article-1")[0] == 200
+    assert order == ["item", "status", "page"]
+    assert _article()[reviewer.HELD_FIELD]
+
+
+def test_a_hold_that_cannot_take_the_article_down_voids_its_item_and_leaves_it_up():
+    _put_article(status="published")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("throttled")
+
+    with (
+        patch("admin_api_handler.update_article_status", broken),
+        patch("admin_api_handler.remove_article_page") as removed,
+        pytest.raises(RuntimeError),
+    ):
+        admin_api_handler.reviewer_hold("article-1")
+    removed.assert_not_called()
+    assert _article()["status"] == "published"
+    assert all(item["status"] != "pending" for item in _queue_items())
