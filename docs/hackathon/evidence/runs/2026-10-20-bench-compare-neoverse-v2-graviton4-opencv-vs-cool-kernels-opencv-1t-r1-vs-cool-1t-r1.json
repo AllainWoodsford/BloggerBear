@@ -1,0 +1,313 @@
+{
+  "schema": "bloggerbear.vision-eval/1",
+  "run_id": "2026-10-20-bench-compare-neoverse-v2-graviton4-opencv-vs-cool-kernels-opencv-1t-r1-vs-cool-1t-r1",
+  "kind": "bench-compare",
+  "mode": "compare",
+  "backend": "opencv-vs-cool",
+  "started_at": "2026-10-20T11:53:32Z",
+  "finished_at": "2026-10-20T11:53:32Z",
+  "code": {
+    "git_sha": "4582abcdbe5395f35c2990ea2ee1ef4879b4eb3d",
+    "dirty": false
+  },
+  "environment": {
+    "cpu": "Neoverse V2 (Graviton4)",
+    "machine": "aarch64",
+    "python": "3.12.3",
+    "opencv": {
+      "opencv_version": "5.0.0",
+      "build_sha256": "4460ffe25568d7f496997f0593f568f4d91ee4740c97f057b2986c237e8a386c",
+      "arch": "aarch64",
+      "kleidicv": true,
+      "cpu_baseline": "NEON FP16",
+      "cpu_dispatch": "NEON_DOTPROD NEON_FP16 NEON_BF16",
+      "cpu": "Neoverse V2 (Graviton4)",
+      "cpu_count": 4,
+      "cv2_path": "~/stock/lib/python3.12/site-packages/cv2/__init__.py"
+    },
+    "cpu_count": 4,
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "threads": 4,
+    "numpy": "2.4.4",
+    "networkx": "3.4.2",
+    "where": "ec2",
+    "host": null,
+    "cool": null,
+    "libraries": null
+  },
+  "worker": {
+    "kind": "in-process",
+    "region": null,
+    "code_sha256": null
+  },
+  "inputs": {
+    "manifest_sha256": null,
+    "cache": false,
+    "scenes": [],
+    "networks": [],
+    "runs": [
+      "2026-10-20-bench-kernels-neoverse-v2-graviton4-opencv-1t-r1",
+      "2026-10-20-bench-kernels-neoverse-v2-graviton4-cool-1t-r1"
+    ]
+  },
+  "params": {
+    "a": "docs/hackathon/evidence/runs/2026-10-20-bench-kernels-neoverse-v2-graviton4-opencv-1t-r1.json",
+    "b": "docs/hackathon/evidence/runs/2026-10-20-bench-kernels-neoverse-v2-graviton4-cool-1t-r1.json",
+    "bootstrap": 2000,
+    "seed": 0
+  },
+  "results": {
+    "a": "2026-10-20-bench-kernels-neoverse-v2-graviton4-opencv-1t-r1",
+    "b": "2026-10-20-bench-kernels-neoverse-v2-graviton4-cool-1t-r1",
+    "kind": "bench-kernels",
+    "backend_a": "opencv",
+    "backend_b": "cool",
+    "build_a": "4460ffe25568d7f496997f0593f568f4d91ee4740c97f057b2986c237e8a386c",
+    "build_b": "12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4",
+    "cpu": "Neoverse V2 (Graviton4)",
+    "bootstrap": 2000,
+    "seed": 0,
+    "parity_pass": true,
+    "notes": [],
+    "cases": {
+      "adaptive_threshold_gaussian_31": {
+        "ratio_ci": {
+          "median_a_ms": 24.449,
+          "median_b_ms": 36.63,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 0.6674,
+          "ci_low": 0.6669,
+          "ci_high": 0.6681
+        }
+      },
+      "analyse_rail_access": {
+        "ratio_ci": {
+          "median_a_ms": 678.971,
+          "median_b_ms": 643.917,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 1.0544,
+          "ci_low": 1.0531,
+          "ci_high": 1.0562
+        },
+        "stages": {
+          "masks": {
+            "median_a_ms": 196.5,
+            "median_b_ms": 187.2,
+            "runs_a": 20,
+            "runs_b": 20,
+            "ratio": 1.0497,
+            "ci_low": 1.0483,
+            "ci_high": 1.0516
+          },
+          "access": {
+            "median_a_ms": 57.3,
+            "median_b_ms": 53.75,
+            "runs_a": 20,
+            "runs_b": 20,
+            "ratio": 1.066,
+            "ci_low": 1.0573,
+            "ci_high": 1.0699
+          },
+          "modes": {
+            "median_a_ms": 98.6,
+            "median_b_ms": 95.3,
+            "runs_a": 20,
+            "runs_b": 20,
+            "ratio": 1.0346,
+            "ci_low": 1.0218,
+            "ci_high": 1.0362
+          },
+          "graph": {
+            "median_a_ms": 311.7,
+            "median_b_ms": 294.25,
+            "runs_a": 20,
+            "runs_b": 20,
+            "ratio": 1.0593,
+            "ci_low": 1.0577,
+            "ci_high": 1.0608
+          },
+          "metrics": {
+            "median_a_ms": 12.5,
+            "median_b_ms": 12.55,
+            "runs_a": 20,
+            "runs_b": 20,
+            "ratio": 0.996,
+            "ci_low": 0.9921,
+            "ci_high": 1.008
+          }
+        }
+      },
+      "analyse_site": {
+        "ratio_ci": {
+          "median_a_ms": 98.433,
+          "median_b_ms": 101.183,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 0.9728,
+          "ci_low": 0.9603,
+          "ci_high": 0.9851
+        }
+      },
+      "apply_colormap": {
+        "ratio_ci": {
+          "median_a_ms": 4.698,
+          "median_b_ms": 4.712,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 0.9971,
+          "ci_low": 0.9911,
+          "ci_high": 1.0018
+        }
+      },
+      "connected_components_stats": {
+        "ratio_ci": {
+          "median_a_ms": 12.427,
+          "median_b_ms": 11.415,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 1.0887,
+          "ci_low": 1.0876,
+          "ci_high": 1.0902
+        }
+      },
+      "connected_components_stats_desert": {
+        "ratio_ci": {
+          "median_a_ms": 13.043,
+          "median_b_ms": 12.443,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 1.0483,
+          "ci_low": 1.0467,
+          "ci_high": 1.051
+        }
+      },
+      "distance_transform_l2": {
+        "ratio_ci": {
+          "median_a_ms": 36.207,
+          "median_b_ms": 32.301,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 1.1209,
+          "ci_low": 1.1075,
+          "ci_high": 1.1317
+        }
+      },
+      "find_contours": {
+        "ratio_ci": {
+          "median_a_ms": 0.699,
+          "median_b_ms": 0.601,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 1.164,
+          "ci_low": 1.1315,
+          "ci_high": 1.1898
+        }
+      },
+      "gaussian_blur_5": {
+        "ratio_ci": {
+          "median_a_ms": 1.149,
+          "median_b_ms": 0.953,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 1.2062,
+          "ci_low": 1.2028,
+          "ci_high": 1.2114
+        }
+      },
+      "morphology_open_3": {
+        "ratio_ci": {
+          "median_a_ms": 0.982,
+          "median_b_ms": 0.905,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 1.0839,
+          "ci_low": 1.0725,
+          "ci_high": 1.0901
+        }
+      },
+      "polylines": {
+        "ratio_ci": {
+          "median_a_ms": 0.076,
+          "median_b_ms": 0.099,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 0.7677,
+          "ci_low": 0.715,
+          "ci_high": 0.8817
+        }
+      },
+      "resize_area_half": {
+        "ratio_ci": {
+          "median_a_ms": 0.118,
+          "median_b_ms": 0.122,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 0.9672,
+          "ci_low": 0.8346,
+          "ci_high": 1.1802
+        }
+      },
+      "thinning_hitmiss": {
+        "ratio_ci": {
+          "median_a_ms": 26.687,
+          "median_b_ms": 26.466,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 1.0083,
+          "ci_low": 1.0018,
+          "ci_high": 1.0134
+        }
+      },
+      "warp_affine_nearest_u16": {
+        "ratio_ci": {
+          "median_a_ms": 3.476,
+          "median_b_ms": 3.605,
+          "runs_a": 20,
+          "runs_b": 20,
+          "ratio": 0.9642,
+          "ci_low": 0.9637,
+          "ci_high": 0.9656
+        }
+      }
+    },
+    "headline": {
+      "median_a_ms": 678.971,
+      "median_b_ms": 643.917,
+      "runs_a": 20,
+      "runs_b": 20,
+      "ratio": 1.0544,
+      "ci_low": 1.0531,
+      "ci_high": 1.0562
+    }
+  },
+  "agent": null,
+  "checks": [],
+  "summary": {
+    "headline_ratio": 1.0544,
+    "headline_ci_low": 1.0531,
+    "headline_ci_high": 1.0562,
+    "parity_pass": 1,
+    "cases_compared": 14,
+    "adaptive_threshold_gaussian_31_ratio": 0.6674,
+    "analyse_rail_access_ratio": 1.0544,
+    "analyse_site_ratio": 0.9728,
+    "apply_colormap_ratio": 0.9971,
+    "connected_components_stats_ratio": 1.0887,
+    "connected_components_stats_desert_ratio": 1.0483,
+    "distance_transform_l2_ratio": 1.1209,
+    "find_contours_ratio": 1.164,
+    "gaussian_blur_5_ratio": 1.2062,
+    "morphology_open_3_ratio": 1.0839,
+    "polylines_ratio": 0.7677,
+    "resize_area_half_ratio": 0.9672,
+    "thinning_hitmiss_ratio": 1.0083,
+    "warp_affine_nearest_u16_ratio": 0.9642
+  }
+}

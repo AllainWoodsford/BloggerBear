@@ -1,0 +1,317 @@
+{
+  "schema": "bloggerbear.vision-eval/1",
+  "run_id": "2026-10-20-bench-controls-neoverse-v2-graviton4-cool",
+  "kind": "bench-controls",
+  "mode": "controls",
+  "backend": "cool",
+  "started_at": "2026-10-20T11:53:32Z",
+  "finished_at": "2026-10-20T11:53:34Z",
+  "code": {
+    "git_sha": "4582abcdbe5395f35c2990ea2ee1ef4879b4eb3d",
+    "dirty": false
+  },
+  "environment": {
+    "cpu": "Neoverse V2 (Graviton4)",
+    "machine": "aarch64",
+    "python": "3.12.3",
+    "opencv": {
+      "opencv_version": "5.1.0-dev",
+      "build_sha256": "12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4",
+      "arch": "aarch64",
+      "kleidicv": true,
+      "cpu_baseline": "SVE NEON FP16 NEON_DOTPROD NEON_FP16 NEON_BF16",
+      "cpu_dispatch": "requested:                 NEON_DOTPROD NEON_FP16 NEON_BF16",
+      "cpu": "Neoverse V2 (Graviton4)",
+      "cpu_count": 4,
+      "cv2_path": "/opt/cool/python_3.12/site-packages/cv2/python-3.12/cv2.cpython-312-aarch64-linux-gnu.so"
+    },
+    "cpu_count": 4,
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "threads": 4,
+    "numpy": "2.5.1",
+    "networkx": "3.4.2",
+    "where": "ec2",
+    "host": {
+      "instance_type": "c8g.xlarge",
+      "ami_id": "ami-08dacb72c289c8261",
+      "region": "us-west-2",
+      "architecture": "arm64",
+      "marketplace_product_codes": [
+        "aajkmdd4qo3r7yhqg61a7aah9"
+      ]
+    },
+    "cool": {
+      "product": "aajkmdd4qo3r7yhqg61a7aah9",
+      "version": "3.1",
+      "delivery": "ami",
+      "image_digest": null,
+      "price": null
+    },
+    "libraries": [
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_core.so.5.1.0",
+        "bytes": 4217768,
+        "sha256": "25fa7c8e5bf3f5b244c96fd30ba3bc621ac925d012b550e53f0fc17c8c24ed2b",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_flann.so.5.1.0",
+        "bytes": 527736,
+        "sha256": "e2ee4ffc128b60269c08771563416897c98eabb578b4372ae6f33be5bce7e765",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_geometry.so.5.1.0",
+        "bytes": 1512104,
+        "sha256": "e52d22d9c1a8935b3735c1fb826893dacc6422628fd028ab8c87b0d16b960ba7",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_imgproc.so.5.1.0",
+        "bytes": 7282752,
+        "sha256": "45bcc4a79e07c75c35028745dd2f01ef77606e5ec25b923ebecc3c38858f0475",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_imgcodecs.so.5.1.0",
+        "bytes": 2757600,
+        "sha256": "4a341cf7aae6412be40caabc1ed92b003604bb54793667985ac151fff6698eb5",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_videoio.so.5.1.0",
+        "bytes": 463808,
+        "sha256": "0f67f2acd7fb13e286e8061f45902bf99c56037ead68a7d851e25a624f8d938e",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_dnn.so.5.1.0",
+        "bytes": 11961120,
+        "sha256": "2d915335b526a83de25594e43ff377d17ce6403b2b0b61e0f9ed7eaf1ae4a3cd",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_features.so.5.1.0",
+        "bytes": 664344,
+        "sha256": "5458edfad52cb6afc45147b957fe74f91eadb1eea6aaeead598358ad2a93e73a",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_objdetect.so.5.1.0",
+        "bytes": 1403952,
+        "sha256": "1f23b49b11f6a884c5aef94f8cfc81781fc19c9f9118fe76cb38c6ebab31c7f1",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_stereo.so.5.1.0",
+        "bytes": 265352,
+        "sha256": "c4101d595922b7d9ea7ce42e730db46bfd2b6773230a681b05f40bbace67730e",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_highgui.so.5.1.0",
+        "bytes": 133896,
+        "sha256": "c290ed19e465e136b745e9da12e15d9eb3678da1e207af8a737dc9594262f0e2",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_calib.so.5.1.0",
+        "bytes": 462472,
+        "sha256": "02d54652aab3d5178c2b4fbb1d300b0d4375f0971017deb53742cc809110a528",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_video.so.5.1.0",
+        "bytes": 594960,
+        "sha256": "3ec2a5966b8eef3563d57e3c0a86b62d56e2a844589e8cda32a12c53abe7b256",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_stitching.so.5.1.0",
+        "bytes": 594312,
+        "sha256": "56c973d603f8b94af0efc9ee3a79453c1ed3c019453d6481421c5fdd929d4a23",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_ptcloud.so.5.1.0",
+        "bytes": 725856,
+        "sha256": "5691a6e758b635c94ebe0d772be921b4b4afa15f82aee90e9e89a9e8f492026c",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/cpp_sdk/lib/libopencv_photo.so.5.1.0",
+        "bytes": 987504,
+        "sha256": "e35f40d603fe78ab12eb061b207eed4259f996069262f989354b26f73d4c4b5c",
+        "package": "not packaged"
+      },
+      {
+        "path": "/opt/cool/python_3.12/site-packages/cv2/python-3.12/cv2.cpython-312-aarch64-linux-gnu.so",
+        "bytes": 5283456,
+        "sha256": "8e0cb494f0c5dbfe5c0fc92d3b242d2fad5732de4a81fc3d45a9a537e7711556",
+        "package": "not packaged"
+      }
+    ],
+    "build_lines": [
+      "C++ Compiler:                /usr/bin/c++  (ver 13.3.0)",
+      "C++ flags (Release):         -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden   -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wsuggest-override -Wno-delete-non-virtual-dtor -Wno-comment -Wimplicit-fallthrough=3 -Wno-strict-overflow -fdiagnostics-show-option -pthread -fomit-frame-pointer -ffunction-sections -fdata-sections -flto=auto  -O3 -DNDEBUG  -DNDEBUG",
+      "C++ flags (Debug):           -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden   -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wsuggest-override -Wno-delete-non-virtual-dtor -Wno-comment -Wimplicit-fallthrough=3 -Wno-strict-overflow -fdiagnostics-show-option -pthread -fomit-frame-pointer -ffunction-sections -fdata-sections -flto=auto  -g  -DDEBUG -D_DEBUG",
+      "C Compiler:                  /usr/bin/cc",
+      "C flags (Release):           -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden    -O3 -DNDEBUG  -DNDEBUG",
+      "C flags (Debug):             -O3 -mcpu=neoverse-v2 -fvisibility=hidden -fvisibility-inlines-hidden    -g  -DDEBUG -D_DEBUG",
+      "DNN MLAS:                    YES (SGEMM-only, vendored)",
+      "Custom HAL:                  YES (carotene (ver 0.0.1) KleidiCV (ver 0.7.0))",
+      "Include path:                /home/ubuntu/opencv-5x-cool/3rdparty/include/opencl/1.2"
+    ]
+  },
+  "worker": {
+    "kind": "in-process",
+    "region": null,
+    "code_sha256": "4c46efe55ae1b2dcda5627df346af6aecdfff2e1e13359f6714abb15ad2889cc"
+  },
+  "inputs": {
+    "manifest_sha256": "2aae709e01823f691434830f0593e7f4903902891093886ff0db1dbb56661922",
+    "cache": true,
+    "scenes": [
+      {
+        "name": "botany-bay-2024-01-05",
+        "scene_id": "S2A_56HLH_20240105_0_L2A",
+        "etag_by_asset": {
+          "nir": "91114410bfd7832034d5a86f5cd36f23-21",
+          "green": "ac5bf4f7a0a2c2fd3fdce8fbb1a5a753-21",
+          "scl": "a6a98e904a508f1f863561a7868dd00f"
+        }
+      },
+      {
+        "name": "sydney-rail-2024-01-05",
+        "scene_id": "S2A_56HLH_20240105_0_L2A",
+        "etag_by_asset": {
+          "red": "f168c9842f53be5ff5265dc3c8fd691f-21",
+          "nir": "91114410bfd7832034d5a86f5cd36f23-21",
+          "swir16": "61207d2fc25a41e056f775e59c0857cb-6",
+          "scl": "a6a98e904a508f1f863561a7868dd00f"
+        }
+      },
+      {
+        "name": "sydney-rail-2024-08-26",
+        "scene_id": "S2A_56HLH_20240826_0_L2A",
+        "etag_by_asset": {
+          "red": "869d2f7d1e646fd069142dd51d1d1ec4-18",
+          "nir": "d641bc64ec21fc2d1434071beeb5b63f-18",
+          "swir16": "c18829ea963633eda50d881d5989754d-5",
+          "scl": "1104e55f9c91a600b0596227acd4901d"
+        }
+      }
+    ],
+    "networks": [
+      {
+        "file": "vision_benchmark_networks/sydney.json",
+        "sha256": "bfc3c7f868f52f755eb3c1a8836729bf4dcc5ee079cf466cf51968921fd77eb4"
+      }
+    ],
+    "cache_index_sha256": "7a4c099ad130bc7602b1d535e359e3dd4fc7a6215a5758fc8ba3eb9f4549bd70",
+    "cache_hits": 9,
+    "cache_misses": 0
+  },
+  "params": {
+    "mode": "controls",
+    "repeats": null,
+    "imds": true,
+    "threads": null,
+    "pin_cpu": null,
+    "backend": "cool",
+    "cool_sha": "12740978f31483f2352d9e8b367f4f6053c3bfb58618e2ff42d53443da2a8ec4",
+    "scenes_file": "scripts/vision_benchmark_scenes.json",
+    "only": null,
+    "manifest": "scripts/vision_eval_manifest.json",
+    "cache": true,
+    "labels": {
+      "product": "aajkmdd4qo3r7yhqg61a7aah9",
+      "version": "3.1",
+      "delivery": "ami",
+      "image_digest": null,
+      "price": null
+    }
+  },
+  "results": {
+    "scene": "botany-bay-2024-01-05",
+    "build_matches_pin": true,
+    "controls": [
+      {
+        "name": "cool_with_pin",
+        "request_backend": "cool",
+        "pinned": true,
+        "expected": "ok",
+        "got": "ok",
+        "pass": true,
+        "detail": null,
+        "timings_ms": {
+          "read": 55.2,
+          "analyse": 14.7,
+          "annotate": 0.0,
+          "total": 70.1
+        },
+        "io": {
+          "requests": 9,
+          "bytes": 5538834,
+          "levels_used": {
+            "nir": 0,
+            "green": 0,
+            "scl": 0
+          }
+        }
+      },
+      {
+        "name": "cool_without_pin",
+        "request_backend": "cool",
+        "pinned": false,
+        "expected": "not_cool",
+        "got": "not_cool",
+        "pass": true,
+        "detail": "this worker's OpenCV is not the pinned COOL build",
+        "timings_ms": null,
+        "io": null
+      },
+      {
+        "name": "opencv_request_to_cool_backend",
+        "request_backend": "opencv",
+        "pinned": true,
+        "expected": "backend_mismatch",
+        "got": "backend_mismatch",
+        "pass": true,
+        "detail": "this worker is 'cool'",
+        "timings_ms": null,
+        "io": null
+      }
+    ]
+  },
+  "agent": null,
+  "checks": [
+    {
+      "name": "cool_with_pin",
+      "expected": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "name": "cool_without_pin",
+      "expected": "not_cool",
+      "got": "not_cool",
+      "pass": true
+    },
+    {
+      "name": "opencv_request_to_cool_backend",
+      "expected": "backend_mismatch",
+      "got": "backend_mismatch",
+      "pass": true
+    }
+  ],
+  "summary": {
+    "as_expected": 3,
+    "controls": 3
+  }
+}

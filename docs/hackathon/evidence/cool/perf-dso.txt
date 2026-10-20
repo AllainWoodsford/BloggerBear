@@ -1,0 +1,1136 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 30K of event 'cycles:P'
+# Event count (approx.): 18960672786
+#
+# Children      Self  Shared Object                                     
+# ........  ........  ..................................................
+#
+    99.82%     3.84%  libc.so.6                                         
+            |          
+            |--93.17%--__libc_start_main
+            |          |          
+            |          |--83.35%--0xf36afb7184c4
+            |          |          Py_BytesMain
+            |          |          |          
+            |          |           --83.27%--Py_RunMain
+            |          |                     _PyRun_AnyFileObject
+            |          |                     _PyRun_SimpleFileObject
+            |          |                     |          
+            |          |                     |--82.63%--0x680274
+            |          |                     |          |          
+            |          |                     |           --82.57%--0x59b884
+            |          |                     |                     PyEval_EvalCode
+            |          |                     |                     |          
+            |          |                     |                      --82.54%--_PyEval_EvalFrameDefault
+            |          |                     |                                |          
+            |          |                     |                                |--28.60%--PyObject_Call
+            |          |                     |                                |          |          
+            |          |                     |                                |          |--27.78%--0x5294d0
+            |          |                     |                                |          |          _PyObject_Call_Prepend
+            |          |                     |                                |          |          |          
+            |          |                     |                                |          |           --27.31%--_PyEval_EvalFrameDefault
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                     |--2.06%--PyDict_GetItemWithError
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                     |--2.05%--_PyObject_MakeTpCall
+            |          |                     |                                |          |                     |          |          
+            |          |                     |                                |          |                     |           --1.06%--0x51e604
+            |          |                     |                                |          |                     |                     |          
+            |          |                     |                                |          |                     |                      --0.75%--0x522ec4
+            |          |                     |                                |          |                     |                                |          
+            |          |                     |                                |          |                     |                                 --0.75%--_PyObject_Call_Prepend
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                     |--1.93%--PyObject_GetIter
+            |          |                     |                                |          |                     |          |          
+            |          |                     |                                |          |                     |           --1.43%--0x5287a0
+            |          |                     |                                |          |                     |                     |          
+            |          |                     |                                |          |                     |                      --1.41%--PyObject_CallOneArg
+            |          |                     |                                |          |                     |                                |          
+            |          |                     |                                |          |                     |                                 --1.12%--_PyEval_EvalFrameDefault
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                     |--1.09%--0x696498
+            |          |                     |                                |          |                     |          |          
+            |          |                     |                                |          |                     |           --0.52%--0x5b63bc
+            |          |                     |                                |          |                     |                     |          
+            |          |                     |                                |          |                     |                      --0.51%--PyObject_RichCompareBool
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                     |--0.91%--0x4f2600
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                     |--0.82%--PyDict_Contains
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                     |--0.77%--PyObject_Vectorcall
+            |          |                     |                                |          |                     |          |          
+            |          |                     |                                |          |                     |           --0.70%--0x5040c0
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                     |--0.76%--0x4f5900
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                      --0.69%--0x56fe60
+            |          |                     |                                |          |                                |          
+            |          |                     |                                |          |                                 --0.63%--0x587044
+            |          |                     |                                |          |          
+            |          |                     |                                |           --0.76%--0x4c6e48
+            |          |                     |                                |                     _PyEval_EvalFrameDefault
+            |          |                     |                                |                     |          
+            |          |                     |                                |                      --0.74%--PyObject_Call
+            |          |                     |                                |                                0x4c6e48
+            |          |                     |                                |                                _PyEval_EvalFrameDefault
+            |          |                     |                                |                                PyObject_Call
+            |          |                     |                                |                                0x4c6e48
+            |          |                     |                                |                                _PyEval_EvalFrameDefault
+            |          |                     |                                |                                |          
+            |          |                     |                                |                                 --0.74%--PyObject_Call
+            |          |                     |                                |                                           0x4c6e48
+            |          |                     |                                |                                           |          
+            |          |                     |                                |                                            --0.73%--_PyEval_EvalFrameDefault
+            |          |                     |                                |                                                      |          
+            |          |                     |                                |                                                       --0.65%--PyObject_Vectorcall
+            |          |                     |                                |                                                                 |          
+            |          |                     |                                |                                                                  --0.63%--0x4cc5dc
+            |          |                     |                                |                                                                            |          
+            |          |                     |                                |                                                                             --0.62%--0xf36ae011bd70
+            |          |                     |                                |                                                                                       SSL_CTX_load_verify_locations
+            |          |                     |                                |                                                                                       X509_STORE_load_file_ex
+            |          |                     |                                |                                                                                       0xf36afa9ea8b8
+            |          |                     |                                |                                                                                       X509_load_cert_crl_file_ex
+            |          |                     |                                |                                                                                       |          
+            |          |                     |                                |                                                                                        --0.61%--PEM_X509_INFO_read_bio_ex
+            |          |                     |                                |                                                                                                  |          
+            |          |                     |                                |                                                                                                   --0.55%--ASN1_item_d2i_ex
+            |          |                     |                                |                                                                                                             0xf36afa832ea8
+            |          |                     |                                |                                                                                                             0xf36afa833924
+            |          |                     |                                |                                                                                                             |          
+            |          |                     |                                |                                                                                                              --0.55%--0xf36afa832ea8
+            |          |                     |                                |                                                                                                                        |          
+            |          |                     |                                |                                                                                                                         --0.54%--0xf36afa833924
+            |          |                     |                                |                                                                                                                                   |          
+            |          |                     |                                |                                                                                                                                    --0.51%--0xf36afa832c34
+            |          |                     |                                |          
+            |          |                     |                                |--27.02%--_PyObject_MakeTpCall
+            |          |                     |                                |          |          
+            |          |                     |                                |          |--14.11%--0xf36af8c48670
+            |          |                     |                                |          |          0xf36af8d7b938
+            |          |                     |                                |          |          |          
+            |          |                     |                                |          |           --14.10%--0xf36af8d7af98
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                      --13.85%--0xf36af8d81ec0
+            |          |                     |                                |          |                                0xf36af8d7f0dc
+            |          |                     |                                |          |                                deflate
+            |          |                     |                                |          |                                |          
+            |          |                     |                                |          |                                 --13.40%--0xf36afb90828c
+            |          |                     |                                |          |                                           |          
+            |          |                     |                                |          |                                           |--5.50%--0xf36afb90228c
+            |          |                     |                                |          |                                           |          
+            |          |                     |                                |          |                                           |--1.46%--0xf36afb902264
+            |          |                     |                                |          |                                           |          
+            |          |                     |                                |          |                                           |--1.02%--0xf36afb90226c
+            |          |                     |                                |          |                                           |          
+            |          |                     |                                |          |                                            --0.89%--0xf36afb90229c
+            |          |                     |                                |          |          
+            |          |                     |                                |          |--2.37%--cv::distanceTransform(cv::_InputArray const&, cv::_OutputArray const&, cv::_OutputArray const&, int, int, int)
+            |          |                     |                                |          |          
+            |          |                     |                                |          |--1.15%--0xf36af85aaab4
+            |          |                     |                                |          |          
+            |          |                     |                                |           --0.96%--0xf36af85aaabc
+            |          |                     |                                |          
+            |          |                     |                                |--11.25%--PyObject_Vectorcall
+            |          |                     |                                |          |          
+            |          |                     |                                |          |--9.67%--0xf36aebb33190
+            |          |                     |                                |          |          PyObject_Vectorcall
+            |          |                     |                                |          |          |          
+            |          |                     |                                |          |          |--4.10%--0x503dac
+            |          |                     |                                |          |          |          |          
+            |          |                     |                                |          |          |          |--1.66%--0xf36aebb3aeb4
+            |          |                     |                                |          |          |          |          
+            |          |                     |                                |          |          |           --0.68%--0xf36aebb3b0b0
+            |          |                     |                                |          |          |          
+            |          |                     |                                |          |          |--3.79%--_PyEval_EvalFrameDefault
+            |          |                     |                                |          |          |          |          
+            |          |                     |                                |          |          |          |--2.62%--PyObject_Call
+            |          |                     |                                |          |          |          |          |          
+            |          |                     |                                |          |          |          |           --2.15%--0x503fb4
+            |          |                     |                                |          |          |          |                     |          
+            |          |                     |                                |          |          |          |                      --2.11%--0xf36aebb96fe8
+            |          |                     |                                |          |          |          |                                0xf36aebb37a10
+            |          |                     |                                |          |          |          |                                |          
+            |          |                     |                                |          |          |          |                                 --2.10%--0xf36aebbc08c4
+            |          |                     |                                |          |          |          |                                           PyObject_Call
+            |          |                     |                                |          |          |          |                                           0x503dac
+            |          |                     |                                |          |          |          |                                           |          
+            |          |                     |                                |          |          |          |                                            --2.09%--0xf36aebc85fec
+            |          |                     |                                |          |          |          |                                                      0xf36aebc7aa23
+            |          |                     |                                |          |          |          |                                                      |          
+            |          |                     |                                |          |          |          |                                                       --1.48%--0xf36aebd522f4
+            |          |                     |                                |          |          |          |          
+            |          |                     |                                |          |          |           --0.59%--PyObject_Vectorcall
+            |          |                     |                                |          |          |          
+            |          |                     |                                |          |           --1.77%--0x5040c0
+            |          |                     |                                |          |                     0xf36aebba2c64
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                      --0.58%--0xf36aebba2928
+            |          |                     |                                |          |          
+            |          |                     |                                |           --0.83%--0x4cc5dc
+            |          |                     |                                |                     |          
+            |          |                     |                                |                      --0.65%--0xf36aebb99c88
+            |          |                     |                                |                                0xf36aebb32064
+            |          |                     |                                |                                |          
+            |          |                     |                                |                                 --0.64%--0xf36aebb316df
+            |          |                     |                                |          
+            |          |                     |                                |--5.81%--0x6be87c
+            |          |                     |                                |          inflate
+            |          |                     |                                |          |          
+            |          |                     |                                |          |--1.31%--0xf36afb9024a8
+            |          |                     |                                |          |          
+            |          |                     |                                |           --0.67%--adler32_z
+            |          |                     |                                |          
+            |          |                     |                                |--2.67%--PyImport_ImportModuleLevelObject
+            |          |                     |                                |          PyObject_CallMethodObjArgs
+            |          |                     |                                |          0x4c3a84
+            |          |                     |                                |          _PyEval_EvalFrameDefault
+            |          |                     |                                |          |          
+            |          |                     |                                |          |--1.82%--0x503dac
+            |          |                     |                                |          |          |          
+            |          |                     |                                |          |           --1.82%--0x55f568
+            |          |                     |                                |          |                     PyEval_EvalCode
+            |          |                     |                                |          |                     |          
+            |          |                     |                                |          |                      --1.81%--_PyEval_EvalFrameDefault
+            |          |                     |                                |          |                                |          
+            |          |                     |                                |          |                                 --1.76%--PyImport_ImportModuleLevelObject
+            |          |                     |                                |          |                                           PyObject_CallMethodObjArgs
+            |          |                     |                                |          |                                           0x4c3a84
+            |          |                     |                                |          |                                           _PyEval_EvalFrameDefault
+            |          |                     |                                |          |                                           |          
+            |          |                     |                                |          |                                            --1.68%--0x503dac
+            |          |                     |                                |          |                                                      |          
+            |          |                     |                                |          |                                                       --1.59%--0x55f568
+            |          |                     |                                |          |                                                                 PyEval_EvalCode
+            |          |                     |                                |          |                                                                 _PyEval_EvalFrameDefault
+            |          |                     |                                |          |                                                                 |          
+            |          |                     |                                |          |                                                                  --1.51%--PyImport_ImportModuleLevelObject
+            |          |                     |                                |          |                                                                            PyObject_CallMethodObjArgs
+            |          |                     |                                |          |                                                                            0x4c3a84
+            |          |                     |                                |          |                                                                            _PyEval_EvalFrameDefault
+            |          |                     |                                |          |                                                                            |          
+            |          |                     |                                |          |                                                                             --1.43%--0x503dac
+            |          |                     |                                |          |                                                                                       |          
+            |          |                     |                                |          |                                                                                        --1.23%--0x55f568
+            |          |                     |                                |          |                                                                                                  PyEval_EvalCode
+            |          |                     |                                |          |                                                                                                  _PyEval_EvalFrameDefault
+            |          |                     |                                |          |                                                                                                  |          
+            |          |                     |                                |          |                                                                                                   --1.05%--PyImport_ImportModuleLevelObject
+            |          |                     |                                |          |                                                                                                             PyObject_CallMethodObjArgs
+            |          |                     |                                |          |                                                                                                             0x4c3a84
+            |          |                     |                                |          |                                                                                                             _PyEval_EvalFrameDefault
+            |          |                     |                                |          |                                                                                                             |          
+            |          |                     |                                |          |                                                                                                              --1.00%--0x503dac
+            |          |                     |                                |          |                                                                                                                        |          
+            |          |                     |                                |          |                                                                                                                         --0.81%--0x55fa58
+            |          |                     |                                |          |                                                                                                                                   PyImport_ImportModuleLevelObject
+            |          |                     |                                |          |                                                                                                                                   |          
+            |          |                     |                                |          |                                                                                                                                    --0.81%--PyObject_CallMethodObjArgs
+            |          |                     |                                |          |                                                                                                                                              0x4c3a84
+            |          |                     |                                |          |                                                                                                                                              _PyEval_EvalFrameDefault
+            |          |                     |                                |          |                                                                                                                                              |          
+            |          |                     |                                |          |                                                                                                                                               --0.80%--0x503dac
+            |          |                     |                                |          |                                                                                                                                                         0x55f568
+            |          |                     |                                |          |                                                                                                                                                         PyEval_EvalCode
+            |          |                     |                                |          |                                                                                                                                                         _PyEval_EvalFrameDefault
+            |          |                     |                                |          |                                                                                                                                                         |          
+            |          |                     |                                |          |                                                                                                                                                          --0.77%--PyImport_ImportModuleLevelObject
+            |          |                     |                                |          |                                                                                                                                                                    PyObject_CallMethodObjArgs
+            |          |                     |                                |          |                                                                                                                                                                    0x4c3a84
+            |          |                     |                                |          |                                                                                                                                                                    _PyEval_EvalFrameDefault
+            |          |                     |                                |          |                                                                                                                                                                    |          
+            |          |                     |                                |          |                                                                                                                                                                     --0.54%--0x503dac
+            |          |                     |                                |          |          
+            |          |                     |                                |           --0.80%--0x5040c0
+            |          |                     |                                |                     |          
+            |          |                     |                                |                      --0.80%--0x66f1bc
+            |          |                     |                                |          
+            |          |                     |                                |--1.24%--PyObject_RichCompare
+            |          |                     |                                |          |          
+            |          |                     |                                |           --1.03%--PyObject_CallFunctionObjArgs
+            |          |                     |                                |                     0x4c3a84
+            |          |                     |                                |                     |          
+            |          |                     |                                |                      --0.69%--0xf36aebc88cdc
+            |          |                     |                                |                                |          
+            |          |                     |                                |                                 --0.64%--0xf36aebc7aa24
+            |          |                     |                                |          
+            |          |                     |                                 --1.00%--0xf36aebb93070
+            |          |                     |          
+            |          |                      --0.51%--0x680534
+            |          |                                0x680800
+            |          |          
+            |          |--0.60%--0xf885bbdc84c4
+            |          |          |          
+            |          |           --0.60%--0xc497e7334278
+            |          |                     |          
+            |          |                      --0.52%--0xc497e7340a94
+            |          |          
+            |          |--0.60%--0xe0e7453b84c4
+            |          |          |          
+            |          |           --0.60%--0xc9c736a54278
+            |          |                     |          
+            |          |                      --0.51%--0xc9c736a60a94
+            |          |          
+            |          |--0.59%--0xee11b4a784c4
+            |          |          0xbdda1a094278
+            |          |          |          
+            |          |           --0.52%--0xbdda1a0a0a94
+            |          |          
+            |          |--0.59%--0xfb94038284c4
+            |          |          |          
+            |          |           --0.59%--0xc1add8df4278
+            |          |                     |          
+            |          |                      --0.51%--0xc1add8e00a94
+            |          |          
+            |          |--0.59%--0xefe444f884c4
+            |          |          |          
+            |          |           --0.58%--0xac56a2e44278
+            |          |                     |          
+            |          |                      --0.51%--0xac56a2e50a94
+            |          |          
+            |          |--0.59%--0xe65df8c884c4
+            |          |          |          
+            |          |           --0.58%--0xc16720ca4278
+            |          |                     |          
+            |          |                      --0.51%--0xc16720cb0a94
+            |          |          
+            |          |--0.58%--0xf14e6e4984c4
+            |          |          |          
+            |          |           --0.58%--0xbc0ae2c64278
+            |          |                     |          
+            |          |                      --0.51%--0xbc0ae2c70a94
+            |          |          
+            |          |--0.58%--0xe53a501384c4
+            |          |          |          
+            |          |           --0.58%--0xca9a1b374278
+            |          |                     |          
+            |          |                      --0.51%--0xca9a1b380a94
+            |          |          
+            |          |--0.58%--0xfbc73b1d84c4
+            |          |          0xb54c207e4278
+            |          |          
+            |          |--0.58%--0xf230f50984c4
+            |          |          |          
+            |          |           --0.58%--0xbb4ff77f4278
+            |          |                     |          
+            |          |                      --0.50%--0xbb4ff7800a94
+            |          |          
+            |          |--0.56%--0xfc0646ea84c4
+            |          |          0xbf6f91914278
+            |          |          
+            |          |--0.56%--0xe5f5060c84c4
+            |          |          0xb97613e14278
+            |          |          
+            |          |--0.56%--0xfac9b66f84c4
+            |          |          0xafba27b94278
+            |          |          
+            |          |--0.56%--0xff61864784c4
+            |          |          0xb6323d804278
+            |          |          
+            |          |--0.55%--0xecf254f384c4
+            |          |          |          
+            |          |           --0.55%--0xbebefb1a4278
+            |          |          
+            |          |--0.54%--0xf472886a84c4
+            |          |          0xbfcc85194278
+            |          |          
+            |           --0.51%--0xf96788a084c4
+            |                     |          
+            |                      --0.51%--0xb24539bf4278
+            |          
+            |--2.88%--_start
+            |          __libc_start_main
+            |          0xf36afb7184c4
+            |          Py_BytesMain
+            |          |          
+            |           --2.88%--Py_RunMain
+            |                     _PyRun_AnyFileObject
+            |                     _PyRun_SimpleFileObject
+            |                     |          
+            |                      --2.85%--0x680274
+            |                                |          
+            |                                 --2.85%--0x59b884
+            |                                           PyEval_EvalCode
+            |                                           _PyEval_EvalFrameDefault
+            |                                           |          
+            |                                           |--0.85%--PyObject_Call
+            |                                           |          
+            |                                            --0.51%--PyObject_RichCompare
+            |                                                      PyObject_CallFunctionObjArgs
+            |                                                      0x4c3a84
+            |                                                      |          
+            |                                                       --0.50%--0xf36aebc88354
+            |          
+             --2.74%--0xf36afb7dbb4c
+                       |          
+                        --2.74%--0xf36afb77582c
+                                  |          
+                                   --1.76%--0xf36aea553b94
+
+    86.30%    33.34%  python3.12                                        
+            |          
+             --86.23%--_start
+                       __libc_start_main
+                       0xf36afb7184c4
+                       Py_BytesMain
+                       |          
+                        --86.14%--Py_RunMain
+                                  _PyRun_AnyFileObject
+                                  _PyRun_SimpleFileObject
+                                  |          
+                                  |--85.48%--0x680274
+                                  |          |          
+                                  |           --85.41%--0x59b884
+                                  |                     PyEval_EvalCode
+                                  |                     |          
+                                  |                      --85.39%--_PyEval_EvalFrameDefault
+                                  |                                |          
+                                  |                                |--29.45%--PyObject_Call
+                                  |                                |          |          
+                                  |                                |          |--28.14%--0x5294d0
+                                  |                                |          |          _PyObject_Call_Prepend
+                                  |                                |          |          |          
+                                  |                                |          |           --27.68%--_PyEval_EvalFrameDefault
+                                  |                                |          |                     |          
+                                  |                                |          |                     |--2.09%--_PyObject_MakeTpCall
+                                  |                                |          |                     |          |          
+                                  |                                |          |                     |           --1.10%--0x51e604
+                                  |                                |          |                     |                     |          
+                                  |                                |          |                     |                      --0.79%--0x522ec4
+                                  |                                |          |                     |                                |          
+                                  |                                |          |                     |                                 --0.79%--_PyObject_Call_Prepend
+                                  |                                |          |                     |          
+                                  |                                |          |                     |--2.06%--PyDict_GetItemWithError
+                                  |                                |          |                     |          
+                                  |                                |          |                     |--2.02%--PyObject_GetIter
+                                  |                                |          |                     |          |          
+                                  |                                |          |                     |           --1.51%--0x5287a0
+                                  |                                |          |                     |                     |          
+                                  |                                |          |                     |                      --1.50%--PyObject_CallOneArg
+                                  |                                |          |                     |                                |          
+                                  |                                |          |                     |                                 --1.19%--_PyEval_EvalFrameDefault
+                                  |                                |          |                     |          
+                                  |                                |          |                     |--1.09%--0x696498
+                                  |                                |          |                     |          |          
+                                  |                                |          |                     |           --0.52%--0x5b63bc
+                                  |                                |          |                     |                     |          
+                                  |                                |          |                     |                      --0.51%--PyObject_RichCompareBool
+                                  |                                |          |                     |          
+                                  |                                |          |                     |--0.91%--0x4f2600
+                                  |                                |          |                     |          
+                                  |                                |          |                     |--0.82%--PyDict_Contains
+                                  |                                |          |                     |          
+                                  |                                |          |                     |--0.81%--PyObject_Vectorcall
+                                  |                                |          |                     |          |          
+                                  |                                |          |                     |           --0.74%--0x5040c0
+                                  |                                |          |                     |          
+                                  |                                |          |                     |--0.76%--0x4f5900
+                                  |                                |          |                     |          
+                                  |                                |          |                      --0.69%--0x56fe60
+                                  |                                |          |                                |          
+                                  |                                |          |                                 --0.63%--0x587044
+                                  |                                |          |          
+                                  |                                |           --1.25%--0x4c6e48
+                                  |                                |                     _PyEval_EvalFrameDefault
+                                  |                                |                     |          
+                                  |                                |                      --1.22%--PyObject_Call
+                                  |                                |                                0x4c6e48
+                                  |                                |                                _PyEval_EvalFrameDefault
+                                  |                                |                                PyObject_Call
+                                  |                                |                                0x4c6e48
+                                  |                                |                                _PyEval_EvalFrameDefault
+                                  |                                |                                |          
+                                  |                                |                                 --1.21%--PyObject_Call
+                                  |                                |                                           0x4c6e48
+                                  |                                |                                           |          
+                                  |                                |                                            --1.21%--_PyEval_EvalFrameDefault
+                                  |                                |                                                      |          
+                                  |                                |                                                       --1.10%--PyObject_Vectorcall
+                                  |                                |                                                                 |          
+                                  |                                |                                                                  --1.07%--0x4cc5dc
+                                  |                                |                                                                            |          
+                                  |                                |                                                                             --1.06%--0xf36ae011bd70
+                                  |                                |                                                                                       SSL_CTX_load_verify_locations
+                                  |                                |                                                                                       X509_STORE_load_file_ex
+                                  |                                |                                                                                       0xf36afa9ea8b8
+                                  |                                |                                                                                       X509_load_cert_crl_file_ex
+                                  |                                |                                                                                       |          
+                                  |                                |                                                                                        --1.05%--PEM_X509_INFO_read_bio_ex
+                                  |                                |                                                                                                  |          
+                                  |                                |                                                                                                   --0.97%--ASN1_item_d2i_ex
+                                  |                                |                                                                                                             0xf36afa832ea8
+                                  |                                |                                                                                                             0xf36afa833924
+                                  |                                |                                                                                                             |          
+                                  |                                |                                                                                                              --0.96%--0xf36afa832ea8
+                                  |                                |                                                                                                                        |          
+                                  |                                |                                                                                                                         --0.95%--0xf36afa833924
+                                  |                                |                                                                                                                                   |          
+                                  |                                |                                                                                                                                    --0.90%--0xf36afa832c34
+                                  |                                |                                                                                                                                              |          
+                                  |                                |                                                                                                                                               --0.79%--0xf36afaa1d424
+                                  |                                |                                                                                                                                                         OSSL_DECODER_CTX_new_for_pkey
+                                  |                                |                                                                                                                                                         |          
+                                  |                                |                                                                                                                                                          --0.57%--OSSL_DECODER_CTX_add_extra
+                                  |                                |                                                                                                                                                                    |          
+                                  |                                |                                                                                                                                                                     --0.51%--OSSL_DECODER_is_a
+                                  |                                |          
+                                  |                                |--27.39%--_PyObject_MakeTpCall
+                                  |                                |          |          
+                                  |                                |          |--14.12%--0xf36af8c48670
+                                  |                                |          |          0xf36af8d7b938
+                                  |                                |          |          |          
+                                  |                                |          |           --14.10%--0xf36af8d7af98
+                                  |                                |          |                     |          
+                                  |                                |          |                      --13.86%--0xf36af8d81ec0
+                                  |                                |          |                                0xf36af8d7f0dc
+                                  |                                |          |                                deflate
+                                  |                                |          |                                |          
+                                  |                                |          |                                 --13.40%--0xf36afb90828c
+                                  |                                |          |                                           |          
+                                  |                                |          |                                           |--5.50%--0xf36afb90228c
+                                  |                                |          |                                           |          
+                                  |                                |          |                                           |--1.46%--0xf36afb902264
+                                  |                                |          |                                           |          
+                                  |                                |          |                                           |--1.02%--0xf36afb90226c
+                                  |                                |          |                                           |          
+                                  |                                |          |                                            --0.89%--0xf36afb90229c
+                                  |                                |          |          
+                                  |                                |          |--2.37%--cv::distanceTransform(cv::_InputArray const&, cv::_OutputArray const&, cv::_OutputArray const&, int, int, int)
+                                  |                                |          |          
+                                  |                                |          |--1.15%--0xf36af85aaab4
+                                  |                                |          |          
+                                  |                                |           --0.96%--0xf36af85aaabc
+                                  |                                |          
+                                  |                                |--11.57%--PyObject_Vectorcall
+                                  |                                |          |          
+                                  |                                |          |--9.75%--0xf36aebb33190
+                                  |                                |          |          PyObject_Vectorcall
+                                  |                                |          |          |          
+                                  |                                |          |          |--4.10%--0x503dac
+                                  |                                |          |          |          |          
+                                  |                                |          |          |          |--1.66%--0xf36aebb3aeb4
+                                  |                                |          |          |          |          
+                                  |                                |          |          |           --0.68%--0xf36aebb3b0b0
+                                  |                                |          |          |          
+                                  |                                |          |          |--3.80%--_PyEval_EvalFrameDefault
+                                  |                                |          |          |          |          
+                                  |                                |          |          |          |--2.63%--PyObject_Call
+                                  |                                |          |          |          |          |          
+                                  |                                |          |          |          |           --2.15%--0x503fb4
+                                  |                                |          |          |          |                     |          
+                                  |                                |          |          |          |                      --2.11%--0xf36aebb96fe8
+                                  |                                |          |          |          |                                0xf36aebb37a10
+                                  |                                |          |          |          |                                |          
+                                  |                                |          |          |          |                                 --2.10%--0xf36aebbc08c4
+                                  |                                |          |          |          |                                           PyObject_Call
+                                  |                                |          |          |          |                                           0x503dac
+                                  |                                |          |          |          |                                           |          
+                                  |                                |          |          |          |                                            --2.09%--0xf36aebc85fec
+                                  |                                |          |          |          |                                                      0xf36aebc7aa23
+                                  |                                |          |          |          |                                                      |          
+                                  |                                |          |          |          |                                                       --1.48%--0xf36aebd522f4
+                                  |                                |          |          |          |          
+                                  |                                |          |          |           --0.59%--PyObject_Vectorcall
+                                  |                                |          |          |          
+                                  |                                |          |           --1.84%--0x5040c0
+                                  |                                |          |                     0xf36aebba2c64
+                                  |                                |          |                     |          
+                                  |                                |          |                      --0.58%--0xf36aebba2928
+                                  |                                |          |          
+                                  |                                |           --0.92%--0x4cc5dc
+                                  |                                |                     |          
+                                  |                                |                      --0.71%--0xf36aebb99c88
+                                  |                                |                                0xf36aebb32064
+                                  |                                |                                |          
+                                  |                                |                                 --0.64%--0xf36aebb316df
+                                  |                                |          
+                                  |                                |--5.81%--0x6be87c
+                                  |                                |          inflate
+                                  |                                |          |          
+                                  |                                |          |--1.31%--0xf36afb9024a8
+                                  |                                |          |          
+                                  |                                |           --0.67%--adler32_z
+                                  |                                |          
+                                  |                                |--2.76%--PyImport_ImportModuleLevelObject
+                                  |                                |          PyObject_CallMethodObjArgs
+                                  |                                |          0x4c3a84
+                                  |                                |          _PyEval_EvalFrameDefault
+                                  |                                |          |          
+                                  |                                |          |--1.89%--0x503dac
+                                  |                                |          |          |          
+                                  |                                |          |           --1.88%--0x55f568
+                                  |                                |          |                     PyEval_EvalCode
+                                  |                                |          |                     |          
+                                  |                                |          |                      --1.88%--_PyEval_EvalFrameDefault
+                                  |                                |          |                                |          
+                                  |                                |          |                                 --1.83%--PyImport_ImportModuleLevelObject
+                                  |                                |          |                                           PyObject_CallMethodObjArgs
+                                  |                                |          |                                           0x4c3a84
+                                  |                                |          |                                           _PyEval_EvalFrameDefault
+                                  |                                |          |                                           |          
+                                  |                                |          |                                            --1.74%--0x503dac
+                                  |                                |          |                                                      |          
+                                  |                                |          |                                                       --1.65%--0x55f568
+                                  |                                |          |                                                                 PyEval_EvalCode
+                                  |                                |          |                                                                 _PyEval_EvalFrameDefault
+                                  |                                |          |                                                                 |          
+                                  |                                |          |                                                                  --1.57%--PyImport_ImportModuleLevelObject
+                                  |                                |          |                                                                            PyObject_CallMethodObjArgs
+                                  |                                |          |                                                                            0x4c3a84
+                                  |                                |          |                                                                            _PyEval_EvalFrameDefault
+                                  |                                |          |                                                                            |          
+                                  |                                |          |                                                                             --1.48%--0x503dac
+                                  |                                |          |                                                                                       |          
+                                  |                                |          |                                                                                        --1.28%--0x55f568
+                                  |                                |          |                                                                                                  PyEval_EvalCode
+                                  |                                |          |                                                                                                  _PyEval_EvalFrameDefault
+                                  |                                |          |                                                                                                  |          
+                                  |                                |          |                                                                                                   --1.09%--PyImport_ImportModuleLevelObject
+                                  |                                |          |                                                                                                             PyObject_CallMethodObjArgs
+                                  |                                |          |                                                                                                             0x4c3a84
+                                  |                                |          |                                                                                                             _PyEval_EvalFrameDefault
+                                  |                                |          |                                                                                                             |          
+                                  |                                |          |                                                                                                              --1.04%--0x503dac
+                                  |                                |          |                                                                                                                        |          
+                                  |                                |          |                                                                                                                         --0.85%--0x55fa58
+                                  |                                |          |                                                                                                                                   PyImport_ImportModuleLevelObject
+                                  |                                |          |                                                                                                                                   |          
+                                  |                                |          |                                                                                                                                    --0.84%--PyObject_CallMethodObjArgs
+                                  |                                |          |                                                                                                                                              0x4c3a84
+                                  |                                |          |                                                                                                                                              _PyEval_EvalFrameDefault
+                                  |                                |          |                                                                                                                                              |          
+                                  |                                |          |                                                                                                                                               --0.83%--0x503dac
+                                  |                                |          |                                                                                                                                                         0x55f568
+                                  |                                |          |                                                                                                                                                         PyEval_EvalCode
+                                  |                                |          |                                                                                                                                                         _PyEval_EvalFrameDefault
+                                  |                                |          |                                                                                                                                                         |          
+                                  |                                |          |                                                                                                                                                          --0.80%--PyImport_ImportModuleLevelObject
+                                  |                                |          |                                                                                                                                                                    PyObject_CallMethodObjArgs
+                                  |                                |          |                                                                                                                                                                    0x4c3a84
+                                  |                                |          |                                                                                                                                                                    _PyEval_EvalFrameDefault
+                                  |                                |          |                                                                                                                                                                    |          
+                                  |                                |          |                                                                                                                                                                     --0.55%--0x503dac
+                                  |                                |          |          
+                                  |                                |           --0.83%--0x5040c0
+                                  |                                |                     |          
+                                  |                                |                      --0.82%--0x66f1bc
+                                  |                                |          
+                                  |                                |--1.75%--PyObject_RichCompare
+                                  |                                |          |          
+                                  |                                |           --1.54%--PyObject_CallFunctionObjArgs
+                                  |                                |                     0x4c3a84
+                                  |                                |                     |          
+                                  |                                |                     |--0.85%--0xf36aebc88354
+                                  |                                |                     |          |          
+                                  |                                |                     |           --0.54%--0xf36aebc7da74
+                                  |                                |                     |                     |          
+                                  |                                |                     |                      --0.52%--0xf36aebab12a8
+                                  |                                |                     |                                |          
+                                  |                                |                     |                                 --0.50%--0xf36aebbac15c
+                                  |                                |                     |          
+                                  |                                |                      --0.69%--0xf36aebc88cdc
+                                  |                                |                                |          
+                                  |                                |                                 --0.64%--0xf36aebc7aa24
+                                  |                                |          
+                                  |                                |--1.04%--0xf36aebb93070
+                                  |                                |          
+                                  |                                 --0.79%--0xf36aebb93318
+                                  |                                           |          
+                                  |                                            --0.66%--0xf36aebb2a598
+                                  |                                                      0xf36aebb32064
+                                  |          
+                                   --0.54%--0x680534
+                                             0x680800
+
+    20.24%    20.16%  libz.so.1.3                                       
+            |          
+             --20.16%--_start
+                       __libc_start_main
+                       0xf36afb7184c4
+                       Py_BytesMain
+                       Py_RunMain
+                       _PyRun_AnyFileObject
+                       _PyRun_SimpleFileObject
+                       0x680274
+                       0x59b884
+                       PyEval_EvalCode
+                       _PyEval_EvalFrameDefault
+                       |          
+                       |--14.26%--_PyObject_MakeTpCall
+                       |          |          
+                       |           --13.85%--0xf36af8c48670
+                       |                     0xf36af8d7b938
+                       |                     0xf36af8d7af98
+                       |                     0xf36af8d81ec0
+                       |                     0xf36af8d7f0dc
+                       |                     deflate
+                       |                     |          
+                       |                      --13.40%--0xf36afb90828c
+                       |                                |          
+                       |                                |--5.50%--0xf36afb90228c
+                       |                                |          
+                       |                                |--1.46%--0xf36afb902264
+                       |                                |          
+                       |                                |--1.02%--0xf36afb90226c
+                       |                                |          
+                       |                                 --0.89%--0xf36afb90229c
+                       |          
+                        --5.75%--0x6be87c
+                                  inflate
+                                  |          
+                                  |--1.31%--0xf36afb9024a8
+                                  |          
+                                   --0.67%--adler32_z
+
+    16.73%    13.92%  _multiarray_umath.cpython-312-aarch64-linux-gnu.so
+            |          
+            |--13.92%--_start
+            |          __libc_start_main
+            |          0xf36afb7184c4
+            |          Py_BytesMain
+            |          Py_RunMain
+            |          _PyRun_AnyFileObject
+            |          _PyRun_SimpleFileObject
+            |          0x680274
+            |          0x59b884
+            |          PyEval_EvalCode
+            |          _PyEval_EvalFrameDefault
+            |          |          
+            |          |--10.13%--PyObject_Vectorcall
+            |          |          |          
+            |          |          |--9.05%--0xf36aebb33190
+            |          |          |          PyObject_Vectorcall
+            |          |          |          |          
+            |          |          |          |--4.00%--0x503dac
+            |          |          |          |          |          
+            |          |          |          |          |--1.66%--0xf36aebb3aeb4
+            |          |          |          |          |          
+            |          |          |          |           --0.68%--0xf36aebb3b0b0
+            |          |          |          |          
+            |          |          |          |--3.48%--_PyEval_EvalFrameDefault
+            |          |          |          |          |          
+            |          |          |          |           --2.56%--PyObject_Call
+            |          |          |          |                     |          
+            |          |          |          |                      --2.10%--0x503fb4
+            |          |          |          |                                |          
+            |          |          |          |                                 --2.08%--0xf36aebb96fe8
+            |          |          |          |                                           0xf36aebb37a10
+            |          |          |          |                                           0xf36aebbc08c4
+            |          |          |          |                                           PyObject_Call
+            |          |          |          |                                           0x503dac
+            |          |          |          |                                           |          
+            |          |          |          |                                            --2.07%--0xf36aebc85fec
+            |          |          |          |                                                      0xf36aebc7aa23
+            |          |          |          |                                                      |          
+            |          |          |          |                                                       --1.46%--0xf36aebd522f4
+            |          |          |          |          
+            |          |          |           --1.56%--0x5040c0
+            |          |          |                     0xf36aebba2c64
+            |          |          |          
+            |          |           --0.65%--0x4cc5dc
+            |          |                     |          
+            |          |                      --0.51%--0xf36aebb99c88
+            |          |                                0xf36aebb32064
+            |          |                                0xf36aebb316df
+            |          |          
+            |          |--1.14%--PyObject_RichCompare
+            |          |          |          
+            |          |           --0.97%--PyObject_CallFunctionObjArgs
+            |          |                     0x4c3a84
+            |          |                     |          
+            |          |                      --0.62%--0xf36aebc88cdc
+            |          |                                |          
+            |          |                                 --0.58%--0xf36aebc7aa24
+            |          |          
+            |           --1.00%--0xf36aebb93070
+            |          
+            |--0.70%--0xf36aebb33190
+            |          PyObject_Vectorcall
+            |          
+             --0.64%--0xf36aebc88354
+                       |          
+                        --0.64%--0xf36aebc7da74
+                                  |          
+                                   --0.62%--0xf36aebab12a8
+                                             0xf36aebbac15c
+
+    14.32%     0.31%  libopencv_imgcodecs.so.5.1.0                      
+            |          
+             --13.86%--0xf36af8c48670
+                       0xf36af8d7b938
+                       0xf36af8d7af98
+                       0xf36af8d81ec0
+                       0xf36af8d7f0dc
+                       deflate
+                       |          
+                        --13.40%--0xf36afb90828c
+                                  |          
+                                  |--5.50%--0xf36afb90228c
+                                  |          
+                                  |--1.46%--0xf36afb902264
+                                  |          
+                                  |--1.02%--0xf36afb90226c
+                                  |          
+                                   --0.89%--0xf36afb90229c
+
+    11.88%    10.89%  libopencv_imgproc.so.5.1.0                        
+            |          
+             --10.89%--_start
+                       __libc_start_main
+                       0xf36afb7184c4
+                       Py_BytesMain
+                       Py_RunMain
+                       _PyRun_AnyFileObject
+                       _PyRun_SimpleFileObject
+                       0x680274
+                       0x59b884
+                       PyEval_EvalCode
+                       _PyEval_EvalFrameDefault
+                       _PyObject_MakeTpCall
+                       |          
+                       |--2.15%--cv::distanceTransform(cv::_InputArray const&, cv::_OutputArray const&, cv::_OutputArray const&, int, int, int)
+                       |          
+                       |--1.15%--0xf36af85aaab4
+                       |          
+                        --0.96%--0xf36af85aaabc
+
+    10.65%     6.35%  dpkg-query                                        
+            |          
+            |--0.65%--0xc497e7334530
+            |          __libc_start_main
+            |          0xf885bbdc84c4
+            |          |          
+            |           --0.65%--0xc497e7334278
+            |                     |          
+            |                      --0.56%--0xc497e7340a94
+            |                                |          
+            |                                 --0.52%--0xc497e733f7e4
+            |          
+            |--0.64%--0xc1add8df4530
+            |          __libc_start_main
+            |          0xfb94038284c4
+            |          |          
+            |           --0.64%--0xc1add8df4278
+            |                     |          
+            |                      --0.55%--0xc1add8e00a94
+            |                                |          
+            |                                 --0.52%--0xc1add8dff7e4
+            |          
+            |--0.64%--0xc9c736a54530
+            |          __libc_start_main
+            |          0xe0e7453b84c4
+            |          |          
+            |           --0.64%--0xc9c736a54278
+            |                     |          
+            |                      --0.56%--0xc9c736a60a94
+            |                                |          
+            |                                 --0.52%--0xc9c736a5f7e4
+            |          
+            |--0.64%--0xac56a2e44530
+            |          __libc_start_main
+            |          0xefe444f884c4
+            |          |          
+            |           --0.64%--0xac56a2e44278
+            |                     |          
+            |                      --0.55%--0xac56a2e50a94
+            |                                |          
+            |                                 --0.52%--0xac56a2e4f7e4
+            |          
+            |--0.64%--0xca9a1b374530
+            |          __libc_start_main
+            |          0xe53a501384c4
+            |          |          
+            |           --0.64%--0xca9a1b374278
+            |                     |          
+            |                      --0.54%--0xca9a1b380a94
+            |                                |          
+            |                                 --0.51%--0xca9a1b37f7e4
+            |          
+            |--0.64%--0xbdda1a094530
+            |          __libc_start_main
+            |          0xee11b4a784c4
+            |          |          
+            |           --0.63%--0xbdda1a094278
+            |                     |          
+            |                      --0.55%--0xbdda1a0a0a94
+            |                                |          
+            |                                 --0.51%--0xbdda1a09f7e4
+            |          
+            |--0.63%--0xbb4ff77f4530
+            |          __libc_start_main
+            |          0xf230f50984c4
+            |          |          
+            |           --0.63%--0xbb4ff77f4278
+            |                     |          
+            |                      --0.54%--0xbb4ff7800a94
+            |                                |          
+            |                                 --0.51%--0xbb4ff77ff7e4
+            |          
+            |--0.63%--0xc16720ca4530
+            |          __libc_start_main
+            |          0xe65df8c884c4
+            |          |          
+            |           --0.63%--0xc16720ca4278
+            |                     |          
+            |                      --0.54%--0xc16720cb0a94
+            |                                |          
+            |                                 --0.50%--0xc16720caf7e4
+            |          
+            |--0.63%--0xbc0ae2c64530
+            |          __libc_start_main
+            |          0xf14e6e4984c4
+            |          |          
+            |           --0.63%--0xbc0ae2c64278
+            |                     |          
+            |                      --0.54%--0xbc0ae2c70a94
+            |                                |          
+            |                                 --0.51%--0xbc0ae2c6f7e4
+            |          
+            |--0.62%--0xb97613e14530
+            |          __libc_start_main
+            |          0xe5f5060c84c4
+            |          0xb97613e14278
+            |          |          
+            |           --0.54%--0xb97613e20a94
+            |                     |          
+            |                      --0.50%--0xb97613e1f7e4
+            |          
+            |--0.62%--0xb54c207e4530
+            |          __libc_start_main
+            |          |          
+            |           --0.62%--0xfbc73b1d84c4
+            |                     0xb54c207e4278
+            |                     |          
+            |                      --0.53%--0xb54c207f0a94
+            |          
+            |--0.62%--0xbf6f91914530
+            |          __libc_start_main
+            |          0xfc0646ea84c4
+            |          0xbf6f91914278
+            |          |          
+            |           --0.54%--0xbf6f91920a94
+            |          
+            |--0.61%--0xb6323d804530
+            |          __libc_start_main
+            |          0xff61864784c4
+            |          0xb6323d804278
+            |          |          
+            |           --0.53%--0xb6323d810a94
+            |          
+            |--0.61%--0xbfcc85194530
+            |          __libc_start_main
+            |          0xf472886a84c4
+            |          |          
+            |           --0.61%--0xbfcc85194278
+            |                     |          
+            |                      --0.53%--0xbfcc851a0a94
+            |          
+            |--0.61%--0xb24539bf4530
+            |          __libc_start_main
+            |          |          
+            |           --0.60%--0xf96788a084c4
+            |                     |          
+            |                      --0.60%--0xb24539bf4278
+            |                                |          
+            |                                 --0.51%--0xb24539c00a94
+            |          
+            |--0.60%--0xafba27b94530
+            |          __libc_start_main
+            |          0xfac9b66f84c4
+            |          0xafba27b94278
+            |          |          
+            |           --0.51%--0xafba27ba0a94
+            |          
+             --0.60%--0xbebefb1a4530
+                       __libc_start_main
+                       0xecf254f384c4
+                       |          
+                        --0.60%--0xbebefb1a4278
+                                  |          
+                                   --0.51%--0xbebefb1b0a94
+
+     6.21%     6.21%  [kernel.kallsyms]                                 
+            |          
+             --2.59%--_start
+                       __libc_start_main
+                       0xf36afb7184c4
+                       Py_BytesMain
+                       |          
+                        --2.57%--Py_RunMain
+                                  _PyRun_AnyFileObject
+                                  _PyRun_SimpleFileObject
+                                  |          
+                                   --2.47%--0x680274
+                                             |          
+                                              --2.47%--0x59b884
+                                                        PyEval_EvalCode
+                                                        _PyEval_EvalFrameDefault
+                                                        |          
+                                                        |--0.67%--PyObject_Vectorcall
+                                                        |          
+                                                         --0.61%--_PyObject_MakeTpCall
+
+     2.75%     2.74%  libscipy_openblas64_-4135cacc.so                  
+            |          
+             --2.74%--0xf36afb7dbb4c
+                       0xf36afb77582c
+                       |          
+                        --1.76%--0xf36aea553b94
+
+     1.76%     0.00%  [unknown]                                         
+     1.56%     1.04%  libcrypto.so.3                                    
+            |          
+             --1.04%--_start
+                       __libc_start_main
+                       0xf36afb7184c4
+                       Py_BytesMain
+                       Py_RunMain
+                       _PyRun_AnyFileObject
+                       _PyRun_SimpleFileObject
+                       0x680274
+                       0x59b884
+                       PyEval_EvalCode
+                       _PyEval_EvalFrameDefault
+                       |          
+                        --0.66%--PyObject_Call
+                                  0x4c6e48
+                                  _PyEval_EvalFrameDefault
+                                  PyObject_Call
+                                  0x4c6e48
+                                  _PyEval_EvalFrameDefault
+                                  PyObject_Call
+                                  0x4c6e48
+                                  _PyEval_EvalFrameDefault
+                                  PyObject_Call
+                                  0x4c6e48
+                                  _PyEval_EvalFrameDefault
+                                  |          
+                                   --0.63%--PyObject_Vectorcall
+                                             |          
+                                              --0.62%--0x4cc5dc
+                                                        0xf36ae011bd70
+                                                        SSL_CTX_load_verify_locations
+                                                        X509_STORE_load_file_ex
+                                                        0xf36afa9ea8b8
+                                                        X509_load_cert_crl_file_ex
+                                                        |          
+                                                         --0.61%--PEM_X509_INFO_read_bio_ex
+                                                                   |          
+                                                                    --0.55%--ASN1_item_d2i_ex
+                                                                              0xf36afa832ea8
+                                                                              0xf36afa833924
+                                                                              |          
+                                                                               --0.54%--0xf36afa832ea8
+                                                                                         |          
+                                                                                          --0.53%--0xf36afa833924
+                                                                                                    |          
+                                                                                                     --0.51%--0xf36afa832c34
+
+     1.19%     0.00%  _ssl.cpython-312-aarch64-linux-gnu.so             
+            |          
+             --1.06%--0xf36ae011bd70
+                       SSL_CTX_load_verify_locations
+                       X509_STORE_load_file_ex
+                       0xf36afa9ea8b8
+                       X509_load_cert_crl_file_ex
+                       |          
+                        --1.05%--PEM_X509_INFO_read_bio_ex
+                                  |          
+                                   --0.97%--ASN1_item_d2i_ex
+                                             0xf36afa832ea8
+                                             0xf36afa833924
+                                             |          
+                                              --0.96%--0xf36afa832ea8
+                                                        |          
+                                                         --0.95%--0xf36afa833924
+                                                                   |          
+                                                                    --0.90%--0xf36afa832c34
+                                                                              |          
+                                                                               --0.79%--0xf36afaa1d424
+                                                                                         OSSL_DECODER_CTX_new_for_pkey
+                                                                                         |          
+                                                                                          --0.57%--OSSL_DECODER_CTX_add_extra
+                                                                                                    |          
+                                                                                                     --0.51%--OSSL_DECODER_is_a
+
+     1.19%     0.00%  libssl.so.3                                       
+            |          
+             --1.06%--SSL_CTX_load_verify_locations
+                       X509_STORE_load_file_ex
+                       0xf36afa9ea8b8
+                       X509_load_cert_crl_file_ex
+                       |          
+                        --1.05%--PEM_X509_INFO_read_bio_ex
+                                  |          
+                                   --0.97%--ASN1_item_d2i_ex
+                                             0xf36afa832ea8
+                                             0xf36afa833924
+                                             |          
+                                              --0.96%--0xf36afa832ea8
+                                                        |          
+                                                         --0.95%--0xf36afa833924
+                                                                   |          
+                                                                    --0.90%--0xf36afa832c34
+                                                                              |          
+                                                                               --0.79%--0xf36afaa1d424
+                                                                                         OSSL_DECODER_CTX_new_for_pkey
+                                                                                         |          
+                                                                                          --0.57%--OSSL_DECODER_CTX_add_extra
+                                                                                                    |          
+                                                                                                     --0.51%--OSSL_DECODER_is_a
+
+     0.95%     0.63%  libopencv_core.so.5.1.0                           
+            |          
+             --0.63%--_start
+                       __libc_start_main
+                       0xf36afb7184c4
+                       Py_BytesMain
+                       Py_RunMain
+                       _PyRun_AnyFileObject
+                       _PyRun_SimpleFileObject
+                       0x680274
+                       0x59b884
+                       PyEval_EvalCode
+                       _PyEval_EvalFrameDefault
+                       |          
+                        --0.62%--_PyObject_MakeTpCall
+
+     0.58%     0.35%  ld-linux-aarch64.so.1                             
+     0.54%     0.03%  cv2.cpython-312-aarch64-linux-gnu.so              
+     0.38%     0.00%  _hashlib.cpython-312-aarch64-linux-gnu.so         
+     0.14%     0.02%  _json.cpython-312-aarch64-linux-gnu.so            
+     0.11%     0.11%  libm.so.6                                         
+     0.06%     0.00%  cd.cpython-312-aarch64-linux-gnu.so               
+     0.05%     0.00%  md.cpython-312-aarch64-linux-gnu.so               
+     0.04%     0.00%  dpkg                                              
+     0.03%     0.00%  libarmpl_lp64.so                                  
+     0.03%     0.00%  bash                                              
+     0.03%     0.00%  curl                                              
+     0.02%     0.02%  libopencv_geometry.so.5.1.0                       
+     0.02%     0.00%  libstdc++.so.6.0.33                               
+     0.02%     0.00%  git                                               
+     0.02%     0.00%  libcurl.so.4.8.0                                  
+     0.01%     0.01%  libgcc_s.so.1                                     
+     0.01%     0.00%  _decimal.cpython-312-aarch64-linux-gnu.so         
+     0.01%     0.00%  dirname                                           
+     0.01%     0.00%  libgnutls.so.30.37.1                              
+     0.00%     0.00%  libselinux.so.1                                   
+     0.00%     0.00%  libopencv_dnn.so.5.1.0                            
+     0.00%     0.00%  _codecs_hk.cpython-312-aarch64-linux-gnu.so       
+     0.00%     0.00%  _ctypes.cpython-312-aarch64-linux-gnu.so          
+     0.00%     0.00%  libgmp.so.10.5.0                                  
+     0.00%     0.00%  libtasn1.so.6.6.3                                 
+     0.00%     0.00%  _umath_linalg.cpython-312-aarch64-linux-gnu.so    
+     0.00%     0.00%  readlink                                          
+     0.00%     0.00%  [vdso]                                            
+     0.00%     0.00%  dash                                              
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
