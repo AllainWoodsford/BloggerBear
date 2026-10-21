@@ -216,6 +216,16 @@ data "aws_iam_policy_document" "ops_mcp" {
     resources = ["${var.content_bucket_arn}/articles/*"]
   }
 
+  # The operator's addresses, for the assistant_access switch's "allowlist" (ops_mcp/access.py):
+  # this one parameter, read only. A SecureString under the account's aws/ssm key, whose key
+  # policy already lets any principal of the account decrypt through SSM, so no KMS statement.
+  statement {
+    sid       = "ReadAllowlistParameter"
+    effect    = "Allow"
+    actions   = ["ssm:GetParameter"]
+    resources = [var.allowed_cidrs_parameter.arn]
+  }
+
   # The alarms tool: what is in ALARM, and since when. Every alarm in this account and region,
   # not <prefix>-* only, although the tool will ask for that prefix: a DescribeAlarms call that
   # lists by prefix is checked against "alarm:*", so a narrower resource here would refuse the
@@ -359,10 +369,11 @@ resource "aws_lambda_function" "ops_mcp" {
 
         # The assistant_access switch (design, section 5): the server reads the config table's
         # `pipeline` row on every request (MODEL_CONFIG_TABLE, from var.tables above) and, when
-        # the row says "allowlist", admits only these addresses. It takes the caller's address
-        # from the x-amzn-request-context header, which the adapter adds to every request it
-        # forwards (identity.sourceIp, as API Gateway recorded it; a caller cannot set it).
-        OPS_ASSISTANT_ALLOWED_CIDRS = join(",", var.allowed_cidrs)
+        # the row says "allowlist", admits only the addresses in this parameter, read then. It
+        # takes the caller's address from the x-amzn-request-context header, which the adapter
+        # adds to every request it forwards (identity.sourceIp, as API Gateway recorded it; a
+        # caller cannot set it).
+        OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER = var.allowed_cidrs_parameter.name
 
         # The key the agent (agent.tf) sends with the operator's address, since its own requests
         # arrive here from an address of Lambda's. A request carrying this key is judged, under

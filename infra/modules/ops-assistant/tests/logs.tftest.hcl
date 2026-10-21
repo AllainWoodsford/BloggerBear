@@ -14,6 +14,12 @@ mock_provider "aws" {
 }
 
 variables {
+  # Every root passes it (the admin API's allowlist parameter); no test here reads it.
+  allowed_cidrs_parameter = {
+    name = "/bloggerbear/test/admin-allowed-cidrs"
+    arn  = "arn:aws:ssm:ap-southeast-2:123456789012:parameter/bloggerbear/test/admin-allowed-cidrs"
+  }
+
   # The roots' provider default_tags, without Environment and TerraformRoot.
   default_tags = {
     ManagedBy = "Terraform"

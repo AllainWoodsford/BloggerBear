@@ -5,7 +5,7 @@ changed with `pipeline-config set --assistant-access`, so the operator can lock 
 to their own addresses, or switch it off, without a deploy:
 
     open       any caller the authorizer in front has let through, from anywhere (the default)
-    allowlist  only from the addresses in OPS_ASSISTANT_ALLOWED_CIDRS
+    allowlist  only from the addresses in the allowlist parameter (below)
     off        every request is refused
 
 `decide` is the rule, a pure function. `AccessMiddleware` applies it to every request of a web
@@ -34,7 +34,14 @@ adapter being the one way to reach the app: it must never be served straight to 
 A REST API puts the address at `identity.sourceIp`; an HTTP API (payload 2.0) puts it at
 `http.sourceIp`. Both are read, since both come from the same trusted header.
 
-    OPS_ASSISTANT_ALLOWED_CIDRS  comma-separated addresses and CIDR blocks, IPv4 or IPv6
+**Where the allowlist comes from.** One SSM parameter per environment, the admin API's
+(scripts/admin_allowlist.py writes it): comma-separated addresses and CIDR blocks, read when a
+request meets `allowlist` and only then, so `open` costs no read and needs no parameter. Not
+cached, like the setting: an address taken off the list is refused from the next request. A
+parameter that is not there, or cannot be read, refuses (CONFIG_UNREADABLE); no name configured
+is an empty list (ALLOWLIST_EMPTY).
+
+    OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER  the parameter's name (Terraform sets it)
 
 **The agent asks on the operator's behalf, from an address of its own.** The agent Lambda
 (ops_agent_handler.py) calls this server over the internet, so the address API Gateway records
@@ -60,6 +67,7 @@ the address only for a request its own check has admitted (ops_agent_handler.py)
 from __future__ import annotations
 
 import asyncio
+import functools
 import hmac
 import ipaddress
 import json
@@ -69,7 +77,7 @@ from collections.abc import Callable
 from common.assistant_access import ACCESS_ALLOWLIST, ACCESS_OFF, ACCESS_OPEN
 from common.dynamo import get_pipeline_config
 
-ALLOWED_CIDRS_ENV = "OPS_ASSISTANT_ALLOWED_CIDRS"
+ALLOWED_CIDRS_PARAMETER_ENV = "OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER"
 REQUEST_CONTEXT_HEADER = b"x-amzn-request-context"
 FORWARD_KEY_ENV = "OPS_AGENT_FORWARD_KEY"
 FORWARD_KEY_HEADER = b"x-ops-agent-key"
@@ -152,8 +160,35 @@ def decide(setting, source_ip, allowed_cidrs) -> tuple[bool, str]:
     return False, ADDRESS_NOT_LISTED
 
 
-def allowed_cidrs_from_env(name: str = ALLOWED_CIDRS_ENV) -> list[str]:
-    return [entry.strip() for entry in os.environ.get(name, "").split(",") if entry.strip()]
+@functools.cache
+def _ssm():
+    # Here, so that importing this module needs no AWS SDK (the rule above doesn't).
+    import boto3
+    from botocore.config import Config
+
+    # Short and bounded, like the other clients here: a stalled read must reach the refusal well
+    # inside the functions' timeouts, not outlast them.
+    config = Config(connect_timeout=2, read_timeout=3, retries={"total_max_attempts": 2, "mode": "standard"})
+    return boto3.client("ssm", config=config)
+
+
+def read_parameter(name: str) -> str:
+    """A SecureString parameter's value. Raises whatever SSM raises: the caller refuses."""
+    return _ssm().get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
+
+
+def allowed_cidrs(env: str = ALLOWED_CIDRS_PARAMETER_ENV) -> list[str]:
+    """The allowlist's entries, from the parameter the environment names; [] when none is named."""
+    name = os.environ.get(env, "").strip()
+    if not name:
+        return []
+    return [entry.strip() for entry in read_parameter(name).split(",") if entry.strip()]
+
+
+def allowed_cidrs_for(setting, read: Callable[[], list[str]] = allowed_cidrs) -> list[str]:
+    """The allowlist when `setting` is the one that uses it, else [] without a read: `open` and
+    `off` never look at the list, and must not depend on the parameter being readable."""
+    return read() if setting == ACCESS_ALLOWLIST else []
 
 
 def forward_key_from_env(name: str = FORWARD_KEY_ENV) -> str:
@@ -248,7 +283,7 @@ class AccessMiddleware:
         app,
         *,
         read_config: Callable[[], dict | None] = get_pipeline_config,
-        allowed_cidrs: Callable[[], list[str]] = allowed_cidrs_from_env,
+        allowed_cidrs: Callable[[], list[str]] = allowed_cidrs,
         forward_key: Callable[[], str] = forward_key_from_env,
         label: str = "assistant",
     ) -> None:
@@ -297,6 +332,6 @@ class AccessMiddleware:
             return True, OPEN  # nothing else is looked at: open costs the one read above
         try:
             address = caller_address(scope.get("headers") or [], self._forward_key())
-            return decide(setting, address, self._allowed_cidrs())
+            return decide(setting, address, allowed_cidrs_for(setting, self._allowed_cidrs))
         except Exception:  # noqa: BLE001 - a check that fails is a refusal, never a way in
             return False, CONFIG_UNREADABLE

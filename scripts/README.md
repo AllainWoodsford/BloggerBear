@@ -9,7 +9,7 @@ else.
 ## First-time setup of your repository: `setup_repo.py`
 
 Deploying your own copy? This one comes before the admin CLI. It asks for the GitHub secrets and
-variables a deployment needs (the AWS region and the name prefix first, then your allowed address ranges, alert emails, the AWS account IDs and
+variables a deployment needs (the AWS region and the name prefix first, then alert emails, the AWS account IDs and
 deploy role ARNs, the state bucket names and `PII_DENYLIST`), checks each answer,
 shows what is already set, and sets what is missing. It also tells you how to turn on the git hook
 that stops personal data being committed.
@@ -29,6 +29,21 @@ It needs only Python 3.11+ and the GitHub CLI (`gh auth login`): no AWS credenti
 until you have seen a summary and confirmed; if a write then fails part-way, it stops and lists
 what was and was not set. See
 [docs/deployment-runsheet.md](../docs/deployment-runsheet.md#quick-start-the-setup-script).
+
+## Who may reach the admin API: `admin_allowlist.py`
+
+The admin API answers only your addresses. They are one SSM parameter per environment, which this
+script writes and then copies into what enforces it (the admin WAF IP set and the API's resource
+policy, deploying the stage), so a new IP needs no apply and no secret:
+
+```bash
+python scripts/admin_allowlist.py set --env dev --my-ip    # after the first deploy, and when your IP changes
+python scripts/admin_allowlist.py show --env dev           # what each place holds; only reads
+python scripts/admin_allowlist.py sync --env dev           # copy the stored list out again
+```
+
+It needs boto3 (`scripts/requirements.txt`) and your own AWS credentials. Why, and what it touches:
+[configuration.md](../docs/configuration.md#the-admin-apis-address-allowlist).
 
 ## Why a CLI, not a web page
 
@@ -156,7 +171,7 @@ python scripts/admin_cli.py pipeline-config set --review-mode shadow
 python scripts/admin_cli.py pipeline-config set --research-interval-hours 2 --review-mode shadow
 # Who may reach the operator's assistant (the ops MCP server). `open` (the default) is any
 # signed-in caller from anywhere; `allowlist` is only from the operator's addresses (the
-# assistant's OPS_ASSISTANT_ALLOWED_CIDRS, set by Terraform); `off` refuses every request;
+# admin API's allowlist parameter, which admin_allowlist.py sets); `off` refuses every request;
 # '' clears the setting (back to open). The assistant reads it on every request, so a
 # change applies from the next one, with no deploy. `pipeline-config get` shows it.
 python scripts/admin_cli.py pipeline-config set --assistant-access allowlist

@@ -18,6 +18,12 @@ mock_provider "aws" {
 }
 
 variables {
+  # Every root passes it (the admin API's allowlist parameter); no test here reads it.
+  allowed_cidrs_parameter = {
+    name = "/bloggerbear/test/admin-allowed-cidrs"
+    arn  = "arn:aws:ssm:ap-southeast-2:123456789012:parameter/bloggerbear/test/admin-allowed-cidrs"
+  }
+
   # What a root passes when UNIQUE_NAME_PREFIX is not set: the original deployment's prefix.
   unique_name_prefix = "bloggerbear"
 
@@ -134,6 +140,7 @@ run "the_role_can_only_read_and_write_its_own_table" {
         "dynamodb:ListTagsOfResource",
         "s3:GetObject",
         "cloudwatch:DescribeAlarms",
+        "ssm:GetParameter",
         "logs:CreateLogStream",
         "logs:PutLogEvents",
       ]),

@@ -162,10 +162,12 @@ python scripts/setup_repo.py --dry-run     # asks and checks, sets nothing
 python scripts/setup_repo.py
 ```
 
-For production it sets `AWS_PROD_DEPLOY_ROLE_ARN` and `ADMIN_ALLOWED_CIDRS_PROD` (both required),
-and, if you give them, `AWS_PROD_ACCOUNT_ID`, `TF_STATE_BUCKET_PROD` and `ALERT_EMAIL_PROD`. The
+For production it sets `AWS_PROD_DEPLOY_ROLE_ARN` (required), and, if you give them, `AWS_PROD_ACCOUNT_ID`, `TF_STATE_BUCKET_PROD` and `ALERT_EMAIL_PROD`. The
 full table, and why each is a secret or a variable, is in
-[configuration.md](configuration.md#github-secrets-and-variables).
+[configuration.md](configuration.md#github-secrets-and-variables). Your IP is not among them: after
+production's first release, let yourself in to its admin API with
+`python scripts/admin_allowlist.py set --env production --my-ip`
+([configuration.md](configuration.md#the-admin-apis-address-allowlist)).
 
 Also worth doing while you are in Settings:
 

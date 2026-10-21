@@ -24,7 +24,7 @@ output "daily_cycle_function_name" {
 
 output "admin_api_url" {
   value       = module.admin_api.invoke_url
-  description = "Invoke URL for the admin API's dev stage (REST API -- the stage name is part of this URL, unlike the HTTP API predecessor's $default stage). Copy into BLOGGERBEAR_ADMIN_API_URL for scripts/admin_cli.py. Unreachable until var.admin_allowed_cidrs is set (see that variable's description)."
+  description = "Invoke URL for the admin API's dev stage (REST API -- the stage name is part of this URL, unlike the HTTP API predecessor's $default stage). Copy into BLOGGERBEAR_ADMIN_API_URL for scripts/admin_cli.py. Unreachable until scripts/admin_allowlist.py has set the operator's address."
 }
 
 output "daily_cycle_state_machine_arn" {

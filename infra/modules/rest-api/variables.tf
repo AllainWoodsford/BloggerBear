@@ -93,14 +93,16 @@ variable "resource_policy" {
     An API Gateway resource policy (a JSON IAM policy document) for the REST API, used only when
     resource_policy_enabled is true. Write its Resource as the shorthand "execute-api:/*": the
     module replaces it with this API's full execution ARN, since the id is not known to a caller.
-    The admin API passes a Deny of execute-api:Invoke from any address outside the operator's
-    allowlist (docs/cost-saving.md): it costs nothing, it is in force whether or not a WAF web ACL
-    is associated, and an empty allowlist denies everything, the same fail-closed behaviour as the
-    admin web ACL's default block. A Deny-only policy is safe beside AWS_IAM authorization: a
-    caller in the same account is allowed by its own IAM policy and refused only by this Deny.
-    The deployment is redeployed whenever the text changes, since API Gateway enforces a resource
-    policy only from the next deployment. The value may be sensitive (it carries the addresses);
-    the plan then prints it as (sensitive value).
+    The admin API passes a Deny of every execute-api:Invoke (docs/cost-saving.md), which
+    scripts/admin_allowlist.py then narrows to the calls from outside the operator's addresses:
+    it costs nothing, it is in force whether or not a WAF web ACL is associated, and until the
+    script runs it denies everything, the same fail-closed behaviour as the admin web ACL's
+    default block. A Deny-only policy is safe beside AWS_IAM authorization: a caller in the same
+    account is allowed by its own IAM policy and refused only by this Deny. Only the first value
+    is applied: the module ignores later changes to the attached policy (lifecycle), so whatever
+    edits it after creation owns it from then on, and redeploys the stage itself, since API
+    Gateway enforces a resource policy only from the next deployment. The value may be
+    sensitive; the plan then prints it as (sensitive value).
   EOT
 }
 
@@ -108,9 +110,9 @@ variable "resource_policy_enabled" {
   type        = bool
   default     = false
   description = <<-EOT
-    Attach var.resource_policy to the API. A separate flag, like associate_web_acl, because the
-    policy the admin API passes is sensitive (it carries the operator's addresses) and Terraform
-    refuses a `count` decided by a sensitive value; a plain bool decides it instead. A caller that
+    Attach var.resource_policy to the API. A separate flag, like associate_web_acl, because a
+    policy may be passed as sensitive and Terraform refuses a `count` decided by a sensitive
+    value; a plain bool decides it instead. A caller that
     passes resource_policy MUST set this to true, or the policy is silently not attached.
   EOT
 }
