@@ -817,8 +817,8 @@ def test_index_writes_one_table_per_kind_and_check_fails_until_a_new_run_is_inde
     assert vision_eval.main(["index", "--evidence", str(evidence)]) == 0
     assert vision_eval.main(["index", "--evidence", str(evidence), "--check"]) == 0
     index = json.loads((evidence / "index.json").read_text(encoding="utf-8"))
-    row = index["runs"][0]
-    assert index["schema"] == "bloggerbear.vision-index/1" and row["kind"] == "eval-coverage"
+    row = next(run for run in index["runs"] if run["kind"] == "eval-coverage")
+    assert index["schema"] == "bloggerbear.vision-index/1"
     assert set(row) >= {"run_id", "kind", "date", "cpu", "backend", "build12", "git_sha", "summary"}
     assert row["build12"] == "0ef08003c311" and row["file"] == f"runs/{row['run_id']}.json"
     # A replay run file added without re-indexing: --check fails; indexed, it gets its own table.
@@ -940,7 +940,7 @@ def test_failures_refuses_a_network_file_that_is_not_there_when_one_is_named(tmp
 def test_index_lists_a_summary_value_that_is_null(tmp_path):
     # vision_benchmark.compare_summary writes None for an interval it could not compute.
     evidence = evidence_copy(tmp_path)
-    path = next((evidence / "runs").glob("*.json"))
+    path = next((evidence / "runs").glob("*-eval-coverage-*.json"))
     run = json.loads(path.read_text(encoding="utf-8"))
     run["summary"] = {**run["summary"], "scenes": None}
     path.write_text(json.dumps(run), encoding="utf-8")

@@ -1,0 +1,223 @@
+{
+ "schema": "bloggerbear.vision-index/1",
+ "runs": [
+  {
+   "run_id": "2026-10-20-eval-replay-amd64-opencv-sydney-winter-recorded",
+   "kind": "eval-replay",
+   "date": "2026-10-20",
+   "cpu": "AMD64",
+   "backend": "opencv",
+   "build12": "ce2f2890911c",
+   "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+   "file": "runs/2026-10-20-eval-replay-amd64-opencv-sydney-winter-recorded.json",
+   "checks_failed": 0,
+   "summary": {
+    "steps": 4,
+    "decisions": 4,
+    "triaged": 1,
+    "look_again": 0,
+    "verdict_real": 0,
+    "verdict_artefact": 1,
+    "finding": 1
+   }
+  },
+  {
+   "run_id": "2026-10-20-eval-replay-amd64-opencv-sydney-winter-bedrock",
+   "kind": "eval-replay",
+   "date": "2026-10-20",
+   "cpu": "AMD64",
+   "backend": "opencv",
+   "build12": "ce2f2890911c",
+   "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+   "file": "runs/2026-10-20-eval-replay-amd64-opencv-sydney-winter-bedrock.json",
+   "checks_failed": 0,
+   "summary": {
+    "steps": 4,
+    "decisions": 4,
+    "triaged": 1,
+    "look_again": 0,
+    "verdict_real": 0,
+    "verdict_artefact": 1,
+    "finding": 1
+   }
+  },
+  {
+   "run_id": "2026-10-20-eval-replay-amd64-opencv-sydney-demo-recorded",
+   "kind": "eval-replay",
+   "date": "2026-10-20",
+   "cpu": "AMD64",
+   "backend": "opencv",
+   "build12": "ce2f2890911c",
+   "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+   "file": "runs/2026-10-20-eval-replay-amd64-opencv-sydney-demo-recorded.json",
+   "checks_failed": 0,
+   "summary": {
+    "steps": 4,
+    "decisions": 4,
+    "triaged": 3,
+    "look_again": 0,
+    "verdict_real": 0,
+    "verdict_artefact": 3,
+    "finding": 1
+   }
+  },
+  {
+   "run_id": "2026-10-20-eval-replay-amd64-opencv-sydney-demo-bedrock",
+   "kind": "eval-replay",
+   "date": "2026-10-20",
+   "cpu": "AMD64",
+   "backend": "opencv",
+   "build12": "ce2f2890911c",
+   "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+   "file": "runs/2026-10-20-eval-replay-amd64-opencv-sydney-demo-bedrock.json",
+   "checks_failed": 0,
+   "summary": {
+    "steps": 4,
+    "decisions": 4,
+    "triaged": 3,
+    "look_again": 0,
+    "verdict_real": 0,
+    "verdict_artefact": 3,
+    "finding": 1
+   }
+  },
+  {
+   "run_id": "2026-10-20-eval-replay-amd64-opencv-sydney-c1-recorded",
+   "kind": "eval-replay",
+   "date": "2026-10-20",
+   "cpu": "AMD64",
+   "backend": "opencv",
+   "build12": "ce2f2890911c",
+   "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+   "file": "runs/2026-10-20-eval-replay-amd64-opencv-sydney-c1-recorded.json",
+   "checks_failed": 0,
+   "summary": {
+    "steps": 4,
+    "decisions": 4,
+    "triaged": 2,
+    "look_again": 0,
+    "verdict_real": 1,
+    "verdict_artefact": 1,
+    "finding": 2
+   }
+  },
+  {
+   "run_id": "2026-10-20-eval-replay-amd64-opencv-sydney-c1-bedrock",
+   "kind": "eval-replay",
+   "date": "2026-10-20",
+   "cpu": "AMD64",
+   "backend": "opencv",
+   "build12": "ce2f2890911c",
+   "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+   "file": "runs/2026-10-20-eval-replay-amd64-opencv-sydney-c1-bedrock.json",
+   "checks_failed": 0,
+   "summary": {
+    "steps": 4,
+    "decisions": 4,
+    "triaged": 2,
+    "look_again": 0,
+    "verdict_real": 1,
+    "verdict_artefact": 1,
+    "finding": 2
+   }
+  },
+  {
+   "run_id": "2026-10-20-eval-failures-amd64-opencv",
+   "kind": "eval-failures",
+   "date": "2026-10-20",
+   "cpu": "AMD64",
+   "backend": "opencv",
+   "build12": "ce2f2890911c",
+   "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+   "file": "runs/2026-10-20-eval-failures-amd64-opencv.json",
+   "checks_failed": 0,
+   "summary": {
+    "rows": 14,
+    "ran": 8,
+    "as_expected": 8,
+    "tests_named": 42,
+    "tests_missing": 0
+   }
+  },
+  {
+   "run_id": "2026-10-20-eval-access-baseline-amd64-opencv",
+   "kind": "eval-access-baseline",
+   "date": "2026-10-20",
+   "cpu": "AMD64",
+   "backend": "opencv",
+   "build12": "ce2f2890911c",
+   "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+   "file": "runs/2026-10-20-eval-access-baseline-amd64-opencv.json",
+   "checks_failed": 0,
+   "summary": {
+    "delta_vs_precise": 0.000566,
+    "delta_vs_buffer": 0.000566,
+    "iou_vs_precise": 0.990909,
+    "iou_vs_buffer": 0.990909,
+    "ms_production": 223.382,
+    "ms_precise": 64.521,
+    "ms_buffer": 7.081
+   }
+  },
+  {
+   "run_id": "2026-10-20-eval-agent-amd64-opencv-bedrock",
+   "kind": "eval-agent",
+   "date": "2026-10-20",
+   "cpu": "AMD64",
+   "backend": "opencv",
+   "build12": "ce2f2890911c",
+   "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+   "file": "runs/2026-10-20-eval-agent-amd64-opencv-bedrock.json",
+   "checks_failed": 0,
+   "summary": {
+    "cases": 13,
+    "gate_closed": 0,
+    "runs": 65,
+    "not_measured_runs": 0,
+    "recall_real": 0.9,
+    "recall_artefact": 1.0,
+    "balanced_accuracy": 0.95,
+    "failed_closed_task_runs": 0,
+    "numeric_only_balanced_accuracy": 0.5,
+    "always_artefact_balanced_accuracy": 0.5,
+    "stability": 0.9692,
+    "fail_closed": 15,
+    "fail_closed_runs": 15,
+    "tool_calls_mean": 2.1846,
+    "look_again_share": 0.0,
+    "web_context_share": 0.7692,
+    "latency_p50_ms": 8879,
+    "latency_p95_ms": 11576,
+    "tokens_mean": 8330.0154,
+    "cost_usd_mean": 0.0125,
+    "cost_aud_mean": 0.0188,
+    "cost_usd_total": 0.625,
+    "cost_aud_total": 0.9376,
+    "recall_imagery_driven": 1.0,
+    "recall_network_driven": 0.9333,
+    "recall_real_wilson_low": 0.699,
+    "recall_real_wilson_high": 0.9721,
+    "recall_artefact_wilson_low": 0.8668,
+    "recall_artefact_wilson_high": 1.0
+   }
+  },
+  {
+   "run_id": "2026-10-20-eval-counterfactual-amd64-opencv-bedrock",
+   "kind": "eval-counterfactual",
+   "date": "2026-10-20",
+   "cpu": "AMD64",
+   "backend": "opencv",
+   "build12": "ce2f2890911c",
+   "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+   "file": "runs/2026-10-20-eval-counterfactual-amd64-opencv-bedrock.json",
+   "checks_failed": 0,
+   "summary": {
+    "agent_pairs": 0,
+    "agent_called_look_again": 1,
+    "agent_flips": 0,
+    "gate_pairs": 2,
+    "gate_flips": 2
+   }
+  }
+ ]
+}

@@ -1,0 +1,444 @@
+{
+  "schema": "bloggerbear.vision-eval/1",
+  "run_id": "2026-10-20-bench-compare-neoverse-v2-graviton4-opencv-vs-opencv-scenes-opencv-4x-1t-vs-opencv-1t",
+  "kind": "bench-compare",
+  "mode": "compare",
+  "backend": "opencv-vs-opencv",
+  "started_at": "2026-10-20T11:53:32Z",
+  "finished_at": "2026-10-20T11:53:32Z",
+  "code": {
+    "git_sha": "4582abcdbe5395f35c2990ea2ee1ef4879b4eb3d",
+    "dirty": false
+  },
+  "environment": {
+    "cpu": "Neoverse V2 (Graviton4)",
+    "machine": "aarch64",
+    "python": "3.12.3",
+    "opencv": {
+      "opencv_version": "5.0.0",
+      "build_sha256": "4460ffe25568d7f496997f0593f568f4d91ee4740c97f057b2986c237e8a386c",
+      "arch": "aarch64",
+      "kleidicv": true,
+      "cpu_baseline": "NEON FP16",
+      "cpu_dispatch": "NEON_DOTPROD NEON_FP16 NEON_BF16",
+      "cpu": "Neoverse V2 (Graviton4)",
+      "cpu_count": 4,
+      "cv2_path": "~/stock/lib/python3.12/site-packages/cv2/__init__.py"
+    },
+    "cpu_count": 4,
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "threads": 4,
+    "numpy": "2.4.4",
+    "networkx": "3.4.2",
+    "where": "ec2",
+    "host": null,
+    "cool": null,
+    "libraries": null
+  },
+  "worker": {
+    "kind": "in-process",
+    "region": null,
+    "code_sha256": null
+  },
+  "inputs": {
+    "manifest_sha256": null,
+    "cache": false,
+    "scenes": [
+      {
+        "name": "botany-bay-2024-01-05",
+        "scene_id": "S2A_56HLH_20240105_0_L2A",
+        "etag_by_asset": {
+          "nir": "91114410bfd7832034d5a86f5cd36f23-21",
+          "green": "ac5bf4f7a0a2c2fd3fdce8fbb1a5a753-21",
+          "scl": "a6a98e904a508f1f863561a7868dd00f"
+        }
+      },
+      {
+        "name": "sydney-rail-2024-01-05",
+        "scene_id": "S2A_56HLH_20240105_0_L2A",
+        "etag_by_asset": {
+          "red": "f168c9842f53be5ff5265dc3c8fd691f-21",
+          "nir": "91114410bfd7832034d5a86f5cd36f23-21",
+          "swir16": "61207d2fc25a41e056f775e59c0857cb-6",
+          "scl": "a6a98e904a508f1f863561a7868dd00f"
+        }
+      },
+      {
+        "name": "sydney-rail-2024-08-26",
+        "scene_id": "S2A_56HLH_20240826_0_L2A",
+        "etag_by_asset": {
+          "red": "869d2f7d1e646fd069142dd51d1d1ec4-18",
+          "nir": "d641bc64ec21fc2d1434071beeb5b63f-18",
+          "swir16": "c18829ea963633eda50d881d5989754d-5",
+          "scl": "1104e55f9c91a600b0596227acd4901d"
+        }
+      }
+    ],
+    "networks": [
+      {
+        "file": "vision_benchmark_networks/sydney.json",
+        "sha256": "bfc3c7f868f52f755eb3c1a8836729bf4dcc5ee079cf466cf51968921fd77eb4"
+      }
+    ],
+    "runs": [
+      "2026-10-20-bench-scenes-neoverse-v2-graviton4-opencv-4x-1t",
+      "2026-10-20-bench-scenes-neoverse-v2-graviton4-opencv-1t"
+    ]
+  },
+  "params": {
+    "a": "docs/hackathon/evidence/runs/2026-10-20-bench-scenes-neoverse-v2-graviton4-opencv-4x-1t.json",
+    "b": "docs/hackathon/evidence/runs/2026-10-20-bench-scenes-neoverse-v2-graviton4-opencv-1t.json",
+    "bootstrap": 2000,
+    "seed": 0
+  },
+  "results": {
+    "a": "2026-10-20-bench-scenes-neoverse-v2-graviton4-opencv-4x-1t",
+    "b": "2026-10-20-bench-scenes-neoverse-v2-graviton4-opencv-1t",
+    "kind": "bench-scenes",
+    "backend_a": "opencv",
+    "backend_b": "opencv",
+    "build_a": "ef331f816d3fad3bd68817cd7f4d8a8ba3e6d52dd691d046e9fc61967a3a1323",
+    "build_b": "4460ffe25568d7f496997f0593f568f4d91ee4740c97f057b2986c237e8a386c",
+    "cpu": "Neoverse V2 (Graviton4)",
+    "bootstrap": 2000,
+    "seed": 0,
+    "parity_pass": true,
+    "notes": [],
+    "scenes": {
+      "botany-bay-2024-01-05": {
+        "stages": {
+          "read": {
+            "median_a_ms": 52.9,
+            "median_b_ms": 52.0,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0173,
+            "ci_low": 0.9577,
+            "ci_high": 1.0788,
+            "share_a": 0.6491,
+            "share_b": 0.6468
+          },
+          "analyse": {
+            "median_a_ms": 10.4,
+            "median_b_ms": 10.2,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0196,
+            "ci_low": 0.642,
+            "ci_high": 1.549,
+            "share_a": 0.1276,
+            "share_b": 0.1269
+          },
+          "annotate": {
+            "median_a_ms": 17.8,
+            "median_b_ms": 17.8,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0,
+            "ci_low": 0.485,
+            "ci_high": 1.0169,
+            "share_a": 0.2184,
+            "share_b": 0.2214
+          },
+          "total": {
+            "median_a_ms": 81.5,
+            "median_b_ms": 80.4,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0137,
+            "ci_low": 0.7498,
+            "ci_high": 1.1281,
+            "share_a": 1.0,
+            "share_b": 1.0
+          }
+        },
+        "compute_stages": [
+          "analyse",
+          "annotate"
+        ],
+        "stages_only_in_a": [],
+        "stages_only_in_b": [],
+        "headline": {
+          "median_a_ms": 28.3,
+          "median_b_ms": 28.0,
+          "runs_a": 5,
+          "runs_b": 5,
+          "ratio": 1.0107,
+          "ci_low": 0.535,
+          "ci_high": 1.2107
+        },
+        "read": {
+          "median_a_ms": 52.9,
+          "median_b_ms": 52.0,
+          "runs_a": 5,
+          "runs_b": 5,
+          "ratio": 1.0173,
+          "ci_low": 0.9577,
+          "ci_high": 1.0788,
+          "share_a": 0.6491,
+          "share_b": 0.6468
+        },
+        "parity": {
+          "pass": true,
+          "equal_digest": true,
+          "differences": []
+        },
+        "pixel_mismatch": {
+          "share": 0.00665,
+          "note": null
+        }
+      },
+      "sydney-rail-2024-01-05": {
+        "stages": {
+          "read": {
+            "median_a_ms": 597.2,
+            "median_b_ms": 596.3,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0015,
+            "ci_low": 0.969,
+            "ci_high": 1.032,
+            "share_a": 0.1322,
+            "share_b": 0.1331
+          },
+          "analyse": {
+            "median_a_ms": 3238.1,
+            "median_b_ms": 3216.4,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0067,
+            "ci_low": 1.0012,
+            "ci_high": 1.0119,
+            "share_a": 0.7167,
+            "share_b": 0.718
+          },
+          "graph": {
+            "median_a_ms": 876.4,
+            "median_b_ms": 869.8,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0076,
+            "ci_low": 0.9923,
+            "ci_high": 1.0129,
+            "share_a": 0.194,
+            "share_b": 0.1942
+          },
+          "annotate": {
+            "median_a_ms": 636.4,
+            "median_b_ms": 626.8,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0153,
+            "ci_low": 0.9815,
+            "ci_high": 1.0186,
+            "share_a": 0.1409,
+            "share_b": 0.1399
+          },
+          "total": {
+            "median_a_ms": 4518.1,
+            "median_b_ms": 4479.5,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0086,
+            "ci_low": 0.9943,
+            "ci_high": 1.0136,
+            "share_a": 1.0,
+            "share_b": 1.0
+          }
+        },
+        "compute_stages": [
+          "analyse",
+          "annotate"
+        ],
+        "stages_only_in_a": [],
+        "stages_only_in_b": [],
+        "headline": {
+          "median_a_ms": 3874.8,
+          "median_b_ms": 3843.1,
+          "runs_a": 5,
+          "runs_b": 5,
+          "ratio": 1.0082,
+          "ci_low": 0.9988,
+          "ci_high": 1.0122
+        },
+        "read": {
+          "median_a_ms": 597.2,
+          "median_b_ms": 596.3,
+          "runs_a": 5,
+          "runs_b": 5,
+          "ratio": 1.0015,
+          "ci_low": 0.969,
+          "ci_high": 1.032,
+          "share_a": 0.1322,
+          "share_b": 0.1331
+        },
+        "parity": {
+          "pass": true,
+          "equal_digest": true,
+          "differences": []
+        },
+        "pixel_mismatch": {
+          "share": null,
+          "note": "shapes differ: [1227, 1024, 3] vs [1181, 1024, 3]"
+        }
+      },
+      "sydney-rail-2024-08-26": {
+        "stages": {
+          "read": {
+            "median_a_ms": 576.9,
+            "median_b_ms": 573.9,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0052,
+            "ci_low": 0.9665,
+            "ci_high": 1.0389,
+            "share_a": 0.1064,
+            "share_b": 0.1062
+          },
+          "analyse": {
+            "median_a_ms": 3603.9,
+            "median_b_ms": 3591.4,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0035,
+            "ci_low": 0.9951,
+            "ci_high": 1.0066,
+            "share_a": 0.6649,
+            "share_b": 0.6648
+          },
+          "graph": {
+            "median_a_ms": 878.5,
+            "median_b_ms": 875.9,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.003,
+            "ci_low": 0.9894,
+            "ci_high": 1.0072,
+            "share_a": 0.1621,
+            "share_b": 0.1621
+          },
+          "annotate": {
+            "median_a_ms": 1199.0,
+            "median_b_ms": 1189.6,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0079,
+            "ci_low": 0.9909,
+            "ci_high": 1.0098,
+            "share_a": 0.2212,
+            "share_b": 0.2202
+          },
+          "total": {
+            "median_a_ms": 5420.1,
+            "median_b_ms": 5402.4,
+            "runs_a": 5,
+            "runs_b": 5,
+            "ratio": 1.0033,
+            "ci_low": 0.9954,
+            "ci_high": 1.0086,
+            "share_a": 1.0,
+            "share_b": 1.0
+          }
+        },
+        "compute_stages": [
+          "analyse",
+          "annotate"
+        ],
+        "stages_only_in_a": [],
+        "stages_only_in_b": [],
+        "headline": {
+          "median_a_ms": 4802.9,
+          "median_b_ms": 4781.0,
+          "runs_a": 5,
+          "runs_b": 5,
+          "ratio": 1.0046,
+          "ci_low": 0.997,
+          "ci_high": 1.0062
+        },
+        "read": {
+          "median_a_ms": 576.9,
+          "median_b_ms": 573.9,
+          "runs_a": 5,
+          "runs_b": 5,
+          "ratio": 1.0052,
+          "ci_low": 0.9665,
+          "ci_high": 1.0389,
+          "share_a": 0.1064,
+          "share_b": 0.1062
+        },
+        "parity": {
+          "pass": true,
+          "equal_digest": true,
+          "differences": []
+        },
+        "pixel_mismatch": {
+          "share": null,
+          "note": "shapes differ: [1227, 1024, 3] vs [1181, 1024, 3]"
+        }
+      }
+    },
+    "headline": {
+      "median_a_ms": 8711.6,
+      "median_b_ms": 8652.1,
+      "runs_a": 5,
+      "runs_b": 5,
+      "ratio": 1.0069,
+      "ci_low": 0.9977,
+      "ci_high": 1.009
+    }
+  },
+  "agent": null,
+  "checks": [
+    {
+      "name": "parity:botany-bay-2024-01-05",
+      "expected": "equal",
+      "got": "equal",
+      "pass": true
+    },
+    {
+      "name": "parity:sydney-rail-2024-01-05",
+      "expected": "equal",
+      "got": "equal",
+      "pass": true
+    },
+    {
+      "name": "parity:sydney-rail-2024-08-26",
+      "expected": "equal",
+      "got": "equal",
+      "pass": true
+    },
+    {
+      "name": "scenes_compared",
+      "expected": ">= 1",
+      "got": 3,
+      "pass": true
+    }
+  ],
+  "summary": {
+    "headline_ratio": 1.0069,
+    "headline_ci_low": 0.9977,
+    "headline_ci_high": 1.009,
+    "parity_pass": 1,
+    "scenes_compared": 3,
+    "botany-bay-2024-01-05.read_ratio": 1.0173,
+    "botany-bay-2024-01-05.analyse_ratio": 1.0196,
+    "botany-bay-2024-01-05.annotate_ratio": 1.0,
+    "botany-bay-2024-01-05.total_ratio": 1.0137,
+    "botany-bay-2024-01-05.pixel_mismatch_share": 0.00665,
+    "sydney-rail-2024-01-05.read_ratio": 1.0015,
+    "sydney-rail-2024-01-05.analyse_ratio": 1.0067,
+    "sydney-rail-2024-01-05.graph_ratio": 1.0076,
+    "sydney-rail-2024-01-05.annotate_ratio": 1.0153,
+    "sydney-rail-2024-01-05.total_ratio": 1.0086,
+    "sydney-rail-2024-08-26.read_ratio": 1.0052,
+    "sydney-rail-2024-08-26.analyse_ratio": 1.0035,
+    "sydney-rail-2024-08-26.graph_ratio": 1.003,
+    "sydney-rail-2024-08-26.annotate_ratio": 1.0079,
+    "sydney-rail-2024-08-26.total_ratio": 1.0033
+  }
+}

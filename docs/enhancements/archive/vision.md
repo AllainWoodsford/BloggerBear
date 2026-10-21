@@ -942,8 +942,8 @@ None of this is automatic.
 7. **For the submission:** the benchmark table (x86, Graviton stock, Graviton COOL), a run of the
    loop on dev showing an artefact rejected and a real change held for review, and the video. The
    package is in `docs/hackathon/`: the [technical report](../../hackathon/technical-report.md), the
-   system and agent [diagrams](../../hackathon/diagrams/README.md), the
-   [reproduction guide](../../hackathon/REPRODUCE.md) and the [video script](../../hackathon/video-script.md).
+   system and agent [diagrams](../../hackathon/diagrams/README.md)
+   and the [reproduction guide](../../hackathon/REPRODUCE.md).
 
 ---
 

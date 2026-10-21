@@ -41,8 +41,8 @@ Then, on Sunday 25 October, after the report's last numbers are in:
 | [ ] The pitch | [opencv-2026-submission.md](opencv-2026-submission.md), One-line pitch |
 | [ ] The description | [opencv-2026-submission.md](opencv-2026-submission.md): the summary and the awards' paragraphs, with a link to the report for everything else |
 | [ ] The code | https://github.com/AllainWoodsford/BloggerBear and the tag `opencv-2026-submission` |
-| [ ] The video | the unlisted video's link, at most 5:00 ([video-script.md](video-script.md)); its duration checked below |
-| [ ] The working endpoint | the approved rail article's URL on dev's CloudFront domain; or the screen-share booking ([video-script.md, The live demonstration](video-script.md#the-live-demonstration)) |
+| [ ] The video | the unlisted video's link, at most 5:00; its duration checked below |
+| [ ] The working endpoint | the approved rail article's URL on dev's CloudFront domain; or a booked live screen-share |
 | [ ] The technical report | the PDF printed from the Markdown page on GitHub at the tag, `docs/hackathon/technical-report.pdf`, and the link to [technical-report.md](technical-report.md) |
 | [ ] The diagrams | [diagrams/architecture.svg](diagrams/architecture.svg) and [diagrams/agent-workflow.svg](diagrams/agent-workflow.svg), with their Mermaid sources beside them |
 | [ ] The team | each member's name and role (the report's front page) |
@@ -67,7 +67,7 @@ py -3.11 scripts\submission_check.py --video-seconds <the video's length in seco
 It fails, and says why, when:
 
 - a placeholder, `[R2: ...]` or any other bracketed text that is not a link, is left in the report,
-  the reproduction guide, the dependency audit, the video script or the Devpost text, or the same
+  the reproduction guide, the dependency audit or the Devpost text, or the same
   R2 marker in angle brackets inside their code (the clone commands); or one of them has an
   unclosed code fence or a stray backtick, which would hide what follows from the check;
 - a repository-relative link in those documents does not resolve (external links are listed for
