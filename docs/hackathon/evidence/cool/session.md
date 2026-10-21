@@ -15,9 +15,9 @@ crash, which is from the session's own terminal output, pasted here.
 | CPU | Neoverse V2, `CPU part 0xd4f` ([lscpu.txt](lscpu.txt)) |
 | Python | 3.12.3 on all three sides: COOL's own environment, `~/stock` and `~/stock4` |
 | Launched | 2026-10-20 11:10:53 UTC (22:10:53 AEDT) |
-| Ended | about 2026-10-20 12:46:48 UTC (23:46:48 AEDT), shut down from the console; [owner: the exact time from the instance's state transition reason] |
-| Hours | about 1.6 |
-| Fees | [owner: the EC2 line and the Marketplace software line from Billing, once posted] |
+| Ended | 2026-10-20 12:46:36 UTC (23:46:36 AEDT), terminated from the console (CloudTrail's `TerminateInstances` for `i-0b0de3b70ccc01b45`) |
+| Hours | 1.6 (1 h 35 min 43 s) |
+| Fees | None paid: the EC2 and Marketplace charges were covered by the account's free AWS credits |
 | Code | `4582abcdbe5395f35c2990ea2ee1ef4879b4eb3d` (`dev`), clean; `scripts/vision_benchmark_networks/sydney.json` sha256 `bfc3c7f8…7eb4`, as its `NOTICE.md` row |
 | Inputs | `vision_eval.py pin`: the manifest matches the bucket; coverage not re-run (nothing re-pinned) |
 
