@@ -1,0 +1,118 @@
+{
+  "schema": "bloggerbear.vision-eval/1",
+  "run_id": "2026-10-20-eval-access-baseline-amd64-opencv",
+  "kind": "eval-access-baseline",
+  "mode": "access-baseline",
+  "backend": "opencv",
+  "started_at": "2026-10-20T13:33:39Z",
+  "finished_at": "2026-10-20T13:34:38Z",
+  "code": {
+    "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+    "dirty": false
+  },
+  "environment": {
+    "cpu": "AMD64",
+    "machine": "AMD64",
+    "python": "3.13.3",
+    "opencv": {
+      "opencv_version": "5.0.0",
+      "build_sha256": "ce2f2890911cf9cf8d7c54cfbc8ccd4fb073cc2b53be1f4c7cbae8e5fd294e1c",
+      "arch": "AMD64",
+      "kleidicv": false,
+      "cpu_baseline": "SSE SSE2 SSE3",
+      "cpu_dispatch": "SSE4_1 SSE4_2 AVX FP16 AVX2 AVX512_SKX",
+      "cpu": "AMD64",
+      "cpu_count": 12,
+      "cv2_path": "~/AppData/Local/Temp/claude/D--BloggerBear-BloggerBear/1a8cc82d-8a00-4065-af57-068e79244287/scratchpad/vision/cv2/__init__.py"
+    },
+    "cpu_count": 12,
+    "affinity": null,
+    "threads": 12,
+    "numpy": "2.4.4",
+    "networkx": "3.4.2",
+    "where": "windows",
+    "host": null,
+    "cool": null,
+    "libraries": null
+  },
+  "worker": {
+    "kind": "in-process",
+    "region": null,
+    "code_sha256": "f53225476c23af68d99328b459d5543d119506f8f3da44ae8bc35b6acd754c3f"
+  },
+  "inputs": {
+    "manifest_sha256": "bf5d8bec12334a201160e5f380e41a67fed6f2ef64cb4f3892629398f4bb6bfa",
+    "cache": true,
+    "scenes": [
+      {
+        "name": "sydney-2024-08-26",
+        "scene_id": "S2A_56HLH_20240826_0_L2A",
+        "etag_by_asset": {
+          "red": "869d2f7d1e646fd069142dd51d1d1ec4-18",
+          "nir": "d641bc64ec21fc2d1434071beeb5b63f-18",
+          "swir16": "c18829ea963633eda50d881d5989754d-5",
+          "scl": "1104e55f9c91a600b0596227acd4901d"
+        }
+      }
+    ],
+    "networks": [
+      {
+        "file": "scripts/vision_benchmark_networks/sydney.json",
+        "sha256": "bfc3c7f868f52f755eb3c1a8836729bf4dcc5ee079cf466cf51968921fd77eb4"
+      }
+    ],
+    "cache_index_sha256": "ec8a2c5bfbefb13ef290b717a7bb746419a3cdce3ece477ed4a2e208426077a7"
+  },
+  "params": {
+    "scene": "sydney-2024-08-26",
+    "reach_m": 1000.0,
+    "repeats": 5,
+    "synthetic": false,
+    "cache": true
+  },
+  "results": {
+    "built_up_px": 192427,
+    "reach_px": 50.0,
+    "pixel_size_m": 20.0,
+    "stations": 225,
+    "worker_served_share": 0.3895,
+    "methods": {
+      "production": {
+        "served_share": 0.389514,
+        "served_km2": 29.9812,
+        "iou_vs_production": 1.0,
+        "ms": 223.382
+      },
+      "precise": {
+        "served_share": 0.39008,
+        "served_km2": 30.0248,
+        "iou_vs_production": 0.990909,
+        "ms": 64.521
+      },
+      "buffer": {
+        "served_share": 0.39008,
+        "served_km2": 30.0248,
+        "iou_vs_production": 0.990909,
+        "ms": 7.081
+      }
+    }
+  },
+  "agent": null,
+  "checks": [
+    {
+      "name": "production's served share is the worker's",
+      "expected": 0.3895,
+      "got": 0.3895,
+      "pass": true
+    }
+  ],
+  "summary": {
+    "delta_vs_precise": 0.000566,
+    "delta_vs_buffer": 0.000566,
+    "iou_vs_precise": 0.990909,
+    "iou_vs_buffer": 0.990909,
+    "ms_production": 223.382,
+    "ms_precise": 64.521,
+    "ms_buffer": 7.081
+  }
+}

@@ -1,0 +1,1294 @@
+{
+  "schema": "bloggerbear.vision-eval/1",
+  "run_id": "2026-10-20-eval-replay-amd64-opencv-sydney-c1-recorded",
+  "kind": "eval-replay",
+  "mode": "replay",
+  "backend": "opencv",
+  "started_at": "2026-10-20T13:44:52Z",
+  "finished_at": "2026-10-20T13:45:39Z",
+  "code": {
+    "git_sha": "862c9d9c05523d09dbe0af9ed01b3feb47aeede3",
+    "dirty": false
+  },
+  "environment": {
+    "cpu": "AMD64",
+    "machine": "AMD64",
+    "python": "3.13.3",
+    "opencv": {
+      "opencv_version": "5.0.0",
+      "build_sha256": "ce2f2890911cf9cf8d7c54cfbc8ccd4fb073cc2b53be1f4c7cbae8e5fd294e1c",
+      "arch": "AMD64",
+      "kleidicv": false,
+      "cpu_baseline": "SSE SSE2 SSE3",
+      "cpu_dispatch": "SSE4_1 SSE4_2 AVX FP16 AVX2 AVX512_SKX",
+      "cpu": "AMD64",
+      "cpu_count": 12,
+      "cv2_path": "~/AppData/Local/Temp/claude/D--BloggerBear-BloggerBear/1a8cc82d-8a00-4065-af57-068e79244287/scratchpad/vision/cv2/__init__.py"
+    },
+    "cpu_count": 12,
+    "affinity": null,
+    "threads": 12,
+    "numpy": "2.4.4",
+    "networkx": "3.4.2",
+    "where": "windows",
+    "host": null,
+    "cool": null,
+    "libraries": null
+  },
+  "worker": {
+    "kind": "in-process",
+    "region": null,
+    "code_sha256": "f53225476c23af68d99328b459d5543d119506f8f3da44ae8bc35b6acd754c3f"
+  },
+  "inputs": {
+    "manifest_sha256": "bf5d8bec12334a201160e5f380e41a67fed6f2ef64cb4f3892629398f4bb6bfa",
+    "cache": true,
+    "scenes": [
+      {
+        "name": "sydney-2024-06-27",
+        "scene_id": "S2A_56HLH_20240627_0_L2A",
+        "etag_by_asset": {
+          "red": "0ad20c01f901f02f457600d0df2f78e3-18",
+          "nir": "b0df2684fe73df9fd3d17f8f5c5a767a-15",
+          "swir16": "6e7c027528b7834ac503c0659722d9ef-4",
+          "scl": "7d5537a43bf477b8f65c2b1969a4491f"
+        }
+      },
+      {
+        "name": "sydney-2024-08-21b",
+        "scene_id": "S2B_56HLH_20240821_1_L2A",
+        "etag_by_asset": {
+          "red": "3bf11b3bb423746edf5de5c244959533-18",
+          "nir": "fa402a35086cede0f963d3bcd815580a-19",
+          "swir16": "d3f191912359449c026b2172ff890487-5",
+          "scl": "c992f966fea1bd6155aadf77193ae855"
+        }
+      },
+      {
+        "name": "sydney-2024-08-26",
+        "scene_id": "S2A_56HLH_20240826_0_L2A",
+        "etag_by_asset": {
+          "red": "869d2f7d1e646fd069142dd51d1d1ec4-18",
+          "nir": "d641bc64ec21fc2d1434071beeb5b63f-18",
+          "swir16": "c18829ea963633eda50d881d5989754d-5",
+          "scl": "1104e55f9c91a600b0596227acd4901d"
+        }
+      },
+      {
+        "name": "sydney-2024-08-31",
+        "scene_id": "S2B_56HLH_20240831_0_L2A",
+        "etag_by_asset": {
+          "red": "30711dfc024265cff34d0f9995215481-19",
+          "nir": "e270558ef1c1666231f5f9f0ad0bf4e8-20",
+          "swir16": "fc700e786544e23e87080b7d6b77d4d3-5",
+          "scl": "5b5942b856553fac50165a259b73d403"
+        }
+      }
+    ],
+    "networks": [
+      {
+        "label": "A",
+        "file": "scripts/vision_benchmark_networks/sydney.json",
+        "sha256": "bfc3c7f868f52f755eb3c1a8836729bf4dcc5ee079cf466cf51968921fd77eb4"
+      },
+      {
+        "label": "B",
+        "file": null,
+        "sha256": null,
+        "derived": "A with a five-station line through the previous scene's largest area beyond reach"
+      }
+    ],
+    "cache_index_sha256": "9ae1f58be6bf816f641cf509e4c888cc2d2cf88f7b9f02b27c0e684e8d715b56"
+  },
+  "params": {
+    "sequence": "sydney-c1",
+    "agent": "recorded",
+    "worker": "in-process",
+    "backend": "opencv",
+    "thresholds": "default",
+    "limit": null,
+    "synthetic": false,
+    "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "from": "2026-10-20-eval-replay-amd64-opencv-sydney-c1-bedrock",
+    "tick_lag_hours": 6.0,
+    "scripted": null
+  },
+  "results": {
+    "sequence": {
+      "site": "sydney",
+      "scenes": [
+        "sydney-2024-06-27",
+        "sydney-2024-08-21b",
+        "sydney-2024-08-26",
+        "sydney-2024-08-31"
+      ],
+      "networks": "AAAB",
+      "news": [
+        {
+          "title": "Evaluation case C1 (constructed): a new rail line with five stations opened",
+          "url": "https://example.org/bloggerbear-evaluation/c1",
+          "published_at": "2024-08-30T00:00:00Z",
+          "source": "BloggerBear evaluation (constructed)",
+          "snippet": "A constructed news item for evaluation case C1: five new stations on one new line."
+        }
+      ]
+    },
+    "topic_id": "eval-sydney-c1",
+    "site_id": "eval-sydney",
+    "ticks": [
+      {
+        "n": 1,
+        "scene": "sydney-2024-06-27",
+        "scene_id": "S2A_56HLH_20240627_0_L2A",
+        "captured_at": "2024-06-27T00:06:11.055000Z",
+        "at": "2024-06-27T06:06:11+00:00",
+        "network": "A",
+        "network_fetched_at": "2026-10-16T23:09:21.194021+00:00",
+        "network_digest": "c0d4ed7b773b1fe02b662a973501b7073069fcffdf3a25bcbd7c51d93ed08aae",
+        "measured": true,
+        "changed": true,
+        "codes": [
+          "first_observation"
+        ],
+        "decisions": [
+          {
+            "v": 1,
+            "at": "2024-06-27T06:06:11+00:00",
+            "tick": "eval-tick-1",
+            "run": "eval-run-1",
+            "scene_id": "S2A_56HLH_20240627_0_L2A",
+            "captured_at": "2024-06-27T00:06:11.055000Z",
+            "coverage": 0.9999,
+            "measure": {
+              "served_share": 0.386,
+              "desert_km2": 39.0492,
+              "built_up_km2": 63.5984,
+              "station_count": 225,
+              "flag_count": 8
+            },
+            "baseline": null,
+            "delta": null,
+            "relative": null,
+            "baseline_scenes": 0,
+            "thresholds": {
+              "coverage_floor": 0.6,
+              "min_baseline": 1,
+              "served_share_threshold": 0.02,
+              "desert_relative_threshold": 0.1
+            },
+            "code": "first_observation",
+            "moved": [],
+            "network_changed": null,
+            "triage": null,
+            "reported": true,
+            "measured_by": {
+              "backend": "opencv",
+              "build": "ce2f2890911c",
+              "cpu": "AMD64",
+              "worker_request_id": null,
+              "worker_ms": 17602
+            }
+          }
+        ],
+        "lines": [
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-sydney\", \"scene_id\": \"S2A_56HLH_20240627_0_L2A\", \"build\": \"ce2f2890911c\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"AMD64\", \"cpu_count\": 12, \"window_px\": {\"w\": 3327, \"h\": 3306}, \"io_requests\": 192, \"io_bytes\": 52606249, \"levels\": {\"swir16\": 0, \"red\": 1, \"nir\": 1, \"scl\": 0}, \"read_ms\": 633, \"analyse_ms\": 5398, \"graph_ms\": 1839, \"annotate_ms\": 1375, \"total_ms\": 7499, \"coverage\": 0.9999, \"quality_flags\": \"no_stops_layer\", \"stations\": 225, \"snapped\": 224, \"nodes\": 448, \"edges\": 491, \"components\": 4}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-1\", \"run\": \"eval-run-1\", \"topic_id\": \"eval-sydney-c1\", \"site_id\": \"eval-sydney\", \"outcome\": \"measured\", \"scene_id\": \"S2A_56HLH_20240627_0_L2A\", \"worker_ms\": 17602, \"budget_left_s\": 52.3696}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-1\", \"run\": \"eval-run-1\", \"topic_id\": \"eval-sydney-c1\", \"site_id\": \"eval-sydney\", \"scene_id\": \"S2A_56HLH_20240627_0_L2A\", \"at\": \"2024-06-27T06:06:11+00:00\", \"captured_at\": \"2024-06-27T00:06:11.055000Z\", \"coverage\": 0.9999, \"measure\": {\"served_share\": 0.386, \"desert_km2\": 39.0492, \"built_up_km2\": 63.5984, \"station_count\": 225, \"flag_count\": 8}, \"baseline_scenes\": 0, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.02, \"desert_relative_threshold\": 0.1}, \"code\": \"first_observation\", \"moved\": \"\", \"triaged\": false, \"reported\": true, \"backend\": \"opencv\", \"build\": \"ce2f2890911c\", \"cpu\": \"AMD64\"}"
+        ],
+        "printed": 0,
+        "measurements": [
+          {
+            "kind": "tick",
+            "site_id": "eval-sydney",
+            "scene_id": "S2A_56HLH_20240627_0_L2A",
+            "params": {
+              "reach_m": 1000.0
+            },
+            "ok": true,
+            "code": null,
+            "request_id": null,
+            "metrics": {
+              "served_share": 0.386,
+              "desert_km2": 39.0492,
+              "built_up_km2": 63.5984,
+              "station_count": 225,
+              "snapped_station_count": 224,
+              "node_count": 448,
+              "edge_count": 491,
+              "components": 4,
+              "hubs": [
+                "s:w679354513",
+                "s:w585998416",
+                "s:n6618892734",
+                "s:w740050932",
+                "s:n20163894"
+              ],
+              "flags": [
+                [
+                  "ghost_line",
+                  "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                ],
+                [
+                  "ghost_line",
+                  "s:n26705335+s:n26705304+s:n26705305+s:n1886240863+s:n1886240866+s:n6503400516+s:w677568472"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                ],
+                [
+                  "ghost_line",
+                  "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1886265363+s:n1886265357+s:n1886255299+s:n6560219263"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1886255320+s:n2130285345+s:n1886255322"
+                ],
+                [
+                  "ghost_line",
+                  "s:n26428905+s:n5692088706+s:n6627573536"
+                ]
+              ],
+              "suggestions": [
+                "orbital_link:s:n1886255320>s:w677568479",
+                "orbital_link:s:n2130285345>s:w677568479",
+                "orbital_link:s:w677568477>s:w677568479"
+              ],
+              "coverage": 0.9999
+            },
+            "metrics_digest": "6fc1a9de9aec3d97e3192483b66ac44c5128799aef56ee4877657f3bf29d20c7"
+          }
+        ],
+        "clock": [
+          0.0,
+          2.4e-05,
+          0.025933,
+          0.025942,
+          17.627981,
+          17.630443
+        ],
+        "clock_overrun": false,
+        "figure": "2026-10-20-eval-replay-amd64-opencv-sydney-c1-recorded.1-sydney-2024-06-27.png"
+      },
+      {
+        "n": 2,
+        "scene": "sydney-2024-08-21b",
+        "scene_id": "S2B_56HLH_20240821_1_L2A",
+        "captured_at": "2024-08-21T00:06:09.244000Z",
+        "at": "2024-08-21T06:06:09+00:00",
+        "network": "A",
+        "network_fetched_at": "2026-10-16T23:09:21.194021+00:00",
+        "network_digest": null,
+        "measured": true,
+        "changed": false,
+        "codes": [
+          "artefact"
+        ],
+        "decisions": [
+          {
+            "v": 1,
+            "at": "2024-08-21T06:06:09+00:00",
+            "tick": "eval-tick-2",
+            "run": "eval-run-2",
+            "scene_id": "S2B_56HLH_20240821_1_L2A",
+            "captured_at": "2024-08-21T00:06:09.244000Z",
+            "coverage": 0.9943,
+            "measure": {
+              "served_share": 0.3964,
+              "desert_km2": 56.9632,
+              "built_up_km2": 94.37,
+              "station_count": 225,
+              "flag_count": 5
+            },
+            "baseline": {
+              "served_share": 0.386,
+              "desert_km2": 39.0492,
+              "station_count": 225
+            },
+            "delta": {
+              "served_share": 0.0104,
+              "desert_km2": 17.914,
+              "station_count": 0
+            },
+            "relative": {
+              "desert_km2": 0.459
+            },
+            "baseline_scenes": 1,
+            "thresholds": {
+              "coverage_floor": 0.6,
+              "min_baseline": 1,
+              "served_share_threshold": 0.02,
+              "desert_relative_threshold": 0.1
+            },
+            "code": "artefact",
+            "moved": [
+              "desert_km2"
+            ],
+            "network_changed": false,
+            "triage": {
+              "verdict": "artefact",
+              "stop": "answered",
+              "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+              "model_calls": 2,
+              "input_tokens": 9738,
+              "output_tokens": 467,
+              "cost_usd": null,
+              "elapsed_ms": 9165,
+              "deadline_left_s": 60.097,
+              "figure": true,
+              "steps": [
+                {
+                  "tool": "previous_scene",
+                  "ok": true,
+                  "ms": 7,
+                  "result": {
+                    "scene_id": "S2A_56HLH_20240627_0_L2A",
+                    "figure": true
+                  }
+                },
+                {
+                  "tool": "web_context",
+                  "ok": true,
+                  "ms": 0,
+                  "result": {
+                    "results": 1,
+                    "dated": 1
+                  }
+                }
+              ],
+              "steps_total": 2,
+              "budget_refusals": 0,
+              "hosts": [
+                "example.org"
+              ],
+              "reason": "Heavy cloud cover (80.5%) in the August scene is misclassified as built-up density, inflating built-up area by 48% and unmeasured desert area by 46% compared to the clear June baseline."
+            },
+            "reported": false,
+            "measured_by": {
+              "backend": "opencv",
+              "build": "ce2f2890911c",
+              "cpu": "AMD64",
+              "worker_request_id": null,
+              "worker_ms": 15713
+            }
+          }
+        ],
+        "lines": [
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-sydney\", \"scene_id\": \"S2B_56HLH_20240821_1_L2A\", \"build\": \"ce2f2890911c\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"AMD64\", \"cpu_count\": 12, \"window_px\": {\"w\": 3327, \"h\": 3306}, \"io_requests\": 192, \"io_bytes\": 61678205, \"levels\": {\"swir16\": 0, \"red\": 1, \"nir\": 1, \"scl\": 0}, \"read_ms\": 712, \"analyse_ms\": 4694, \"graph_ms\": 1952, \"annotate_ms\": 1936, \"total_ms\": 7406, \"coverage\": 0.9943, \"quality_flags\": \"no_stops_layer\", \"stations\": 225, \"snapped\": 224, \"nodes\": 448, \"edges\": 491, \"components\": 4}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-2\", \"run\": \"eval-run-2\", \"topic_id\": \"eval-sydney-c1\", \"site_id\": \"eval-sydney\", \"outcome\": \"measured\", \"scene_id\": \"S2B_56HLH_20240821_1_L2A\", \"worker_ms\": 15713, \"budget_left_s\": 54.2626}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_triage\", \"tick\": \"eval-tick-2\", \"run\": \"eval-run-2\", \"topic_id\": \"eval-sydney-c1\", \"site_id\": \"eval-sydney\", \"scene_id\": \"S2B_56HLH_20240821_1_L2A\", \"verdict\": \"artefact\", \"stop\": \"answered\", \"model_id\": \"au.anthropic.claude-haiku-4-5-20251001-v1:0\", \"model_calls\": 2, \"input_tokens\": 9738, \"output_tokens\": 467, \"elapsed_ms\": 9165, \"deadline_left_s\": 60.097, \"figure\": true, \"tools\": \"previous_scene,web_context\", \"tools_total\": 2, \"look_again\": 0, \"budget_refusals\": 0, \"steps\": [{\"tool\": \"previous_scene\", \"ok\": true, \"ms\": 7, \"result\": {\"scene_id\": \"S2A_56HLH_20240627_0_L2A\", \"figure\": true}}, {\"tool\": \"web_context\", \"ok\": true, \"ms\": 0, \"result\": {\"results\": 1, \"dated\": 1}}], \"steps_total\": 2, \"worker_request_ids\": \"\", \"reason_sha256\": \"e9be5282e055\"}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-2\", \"run\": \"eval-run-2\", \"topic_id\": \"eval-sydney-c1\", \"site_id\": \"eval-sydney\", \"scene_id\": \"S2B_56HLH_20240821_1_L2A\", \"at\": \"2024-08-21T06:06:09+00:00\", \"captured_at\": \"2024-08-21T00:06:09.244000Z\", \"coverage\": 0.9943, \"measure\": {\"served_share\": 0.3964, \"desert_km2\": 56.9632, \"built_up_km2\": 94.37, \"station_count\": 225, \"flag_count\": 5}, \"baseline\": {\"served_share\": 0.386, \"desert_km2\": 39.0492, \"station_count\": 225}, \"delta\": {\"served_share\": 0.0104, \"desert_km2\": 17.914, \"station_count\": 0}, \"relative\": {\"desert_km2\": 0.459}, \"baseline_scenes\": 1, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.02, \"desert_relative_threshold\": 0.1}, \"code\": \"artefact\", \"moved\": \"desert_km2\", \"network_changed\": false, \"triaged\": true, \"verdict\": \"artefact\", \"stop\": \"answered\", \"reported\": false, \"backend\": \"opencv\", \"build\": \"ce2f2890911c\", \"cpu\": \"AMD64\"}"
+        ],
+        "printed": 0,
+        "measurements": [
+          {
+            "kind": "tick",
+            "site_id": "eval-sydney",
+            "scene_id": "S2B_56HLH_20240821_1_L2A",
+            "params": {
+              "reach_m": 1000.0
+            },
+            "ok": true,
+            "code": null,
+            "request_id": null,
+            "metrics": {
+              "served_share": 0.3964,
+              "desert_km2": 56.9632,
+              "built_up_km2": 94.37,
+              "station_count": 225,
+              "snapped_station_count": 224,
+              "node_count": 448,
+              "edge_count": 491,
+              "components": 4,
+              "hubs": [
+                "s:w679354513",
+                "s:w585998416",
+                "s:w740050932",
+                "s:n20163894",
+                "s:n1886240860"
+              ],
+              "flags": [
+                [
+                  "ghost_line",
+                  "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                ],
+                [
+                  "ghost_line",
+                  "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                ]
+              ],
+              "suggestions": [
+                "orbital_link:s:w677568477>s:w677568479",
+                "feeder_corridor:s:w1435822999>s:w740050932",
+                "feeder_corridor:s:n20918030>s:w585998416"
+              ],
+              "coverage": 0.9943
+            },
+            "metrics_digest": "904e6a0ae4a2b065468b7e1e7261f42db4791f81ff61629824df41e67d97bb6e"
+          }
+        ],
+        "clock": [
+          0.0,
+          0.00222,
+          0.019892,
+          0.019904,
+          15.732861,
+          15.737379,
+          15.737595,
+          15.743916,
+          18.297442,
+          18.304226,
+          18.304241,
+          18.304248,
+          18.304295,
+          18.304328,
+          24.903021
+        ],
+        "clock_overrun": false,
+        "figure": "2026-10-20-eval-replay-amd64-opencv-sydney-c1-recorded.2-sydney-2024-08-21b.png"
+      },
+      {
+        "n": 3,
+        "scene": "sydney-2024-08-26",
+        "scene_id": "S2A_56HLH_20240826_0_L2A",
+        "captured_at": "2024-08-26T00:06:06.130000Z",
+        "at": "2024-08-26T06:06:06+00:00",
+        "network": "A",
+        "network_fetched_at": "2026-10-16T23:09:21.194021+00:00",
+        "network_digest": null,
+        "measured": true,
+        "changed": false,
+        "codes": [
+          "within_range"
+        ],
+        "decisions": [
+          {
+            "v": 1,
+            "at": "2024-08-26T06:06:06+00:00",
+            "tick": "eval-tick-3",
+            "run": "eval-run-3",
+            "scene_id": "S2A_56HLH_20240826_0_L2A",
+            "captured_at": "2024-08-26T00:06:06.130000Z",
+            "coverage": 0.9999,
+            "measure": {
+              "served_share": 0.3895,
+              "desert_km2": 46.9896,
+              "built_up_km2": 76.9708,
+              "station_count": 225,
+              "flag_count": 5
+            },
+            "baseline": {
+              "served_share": 0.3912,
+              "desert_km2": 48.0062,
+              "station_count": 225
+            },
+            "delta": {
+              "served_share": -0.0017,
+              "desert_km2": -1.0166,
+              "station_count": 0
+            },
+            "relative": {
+              "desert_km2": -0.021
+            },
+            "baseline_scenes": 2,
+            "thresholds": {
+              "coverage_floor": 0.6,
+              "min_baseline": 1,
+              "served_share_threshold": 0.02,
+              "desert_relative_threshold": 0.1
+            },
+            "code": "within_range",
+            "moved": [],
+            "network_changed": false,
+            "triage": null,
+            "reported": false,
+            "measured_by": {
+              "backend": "opencv",
+              "build": "ce2f2890911c",
+              "cpu": "AMD64",
+              "worker_request_id": null,
+              "worker_ms": 15139
+            }
+          }
+        ],
+        "lines": [
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-sydney\", \"scene_id\": \"S2A_56HLH_20240826_0_L2A\", \"build\": \"ce2f2890911c\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"AMD64\", \"cpu_count\": 12, \"window_px\": {\"w\": 3327, \"h\": 3306}, \"io_requests\": 192, \"io_bytes\": 57444442, \"levels\": {\"swir16\": 0, \"red\": 1, \"nir\": 1, \"scl\": 0}, \"read_ms\": 709, \"analyse_ms\": 5597, \"graph_ms\": 1934, \"annotate_ms\": 1430, \"total_ms\": 7796, \"coverage\": 0.9999, \"quality_flags\": \"no_stops_layer\", \"stations\": 225, \"snapped\": 224, \"nodes\": 448, \"edges\": 491, \"components\": 4}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-3\", \"run\": \"eval-run-3\", \"topic_id\": \"eval-sydney-c1\", \"site_id\": \"eval-sydney\", \"outcome\": \"measured\", \"scene_id\": \"S2A_56HLH_20240826_0_L2A\", \"worker_ms\": 15139, \"budget_left_s\": 54.8373}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-3\", \"run\": \"eval-run-3\", \"topic_id\": \"eval-sydney-c1\", \"site_id\": \"eval-sydney\", \"scene_id\": \"S2A_56HLH_20240826_0_L2A\", \"at\": \"2024-08-26T06:06:06+00:00\", \"captured_at\": \"2024-08-26T00:06:06.130000Z\", \"coverage\": 0.9999, \"measure\": {\"served_share\": 0.3895, \"desert_km2\": 46.9896, \"built_up_km2\": 76.9708, \"station_count\": 225, \"flag_count\": 5}, \"baseline\": {\"served_share\": 0.3912, \"desert_km2\": 48.0062, \"station_count\": 225}, \"delta\": {\"served_share\": -0.0017, \"desert_km2\": -1.0166, \"station_count\": 0}, \"relative\": {\"desert_km2\": -0.021}, \"baseline_scenes\": 2, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.02, \"desert_relative_threshold\": 0.1}, \"code\": \"within_range\", \"moved\": \"\", \"network_changed\": false, \"triaged\": false, \"reported\": false, \"backend\": \"opencv\", \"build\": \"ce2f2890911c\", \"cpu\": \"AMD64\"}"
+        ],
+        "printed": 0,
+        "measurements": [
+          {
+            "kind": "tick",
+            "site_id": "eval-sydney",
+            "scene_id": "S2A_56HLH_20240826_0_L2A",
+            "params": {
+              "reach_m": 1000.0
+            },
+            "ok": true,
+            "code": null,
+            "request_id": null,
+            "metrics": {
+              "served_share": 0.3895,
+              "desert_km2": 46.9896,
+              "built_up_km2": 76.9708,
+              "station_count": 225,
+              "snapped_station_count": 224,
+              "node_count": 448,
+              "edge_count": 491,
+              "components": 4,
+              "hubs": [
+                "s:w679354513",
+                "s:w585998416",
+                "s:n6618892734",
+                "s:w740050932",
+                "s:n20163894"
+              ],
+              "flags": [
+                [
+                  "ghost_line",
+                  "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                ],
+                [
+                  "ghost_line",
+                  "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1886255320+s:n2130285345+s:n1886255322"
+                ]
+              ],
+              "suggestions": [
+                "orbital_link:s:n1886255320>s:w677568479",
+                "orbital_link:s:n2130285345>s:w677568479",
+                "orbital_link:s:w677568477>s:w677568479"
+              ],
+              "coverage": 0.9999
+            },
+            "metrics_digest": "62617abf3701f80e02b450e9a73ab97969f8bfa3b85762295a2ae9acc57c25a9"
+          }
+        ],
+        "clock": [
+          0.0,
+          0.002247,
+          0.021446,
+          0.021455,
+          15.16008,
+          15.162663
+        ],
+        "clock_overrun": false,
+        "figure": "2026-10-20-eval-replay-amd64-opencv-sydney-c1-recorded.3-sydney-2024-08-26.png"
+      },
+      {
+        "n": 4,
+        "scene": "sydney-2024-08-31",
+        "scene_id": "S2B_56HLH_20240831_0_L2A",
+        "captured_at": "2024-08-31T00:06:10.837000Z",
+        "at": "2024-08-31T06:06:10+00:00",
+        "network": "B",
+        "network_fetched_at": "2026-10-17T23:09:21.194021+00:00",
+        "network_digest": "3e4037461441d20a3450298f693563ded3306204f8a32c7fbf12880e75dabb2a",
+        "measured": true,
+        "changed": true,
+        "codes": [
+          "reported"
+        ],
+        "decisions": [
+          {
+            "v": 1,
+            "at": "2024-08-31T06:06:10+00:00",
+            "tick": "eval-tick-4",
+            "run": "eval-run-4",
+            "scene_id": "S2B_56HLH_20240831_0_L2A",
+            "captured_at": "2024-08-31T00:06:10.837000Z",
+            "coverage": 0.9998,
+            "measure": {
+              "served_share": 0.3877,
+              "desert_km2": 49.8808,
+              "built_up_km2": 81.4688,
+              "station_count": 230,
+              "flag_count": 5
+            },
+            "baseline": {
+              "served_share": 0.3895,
+              "desert_km2": 46.9896,
+              "station_count": 225
+            },
+            "delta": {
+              "served_share": -0.0018,
+              "desert_km2": 2.8912,
+              "station_count": 5
+            },
+            "relative": {
+              "desert_km2": 0.062
+            },
+            "baseline_scenes": 3,
+            "thresholds": {
+              "coverage_floor": 0.6,
+              "min_baseline": 1,
+              "served_share_threshold": 0.02,
+              "desert_relative_threshold": 0.1
+            },
+            "code": "reported",
+            "moved": [
+              "station_count"
+            ],
+            "network_changed": true,
+            "triage": {
+              "verdict": "real",
+              "stop": "answered",
+              "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+              "model_calls": 2,
+              "input_tokens": 10171,
+              "output_tokens": 347,
+              "cost_usd": null,
+              "elapsed_ms": 13792,
+              "deadline_left_s": 53.91,
+              "figure": true,
+              "steps": [
+                {
+                  "tool": "previous_scene",
+                  "ok": true,
+                  "ms": 6,
+                  "result": {
+                    "scene_id": "S2A_56HLH_20240826_0_L2A",
+                    "figure": true
+                  }
+                },
+                {
+                  "tool": "web_context",
+                  "ok": true,
+                  "ms": 0,
+                  "result": {
+                    "results": 1,
+                    "dated": 1
+                  }
+                },
+                {
+                  "tool": "site_history",
+                  "ok": true,
+                  "ms": 0,
+                  "result": {
+                    "scenes": 4
+                  }
+                }
+              ],
+              "steps_total": 3,
+              "budget_refusals": 0,
+              "hosts": [
+                "example.org"
+              ],
+              "reason": "Web context reports a new rail line with five stations opened on 2024-08-30, exactly matching the measured +5 station increase between consecutive scenes. Site history confirms the station count rose from 225 to 230 between 2024-08-26 and 2024-08-31."
+            },
+            "reported": true,
+            "measured_by": {
+              "backend": "opencv",
+              "build": "ce2f2890911c",
+              "cpu": "AMD64",
+              "worker_request_id": null,
+              "worker_ms": 17269
+            }
+          }
+        ],
+        "lines": [
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-sydney\", \"scene_id\": \"S2B_56HLH_20240831_0_L2A\", \"build\": \"ce2f2890911c\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"AMD64\", \"cpu_count\": 12, \"window_px\": {\"w\": 3327, \"h\": 3306}, \"io_requests\": 192, \"io_bytes\": 62262442, \"levels\": {\"swir16\": 0, \"red\": 1, \"nir\": 1, \"scl\": 0}, \"read_ms\": 694, \"analyse_ms\": 5511, \"graph_ms\": 1853, \"annotate_ms\": 2243, \"total_ms\": 8509, \"coverage\": 0.9998, \"quality_flags\": \"no_stops_layer\", \"stations\": 230, \"snapped\": 229, \"nodes\": 453, \"edges\": 495, \"components\": 5}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-4\", \"run\": \"eval-run-4\", \"topic_id\": \"eval-sydney-c1\", \"site_id\": \"eval-sydney\", \"outcome\": \"measured\", \"scene_id\": \"S2B_56HLH_20240831_0_L2A\", \"worker_ms\": 17269, \"budget_left_s\": 52.7021}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_triage\", \"tick\": \"eval-tick-4\", \"run\": \"eval-run-4\", \"topic_id\": \"eval-sydney-c1\", \"site_id\": \"eval-sydney\", \"scene_id\": \"S2B_56HLH_20240831_0_L2A\", \"verdict\": \"real\", \"stop\": \"answered\", \"model_id\": \"au.anthropic.claude-haiku-4-5-20251001-v1:0\", \"model_calls\": 2, \"input_tokens\": 10171, \"output_tokens\": 347, \"elapsed_ms\": 13792, \"deadline_left_s\": 53.91, \"figure\": true, \"tools\": \"previous_scene,web_context,site_history\", \"tools_total\": 3, \"look_again\": 0, \"budget_refusals\": 0, \"steps\": [{\"tool\": \"previous_scene\", \"ok\": true, \"ms\": 6, \"result\": {\"scene_id\": \"S2A_56HLH_20240826_0_L2A\", \"figure\": true}}, {\"tool\": \"web_context\", \"ok\": true, \"ms\": 0, \"result\": {\"results\": 1, \"dated\": 1}}, {\"tool\": \"site_history\", \"ok\": true, \"ms\": 0, \"result\": {\"scenes\": 4}}], \"steps_total\": 3, \"worker_request_ids\": \"\", \"reason_sha256\": \"2e5becabfb87\"}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-4\", \"run\": \"eval-run-4\", \"topic_id\": \"eval-sydney-c1\", \"site_id\": \"eval-sydney\", \"scene_id\": \"S2B_56HLH_20240831_0_L2A\", \"at\": \"2024-08-31T06:06:10+00:00\", \"captured_at\": \"2024-08-31T00:06:10.837000Z\", \"coverage\": 0.9998, \"measure\": {\"served_share\": 0.3877, \"desert_km2\": 49.8808, \"built_up_km2\": 81.4688, \"station_count\": 230, \"flag_count\": 5}, \"baseline\": {\"served_share\": 0.3895, \"desert_km2\": 46.9896, \"station_count\": 225}, \"delta\": {\"served_share\": -0.0018, \"desert_km2\": 2.8912, \"station_count\": 5}, \"relative\": {\"desert_km2\": 0.062}, \"baseline_scenes\": 3, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.02, \"desert_relative_threshold\": 0.1}, \"code\": \"reported\", \"moved\": \"station_count\", \"network_changed\": true, \"triaged\": true, \"verdict\": \"real\", \"stop\": \"answered\", \"reported\": true, \"backend\": \"opencv\", \"build\": \"ce2f2890911c\", \"cpu\": \"AMD64\"}"
+        ],
+        "printed": 0,
+        "measurements": [
+          {
+            "kind": "tick",
+            "site_id": "eval-sydney",
+            "scene_id": "S2B_56HLH_20240831_0_L2A",
+            "params": {
+              "reach_m": 1000.0
+            },
+            "ok": true,
+            "code": null,
+            "request_id": null,
+            "metrics": {
+              "served_share": 0.3877,
+              "desert_km2": 49.8808,
+              "built_up_km2": 81.4688,
+              "station_count": 230,
+              "snapped_station_count": 229,
+              "node_count": 453,
+              "edge_count": 495,
+              "components": 5,
+              "hubs": [
+                "s:w679354513",
+                "s:w585998416",
+                "s:w740050932",
+                "s:n20163894",
+                "s:n630744637"
+              ],
+              "flags": [
+                [
+                  "ghost_line",
+                  "s:n20918030+s:n1839276327+s:n1778919090+s:n1886174956+s:n6620600147+s:n6620600145+s:n1833786046+s:n6620600140"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1829323375+s:n4887412745+s:n1886265376+s:n1830303527"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1886240868+s:n1886240870+s:n6503400516+s:n1886240866+s:n1886240863+s:n26705305+s:n26705304+s:n26705335+s:w677568472"
+                ],
+                [
+                  "ghost_line",
+                  "s:n1886265373+s:n26391532+s:n32501096+s:n6624454793+s:n1886240871+s:w1001065439+s:n6553012216+s:n6553012213+s:w677568469"
+                ],
+                [
+                  "ghost_line",
+                  "s:n6624452584+s:n1886240875+s:n1886265349+s:w1435822999"
+                ]
+              ],
+              "suggestions": [
+                "orbital_link:s:n1886255320>s:w677568479",
+                "orbital_link:s:n2130285345>s:w677568479",
+                "orbital_link:s:w677568477>s:w677568479"
+              ],
+              "coverage": 0.9998
+            },
+            "metrics_digest": "ed185176aa0366ab0733828e18cd8b9678051c543c16d79afa98c95da093ab69"
+          }
+        ],
+        "clock": [
+          0.0,
+          0.002401,
+          0.026669,
+          0.026677,
+          17.295396,
+          17.297874,
+          17.298044,
+          17.305109,
+          21.413057,
+          21.418845,
+          21.418858,
+          21.418865,
+          21.418915,
+          21.418932,
+          21.418945,
+          21.418949,
+          31.089588
+        ],
+        "clock_overrun": false,
+        "figure": "2026-10-20-eval-replay-amd64-opencv-sydney-c1-recorded.4-sydney-2024-08-31.png"
+      }
+    ],
+    "ring": [
+      {
+        "v": 1,
+        "at": "2024-06-27T06:06:11+00:00",
+        "tick": "eval-tick-1",
+        "run": "eval-run-1",
+        "scene_id": "S2A_56HLH_20240627_0_L2A",
+        "captured_at": "2024-06-27T00:06:11.055000Z",
+        "coverage": 0.9999,
+        "measure": {
+          "served_share": 0.386,
+          "desert_km2": 39.0492,
+          "built_up_km2": 63.5984,
+          "station_count": 225,
+          "flag_count": 8
+        },
+        "baseline": null,
+        "delta": null,
+        "relative": null,
+        "baseline_scenes": 0,
+        "thresholds": {
+          "coverage_floor": 0.6,
+          "min_baseline": 1,
+          "served_share_threshold": 0.02,
+          "desert_relative_threshold": 0.1
+        },
+        "code": "first_observation",
+        "moved": [],
+        "network_changed": null,
+        "triage": null,
+        "reported": true,
+        "measured_by": {
+          "backend": "opencv",
+          "build": "ce2f2890911c",
+          "cpu": "AMD64",
+          "worker_request_id": null,
+          "worker_ms": 17602
+        }
+      },
+      {
+        "v": 1,
+        "at": "2024-08-21T06:06:09+00:00",
+        "tick": "eval-tick-2",
+        "run": "eval-run-2",
+        "scene_id": "S2B_56HLH_20240821_1_L2A",
+        "captured_at": "2024-08-21T00:06:09.244000Z",
+        "coverage": 0.9943,
+        "measure": {
+          "served_share": 0.3964,
+          "desert_km2": 56.9632,
+          "built_up_km2": 94.37,
+          "station_count": 225,
+          "flag_count": 5
+        },
+        "baseline": {
+          "served_share": 0.386,
+          "desert_km2": 39.0492,
+          "station_count": 225
+        },
+        "delta": {
+          "served_share": 0.0104,
+          "desert_km2": 17.914,
+          "station_count": 0
+        },
+        "relative": {
+          "desert_km2": 0.459
+        },
+        "baseline_scenes": 1,
+        "thresholds": {
+          "coverage_floor": 0.6,
+          "min_baseline": 1,
+          "served_share_threshold": 0.02,
+          "desert_relative_threshold": 0.1
+        },
+        "code": "artefact",
+        "moved": [
+          "desert_km2"
+        ],
+        "network_changed": false,
+        "triage": {
+          "verdict": "artefact",
+          "stop": "answered",
+          "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+          "model_calls": 2,
+          "input_tokens": 9738,
+          "output_tokens": 467,
+          "cost_usd": null,
+          "elapsed_ms": 9165,
+          "deadline_left_s": 60.097,
+          "figure": true,
+          "steps": [
+            {
+              "tool": "previous_scene",
+              "ok": true,
+              "ms": 7,
+              "result": {
+                "scene_id": "S2A_56HLH_20240627_0_L2A",
+                "figure": true
+              }
+            },
+            {
+              "tool": "web_context",
+              "ok": true,
+              "ms": 0,
+              "result": {
+                "results": 1,
+                "dated": 1
+              }
+            }
+          ],
+          "steps_total": 2,
+          "budget_refusals": 0,
+          "hosts": [
+            "example.org"
+          ],
+          "reason": "Heavy cloud cover (80.5%) in the August scene is misclassified as built-up density, inflating built-up area by 48% and unmeasured desert area by 46% compared to the clear June baseline."
+        },
+        "reported": false,
+        "measured_by": {
+          "backend": "opencv",
+          "build": "ce2f2890911c",
+          "cpu": "AMD64",
+          "worker_request_id": null,
+          "worker_ms": 15713
+        }
+      },
+      {
+        "v": 1,
+        "at": "2024-08-26T06:06:06+00:00",
+        "tick": "eval-tick-3",
+        "run": "eval-run-3",
+        "scene_id": "S2A_56HLH_20240826_0_L2A",
+        "captured_at": "2024-08-26T00:06:06.130000Z",
+        "coverage": 0.9999,
+        "measure": {
+          "served_share": 0.3895,
+          "desert_km2": 46.9896,
+          "built_up_km2": 76.9708,
+          "station_count": 225,
+          "flag_count": 5
+        },
+        "baseline": {
+          "served_share": 0.3912,
+          "desert_km2": 48.0062,
+          "station_count": 225
+        },
+        "delta": {
+          "served_share": -0.0017,
+          "desert_km2": -1.0166,
+          "station_count": 0
+        },
+        "relative": {
+          "desert_km2": -0.021
+        },
+        "baseline_scenes": 2,
+        "thresholds": {
+          "coverage_floor": 0.6,
+          "min_baseline": 1,
+          "served_share_threshold": 0.02,
+          "desert_relative_threshold": 0.1
+        },
+        "code": "within_range",
+        "moved": [],
+        "network_changed": false,
+        "triage": null,
+        "reported": false,
+        "measured_by": {
+          "backend": "opencv",
+          "build": "ce2f2890911c",
+          "cpu": "AMD64",
+          "worker_request_id": null,
+          "worker_ms": 15139
+        }
+      },
+      {
+        "v": 1,
+        "at": "2024-08-31T06:06:10+00:00",
+        "tick": "eval-tick-4",
+        "run": "eval-run-4",
+        "scene_id": "S2B_56HLH_20240831_0_L2A",
+        "captured_at": "2024-08-31T00:06:10.837000Z",
+        "coverage": 0.9998,
+        "measure": {
+          "served_share": 0.3877,
+          "desert_km2": 49.8808,
+          "built_up_km2": 81.4688,
+          "station_count": 230,
+          "flag_count": 5
+        },
+        "baseline": {
+          "served_share": 0.3895,
+          "desert_km2": 46.9896,
+          "station_count": 225
+        },
+        "delta": {
+          "served_share": -0.0018,
+          "desert_km2": 2.8912,
+          "station_count": 5
+        },
+        "relative": {
+          "desert_km2": 0.062
+        },
+        "baseline_scenes": 3,
+        "thresholds": {
+          "coverage_floor": 0.6,
+          "min_baseline": 1,
+          "served_share_threshold": 0.02,
+          "desert_relative_threshold": 0.1
+        },
+        "code": "reported",
+        "moved": [
+          "station_count"
+        ],
+        "network_changed": true,
+        "triage": {
+          "verdict": "real",
+          "stop": "answered",
+          "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+          "model_calls": 2,
+          "input_tokens": 10171,
+          "output_tokens": 347,
+          "cost_usd": null,
+          "elapsed_ms": 13792,
+          "deadline_left_s": 53.91,
+          "figure": true,
+          "steps": [
+            {
+              "tool": "previous_scene",
+              "ok": true,
+              "ms": 6,
+              "result": {
+                "scene_id": "S2A_56HLH_20240826_0_L2A",
+                "figure": true
+              }
+            },
+            {
+              "tool": "web_context",
+              "ok": true,
+              "ms": 0,
+              "result": {
+                "results": 1,
+                "dated": 1
+              }
+            },
+            {
+              "tool": "site_history",
+              "ok": true,
+              "ms": 0,
+              "result": {
+                "scenes": 4
+              }
+            }
+          ],
+          "steps_total": 3,
+          "budget_refusals": 0,
+          "hosts": [
+            "example.org"
+          ],
+          "reason": "Web context reports a new rail line with five stations opened on 2024-08-30, exactly matching the measured +5 station increase between consecutive scenes. Site history confirms the station count rose from 225 to 230 between 2024-08-26 and 2024-08-31."
+        },
+        "reported": true,
+        "measured_by": {
+          "backend": "opencv",
+          "build": "ce2f2890911c",
+          "cpu": "AMD64",
+          "worker_request_id": null,
+          "worker_ms": 17269
+        }
+      }
+    ],
+    "excluded": [
+      "tick",
+      "run",
+      "measured_by",
+      "triage.elapsed_ms",
+      "triage.deadline_left_s",
+      "triage.cost_usd",
+      "triage.steps[].ms",
+      "triage.steps[].result.worker_request_id",
+      "triage.steps[].result.worker_ms",
+      "triage.steps[].result.build"
+    ],
+    "parity": {
+      "calls": 4,
+      "equal_digest": 4,
+      "within_tolerance": 4,
+      "differences": []
+    }
+  },
+  "agent": {
+    "mode": "recorded",
+    "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "responses": [
+      {
+        "tick": 2,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll analyze this change by examining the previous scene and checking for contextual information about recent rail changes in Sydney."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_zfCXS4xMoZv54wPKMME1AM",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_Xu0p4djoqgwJ4ed1lH7smA",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3863,
+              "outputTokens": 79,
+              "totalTokens": 3942
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The web context shows a constructed evaluation case, not real news. Let me examine the actual change more closely.\n\n**Analysis:**\n\nComparing the two scenes (June 27 vs August 21, 2024):\n\n1. **Built-up area increased dramatically**: from 63.6 km\u00b2 to 94.4 km\u00b2 (+48%) in 55 days\u2014an implausibly large real urban expansion.\n\n2. **Desert area nearly doubled**: from 39.0 km\u00b2 to 57.0 km\u00b2 (+46%), while the scene coverage dropped from 99.99% to 99.43%.\n\n3. **Cloud cover changed radically**: from 0.66% to 80.46%\u2014the August scene is heavily obscured.\n\n4. **Served share rose** from 38.6% to 39.64% despite similar station count (225).\n\n5. **Comparison of images**: The June scene shows clear purple (built-up density), while the August scene shows extensive dark areas (unmeasured due to cloud/haze), particularly in the periphery where the \"ghost lines\" appear in the flags.\n\nThe combination of extreme cloud cover (80%), dramatically increased \"desert\" (unmeasured) area, and a substantial apparent expansion of built-up pixels across the entire periphery strongly suggests the August NDBI built-up classifier is detecting clouds or haze as built-up density, not real urban growth.\n\n```json\n{\"verdict\": \"artefact\", \"reason\": \"Heavy cloud cover (80.5%) in the August scene is misclassified as built-up density, inflating built-up area by 48% and unmeasured desert area by 46% compared to the clear June baseline.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 5875,
+              "outputTokens": 388,
+              "totalTokens": 6263
+            }
+          }
+        ]
+      },
+      {
+        "tick": 4,
+        "site_id": "eval-sydney",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "I'll check this Sydney rail access measurement change. The data shows a station count increase of 5 stations against the baseline, along with a modest shift in desert area. Let me investigate whether this is a real network change or an artifact."
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_llUMNASH9twMMvuSAg2iJZ",
+                      "name": "previous_scene",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_9woAFOtTz1cPoTQ5ZGOlCK",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  },
+                  {
+                    "toolUse": {
+                      "toolUseId": "tooluse_0H7n9prsQj43xOssLt0LMv",
+                      "name": "site_history",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 3864,
+              "outputTokens": 124,
+              "totalTokens": 3988
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "The evidence strongly indicates this is a **real** change. The web context explicitly reports that a new rail line with five new stations opened (evaluation case C1, dated 2024-08-30), which precisely matches the +5 station count increase measured between the 2024-08-26 and 2024-08-31 scenes. The site history confirms the station count rose from 225 to 230. The network was fetched on 2026-10-17 in the latest measurement, which should have captured the new line. The figures are visually similar (indicating consistent imaging conditions), and web news confirms the infrastructure change.\n\n```json\n{\"verdict\": \"real\", \"reason\": \"Web context reports a new rail line with five stations opened on 2024-08-30, exactly matching the measured +5 station increase between consecutive scenes. Site history confirms the station count rose from 225 to 230 between 2024-08-26 and 2024-08-31.\"}\n```"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 6307,
+              "outputTokens": 223,
+              "totalTokens": 6530
+            }
+          }
+        ]
+      }
+    ],
+    "input_tokens": 19909,
+    "output_tokens": 814,
+    "cost_usd": 0.023979,
+    "cost_aud": 0.035969,
+    "price_source": "common/model_pricing.py's built-in table"
+  },
+  "checks": [
+    {
+      "name": "tick 1 (sydney-2024-06-27): the ring equals the recording",
+      "expected": "equal",
+      "got": "equal",
+      "pass": true
+    },
+    {
+      "name": "tick 1: the clock replayed within its recording",
+      "expected": true,
+      "got": true,
+      "pass": true
+    },
+    {
+      "name": "tick 2 (sydney-2024-08-21b): the ring equals the recording",
+      "expected": "equal",
+      "got": "equal",
+      "pass": true
+    },
+    {
+      "name": "tick 2: the clock replayed within its recording",
+      "expected": true,
+      "got": true,
+      "pass": true
+    },
+    {
+      "name": "tick 3 (sydney-2024-08-26): the ring equals the recording",
+      "expected": "equal",
+      "got": "equal",
+      "pass": true
+    },
+    {
+      "name": "tick 3: the clock replayed within its recording",
+      "expected": true,
+      "got": true,
+      "pass": true
+    },
+    {
+      "name": "tick 4 (sydney-2024-08-31): the ring equals the recording",
+      "expected": "equal",
+      "got": "equal",
+      "pass": true
+    },
+    {
+      "name": "tick 4: the clock replayed within its recording",
+      "expected": true,
+      "got": true,
+      "pass": true
+    },
+    {
+      "name": "every worker call within the parity tolerances",
+      "expected": true,
+      "got": true,
+      "pass": true
+    }
+  ],
+  "summary": {
+    "steps": 4,
+    "decisions": 4,
+    "triaged": 2,
+    "look_again": 0,
+    "verdict_real": 1,
+    "verdict_artefact": 1,
+    "finding": 2
+  }
+}
