@@ -227,6 +227,8 @@ Read the plan before typing `yes`. Every name in it should start with `<your-pre
 `<your-state-bucket>`. **Each of `github_repo`, `state_bucket_name`, `unique_name_prefix` and
 `domain_name` defaults to the original deployment's value, so pass all four.** `domain_name=` (empty)
 creates no hosted zone, which is what you want until you set up production.
+The web search gateway's Region needs nothing here: the bootstrap allows `ap-northeast-1` (Tokyo),
+which is where the gateway goes unless you set `WEB_SEARCH_REGION` (6b).
 
 Keep the outputs (`terraform -chdir=infra/bootstrap output` shows them again):
 
@@ -277,6 +279,12 @@ What it asks for, and what to answer:
 | `AWS_DEV_DEPLOY_ROLE_ARN` / `AWS_PROD_DEPLOY_ROLE_ARN` | secret | the bootstrap outputs |
 | `TF_STATE_BUCKET_DEV` / `TF_STATE_BUCKET_PROD` | secret | `<your-state-bucket>` (one per account if you have two) |
 | `PII_DENYLIST` | secret | optional: your own name, address and so on, one per line, so a pull request that adds one is refused |
+
+It does not ask where the web search gateway runs. Unset, both environments put it in
+`ap-northeast-1` (Tokyo), and a first deploy should leave it there. To choose `us-east-1` or
+`eu-west-1` later, per environment, set `WEB_SEARCH_REGION_DEV` / `WEB_SEARCH_REGION_PROD` (or the
+shared `WEB_SEARCH_REGION`) after re-applying the bootstrap with that Region in
+`web_search_regions`: [the steps](deployment-runsheet.md#the-web-search-gateways-region).
 
 Prefer to set them by hand? Settings → Secrets and variables → Actions. The full table, with what
 each one is for and why some are secrets, is in

@@ -171,6 +171,7 @@ terraform apply \
 | `separate_environment_permissions` | Whether each deploy role is refused the other environment's resources (the dev role production's, and the reverse). Deny only: it changes nothing a role may do in its own environment. Pass `false` to detach it if a deploy is ever refused by it. | `true` |
 | `aws_region` | Region for the state bucket, and the region the deploy roles are allowed to work in. Must be the same as the `AWS_REGION` GitHub variable. | `ap-southeast-2` |
 | `vision_region` | Where the vision worker runs. The deploy roles may create its Lambda functions and log groups (`<prefix>-*-vision-*`) there. Must be the same as each environment's `vision_region` ([Vision (optional)](#vision-optional)). | `us-west-2` |
+| `web_search_regions` | The Regions the deploy roles may create the AgentCore web search gateway in (a list). Must include each environment's `WEB_SEARCH_REGION` GitHub variable; leave it alone if you never set that variable ([The web search gateway's region](#the-web-search-gateways-region)). | `["ap-northeast-1"]` |
 
 Keep the outputs: `state_bucket_name`, `dev_deploy_role_arn`, `prod_deploy_role_arn`,
 `hosted_zone_id`, `hosted_zone_name_servers`.
@@ -1494,9 +1495,10 @@ What stays where it is, whatever you choose:
   CloudFront, that ACL's logs and metrics, and CloudFront's own metrics exist only in
   `us-east-1`. AWS requires it. The cost report also calls Cost Explorer there, because that is
   its only endpoint. These keep `us-east-1` written in the code, each beside a comment saying why.
-- **The web search gateway** is in `ap-northeast-1` (Tokyo). AWS offers that tool in only three
-  regions (`us-east-1`, `eu-west-1`, `ap-northeast-1`). It is its own setting, the `region`
-  variable of `infra/modules/web-search`, and changing it is a code edit.
+- **The web search gateway** is in `ap-northeast-1` (Tokyo) unless you choose otherwise. AWS
+  offers that tool in only three regions (`us-east-1`, `eu-west-1`, `ap-northeast-1`). It is its
+  own setting, the `WEB_SEARCH_REGION` GitHub variable, per environment and independent of
+  `AWS_REGION`: see [The web search gateway's region](#the-web-search-gateways-region).
 - **The time zones.** A new topic's daily article is scheduled in `Australia/Sydney` unless you
   pass `--daily-timezone`, and the fixed weekly and daily jobs have their times written in each
   environment's `main.tf`. A time zone is not a region: change them to suit where you are.
@@ -1512,6 +1514,37 @@ Check by hand, because nothing in this repository can:
   wording to match where yours are.
 - The commands in these guides and in `scripts/QUICKSTART.md` name `ap-southeast-2`. Use your
   region in its place (`--region`, or `AWS_REGION` / `AWS_DEFAULT_REGION`).
+
+### The web search gateway's region
+
+The AgentCore web search gateway (`infra/modules/web-search`, the fallback search when GDELT
+fails) runs in its own Region, because AWS offers the Web Search Tool in only `us-east-1`,
+`eu-west-1` and `ap-northeast-1`. **With nothing set it is `ap-northeast-1` (Tokyo)**, the closest
+to Sydney, and you need do nothing. To put it somewhere else, for example `eu-west-1` beside a
+European deployment:
+
+1. **Re-apply the bootstrap by hand, first** (it is never applied by CI), adding the Region to
+   `web_search_regions`, with the same other variables as your first apply:
+   `-var='web_search_regions=["ap-northeast-1","eu-west-1"]'`. Keep the old Region in the list
+   until every environment has moved off it: the apply that moves the gateway also deletes the old
+   one there. Check the plan changes only the deploy roles' policies. Two accounts: do this in each
+   account whose environment moves.
+2. **Set the GitHub variable.** `WEB_SEARCH_REGION_DEV` for dev (on the repository: the dev job
+   runs in no environment), `WEB_SEARCH_REGION_PROD` for production (on the repository or the
+   `production` environment), or the shared `WEB_SEARCH_REGION` for both. Each environment reads
+   its own name first, then the shared one, then `ap-northeast-1`. Settings → Secrets and
+   variables → Actions → Variables. A value other than the three Regions fails the plan, before
+   anything changes.
+3. **Deploy.** Dev applies on the next merge to `dev` that touches `infra/`, `lambdas/` or
+   `frontend/` (or `workflow_dispatch` the Terraform workflow from `dev`); production at the next
+   release ([production-runsheet.md](production-runsheet.md#the-web-search-gateways-region)). The
+   apply replaces the gateway and its target in the new Region and hands the Lambdas its new URL
+   and Region (`AGENTCORE_WEB_SEARCH_URL`, `AGENTCORE_WEB_SEARCH_REGION`). Nothing is stored in
+   it, so nothing is lost; a fallback search made during the apply itself may fail.
+4. Optionally, once no environment uses the old Region, re-apply the bootstrap without it.
+
+To go back, unset the variable (or set it to `ap-northeast-1`) and deploy again. If an apply is
+refused with `AccessDenied` on `bedrock-agentcore`, step 1 was missed or names a different Region.
 
 ## Tearing down and cost control
 
@@ -1612,8 +1645,9 @@ These need a hand edit in your fork, or cannot be changed yet.
   [Deploying to another region](#deploying-to-another-region)). To use a different model
   altogether, set `bedrock_model_id` there, or set a default in
   [the model registry](#the-model-registry-seeding-and-rotation) with no deploy.
-- **The web search gateway's region** (`ap-northeast-1`) and the privacy page's wording about
-  where logs are kept: see the same section.
+- **The web search gateway's region** (`ap-northeast-1` unless `WEB_SEARCH_REGION` says otherwise:
+  [The web search gateway's region](#the-web-search-gateways-region)) and the privacy page's
+  wording about where logs are kept (see the same section).
 - **Repository protection** (rulesets, required reviewers, secret scanning) is set in GitHub, not
   in code. The archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md) lists the settings a
   public copy should have.

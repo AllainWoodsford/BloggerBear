@@ -37,6 +37,7 @@ jobs:
     # same names, as the apply that made it.
     # The region is the same again (AWS_REGION, and TF_STATE_REGION for the state bucket): a
     # destroy pointed at another region would find none of the resources its state lists.
+    # The web search gateway's region likewise (WEB_SEARCH_REGION_DEV, as apply-dev reads it).
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
@@ -48,6 +49,7 @@ jobs:
       TF_VAR_backup_bucket_name: ${{ secrets.TF_STATE_BUCKET_DEV }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
+      TF_VAR_web_search_region: ${{ vars.WEB_SEARCH_REGION_DEV || vars.WEB_SEARCH_REGION || 'ap-northeast-1' }}
     steps:
       - name: Check confirmation input
         run: |

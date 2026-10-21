@@ -42,6 +42,7 @@ be on the `production` environment or on the repository.
 | `TF_STATE_REGION` | variable | repo | The region of the state bucket, only if it is not `AWS_REGION`. Optional, and rarely needed. | `eu-west-1` |
 | `VISION_ENABLED` | variable | repo | Set to `true` to deploy the vision worker (OpenCV on arm64 in `vision_region`, for the `satellite_vision` and `rail_access` topics; [the vision docs](enhancements/archive/vision.md)). Read as a switch: `true`, in any letter case (GitHub Actions compares strings ignoring case), turns the worker on; any other value, or unset, is read as off, so nothing of it is created and a deployed worker is removed on the next apply. The bootstrap must have been re-applied with `vision_region` first. Set on the repository, it also turns the worker on in production at the next release: the release job runs in the `production` environment, whose `vars.VISION_ENABLED` falls back to the repository's value. To keep production off until the dev trial is done, set `VISION_ENABLED` to `false` on the `production` environment. Set to `true` on the `production` environment alone, it turns the worker on there alone. | `true` |
 | `REVIEWER_ENABLED` | variable | repo or environment | Deploys Professor Grizzlewick, the reviewer bear ([reviewer-bear.md](enhancements/reviewer-bear.md)). **On unless set to `false`** (any letter case): the opposite reading to `VISION_ENABLED`, so a deployment that never set it gets him. `false` deploys neither his Lambda nor his schedule, and removes them on the next apply. Set on the `production` environment alone to differ there. | `false` |
+| `WEB_SEARCH_REGION` | variable | repo or `production` | Where the AgentCore web search gateway runs (the fallback search when GDELT fails). **Optional: unset, it is `ap-northeast-1` (Tokyo)**, where it has always been. Only `us-east-1`, `eu-west-1` or `ap-northeast-1`, the three Regions AWS offers the Web Search Tool in; anything else fails the plan. Read as `WEB_SEARCH_REGION_DEV` / `WEB_SEARCH_REGION_PROD` first, then this shared name, then `ap-northeast-1`, so each environment can have its own. The bootstrap's `web_search_regions` must include it, re-applied by hand first, or the apply is refused. Changing it moves the gateway: the next apply replaces it in the new Region. [The web search gateway's region](deployment-runsheet.md#the-web-search-gateways-region) has the steps. | `us-east-1` |
 | `UNIQUE_NAME_PREFIX` | variable | repo | What every resource name starts with: `<prefix>-<env>-<resource>`. Optional: unset, it is `bloggerbear`. **Required for a fork.** Bucket names and the sign-in host name must be unique across all of AWS, and the default ones are taken. Lowercase letters, digits and hyphens, starting with a letter, at most 14, with no hyphen at the end (at most 12 if the vision worker will run in production: [the bucket that limits it](#environment-terraform-variables)). No two hyphens in a row, and no `aws`, `amazon` or `cognito` in it: the plan refuses them. Must be the same as bootstrap's `unique_name_prefix`. Set it before the first deploy and never change it. | `acme-blog` |
 | `ADMIN_ALLOWED_CIDRS_DEV` | secret | repo | Your public IP, as a Terraform list. Without it nothing can call dev's admin API. | `["203.0.113.7/32"]` |
 | `ADMIN_ALLOWED_CIDRS_PROD` | secret | `production` | The same, for production. | `["203.0.113.7/32"]` |
@@ -100,6 +101,7 @@ account ([separate AWS accounts](deployment-separate-accounts.md#bootstrap-once-
 | `separate_environment_permissions` | Whether each deploy role is refused the other environment's resources (the dev role production's, and the reverse). Deny only: it changes nothing a role may do in its own environment. Pass `false` to detach it if a deploy is ever refused by it. | `true` |
 | `bedrock_budget_limit_usd` | The monthly Bedrock spend, in USD, that triggers the budget alert. | `20` |
 | `aws_region` | Region for the state bucket and the one the deploy roles may work in. Must match `AWS_REGION`. | `ap-southeast-2` |
+| `web_search_regions` | The Regions the deploy roles may create the web search gateway in, as a list: `-var='web_search_regions=["ap-northeast-1","us-east-1"]'`. Every `WEB_SEARCH_REGION` value you use, dev's and production's, must be in it. Only `us-east-1`, `eu-west-1` and `ap-northeast-1`. | `["ap-northeast-1"]` |
 
 Its outputs feed the other tables: `dev_deploy_role_arn`, `prod_deploy_role_arn`,
 `state_bucket_name`, `hosted_zone_id`, `hosted_zone_name_servers`.
@@ -126,7 +128,8 @@ only production's domain.
 Do not set these in `terraform.tfvars`; CI supplies them from the GitHub settings above:
 `admin_allowed_cidrs`, `alert_email`, `aws_account_id`, `unique_name_prefix`, `aws_region`,
 `vision_enabled` (the `VISION_ENABLED` variable above), `reviewer_enabled` (the `REVIEWER_ENABLED`
-variable above), and the firewall switches
+variable above), `web_search_region` (the `WEB_SEARCH_REGION` variables above; `ap-northeast-1`
+when unset), and the firewall switches
 `waf_regional_enabled`, `waf_admin_allowlist`, `waf_log_all_requests` and, in production only,
 `waf_site_enabled` (the `WAF_*` variables above).
 

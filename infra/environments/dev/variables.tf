@@ -382,3 +382,15 @@ variable "reviewer_enabled" {
     docs/enhancements/reviewer-bear.md.
   EOT
 }
+
+variable "web_search_region" {
+  type        = string
+  default     = "ap-northeast-1"
+  description = "Where the AgentCore web search gateway runs (infra/modules/web-search). The Web Search Tool is only offered in us-east-1, eu-west-1 and ap-northeast-1 (Tokyo, the closest to Sydney, and what an unset WEB_SEARCH_REGION GitHub variable gives). Must be one of the bootstrap's web_search_regions, or the apply is refused (docs/configuration.md)."
+
+  validation {
+    # AWS offers the Web Search Tool in these three Regions only.
+    condition     = contains(["us-east-1", "eu-west-1", "ap-northeast-1"], var.web_search_region)
+    error_message = "web_search_region must be one of the Web Search Tool's regions: us-east-1, eu-west-1 or ap-northeast-1."
+  }
+}

@@ -710,6 +710,7 @@ locals {
 module "web_search" {
   source = "../../modules/web-search"
   name   = "${var.unique_name_prefix}-dev"
+  region = var.web_search_region
 }
 
 # Lets the Lambdas call the web search gateway (IAM inbound auth -- see
