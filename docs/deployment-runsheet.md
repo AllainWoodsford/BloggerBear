@@ -1436,7 +1436,9 @@ The logs are read through Logs Insights, a few queries at a time, each batch wai
 
    The second reads live (the logs and the running state, now) and writes nothing; in the video,
    run query (c) on the same tick id the committed trace shows.
-4. **Label (O9).** Copy `labels-template.csv` to `labels.csv` in the same directory and fill each
+4. **Label (optional; not done for the submission).** The human control is the article inbox,
+   which the export already measures; labelling is a one-off audit of the agent's live calls. To
+   do it, copy `labels-template.csv` to `labels.csv` in the same directory and fill each
    row's `label` (`agree` or `disagree` with the agent's verdict) and `reason` (one of the codes in
    the file's header), reading the trace and the figure the row names. Save it as UTF-8 CSV. Then:
 

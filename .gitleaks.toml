@@ -66,3 +66,12 @@ tags = ["pii"]
   [[rules.allowlists]]
   description = "AWS's documentation placeholders"
   regexes = ['''^(?:123456789012|111111111111|000000000000)$''']
+
+# The evidence export's lines (docs/hackathon/evidence/live/) carry API Gateway's request id, a
+# random UUID that names one call and grants nothing; generic-api-key fires on the field's name.
+# That field with a UUID value only: any other value in it, or a key anywhere else, still fails.
+[[allowlists]]
+description = "API Gateway request ids in the evidence export"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = ['''"api_request_id": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"''']

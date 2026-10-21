@@ -1,0 +1,453 @@
+{
+ "rail-cities": {
+  "fetched_at": "2026-10-21T10:25:28.959791+00:00",
+  "first_observed_at": "2026-10-16T23:11:46.590120+00:00",
+  "thresholds": {
+   "coverage_floor": 0.6,
+   "min_baseline": 1,
+   "served_share_threshold": 0.02,
+   "desert_relative_threshold": 0.1
+  },
+  "sites": {
+   "boston": {
+    "first_observed_at": "2026-10-16T23:15:39.758714+00:00",
+    "last_attempt_at": "2026-10-21T10:25:28.959791+00:00",
+    "network_fetched_at": "2026-10-16T23:14:41.854480+00:00",
+    "network_site_key": "4cb4bc54da83bc76",
+    "network_counts": {
+     "ways": 1610,
+     "stations": 169,
+     "pois": 1174,
+     "points": 11070
+    },
+    "last_error": null,
+    "network_error": null,
+    "failed_scene": null,
+    "history": [
+     {
+      "scene_id": "S2A_19TCG_20261015_1_L2A",
+      "captured_at": "2026-10-15T15:51:36.363000Z",
+      "scene_cloud_cover": 0.03471,
+      "coverage": 0.9999,
+      "built_up_km2": 16.444,
+      "served_km2": 6.9792,
+      "desert_km2": 9.4648,
+      "served_share": 0.4244,
+      "station_count": 169,
+      "edge_count": 268,
+      "flag_count": 11,
+      "quality_flags": [],
+      "backend": "opencv",
+      "build": "bceed38e3a95",
+      "timings_ms": {
+       "read": 2922.7,
+       "analyse": 1077.4,
+       "graph": 372.0,
+       "annotate": 1207.1,
+       "total": 5235.3
+      },
+      "network_fetched_at": "2026-10-16T23:14:41.854480+00:00",
+      "network_stale": false,
+      "site_key": "4cb4bc54da83bc76",
+      "params": {
+       "pixel_size_m": 20.0,
+       "coverage_floor": 0.6,
+       "ndbi_threshold": 0.0,
+       "ndvi_max": 0.3,
+       "reach_m": 1000.0,
+       "heat_sigma_m": 500.0,
+       "snap_m": 300.0,
+       "hub_count": 5,
+       "intermodal_near_m": 300.0,
+       "intermodal_far_m": 500.0,
+       "min_desert_km2": 0.5,
+       "visibility_ndvi_max": 0.35
+      }
+     },
+     {
+      "scene_id": "S2B_19TCG_20261018_0_L2A",
+      "captured_at": "2026-10-18T15:51:24.636000Z",
+      "scene_cloud_cover": 0.045601,
+      "coverage": 0.9999,
+      "built_up_km2": 18.718,
+      "served_km2": 7.9676,
+      "desert_km2": 10.7504,
+      "served_share": 0.4257,
+      "station_count": 169,
+      "edge_count": 268,
+      "flag_count": 11,
+      "quality_flags": [],
+      "backend": "opencv",
+      "build": "bceed38e3a95",
+      "timings_ms": {
+       "read": 3205.3,
+       "analyse": 1292.3,
+       "graph": 470.5,
+       "annotate": 1217.3,
+       "total": 5763.0
+      },
+      "network_fetched_at": "2026-10-16T23:14:41.854480+00:00",
+      "network_stale": false,
+      "site_key": "4cb4bc54da83bc76",
+      "params": {
+       "pixel_size_m": 20.0,
+       "coverage_floor": 0.6,
+       "ndbi_threshold": 0.0,
+       "ndvi_max": 0.3,
+       "reach_m": 1000.0,
+       "heat_sigma_m": 500.0,
+       "snap_m": 300.0,
+       "hub_count": 5,
+       "intermodal_near_m": 300.0,
+       "intermodal_far_m": 500.0,
+       "min_desert_km2": 0.5,
+       "visibility_ndvi_max": 0.35
+      }
+     }
+    ],
+    "ring_entries": 2
+   },
+   "melbourne": {
+    "first_observed_at": "2026-10-16T23:12:28.490528+00:00",
+    "last_attempt_at": "2026-10-21T10:25:28.959791+00:00",
+    "network_fetched_at": "2026-10-16T23:09:21.194021+00:00",
+    "network_site_key": "80e9b384e83c893e",
+    "network_counts": {
+     "ways": 1763,
+     "stations": 163,
+     "pois": 1475,
+     "points": 17902
+    },
+    "last_error": null,
+    "network_error": null,
+    "failed_scene": null,
+    "history": [
+     {
+      "scene_id": "S2B_55HCU_20261016_0_L2A",
+      "captured_at": "2026-10-16T00:27:16.539000Z",
+      "scene_cloud_cover": 4.655714,
+      "coverage": 0.9945,
+      "built_up_km2": 115.8532,
+      "served_km2": 38.922,
+      "desert_km2": 76.9312,
+      "served_share": 0.336,
+      "station_count": 163,
+      "edge_count": 292,
+      "flag_count": 5,
+      "quality_flags": [],
+      "backend": "opencv",
+      "build": "bceed38e3a95",
+      "timings_ms": {
+       "read": 4953.2,
+       "analyse": 2362.4,
+       "graph": 670.9,
+       "annotate": 934.5,
+       "total": 8289.7
+      },
+      "network_fetched_at": "2026-10-16T23:09:21.194021+00:00",
+      "network_stale": false,
+      "site_key": "80e9b384e83c893e",
+      "params": {
+       "pixel_size_m": 20.0,
+       "coverage_floor": 0.6,
+       "ndbi_threshold": 0.0,
+       "ndvi_max": 0.3,
+       "reach_m": 1000.0,
+       "heat_sigma_m": 500.0,
+       "snap_m": 300.0,
+       "hub_count": 5,
+       "intermodal_near_m": 300.0,
+       "intermodal_far_m": 500.0,
+       "min_desert_km2": 0.5,
+       "visibility_ndvi_max": 0.35
+      }
+     },
+     {
+      "scene_id": "S2C_55HCU_20261018_0_L2A",
+      "captured_at": "2026-10-18T00:17:22.865000Z",
+      "scene_cloud_cover": 0.46736,
+      "coverage": 0.9887,
+      "built_up_km2": 119.8692,
+      "served_km2": 39.5132,
+      "desert_km2": 80.356,
+      "served_share": 0.3296,
+      "station_count": 163,
+      "edge_count": 292,
+      "flag_count": 5,
+      "quality_flags": [],
+      "backend": "opencv",
+      "build": "bceed38e3a95",
+      "timings_ms": {
+       "read": 3722.2,
+       "analyse": 2594.1,
+       "graph": 727.0,
+       "annotate": 903.7,
+       "total": 7290.3
+      },
+      "network_fetched_at": "2026-10-16T23:09:21.194021+00:00",
+      "network_stale": false,
+      "site_key": "80e9b384e83c893e",
+      "params": {
+       "pixel_size_m": 20.0,
+       "coverage_floor": 0.6,
+       "ndbi_threshold": 0.0,
+       "ndvi_max": 0.3,
+       "reach_m": 1000.0,
+       "heat_sigma_m": 500.0,
+       "snap_m": 300.0,
+       "hub_count": 5,
+       "intermodal_near_m": 300.0,
+       "intermodal_far_m": 500.0,
+       "min_desert_km2": 0.5,
+       "visibility_ndvi_max": 0.35
+      }
+     },
+     {
+      "scene_id": "S2C_55HCU_20261021_0_L2A",
+      "captured_at": "2026-10-21T00:27:18.002000Z",
+      "scene_cloud_cover": 21.886759,
+      "coverage": 0.9935,
+      "built_up_km2": 149.2556,
+      "served_km2": 50.3628,
+      "desert_km2": 98.8928,
+      "served_share": 0.3374,
+      "station_count": 163,
+      "edge_count": 292,
+      "flag_count": 5,
+      "quality_flags": [
+       "no_stops_layer"
+      ],
+      "backend": "opencv",
+      "build": "bceed38e3a95",
+      "timings_ms": {
+       "read": 4209.6,
+       "analyse": 2608.2,
+       "graph": 741.6,
+       "annotate": 869.3,
+       "total": 7755.9
+      },
+      "network_fetched_at": "2026-10-16T23:09:21.194021+00:00",
+      "network_stale": false,
+      "site_key": "80e9b384e83c893e",
+      "params": {
+       "pixel_size_m": 20.0,
+       "coverage_floor": 0.6,
+       "ndbi_threshold": 0.0,
+       "ndvi_max": 0.3,
+       "reach_m": 1000.0,
+       "heat_sigma_m": 500.0,
+       "snap_m": 300.0,
+       "hub_count": 5,
+       "intermodal_near_m": 300.0,
+       "intermodal_far_m": 500.0,
+       "min_desert_km2": 0.5,
+       "visibility_ndvi_max": 0.35
+      }
+     }
+    ],
+    "ring_entries": 3
+   },
+   "singapore": {
+    "first_observed_at": "2026-10-16T23:14:06.216698+00:00",
+    "last_attempt_at": "2026-10-21T10:25:28.959791+00:00",
+    "network_fetched_at": "2026-10-16T23:12:57.075350+00:00",
+    "network_site_key": "f99eed165dd9303d",
+    "network_counts": {
+     "ways": 405,
+     "stations": 251,
+     "pois": 2542,
+     "points": 8911
+    },
+    "last_error": null,
+    "network_error": null,
+    "failed_scene": null,
+    "history": [
+     {
+      "scene_id": "S2C_48NUG_20261001_0_L2A",
+      "captured_at": "2026-10-01T03:37:48.500000Z",
+      "scene_cloud_cover": 37.938815,
+      "coverage": 0.7684,
+      "built_up_km2": 318.5696,
+      "served_km2": 69.5968,
+      "desert_km2": 248.9728,
+      "served_share": 0.2185,
+      "station_count": 251,
+      "edge_count": 468,
+      "flag_count": 4,
+      "quality_flags": [],
+      "backend": "opencv",
+      "build": "bceed38e3a95",
+      "timings_ms": {
+       "read": 6949.0,
+       "analyse": 3174.8,
+       "graph": 1134.9,
+       "annotate": 1634.3,
+       "total": 11798.4
+      },
+      "network_fetched_at": "2026-10-16T23:12:57.075350+00:00",
+      "network_stale": false,
+      "site_key": "f99eed165dd9303d",
+      "params": {
+       "pixel_size_m": 20.0,
+       "coverage_floor": 0.6,
+       "ndbi_threshold": 0.0,
+       "ndvi_max": 0.3,
+       "reach_m": 1000.0,
+       "heat_sigma_m": 500.0,
+       "snap_m": 300.0,
+       "hub_count": 5,
+       "intermodal_near_m": 300.0,
+       "intermodal_far_m": 500.0,
+       "min_desert_km2": 0.5,
+       "visibility_ndvi_max": 0.35
+      }
+     }
+    ],
+    "ring_entries": 1
+   },
+   "sydney": {
+    "first_observed_at": "2026-10-16T23:11:46.590120+00:00",
+    "last_attempt_at": "2026-10-21T10:25:28.959791+00:00",
+    "network_fetched_at": "2026-10-16T23:09:21.194021+00:00",
+    "network_site_key": "323ce56f7336c90e",
+    "network_counts": {
+     "ways": 3483,
+     "stations": 225,
+     "pois": 2150,
+     "points": 24891
+    },
+    "last_error": null,
+    "network_error": null,
+    "failed_scene": null,
+    "history": [
+     {
+      "scene_id": "S2B_56HLH_20260930_0_L2A",
+      "captured_at": "2026-09-30T00:06:07.818000Z",
+      "scene_cloud_cover": 18.140231,
+      "coverage": 0.8759,
+      "built_up_km2": 79.8032,
+      "served_km2": 34.3668,
+      "desert_km2": 45.4364,
+      "served_share": 0.4306,
+      "station_count": 225,
+      "edge_count": 491,
+      "flag_count": 6,
+      "quality_flags": [],
+      "backend": "opencv",
+      "build": "bceed38e3a95",
+      "timings_ms": {
+       "read": 8252.1,
+       "analyse": 5437.6,
+       "graph": 1535.7,
+       "annotate": 3137.8,
+       "total": 16920.1
+      },
+      "network_fetched_at": "2026-10-16T23:09:21.194021+00:00",
+      "network_stale": false,
+      "site_key": "323ce56f7336c90e",
+      "params": {
+       "pixel_size_m": 20.0,
+       "coverage_floor": 0.6,
+       "ndbi_threshold": 0.0,
+       "ndvi_max": 0.3,
+       "reach_m": 1000.0,
+       "heat_sigma_m": 500.0,
+       "snap_m": 300.0,
+       "hub_count": 5,
+       "intermodal_near_m": 300.0,
+       "intermodal_far_m": 500.0,
+       "min_desert_km2": 0.5,
+       "visibility_ndvi_max": 0.35
+      }
+     },
+     {
+      "scene_id": "S2B_56HLH_20261020_0_L2A",
+      "captured_at": "2026-10-20T00:06:07.590000Z",
+      "scene_cloud_cover": 17.517166,
+      "coverage": 0.8473,
+      "built_up_km2": 84.3188,
+      "served_km2": 31.4268,
+      "desert_km2": 52.892,
+      "served_share": 0.3727,
+      "station_count": 225,
+      "edge_count": 491,
+      "flag_count": 5,
+      "quality_flags": [
+       "no_stops_layer"
+      ],
+      "backend": "opencv",
+      "build": "bceed38e3a95",
+      "timings_ms": {
+       "read": 7715.3,
+       "analyse": 6044.6,
+       "graph": 1583.9,
+       "annotate": 2579.2,
+       "total": 16436.9
+      },
+      "network_fetched_at": "2026-10-16T23:09:21.194021+00:00",
+      "network_stale": false,
+      "site_key": "323ce56f7336c90e",
+      "params": {
+       "pixel_size_m": 20.0,
+       "coverage_floor": 0.6,
+       "ndbi_threshold": 0.0,
+       "ndvi_max": 0.3,
+       "reach_m": 1000.0,
+       "heat_sigma_m": 500.0,
+       "snap_m": 300.0,
+       "hub_count": 5,
+       "intermodal_near_m": 300.0,
+       "intermodal_far_m": 500.0,
+       "min_desert_km2": 0.5,
+       "visibility_ndvi_max": 0.35
+      }
+     }
+    ],
+    "ring_entries": 2
+   }
+  }
+ },
+ "ships-botany": {
+  "fetched_at": "2026-10-21T11:05:38.946343+00:00",
+  "first_observed_at": "2026-10-20T13:13:52.639077+00:00",
+  "thresholds": {
+   "coverage_floor": 0.7,
+   "min_baseline": 2,
+   "relative_threshold": 0.35,
+   "absolute_threshold": 5.0
+  },
+  "sites": {
+   "botany-bay": {
+    "first_observed_at": null,
+    "last_attempt_at": "2026-10-21T11:05:38.946343+00:00",
+    "network_fetched_at": null,
+    "network_site_key": null,
+    "network_counts": null,
+    "last_error": null,
+    "network_error": null,
+    "failed_scene": null,
+    "history": [
+     {
+      "scene_id": "S2B_56HLH_20261020_0_L2A",
+      "captured_at": "2026-10-20T00:06:07.590000Z",
+      "scene_cloud_cover": 17.517166,
+      "count": 2,
+      "coverage": 0.9951,
+      "clear_water_km2": 17.8364,
+      "density_per_km2": 0.1121,
+      "quality_flags": [],
+      "backend": "opencv",
+      "build": "bceed38e3a95",
+      "timings_ms": {
+       "read": 1168.3,
+       "analyse": 101.1,
+       "annotate": 74.7,
+       "total": 1348.2
+      }
+     }
+    ],
+    "ring_entries": 1
+   }
+  }
+ }
+}
