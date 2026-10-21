@@ -40,7 +40,7 @@ In the order you are likely to need them.
 | [Progress](docs/PROGRESS.md) | The build history, phase by phase, and the backlog. |
 | [Friction log](docs/friction.md) | Problems met while building and deploying this, and what fixed them. |
 | [Enhancements](docs/enhancements/) | Designs not built yet. The designs that were built are in [`docs/enhancements/archive/`](docs/enhancements/archive/README.md), each with what shipped and what did not. |
-| [Hackathon package](docs/hackathon/) | The OpenCV entry: the technical report, how to reproduce it, the evidence and its index, the rubric tracker, the video script. |
+| [Hackathon package](docs/hackathon/) | The OpenCV entry: the technical report, how to reproduce it, the evidence and its index, the rubric tracker |
 | [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md) | How to take part, and how to report a vulnerability. |
 
 ## Architecture
