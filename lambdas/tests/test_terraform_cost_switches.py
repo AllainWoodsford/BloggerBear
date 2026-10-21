@@ -141,16 +141,12 @@ def test_the_admin_allowlist_is_always_a_resource_policy_that_fails_closed(env):
     text = _read("infra", "environments", env, "main.tf")
     assert "resource_policy_enabled = true" in text
     assert "resource_policy         = local.admin_api_resource_policy" in text
-    policy = re.search(
-        r"admin_api_resource_policy = sensitive\(jsonencode\(\{(.*?)\}\)\)", text, re.S
-    ).group(1)
-    # A Deny, of the invoke action, on every path; conditioned on the address only when there are
-    # addresses, and unconditional (deny all) when the list is empty.
-    assert 'Effect    = "Deny"' in text and 'Action    = "execute-api:Invoke"' in text
-    assert 'Resource  = "execute-api:/*"' in text
-    assert 'NotIpAddress = { "aws:SourceIp" = var.admin_allowed_cidrs }' in policy
-    assert "length(var.admin_allowed_cidrs) > 0 ? [1] : []" in policy
-    assert "length(var.admin_allowed_cidrs) > 0 ? [] : [1]" in policy
+    policy = re.search(r"admin_api_resource_policy = jsonencode\(\{(.*?)\}\)", text, re.S).group(1)
+    # A Deny, of the invoke action, on every path, with no condition: Terraform's policy denies
+    # everything, and scripts/admin_allowlist.py narrows it to the operator's addresses later.
+    assert 'Effect    = "Deny"' in policy and 'Action    = "execute-api:Invoke"' in policy
+    assert 'Resource  = "execute-api:/*"' in policy
+    assert "Condition" not in policy and "admin_allowed_cidrs" not in text
     # Never an Allow: AWS_IAM authorization stays what admits a caller.
     assert '"Allow"' not in policy
 
@@ -169,7 +165,12 @@ def test_the_rest_api_module_attaches_the_policy_from_a_plain_flag_and_redeploys
     assert expanded in policy
     deployment = _resource_block(module, "aws_api_gateway_deployment.this")
     assert 'policy = var.resource_policy_enabled ? sha1(var.resource_policy) : ""' in deployment
-    assert "depends_on = [aws_api_gateway_rest_api_policy.this]" in deployment
+    # After the policy, by its id alone: a depends_on would print the script's policy in the log.
+    assert 'attached = try(aws_api_gateway_rest_api_policy.this[0].id, "")' in deployment
+    assert "aws_api_gateway_rest_api_policy.this[*]" not in deployment  # a splat is the whole resource
+    assert "depends_on =" not in deployment
+    # Terraform writes the starting policy and then leaves it to scripts/admin_allowlist.py.
+    assert "ignore_changes = [policy]" in policy
     variables = _read("infra", "modules", "rest-api", "variables.tf")
     flag = _variable_block(variables, "resource_policy_enabled")
     assert re.search(r"^\s*default\s*=\s*false\s*$", flag, re.M)
@@ -207,7 +208,7 @@ def test_the_cost_saving_page_covers_every_switch_and_warns():
         assert f"`{variable}`" in page, variable
     assert "at your own risk" in page.lower()
     assert "resource policy" in page
-    assert "sensitive value" in page
+    assert "admin_allowlist.py" in page  # who writes the addresses, now no variable carries them
     table = _read("docs", "configuration.md")
     for github in GITHUB_NAMES.values():
         assert re.search(rf"^\| `{github}` \| variable \| ", table, re.M), github

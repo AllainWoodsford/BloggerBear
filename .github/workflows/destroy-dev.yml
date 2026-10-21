@@ -23,12 +23,6 @@ jobs:
     concurrency:
       group: deploy-dev
       cancel-in-progress: false
-    # Same TF_VAR_admin_allowed_cidrs wiring as terraform.yml's apply-dev
-    # job (see its own comment for the full rationale) -- kept consistent
-    # here even though a plain `terraform destroy` doesn't strictly need
-    # the real value (it tears down from state, not from a freshly
-    # computed plan), so that Terraform's config evaluation sees the same
-    # inputs either job would.
     # The firewall switches are passed as apply-dev passes them (see terraform.yml), for the same
     # reason: a destroy evaluates the configuration with the same inputs the apply had.
     # The account check, name prefix and state bucket are the same three optional settings as
@@ -38,7 +32,6 @@ jobs:
     # The region is the same again (AWS_REGION, and TF_STATE_REGION for the state bucket): a
     # destroy pointed at another region would find none of the resources its state lists.
     env:
-      TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_DEV || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
       TF_VAR_waf_log_all_requests: ${{ vars.WAF_LOG_ALL_REQUESTS_DEV || vars.WAF_LOG_ALL_REQUESTS || 'true' }}

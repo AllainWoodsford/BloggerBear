@@ -159,6 +159,15 @@ data "aws_iam_policy_document" "ops_agent" {
     resources = [var.tables["MODEL_CONFIG_TABLE"].arn]
   }
 
+  # Under "allowlist", the operator's addresses: this one parameter, read only (the MCP server's
+  # ReadAllowlistParameter in main.tf says why no KMS statement is needed).
+  statement {
+    sid       = "ReadAllowlistParameter"
+    effect    = "Allow"
+    actions   = ["ssm:GetParameter"]
+    resources = [var.allowed_cidrs_parameter.arn]
+  }
+
   # Its own log group and no other. No CreateLogGroup: Terraform creates the group below, before
   # the function exists.
   statement {
@@ -241,11 +250,11 @@ resource "aws_lambda_function" "ops_agent" {
       OPS_AGENT_ALLOWED_ORIGIN = var.agent_allowed_origin
 
       # The assistant_access switch, enforced here as well as on the MCP server: the handler
-      # reads the `pipeline` row of this table first, and under "allowlist" admits only these
-      # addresses, the same list the MCP server is given. It takes the caller's address from the
-      # event's requestContext.identity.sourceIp, as API Gateway recorded it.
-      MODEL_CONFIG_TABLE          = var.tables["MODEL_CONFIG_TABLE"].name
-      OPS_ASSISTANT_ALLOWED_CIDRS = join(",", var.allowed_cidrs)
+      # reads the `pipeline` row of this table first, and under "allowlist" admits only the
+      # addresses in this parameter, the one the MCP server reads. It takes the caller's address
+      # from the event's requestContext.identity.sourceIp, as API Gateway recorded it.
+      MODEL_CONFIG_TABLE                    = var.tables["MODEL_CONFIG_TABLE"].name
+      OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER = var.allowed_cidrs_parameter.name
 
       # The key this function sends to the MCP server with the address of an operator it has
       # admitted, so that under "allowlist" the server judges the request by that address and

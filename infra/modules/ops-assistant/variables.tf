@@ -116,11 +116,12 @@ variable "allowed_origins" {
   description = "Origins (e.g. \"https://bloggerbear.com\") a browser page may call the MCP endpoint from, passed to the function as OPS_MCP_ALLOWED_ORIGINS. The server answers 403 to any other Origin. Empty is right while only the agent Lambda calls it: a request with no Origin header is not a browser's and is let through."
 }
 
-variable "allowed_cidrs" {
-  type        = list(string)
-  default     = []
-  sensitive   = true
-  description = "The operator's addresses (CIDRs), passed to the function as OPS_ASSISTANT_ALLOWED_CIDRS. Only read when the config table's assistant_access setting is \"allowlist\"; the default setting, \"open\", never looks at it. Pass the same list the admin API's WAF allowlist uses, so there is one list of the operator's addresses per environment. Sensitive for the reason that list is: a plan must not print a home IP address."
+variable "allowed_cidrs_parameter" {
+  type = object({
+    name = string
+    arn  = string
+  })
+  description = "The SSM parameter holding the operator's addresses (comma-separated CIDRs, a SecureString), as the admin API's allowlist uses it: its name goes to both functions as OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER, and its ARN is the one parameter their roles may read. The functions read it at request time, and only when the config table's assistant_access setting is \"allowlist\"; the default setting, \"open\", never looks at it. scripts/admin_allowlist.py writes it; Terraform never does, so no address is in a plan."
 }
 
 variable "throttling_rate_limit" {

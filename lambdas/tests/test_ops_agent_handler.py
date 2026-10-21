@@ -15,7 +15,7 @@ import logging
 from unittest.mock import patch
 
 import pytest
-from ops_agent_fakes import FakeTool, ScriptedModel, finding
+from ops_agent_fakes import FakeTool, ScriptedModel, finding, stored_allowlist
 
 import ops_agent_handler
 from ops_agent import agent
@@ -56,7 +56,7 @@ def pipeline_config(monkeypatch):
     `open`, unless a test puts a setting in; no test here reads a real table."""
     row = {}
     monkeypatch.setattr(ops_agent_handler.dynamo, "get_pipeline_config", lambda: dict(row) or None)
-    monkeypatch.delenv("OPS_ASSISTANT_ALLOWED_CIDRS", raising=False)
+    monkeypatch.delenv("OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER", raising=False)
     monkeypatch.delenv("OPS_AGENT_FORWARD_KEY", raising=False)
     return row
 
@@ -465,7 +465,7 @@ def test_open_or_nothing_stored_admits_a_caller_from_anywhere(answer, pipeline_c
 
 def test_allowlist_admits_a_listed_address(answer, pipeline_config, monkeypatch):
     pipeline_config["assistant_access"] = "allowlist"
-    monkeypatch.setenv("OPS_ASSISTANT_ALLOWED_CIDRS", ALLOWED_CIDRS)
+    stored_allowlist(monkeypatch, ALLOWED_CIDRS)
 
     response = ops_agent_handler.handler(event({"question": QUESTION}, source_ip=LISTED_ADDRESS), None)
 
@@ -475,7 +475,7 @@ def test_allowlist_admits_a_listed_address(answer, pipeline_config, monkeypatch)
 
 def test_allowlist_refuses_an_unlisted_address(nothing_downstream, pipeline_config, monkeypatch, capsys):
     pipeline_config["assistant_access"] = "allowlist"
-    monkeypatch.setenv("OPS_ASSISTANT_ALLOWED_CIDRS", ALLOWED_CIDRS)
+    stored_allowlist(monkeypatch, ALLOWED_CIDRS)
 
     response = ops_agent_handler.handler(event({"question": QUESTION}), None)
 
@@ -485,7 +485,7 @@ def test_allowlist_refuses_an_unlisted_address(nothing_downstream, pipeline_conf
 def test_allowlist_ignores_a_forwarded_for_header(nothing_downstream, pipeline_config, monkeypatch, capsys):
     """A caller writes what it likes in X-Forwarded-For; only API Gateway's own record counts."""
     pipeline_config["assistant_access"] = "allowlist"
-    monkeypatch.setenv("OPS_ASSISTANT_ALLOWED_CIDRS", ALLOWED_CIDRS)
+    stored_allowlist(monkeypatch, ALLOWED_CIDRS)
     headers = {"Authorization": f"Bearer {TOKEN}", "X-Forwarded-For": LISTED_ADDRESS}
 
     response = ops_agent_handler.handler(event({"question": QUESTION}, headers=headers), None)
@@ -507,7 +507,7 @@ def test_allowlist_refuses_whatever_it_cannot_place(
     nothing_downstream, pipeline_config, monkeypatch, capsys, cidrs, request_context, reason
 ):
     pipeline_config["assistant_access"] = "allowlist"
-    monkeypatch.setenv("OPS_ASSISTANT_ALLOWED_CIDRS", cidrs)
+    stored_allowlist(monkeypatch, cidrs)
     request = event({"question": QUESTION})
     request["requestContext"] = request_context
 
@@ -516,7 +516,7 @@ def test_allowlist_refuses_whatever_it_cannot_place(
 
 def test_off_refuses_everyone(nothing_downstream, pipeline_config, monkeypatch, capsys):
     pipeline_config["assistant_access"] = "off"
-    monkeypatch.setenv("OPS_ASSISTANT_ALLOWED_CIDRS", ALLOWED_CIDRS)
+    stored_allowlist(monkeypatch, ALLOWED_CIDRS)
 
     response = ops_agent_handler.handler(event({"question": QUESTION}, source_ip=LISTED_ADDRESS), None)
 
@@ -759,7 +759,7 @@ def test_a_refused_request_is_never_vouched_for(
     """The key says "this function checked the address": it is not even read for a request the
     check turned away."""
     monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", "k" * 40)
-    monkeypatch.setenv("OPS_ASSISTANT_ALLOWED_CIDRS", cidrs)
+    stored_allowlist(monkeypatch, cidrs)
     pipeline_config.update(stored)
 
     with patch.object(access, "forwarding_headers") as forwarding:

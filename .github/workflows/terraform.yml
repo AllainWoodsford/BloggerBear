@@ -74,20 +74,12 @@ jobs:
     concurrency:
       group: deploy-dev
       cancel-in-progress: false
-    # TF_VAR_admin_allowed_cidrs: repo-level secret (not a variable) so the
-    # operator's real public IP never lands in terraform.tfvars / git
-    # history -- see infra/environments/dev/variables.tf's admin_allowed_cidrs
-    # description. Must be valid Terraform list-of-strings syntax, e.g.
-    # ["203.0.113.7/32"]. Terraform env vars are its lowest-precedence value
-    # source, which is exactly why terraform.tfvars must NOT also set this
-    # variable (that would silently win over this).
-    # TF_VAR_alert_email: same reasoning as TF_VAR_admin_allowed_cidrs above
-    # -- a repo-level secret rather than terraform.tfvars, so the operator's
+    # TF_VAR_alert_email: a repo-level secret rather than terraform.tfvars, so the operator's
     # real email never lands in git history. See
     # infra/environments/dev/variables.tf's alert_email description. Unset
     # (empty secret) is fine -- every alarm/subscription it gates is
     # count-gated on `var.alert_email != ""`, so nothing is created without
-    # it, same fail-closed-to-"off" pattern as admin_allowed_cidrs' `[]`.
+    # it.
     # TF_VAR_aws_account_id, TF_VAR_unique_name_prefix, TF_STATE_BUCKET: what lets a fork deploy
     # to its own AWS account without editing code (docs/deployment-runsheet.md). All three are
     # optional. Unset, the account ID and the state bucket are empty strings, which Terraform and
@@ -134,7 +126,6 @@ jobs:
     # the REVIEWER_ENABLED variable is `false` (any letter case), so a deployment that never set it
     # gets the bear. Everything else about him is a setting in DynamoDB (`admin_cli reviewer set`).
     env:
-      TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_DEV || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
       TF_VAR_waf_log_all_requests: ${{ vars.WAF_LOG_ALL_REQUESTS_DEV || vars.WAF_LOG_ALL_REQUESTS || 'true' }}
@@ -234,6 +225,24 @@ jobs:
           terraform -chdir="$target_dir" validate
           terraform -chdir="$target_dir" plan -out="$plan_file" -input=false
           terraform -chdir="$target_dir" apply -input=false "$plan_file"
+
+      # The admin API's address allowlist is not Terraform's (scripts/admin_allowlist.py): the
+      # script writes the API's resource policy and deploys the stage, and Terraform ignores the
+      # policy. An apply can still point the stage back at Terraform's own latest deployment,
+      # made before the script's policy, so one fresh deployment here snapshots the policy the
+      # API holds now. The same API, routes and policy, deployed again: nothing else changes.
+      # always(): an apply that failed part-way may already have moved the stage.
+      - name: Redeploy the admin API with its current allowlist (dev)
+        if: always()
+        run: |
+          set -euo pipefail
+          api_name="${TF_VAR_unique_name_prefix}-dev-admin-api"
+          api_id=$(aws apigateway get-rest-apis --query "items[?name=='${api_name}'].id | [0]" --output text)
+          if [ -z "$api_id" ] || [ "$api_id" = "None" ]; then
+            echo "No REST API named $api_name; nothing to redeploy"
+            exit 0
+          fi
+          aws apigateway create-deployment --rest-api-id "$api_id" --stage-name dev             --description "after terraform apply: the admin allowlist's current policy" --query id --output text
 
       # Manual debug aid, not part of the normal deploy path: queries
       # CloudTrail (no dedicated Trail needed -- the default 90-day Event

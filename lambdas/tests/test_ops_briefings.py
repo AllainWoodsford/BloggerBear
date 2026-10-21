@@ -215,7 +215,7 @@ def test_what_is_stored_is_capped_and_never_fails_the_caller(table):
 def pipeline_config(monkeypatch):
     row = {}
     monkeypatch.setattr(ops_agent_handler.dynamo, "get_pipeline_config", lambda: dict(row) or None)
-    monkeypatch.delenv("OPS_ASSISTANT_ALLOWED_CIDRS", raising=False)
+    monkeypatch.delenv("OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER", raising=False)
     return row
 
 
