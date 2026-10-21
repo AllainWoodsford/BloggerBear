@@ -1246,10 +1246,18 @@ module "admin_api" {
 # API's own region, no us-east-1 alias needed), and protects only the
 # admin API.
 #
-# default_action = block: until var.admin_allowed_cidrs is set to the
-# operator's real public IP (a /32 CIDR), the IP set is empty and NOTHING
-# can call this API. That is the deliberately safe default -- fail closed
-# -- not a bug.
+# default_action = block, and the IP set is created empty: until the
+# operator's address is set, NOTHING can call this API. That is the
+# deliberately safe default -- fail closed -- not a bug.
+#
+# The addresses themselves are not Terraform's. They live in one SSM
+# parameter per environment (local.admin_allowlist_parameter), written by
+# scripts/admin_allowlist.py, which also copies them into this IP set and
+# into the API's resource policy and redeploys the stage. Terraform makes
+# both locked and then ignores their contents, so an operator whose IP
+# changed runs one command, with no apply, and no address is ever in a
+# variable, a GitHub secret or a plan. (The state still records what a
+# refresh reads back from the IP set and the policy, as it always did.)
 # -----------------------------------------------------------------------
 # Cost saving (docs/cost-saving.md): which firewall pieces exist. Each switch is a variable CI
 # passes from a GitHub variable, true by default (variables.tf). The public API's web ACL goes
@@ -1259,34 +1267,34 @@ locals {
   waf_admin_enabled      = var.waf_regional_enabled && var.waf_admin_allowlist
 }
 
-# The admin API's address allowlist as the API's own resource policy: always on, whatever the
-# switches say, and free. A Deny of every call whose address is not in var.admin_allowed_cidrs,
-# the same list the IP set below is built from; with the list empty (the default until the
-# secret is set), a Deny of every call, so it fails closed exactly as the admin web ACL's
-# default block does. Deny-only, so AWS_IAM authorization is unchanged: a caller in this
-# account from an allowed address is admitted by its own IAM policy. The statement is built
-# with the two for-expressions rather than a conditional because its two shapes (with and
-# without a Condition) are not one type. Sensitive, like the list it carries, so the plan
-# prints it as (sensitive value); no output carries it, and a refused caller's 403 never
-# shows it. API Gateway enforces a resource policy from the next deployment, which the module
-# triggers on the policy's text.
+# The SSM parameter holding the operator's addresses (comma-separated CIDRs, a SecureString under
+# the account's aws/ssm key). Terraform never creates or reads it: scripts/admin_allowlist.py does.
+# Its name is the script's contract (`--prefix`, `--env`).
 locals {
-  admin_api_deny_statement = {
-    Sid       = "DenyOutsideAdminAllowlist"
-    Effect    = "Deny"
-    Principal = "*"
-    Action    = "execute-api:Invoke"
-    Resource  = "execute-api:/*"
+  admin_allowlist_parameter = {
+    name = "/${var.unique_name_prefix}/production/admin-allowed-cidrs"
+    arn  = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.unique_name_prefix}/production/admin-allowed-cidrs"
   }
-  admin_api_resource_policy = sensitive(jsonencode({
+}
+
+# The admin API's address allowlist as the API's own resource policy: always on, whatever the
+# switches say, and free. Terraform writes it as a Deny of every call, and the rest-api module
+# ignores later changes to it (lifecycle), so scripts/admin_allowlist.py can replace it with a Deny
+# of every call whose address is not in the parameter, the same list it puts in the IP set below.
+# A fresh API therefore fails closed exactly as the admin web ACL's default block does, until the
+# script runs. Deny-only, so AWS_IAM authorization is unchanged: a caller in this account from an
+# allowed address is admitted by its own IAM policy.
+locals {
+  admin_api_resource_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = concat(
-      [for _ in(length(var.admin_allowed_cidrs) > 0 ? [1] : []) : merge(local.admin_api_deny_statement, {
-        Condition = { NotIpAddress = { "aws:SourceIp" = var.admin_allowed_cidrs } }
-      })],
-      [for _ in(length(var.admin_allowed_cidrs) > 0 ? [] : [1]) : local.admin_api_deny_statement],
-    )
-  }))
+    Statement = [{
+      Sid       = "DenyOutsideAdminAllowlist"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "execute-api:Invoke"
+      Resource  = "execute-api:/*"
+    }]
+  })
 }
 
 resource "aws_wafv2_ip_set" "admin_allowlist" {
@@ -1295,7 +1303,12 @@ resource "aws_wafv2_ip_set" "admin_allowlist" {
   name               = "${var.unique_name_prefix}-production-admin-allowlist"
   scope              = "REGIONAL"
   ip_address_version = "IPV4"
-  addresses          = var.admin_allowed_cidrs
+  # Empty when created; scripts/admin_allowlist.py fills it from the parameter.
+  addresses = []
+
+  lifecycle {
+    ignore_changes = [addresses]
+  }
 }
 
 resource "aws_wafv2_web_acl" "admin" {
@@ -3217,9 +3230,10 @@ module "ops_assistant" {
   alexa_redirect_uris = var.ops_alexa_redirect_uris
   keep_warm           = length(var.ops_alexa_redirect_uris) > 0
 
-  # The operator's addresses, for when assistant_access is "allowlist" (the admin API's list).
+  # The operator's addresses, for when assistant_access is "allowlist" (the admin API's list,
+  # read from its parameter at request time).
   # Note that Alexa+ calls from Amazon's addresses: under "allowlist" every Alexa call is refused.
-  allowed_cidrs = var.admin_allowed_cidrs
+  allowed_cidrs_parameter = local.admin_allowlist_parameter
 
   throttling_rate_limit  = 5
   throttling_burst_limit = 10

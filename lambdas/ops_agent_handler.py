@@ -40,7 +40,8 @@ without the check: it carries no token, reaches no model, and a browser that can
 headers reports a network error where the page should be shown the 403.
 
     MODEL_CONFIG_TABLE           the config table (common/dynamo.py), where the setting is stored
-    OPS_ASSISTANT_ALLOWED_CIDRS  the operator's addresses, for `allowlist`
+    OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER  the SSM parameter of the operator's addresses, for
+                                           `allowlist` (read then, and only then)
 
 **The wake call.** The page sends `{"warm": true}` once, as the operator signs in, so the two
 Lambdas a question passes through are started before the first question and not by it. It goes
@@ -151,7 +152,7 @@ def _admitted(event: dict) -> tuple[bool, str]:
         return False, access.CONFIG_UNREADABLE
     try:
         identity = (event.get("requestContext") or {}).get("identity") or {}
-        return access.decide(setting, identity.get("sourceIp"), access.allowed_cidrs_from_env())
+        return access.decide(setting, identity.get("sourceIp"), access.allowed_cidrs_for(setting))
     except Exception:  # noqa: BLE001 - a check that fails is a refusal, never a way in
         return False, access.CONFIG_UNREADABLE
 
@@ -384,7 +385,12 @@ def _briefing_run(event: dict) -> dict:
         return {"ok": False}
     try:
         setting = (dynamo.get_pipeline_config() or {}).get("assistant_access")
-        allowed, reason = access.decide(setting, None, access.allowed_cidrs_from_env())
+        if setting == access.ACCESS_ALLOWLIST:
+            # A briefing run has no caller address, so `allowlist` refuses it whatever the list
+            # holds: the list is not read.
+            allowed, reason = False, access.ADDRESS_UNKNOWN
+        else:
+            allowed, reason = access.decide(setting, None, [])
     except Exception:  # noqa: BLE001 - a check that fails is a refusal
         allowed, reason = False, access.CONFIG_UNREADABLE
     if not allowed:

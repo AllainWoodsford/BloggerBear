@@ -59,7 +59,7 @@ commands it would run, with every value replaced by `<redacted>`. It sets nothin
 python scripts/setup_repo.py --dry-run
 python scripts/setup_repo.py                      # the real thing
 python scripts/setup_repo.py --repo your-name/your-fork
-python scripts/setup_repo.py --only ADMIN_ALLOWED_CIDRS_DEV ADMIN_ALLOWED_CIDRS_PROD
+python scripts/setup_repo.py --only ALERT_EMAIL_DEV ALERT_EMAIL_PROD
 ```
 
 What it does, in order:
@@ -213,8 +213,9 @@ deploy cannot do without:
   same word you gave bootstrap as `unique_name_prefix`. Unset, it is `bloggerbear`, which only
   the original deployment can use: bucket names and the sign-in host name must be unique across
   all of AWS.
-- `ADMIN_ALLOWED_CIDRS_DEV` and `ADMIN_ALLOWED_CIDRS_PROD`: your public IP. Without it nothing can
-  call the admin API: the allowlist fails closed.
+- Not your IP: the admin API's allowlist is an SSM parameter, set after the first deploy with
+  `scripts/admin_allowlist.py` ([configuration.md](configuration.md#the-admin-apis-address-allowlist)). Until then nothing
+  can call the admin API: it fails closed.
 
 Dev's settings must be at repository level, because the dev job runs in no environment.
 Production's can be on the `production` environment or on the repository.
@@ -312,8 +313,10 @@ Dev is up once the `terraform` workflow goes green. What is left is by hand.
    export BLOGGERBEAR_ADMIN_API_URL=$(terraform -chdir=infra/environments/dev output -raw admin_api_url)
    python scripts/admin_cli.py topics list
    ```
-   The admin API only answers from the addresses in `ADMIN_ALLOWED_CIDRS_DEV`, with your own AWS
-   credentials.
+   The admin API only answers from the addresses in its allowlist, with your own AWS credentials.
+   Set yours first, and again whenever your IP changes (no deploy needed):
+   `python scripts/admin_allowlist.py set --env dev --my-ip`
+   ([configuration.md](configuration.md#the-admin-apis-address-allowlist)).
 4. **Seed a topic, and run it once by hand:**
    ```bash
    python scripts/admin_cli.py topics create \

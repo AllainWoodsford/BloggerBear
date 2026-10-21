@@ -74,12 +74,12 @@ switch turned off lists exactly the resources it removes; read it before approvi
 
 ## The admin API's allowlist is always on
 
-Whatever the switches say, the admin API only answers the addresses in `ADMIN_ALLOWED_CIDRS_DEV`
-and `ADMIN_ALLOWED_CIDRS_PROD`. Before the switches, that was the admin web ACL's job alone. Now
+Whatever the switches say, the admin API only answers the addresses in its allowlist parameter,
+`/<prefix>/<env>/admin-allowed-cidrs` ([configuration.md](configuration.md#the-admin-apis-address-allowlist)). Before the switches, that was the admin web ACL's job alone. Now
 it is the API's own **resource policy** first (`infra/modules/rest-api`, `resource_policy`): a
 Deny of every `execute-api:Invoke` whose address is not in the list, which API Gateway enforces
-before anything is run and which costs nothing. With the list empty (the default until the
-secret is set), it is a Deny of every call: the same fail-closed behaviour as the admin web ACL's
+before anything is run and which costs nothing. Terraform creates it as a Deny of every call,
+and `scripts/admin_allowlist.py` narrows it to the list (until then nothing gets in): the same fail-closed behaviour as the admin web ACL's
 default block. SigV4 (`AWS_IAM`) authorization is unchanged: a Deny-only policy never admits
 anyone on its own, and a caller in the same account from an allowed address is admitted by its
 own IAM policy, as before.
@@ -92,12 +92,11 @@ firewall saw them (`security_events_handler.counts_as_admin_error`).
 
 The addresses are no more exposed than they were:
 
-- the policy is built from the same `TF_VAR_admin_allowed_cidrs` the IP set is built from, which
-  is `sensitive = true`, so the plan prints it as `(sensitive value)`; the root writes its
-  resource as API Gateway's shorthand `execute-api:/*` and the module writes it out as the API's
-  full ARN, which API Gateway would otherwise do by itself and Terraform would then read back as
-  a change on every plan;
-- it lives in the account and in the Terraform state, where the IP set already lives;
+- they are not Terraform's at all: `scripts/admin_allowlist.py` writes the parameter and copies
+  it into the IP set and the policy, which Terraform creates locked and then ignores
+  (`ignore_changes`), so no address is in a variable, a GitHub secret or a plan (Terraform's
+  state still records what a refresh reads back from the IP set and the policy, as it did);
+- they live in the account, in the parameter (a `SecureString`), the IP set and the policy;
 - no Terraform output carries it;
 - a refused caller's 403 says only that the call was denied.
 

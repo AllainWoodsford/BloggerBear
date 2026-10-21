@@ -967,12 +967,13 @@ def test_pull_request_only_checks_live_in_their_own_workflow():
 
 @pytest.mark.parametrize("env", ["dev", "production"])
 def test_personal_values_never_print_in_public_ci_logs(env):
-    """The admin IP and alert email are secrets, but GitHub masks only a secret's exact text, and a
-    plan prints each list element on its own: both appeared in apply logs before they were sensitive."""
+    """The alert email is a secret, but GitHub masks only a secret's exact text, and a plan prints
+    values: it appeared in apply logs before it was sensitive. The admin IP is no longer Terraform's
+    at all (scripts/admin_allowlist.py keeps it in SSM), so it cannot reach a plan."""
     variables = _read("environments", env, "variables.tf")
-    for name in ("admin_allowed_cidrs", "alert_email"):
-        block = variables.split(f'variable "{name}" {{')[1].split("\n}\n")[0]
-        assert "\n  sensitive   = true\n" in block, name
+    block = variables.split('variable "alert_email" {')[1].split("\n}\n")[0]
+    assert "\n  sensitive   = true\n" in block
+    assert "admin_allowed_cidrs" not in variables
     module = _read("modules", "observability", "variables.tf")
     assert "\n  sensitive   = true\n" in module.split('variable "alert_email" {')[1].split("\n}\n")[0]
 
@@ -1771,6 +1772,8 @@ _OPS_MCP_ALLOWED_ACTIONS = {
     "dynamodb:ListTagsOfResource",
     "s3:GetObject",
     "cloudwatch:DescribeAlarms",
+    # The assistant_access allowlist (ops_mcp/access.py): the admin API's parameter, read only.
+    "ssm:GetParameter",
     "logs:CreateLogStream",
     "logs:PutLogEvents",
 }
@@ -1894,7 +1897,7 @@ def test_table_sample_reads_only_tables_carrying_the_default_tags_and_a_readable
         ("StringEquals", "aws:ResourceTag/ManagedBy", '[var.default_tags["ManagedBy"]]'),
         ("StringEquals", "aws:ResourceTag/Project", '[var.default_tags["Project"]]'),
     ]
-    assert "ssm:" not in policy  # the tags come from Terraform, not a parameter
+    assert "ssm:" not in statement  # the tags come from Terraform, not a parameter
     module = _ops_module()
     function = _uncommented(_resource_block(module, "aws_lambda_function", "ops_mcp"))
     assert re.search(r"OPS_DEFAULT_TAGS\s*=\s*jsonencode\(var\.default_tags\)", function)
@@ -2000,15 +2003,14 @@ def test_the_assistant_can_read_its_access_switch_and_can_never_change_it():
         "dynamodb:ListTagsOfResource",
     }
     assert policy.count("dynamodb:GetItem") == 1 and policy.count("var.tables") == 2
-    # The operator's addresses come from the list the admin API's WAF allowlist uses.
-    dev = _read("environments", "dev", "main.tf")
-    assert re.search(r"addresses\s*=\s*var\.admin_allowed_cidrs", dev)
-    assert re.search(r"^\s*allowed_cidrs\s*=\s*var\.admin_allowed_cidrs$", call, re.M)
-    assert re.search(r'OPS_ASSISTANT_ALLOWED_CIDRS\s*=\s*join\(",", var\.allowed_cidrs\)', function)
-    variable = re.search(
-        r'variable "allowed_cidrs" \{(.*?)\n\}', _read("modules", "ops-assistant", "variables.tf"), re.S
-    ).group(1)
-    assert re.search(r"sensitive\s*=\s*true", variable)  # a plan must not print a home address
+    # The operator's addresses: the admin API's allowlist parameter, by name, read at request time
+    # (never the addresses themselves, so none is in a plan), and GetParameter on it alone.
+    assert re.search(r"^\s*allowed_cidrs_parameter\s*=\s*local\.admin_allowlist_parameter$", call, re.M)
+    assert re.search(
+        r"OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER\s*=\s*var\.allowed_cidrs_parameter\.name", function
+    )
+    assert re.findall(r'"(ssm:[A-Za-z*]+)"', policy) == ["ssm:GetParameter"]
+    assert "resources = [var.allowed_cidrs_parameter.arn]" in policy
 
 
 # The assistant's memory (infra/modules/ops-assistant/memory.tf, lambdas/ops_mcp/memory.py): the one
@@ -2612,6 +2614,7 @@ def test_dev_outputs_what_the_page_and_the_agent_need():
 _OPS_AGENT_ALLOWED_ACTIONS = {
     "bedrock:InvokeModel",
     "dynamodb:GetItem",
+    "ssm:GetParameter",  # the assistant_access allowlist, as the MCP server reads it
     "logs:CreateLogStream",
     "logs:PutLogEvents",
 }
@@ -2666,8 +2669,8 @@ def test_the_agents_role_may_invoke_the_model_read_the_switch_and_log():
     assert "logs:*" not in policy and "logs:CreateLogGroup" not in policy
     assert '"*"' not in policy  # no statement is on every resource
     assert "not_actions" not in policy and "not_resources" not in policy
-    assert policy.count("statement {") == 3
-    assert len(re.findall(r'effect\s*=\s*"Allow"', policy)) == 3
+    assert policy.count("statement {") == 4
+    assert len(re.findall(r'effect\s*=\s*"Allow"', policy)) == 4
     # One row's table, its own log group, and nothing handed in wholesale.
     assert 'resources = [var.tables["MODEL_CONFIG_TABLE"].arn]' in policy
     assert 'resources = ["${aws_cloudwatch_log_group.agent.arn}:*"]' in policy
@@ -2785,7 +2788,7 @@ def test_the_agent_is_told_everything_its_code_reads_and_no_tracing_is_switched_
         "OPS_MCP_URL": "local.agent_mcp_url",
         "OPS_AGENT_ALLOWED_ORIGIN": "var.agent_allowed_origin",
         "MODEL_CONFIG_TABLE": 'var.tables["MODEL_CONFIG_TABLE"].name',
-        "OPS_ASSISTANT_ALLOWED_CIDRS": 'join(",", var.allowed_cidrs)',
+        "OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER": "var.allowed_cidrs_parameter.name",
         "OPS_AGENT_FORWARD_KEY": "var.agent_forward_key",
         "OPS_BRIEFINGS_TABLE": "aws_dynamodb_table.briefings.name",
         "OPS_AGENT_DAILY_QUESTION_CAP": "tostring(var.agent_daily_question_cap)",
@@ -2796,9 +2799,11 @@ def test_the_agent_is_told_everything_its_code_reads_and_no_tracing_is_switched_
     assert "tracing_config" not in _uncommented(_agent_module())
     dynamo = (ROOT / "lambdas" / "common" / "dynamo.py").read_text(encoding="utf-8")
     assert 'get_table(os.environ["MODEL_CONFIG_TABLE"])' in dynamo
-    # The same allowlist, written the same way, as the MCP server's.
+    # The same allowlist parameter as the MCP server's.
     mcp_function = _resource_block(_ops_module(), "aws_lambda_function", "ops_mcp")
-    assert re.search(r'OPS_ASSISTANT_ALLOWED_CIDRS\s*=\s*join\(",", var\.allowed_cidrs\)', mcp_function)
+    assert re.search(
+        r"OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER\s*=\s*var\.allowed_cidrs_parameter\.name", mcp_function
+    )
 
 
 def test_the_agent_and_the_server_share_one_forward_key_and_no_plan_prints_it():

@@ -986,7 +986,7 @@ resource "aws_route53_zone" "site" {
 # address: AWS Budgets requires at least one notification subscriber, so
 # with no email configured this creates nothing rather than failing the
 # apply (same fail-closed-by-omission pattern as
-# infra/environments/dev's var.admin_allowed_cidrs).
+# the admin API's IP allowlist, empty until scripts/admin_allowlist.py runs).
 # -----------------------------------------------------------------------
 resource "aws_budgets_budget" "bedrock_spend" {
   count = var.budget_alert_email != "" ? 1 : 0

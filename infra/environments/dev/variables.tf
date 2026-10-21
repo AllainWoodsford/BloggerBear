@@ -43,39 +43,6 @@ variable "bedrock_model_id" {
   EOT
 }
 
-variable "admin_allowed_cidrs" {
-  type        = list(string)
-  default     = []
-  sensitive   = true
-  description = <<-EOT
-    Public IP CIDRs (as /32s, e.g. ["203.0.113.7/32"]) allowed through the
-    regional WAF Web ACL in front of the admin API. This MUST be set to
-    the operator's own public IP before the admin API becomes reachable at
-    all -- with this left empty, the Web ACL's default-block action means
-    NOTHING can call the API. That is the deliberately safe default (fail
-    closed, consistent with this project's compliance-review posture),
-    not a bug.
-
-    Deliberately NOT set in terraform.tfvars -- a real home/office IP
-    checked into git history is a personal-information leak (and stays
-    leaked even if later removed/rotated) that also goes stale the moment
-    the operator's IP changes. Supplied instead as a `TF_VAR_
-    admin_allowed_cidrs` environment variable in this repo's
-    .github/workflows/terraform.yml apply-dev job, sourced from a
-    repo-level GitHub Actions secret `ADMIN_ALLOWED_CIDRS_DEV` (never in
-    the repo). Environment variables are Terraform's
-    lowest-precedence value source, so this only works because
-    terraform.tfvars doesn't also set this variable -- if it did, the
-    tfvars value would silently win and the CI-supplied one would be
-    ignored. A local `terraform apply` without that env var set falls back
-    to this variable's `[]` default (fail closed), same as before.
-
-    sensitive = true matters as much as the secret: GitHub masks only the
-    secret's exact text, and a plan prints each list element separately,
-    so before this the bare IP appeared in apply logs.
-  EOT
-}
-
 # -----------------------------------------------------------------------
 # Cost saving: the firewall switches (docs/cost-saving.md). Every one defaults to true, which is
 # the firewall exactly as it was before the switches existed, and CI passes each one from a
@@ -84,7 +51,7 @@ variable "admin_allowed_cidrs" {
 # silently picking a mode. Turning one off is for a deployment that only tries the project out:
 # a fork that stores real people's data should keep every switch on.
 #
-# Whatever these say, the admin API's address allowlist (var.admin_allowed_cidrs) is always
+# Whatever these say, the admin API's address allowlist (scripts/admin_allowlist.py) is always
 # enforced by the API's own resource policy (module.admin_api's resource_policy, free), so no
 # switch ever leaves the admin API reachable from another address.
 # -----------------------------------------------------------------------

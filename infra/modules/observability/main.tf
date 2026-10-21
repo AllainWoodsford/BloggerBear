@@ -9,7 +9,7 @@
 # Every alarm publishes to the same per-environment SNS topic; whether
 # anyone actually gets paged depends on var.alert_email being set (see
 # variables.tf) -- that's a deliberate manual follow-up, same pattern as
-# var.admin_allowed_cidrs / var.bedrock_model_id elsewhere in this
+# var.bedrock_model_id elsewhere in this
 # project: code complete, real value supplied via terraform.tfvars once
 # the human has an inbox to point it at.
 # -----------------------------------------------------------------------

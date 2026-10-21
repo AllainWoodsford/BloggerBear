@@ -15,11 +15,9 @@ force_destroy = true
 # is ever needed for dev specifically. Outside Australia, set
 # bedrock_inference_profile_id here instead (docs/deployment-runsheet.md).
 
-# admin_allowed_cidrs is deliberately NOT set here -- see its description in
-# variables.tf. It's supplied in CI via a TF_VAR_admin_allowed_cidrs env var
-# sourced from the ADMIN_ALLOWED_CIDRS_DEV GitHub Actions secret instead, so
-# a real IP never lands in git history. A local apply without that env var
-# falls back to the variable's `[]` fail-closed default.
+# The admin API's address allowlist is not a Terraform variable: it is an SSM
+# parameter that scripts/admin_allowlist.py writes and copies into the WAF IP
+# set and the API's resource policy, so no address is in git or a plan.
 
 # Manual follow-up: after infra/environments/production has been applied
 # at least once and its WAF Web ACL exists, set this to that ACL's ARN

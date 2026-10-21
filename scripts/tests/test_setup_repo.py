@@ -7,7 +7,6 @@ touches GitHub, AWS or this clone's git config.
 from __future__ import annotations
 
 import io
-import json
 import re
 from pathlib import Path
 
@@ -40,8 +39,6 @@ FULL_RUN = [
     REGION,  # AWS_REGION: asked first, because later steps print commands that name it
     STATE_REGION,  # TF_STATE_REGION
     PREFIX,  # UNIQUE_NAME_PREFIX: before the roles, whose names are built from it
-    CIDR,  # ADMIN_ALLOWED_CIDRS_DEV
-    "y",  # ADMIN_ALLOWED_CIDRS_PROD: same as dev
     EMAIL,  # ALERT_EMAIL_DEV
     "y",  # ALERT_EMAIL_PROD: same as dev
     DEV_ACCOUNT,  # AWS_DEV_ACCOUNT_ID
@@ -273,49 +270,9 @@ def test_the_hook_and_the_denylist_file_are_what_the_repository_uses():
     assert f"git config core.hooksPath {sr.HOOKS_PATH}" in hook
     assert sr.DENYLIST_FILE == ".pii-denylist"
     assert re.search(r"^\.pii-denylist$", (REPO_ROOT / ".gitignore").read_text(encoding="utf-8"), re.M)
-    # The allowlist really is IPv4-only, which is why check_cidrs refuses IPv6.
-    for environment in ("dev", "production"):
-        main = (REPO_ROOT / "infra" / "environments" / environment / "main.tf").read_text(encoding="utf-8")
-        block = main.split("addresses          = var.admin_allowed_cidrs")[0][-400:]
-        assert 'ip_address_version = "IPV4"' in block
 
 
 # --- The checks ------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "raw, expected",
-    [
-        ("203.0.113.7/32", ["203.0.113.7/32"]),
-        ("203.0.113.7", ["203.0.113.7/32"]),  # a bare address is that one address
-        ("203.0.113.7/32, 198.51.100.0/24", ["203.0.113.7/32", "198.51.100.0/24"]),
-        ("203.0.113.7/32 203.0.113.7/32", ["203.0.113.7/32"]),
-        ('["203.0.113.7/32"]', ["203.0.113.7/32"]),  # the form the docs show
-    ],
-)
-def test_cidrs_become_the_terraform_list_the_workflow_passes_on(raw, expected):
-    assert json.loads(sr.check_cidrs(raw)) == expected
-
-
-@pytest.mark.parametrize(
-    "raw",
-    ["", "  ", "not-an-ip", "203.0.113.7/33", "203.0.113.7/24", "999.1.1.1/32", '["203.0.113.7/32"', "[1]"],
-)
-def test_bad_cidrs_are_refused(raw):
-    with pytest.raises(sr.Invalid):
-        sr.check_cidrs(raw)
-
-
-def test_ipv6_is_recognised_and_refused_because_the_allowlist_is_ipv4_only():
-    with pytest.raises(sr.Invalid, match="IPv6"):
-        sr.check_cidrs("2001:db8::/32")
-
-
-def test_the_whole_internet_is_refused_loudly():
-    with pytest.raises(sr.Invalid, match="STOP.*every address"):
-        sr.check_cidrs("0.0.0.0/0")
-    assert sr.wide_ranges(sr.check_cidrs("10.0.0.0/8")) == 1
-    assert sr.wide_ranges(sr.check_cidrs("203.0.113.7/32")) == 0
 
 
 @pytest.mark.parametrize("raw", ["you@example.com", " first.last+tag@mail.example.org "])
@@ -513,8 +470,7 @@ def test_a_first_run_sets_everything_with_values_on_stdin_and_never_in_argv(tmp_
 
     sets = {argv[3]: (argv, stdin) for argv, stdin in commands.writes if argv[0] == "gh"}
     assert set(sets) == {setting.name for setting in sr.SETTINGS}
-    assert sets["ADMIN_ALLOWED_CIDRS_DEV"][1] == json.dumps([CIDR])
-    assert sets["ADMIN_ALLOWED_CIDRS_PROD"][1] == json.dumps([CIDR])
+    assert not any(name.startswith("ADMIN_ALLOWED_CIDRS") for name in sets)  # SSM's now, not a secret
     assert sets["ALERT_EMAIL_PROD"][1] == EMAIL
     assert sets["AWS_DEV_ACCOUNT_ID"][1] == DEV_ACCOUNT and sets["AWS_PROD_ACCOUNT_ID"][1] == PROD_ACCOUNT
     # The stub: the account given for each environment, and the role name bootstrap creates.
@@ -548,7 +504,7 @@ def test_a_first_run_sets_everything_with_values_on_stdin_and_never_in_argv(tmp_
     # And nothing it printed holds a secret value.
     for value in SECRET_VALUES:
         assert value not in out
-    assert "Done. 16 set." in out
+    assert "Done. 14 set." in out
 
 
 def test_nothing_is_written_before_the_confirmation(tmp_path):
@@ -571,11 +527,11 @@ def test_nothing_is_written_before_the_confirmation(tmp_path):
     out = io.StringIO()
     assert sr.main([], reader=reader, out=out, err=io.StringIO(), run=commands, root=clone(tmp_path)) == 0
     assert seen_at_confirm == [([], False)]  # at the last question: no command, no file
-    assert len(commands.writes) == 15  # and then all of them
+    assert len(commands.writes) == 13  # and then all of them
     # The summary came before the question, with values masked.
     summary = out.getvalue().split("== Summary ==")[1].split("Nothing has been written yet")[0]
     assert 'AWS_DEV_ACCOUNT_ID  [secret, repository]  12 characters, ending "11"' in summary
-    assert "ADMIN_ALLOWED_CIDRS_PROD  [secret, production environment]  1 range" in summary
+    assert 'ALERT_EMAIL_PROD  [secret, production environment]' in summary
     assert "PII_DENYLIST  [secret, repository]  1 entry" in summary
     assert f"UNIQUE_NAME_PREFIX  [variable, repository]  {PREFIX}" in summary  # public by definition
 
@@ -608,13 +564,13 @@ def test_a_failure_part_way_says_what_was_and_was_not_written_and_exits_non_zero
     assert attempted == [
         "AWS_REGION", "TF_STATE_REGION",  # the region is asked, and so written, first
         "UNIQUE_NAME_PREFIX",  # then the name prefix
-        "ADMIN_ALLOWED_CIDRS_DEV", "ADMIN_ALLOWED_CIDRS_PROD", "ALERT_EMAIL_DEV", "ALERT_EMAIL_PROD",
+        "ALERT_EMAIL_DEV", "ALERT_EMAIL_PROD",
         "AWS_DEV_ACCOUNT_ID",
     ]  # it stopped at the failure: nothing after it was tried
     report = out.split("Stopped at AWS_DEV_ACCOUNT_ID.")[1]
     written = report.split("Written:")[1].split("\n")[0]
     not_written = report.split("NOT written:")[1].split("\n")[0]
-    assert [name.strip() for name in written.split(",")] == attempted[:7]
+    assert [name.strip() for name in written.split(",")] == attempted[:5]
     assert [name.strip() for name in not_written.split(",")] == [
         "AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "AWS_DEV_DEPLOY_ROLE_ARN", "AWS_PROD_DEPLOY_ROLE_ARN",
         "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD", "PII_DENYLIST",
@@ -631,7 +587,7 @@ def test_a_failure_part_way_says_what_was_and_was_not_written_and_exits_non_zero
 def test_settings_already_present_are_skipped_by_default(tmp_path):
     present = {s.name for s in sr.SETTINGS if s.kind == "secret" and s.where == "repo"} - {"PII_DENYLIST"}
     commands = FakeCommands(
-        secrets=present | {"ADMIN_ALLOWED_CIDRS_PROD"},  # a production secret kept at repository level
+        secrets=present | {"ALERT_EMAIL_PROD"},  # a production secret kept at repository level
         env_secrets={"AWS_PROD_DEPLOY_ROLE_ARN"},
         variables={"UNIQUE_NAME_PREFIX", "ALERT_EMAIL_DEV"},
         hooks_path=".githooks",
@@ -641,7 +597,6 @@ def test_settings_already_present_are_skipped_by_default(tmp_path):
         "",  # replace any? default: no
         "",  # AWS_REGION: leave unset (the default region)
         "",  # TF_STATE_REGION: leave unset
-        "",  # ALERT_EMAIL_PROD: leave unset
         PROD_ACCOUNT,  # AWS_PROD_ACCOUNT_ID (dev's was not asked, so no "same as")
         BUCKET,  # TF_STATE_BUCKET_PROD
         "",  # PII_DENYLIST: no entries
@@ -651,12 +606,12 @@ def test_settings_already_present_are_skipped_by_default(tmp_path):
     assert code == 0
     assert [argv[3] for argv, _ in commands.writes] == ["AWS_PROD_ACCOUNT_ID", "TF_STATE_BUCKET_PROD"]
     table = out.split("== ")[0]
-    assert re.search(r"^ADMIN_ALLOWED_CIDRS_DEV +secret +repository +required +set$", table, re.M)
-    assert re.search(r"^ADMIN_ALLOWED_CIDRS_PROD .* set \(repository level\)$", table, re.M)
+    assert re.search(r"^AWS_DEV_DEPLOY_ROLE_ARN +secret +repository +required +set$", table, re.M)
+    assert re.search(r"^ALERT_EMAIL_PROD .* set \(repository level\)$", table, re.M)
     assert re.search(r"^AWS_PROD_DEPLOY_ROLE_ARN .*production environment +required +set$", table, re.M)
     assert re.search(r"^TF_STATE_BUCKET_PROD .*required for a fork +not set$", table, re.M)
     assert re.search(r"^PII_DENYLIST .*optional +not set$", table, re.M)
-    assert "8 already set." in out
+    assert "7 already set." in out
     assert "ALERT_EMAIL_DEV also exists as a plain variable" in out
     assert "It is already turned on for this clone." in out
 
@@ -673,23 +628,6 @@ def test_nothing_to_set_is_a_clean_exit(tmp_path):
     commands = FakeCommands(secrets={"ALERT_EMAIL_DEV"}, hooks_path=".githooks")
     code, out, _ = run(["--only", "ALERT_EMAIL_DEV"], ["y", "n"], commands, clone(tmp_path))
     assert code == 0 and commands.writes == [] and "Nothing to set." in out
-
-
-def test_bad_answers_are_asked_again_and_a_required_one_cannot_be_left_blank(tmp_path):
-    commands = FakeCommands(hooks_path=".githooks")
-    answers = ["y", "", "0.0.0.0/0", "2001:db8::/32", "nonsense", CIDR, "y"]
-    code, out, _ = run(["--only", "ADMIN_ALLOWED_CIDRS_DEV"], answers, commands, clone(tmp_path))
-    assert code == 0
-    assert "This one is required." in out and "STOP: 0.0.0.0/0" in out and "is IPv6" in out
-    assert [stdin for _, stdin in commands.writes] == [json.dumps([CIDR])]
-
-
-def test_a_wide_range_needs_a_second_yes(tmp_path):
-    commands = FakeCommands(hooks_path=".githooks")
-    answers = ["y", "10.0.0.0/8", "", CIDR, "y"]  # the warning's default is no, so it asks again
-    code, out, _ = run(["--only", "ADMIN_ALLOWED_CIDRS_DEV"], answers, commands, clone(tmp_path))
-    assert code == 0 and "WARNING" in out
-    assert [stdin for _, stdin in commands.writes] == [json.dumps([CIDR])]
 
 
 def test_a_role_arn_in_another_account_is_refused_until_it_matches(tmp_path):
@@ -759,7 +697,7 @@ def test_there_is_no_yes_flag():
         sr.build_parser().parse_args(["--yes"])
     help_text = sr.build_parser().format_help()
     assert help_text.index("--dry-run") < help_text.index("examples:")
-    assert "setup_repo.py --dry-run" in help_text and "--only ADMIN_ALLOWED_CIDRS_DEV" in help_text
+    assert "setup_repo.py --dry-run" in help_text and "--only ALERT_EMAIL_DEV" in help_text
 
 
 # --- PII_DENYLIST and the hook ---------------------------------------------------------------------
@@ -867,7 +805,7 @@ def test_a_dry_run_finishes_without_gh_signed_in(tmp_path, commands):
     code, out, _ = run(["--dry-run"], FULL_RUN, commands, clone(tmp_path))
     assert code == 0 and commands.writes == []
     assert "Could not check what is already set" in out and "Repository: <owner>/<name>" in out
-    assert re.search(r"^ADMIN_ALLOWED_CIDRS_DEV .* unknown$", out, re.M)
+    assert re.search(r"^ALERT_EMAIL_DEV .* unknown$", out, re.M)
     assert not any(argv[:2] == ["gh", "api"] for argv, _ in commands.calls)
     for value in SECRET_VALUES:
         assert value not in out
