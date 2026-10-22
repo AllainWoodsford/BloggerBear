@@ -203,6 +203,13 @@ NOT_ASKED = {
     "WAF_LOG_ALL_REQUESTS_PROD",
     "WAF_SITE_ENABLED",
     "WAF_SITE_ENABLED_PROD",
+    # Where the web search gateway runs (docs/configuration.md): WEB_SEARCH_REGION_DEV /
+    # WEB_SEARCH_REGION_PROD, else the shared name, else ap-northeast-1. The default is what a
+    # first deploy wants, and another Region needs the bootstrap re-applied first, so this script
+    # does not ask.
+    "WEB_SEARCH_REGION",
+    "WEB_SEARCH_REGION_DEV",
+    "WEB_SEARCH_REGION_PROD",
     # GitHub creates this for every workflow run. Nobody sets it.
     "GITHUB_TOKEN",
     # Only claude-issue-worker.yml reads it. That workflow is an optional extra with its own

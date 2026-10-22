@@ -125,6 +125,13 @@ jobs:
     # (lambdas/reviewer_handler.py), is deployed. The opposite reading to VISION_ENABLED: ON unless
     # the REVIEWER_ENABLED variable is `false` (any letter case), so a deployment that never set it
     # gets the bear. Everything else about him is a setting in DynamoDB (`admin_cli reviewer set`).
+    # TF_VAR_web_search_region: where the AgentCore web search gateway (infra/modules/web-search)
+    # runs: WEB_SEARCH_REGION_DEV if set, else the shared WEB_SEARCH_REGION, else 'ap-northeast-1'
+    # (Tokyo), which is the Region it has always been in and the variable's own default. A plain
+    # variable: a region is not a secret. The Web Search Tool exists only in us-east-1, eu-west-1
+    # and ap-northeast-1, and the plan refuses anything else; the bootstrap's web_search_regions
+    # must include it, or the deploy role is refused (docs/configuration.md). Changing it moves
+    # the gateway: the next apply replaces it in the new Region.
     env:
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_DEV || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
@@ -138,6 +145,7 @@ jobs:
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
       TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}
       TF_VAR_reviewer_enabled: ${{ vars.REVIEWER_ENABLED == 'false' && 'false' || 'true' }}
+      TF_VAR_web_search_region: ${{ vars.WEB_SEARCH_REGION_DEV || vars.WEB_SEARCH_REGION || 'ap-northeast-1' }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

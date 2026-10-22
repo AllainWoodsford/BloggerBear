@@ -35,7 +35,8 @@ WAF tuning -- `docs/PROGRESS.md` tracks them.
 - **Region**: `ap-southeast-2` (Sydney) for everything, except the
   CloudFront-scope WAF Web ACL and ACM certificate, which AWS requires in
   `us-east-1` regardless of hosting region, the AgentCore web search
-  gateway, which lives in `ap-northeast-1` (Tokyo) because the Web Search
+  gateway, which lives in `ap-northeast-1` (Tokyo) by default (the
+  `WEB_SEARCH_REGION` GitHub variable, per environment) because the Web Search
   Tool connector isn't offered in Sydney (see §11, "Web search"), and the
   optional vision worker, which runs in `vision_region` (`us-west-2` by
   default, beside the Sentinel-2 imagery)

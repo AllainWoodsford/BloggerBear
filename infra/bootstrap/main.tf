@@ -402,7 +402,8 @@ data "aws_iam_policy_document" "gha_deploy" {
   # discovering gaps one failed apply at a time" reasoning as
   # DynamoDBAppTables above. Gateway ARNs carry a generated id, and some
   # of these calls (Create*, List*) have no resource ARN yet, so this is
-  # scoped by Region instead: the connector's Region only, never Sydney.
+  # scoped by Region instead: the connector's Regions only
+  # (var.web_search_regions, ap-northeast-1 unless set), never Sydney.
   statement {
     sid       = "AgentCoreWebSearchGateway"
     effect    = "Allow"
@@ -411,7 +412,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     condition {
       test     = "StringEquals"
       variable = "aws:RequestedRegion"
-      values   = ["ap-northeast-1"]
+      values   = var.web_search_regions
     }
   }
 

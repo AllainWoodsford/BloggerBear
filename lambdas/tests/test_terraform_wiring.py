@@ -464,15 +464,32 @@ def test_the_deploy_role_can_create_the_gateway_and_pass_it_its_role():
 
     assert "arn:aws:iam::*:role/bloggerbear-*-agentcore-gateway" in bootstrap
     statement = re.search(r'sid\s*=\s*"AgentCoreWebSearchGateway"(.*?)\n  \}', bootstrap, re.S).group(1)
-    region = re.search(r'variable\s*=\s*"aws:RequestedRegion"\s*values\s*=\s*\["([^"]+)"\]', statement).group(
-        1
+    requested = r'variable\s*=\s*"aws:RequestedRegion"\s*values\s*=\s*var\.web_search_regions'
+    assert re.search(requested, statement)
+    defaults = _read("bootstrap", "variables.tf")
+    allowed = re.search(r'variable "web_search_regions" \{.*?default\s*=\s*\[([^\]]*)\]', defaults, re.S)
+    module_variables = _read("modules", "web-search", "variables.tf")
+    module = re.search(r'variable "region" \{.*?default\s*=\s*"([^"]+)"', module_variables, re.S).group(1)
+    assert module == "ap-northeast-1" and f'"{module}"' in allowed.group(1)
+
+
+@pytest.mark.parametrize(
+    ("env", "workflow", "suffix"),
+    [("dev", "terraform.yml", "DEV"), ("dev", "destroy-dev.yml", "DEV"),
+     ("production", "terraform-production-release.yml", "PROD")],
+)
+def test_the_web_search_region_comes_from_a_github_variable_and_defaults_to_tokyo(env, workflow, suffix):
+    """WEB_SEARCH_REGION_<ENV>, else WEB_SEARCH_REGION, else ap-northeast-1: an unset variable keeps
+    the gateway where it has always been, and the root's own default agrees."""
+    variables = _read("environments", env, "variables.tf")
+    default = re.search(r'variable "web_search_region" \{.*?default\s*=\s*"([^"]+)"', variables, re.S)
+    assert default.group(1) == "ap-northeast-1"
+    assert re.search(r"^\s*region\s*=\s*var\.web_search_region$", _read("environments", env, "main.tf"), re.M)
+    line = (
+        f"TF_VAR_web_search_region: ${{{{ vars.WEB_SEARCH_REGION_{suffix} || vars.WEB_SEARCH_REGION"
+        " || 'ap-northeast-1' }}"
     )
-    default = re.search(
-        r'variable "region" \{.*?default\s*=\s*"([^"]+)"',
-        _read("modules", "web-search", "variables.tf"),
-        re.S,
-    )
-    assert region == default.group(1)
+    assert line in (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
 
 
 # --- WAF logs for visitor traffic: blocks only, fingerprint headers redacted, 14 days ------------
@@ -3184,7 +3201,7 @@ _REGION_SCANNED_SUFFIXES = {
 # Why a us-east-1 written in code is allowed to be there: a comment beside it has to give one of
 # these reasons. CloudFront (its certificate, its web ACL with that ACL's logs and metrics, its own
 # metrics) and Cost Explorer's only endpoint are the things AWS serves from that region alone.
-_US_EAST_1_REASON = re.compile(r"cloudfront|cost explorer|price list", re.I)
+_US_EAST_1_REASON = re.compile(r"cloudfront|cost explorer|price list|web search tool", re.I)
 _US_EAST_1_COMMENT_REACH = 6  # lines above the literal in which the comment must sit
 
 
