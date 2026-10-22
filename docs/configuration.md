@@ -19,6 +19,7 @@ Settings live in six places:
 Two more are set in a console and nowhere else: [AWS account settings](#aws-account-settings) and
 [GitHub repository settings](#github-repository-settings). The optional vision work spans
 several of these, so its settings are gathered in [Vision and rail access](#vision-and-rail-access).
+The `adapter_config` keys of the other four adapters are in [Adapter settings](#adapter-settings).
 
 Account IDs here are AWS's documentation placeholders. `<env>` is `dev` or `production`.
 `<prefix>` is your name prefix, the [`UNIQUE_NAME_PREFIX`](#github-secrets-and-variables) setting:
@@ -124,10 +125,12 @@ only production's domain.
 | `ops_assistant_mfa` | dev | MFA on the assistant's sign-in: `"OFF"`, `"OPTIONAL"` or `"ON"`. Production always requires it. | `"OPTIONAL"` |
 | `force_destroy` | dev | Whether dev's site bucket can be destroyed while not empty. | `true` |
 | `vision_region` | both | Where the vision worker runs, beside the Sentinel-2 imagery. Must match the bootstrap's `vision_region`. In production, with the worker on, it and the prefix must fit one bucket name (below). | `"us-west-2"` |
+| `backup_export_buckets` | both | Buckets besides the backup bucket that `admin_cli backup export --bucket` may copy articles into and `backup restore --bucket` may read a snapshot from. Each is granted to the Lambda role; the bucket itself is made and kept outside Terraform. | `[]` |
 
 Do not set these in `terraform.tfvars`; CI supplies them from the GitHub settings above:
 `alert_email`, `aws_account_id`, `unique_name_prefix`, `aws_region`,
-`vision_enabled` (the `VISION_ENABLED` variable above), `reviewer_enabled` (the `REVIEWER_ENABLED`
+`backup_bucket_name` (the `TF_STATE_BUCKET_*` secret again: backups are kept in the state bucket,
+under `backup/<prefix>-<env>/`), `vision_enabled` (the `VISION_ENABLED` variable above), `reviewer_enabled` (the `REVIEWER_ENABLED`
 variable above), `web_search_region` (the `WEB_SEARCH_REGION` variables above; `ap-northeast-1`
 when unset), and the firewall switches
 `waf_regional_enabled`, `waf_admin_allowlist`, `waf_log_all_requests` and, in production only,
@@ -154,7 +157,8 @@ name has room to spare at 14") predates the worker; shortening the name, and tes
 follow-up ([vision.md §10](enhancements/archive/vision.md#10-still-open)).
 
 The times of the fixed jobs (the weekly reflection, the Stats rollover, the cost poll, the feedback
-musing and the model catalog's jobs) are not variables: they are written in each environment's `main.tf`.
+musing, the weekly backup, the reviewer bear and the model catalog's jobs) are not variables: they
+are written in each environment's `main.tf`.
 
 ## SSM Parameter Store
 
@@ -218,6 +222,8 @@ private state bucket, as it did before.)
 | `/<prefix>/production/admin-allowed-cidrs` | The same, for production. | The same, for production. |
 
 ```bash
+# Add --prefix <your UNIQUE_NAME_PREFIX> (and --region <yours>) unless you use the defaults:
+# the script reads neither from your environment.
 python scripts/admin_allowlist.py set --env dev --my-ip     # this machine's address, as a /32
 python scripts/admin_allowlist.py set --env production 203.0.113.7/32 198.51.100.0/28
 python scripts/admin_allowlist.py show --env dev            # what each place holds; only reads
@@ -248,8 +254,9 @@ python scripts/admin_allowlist.py sync --env dev            # copy the stored li
   does the assistant read this parameter, on each request (`OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER`
   names it; its roles may read that one parameter). Under `open` or `off` it never looks.
 - **Credentials**: your own, for that environment's account, with `ssm:GetParameter` and
-  `PutParameter`, `wafv2:ListIPSets`, `GetIPSet` and `UpdateIPSet`, and `apigateway:GET`, `PATCH`
-  and `POST`. `--prefix` and `--region` default to `bloggerbear` and `ap-southeast-2`.
+  `PutParameter`, `wafv2:ListIPSets`, `GetIPSet` and `UpdateIPSet`, `apigateway:GET`, `PATCH`
+  and `POST`, and `sts:GetCallerIdentity`. `--prefix` and `--region` default to `bloggerbear` and
+  `ap-southeast-2`: a fork must pass its own `--prefix`, or it writes a parameter nothing reads.
 - **In Git Bash on Windows** nothing needs `MSYS_NO_PATHCONV`: the script builds the name itself.
 
 ## DynamoDB: settings changed with no deploy
@@ -265,11 +272,11 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | What the model catalog last did (`last_discover_at`, `last_reprice_at` and their results) and the pricing run under review (`active_run_id`). Written by the job only | `<prefix>-<env>-model-config`, item `config_id` = `model-catalog-state` | `model-catalog get` | No item until a job runs |
 | A pricing run: each changed model's old and new price, its check times and what each check found. Pruned by TTL 14 days after it closes | `<prefix>-<env>-model-config`, items `config_id` = `pricing-run#<run id>` | `model-catalog get` (the run under review) | None |
 | The global default and fallback model | `<prefix>-<env>-model-config`, item `config_id` = `default` | `model-config set --model-id … --fallback-model-id …` | No item: the model Terraform set (`BEDROCK_MODEL_ID`), no fallback. |
-| How often research really runs, for every topic | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --research-interval-hours N` | 1 hour |
+| How often research really runs (`research_interval_hours`, whole hours, 1 to 168). The research schedule is only a heartbeat; each tick does work only once this much time has passed since the topic was last checked. A topic's own value wins over the pipeline-wide one, which every other topic inherits | `<prefix>-<env>-model-config`, item `config_id` = `pipeline`; a topic's own on its item in `<prefix>-<env>-topics` | `pipeline-config set --research-interval-hours N`; for one topic, `topics create\|update --research-interval-hours N` (`""` clears it) | 1 hour |
 | The stagger: the minutes between one topic's schedules and the next (`stagger_minutes`; 0 turns it off), then `topics reschedule` to apply it | same item | `pipeline-config set --stagger-minutes N`, `topics schedule`, `topics reschedule` | 5 minutes: slot 1 researches at :05 past, slot 2 at :10, ...; the daily cycles start one slot past the hour's last heartbeat (topics × 5 minutes), then one slot apart |
 | A topic's slot in the stagger (`stagger_slot`), and the schedules written for it (`research_schedule`, `daily_schedule`) | `<prefix>-<env>-topics`, one item per topic | `topics create\|update --stagger-slot N` (`""` for the next free one); `topics schedule` shows them | The next free slot when the topic is created or first edited |
 | A topic paused: no research tick, no candidate ideas, no article until it is resumed (`paused`, `paused_at`, `resumed_at`); its schedules disabled; "Paused" on its page; a musing each way | same item | `topics pause <topic_id>`, `topics resume <topic_id>` | Running |
-| The fresh-data review of each draft | same item | `pipeline-config set --review-mode off\|shadow\|enforce`, `--review-on-unavailable hold\|note` | `shadow`; hold |
+| The fresh-data review of each draft (`review_mode`), and what enforce mode does when a review cannot run (`review_on_unavailable`, pipeline-wide only). A topic's own `review_mode` wins over the pipeline-wide one | `<prefix>-<env>-model-config`, item `config_id` = `pipeline`; a topic's own `review_mode` on its item in `<prefix>-<env>-topics` | `pipeline-config set --review-mode off\|shadow\|enforce`, `--review-on-unavailable hold\|note`; for one topic, `topics create\|update --review-mode off\|shadow\|enforce` (`""` clears it on update) | `shadow`; hold |
 | Who may reach the operator's assistant | same item | `pipeline-config set --assistant-access open\|allowlist\|off` | `open` |
 | Security incidents: listing them, marking one seen or dealt with, opening one by hand | `<prefix>-<env>-security-events`, one item per incident | `security list`, `security acknowledge\|resolve\|reopen <event_id>`, `security open --severity … --summary …` | Opened automatically; a high one emails the alert address |
 | A user locked out of the assistant after failed sign-ins | `<prefix>-<env>-sign-ins`, one item per sign-in event | `sign-ins list`, `sign-ins unlock <username>` | Locked after 5 failures in 15 minutes; lifts by itself |
@@ -285,7 +292,7 @@ then on, for good), what he cut when he published it after `defang_after_days` (
 | A topic's goal rotation (`editorial_goal_rotation`): 2 to 7 editorial goals, each `{"name", "primary_focus"}`, taken in turn so one set of findings is written up from different sides ([common/goal_rotation.py](../lambdas/common/goal_rotation.py)). Each goal's focus stands in for `editorial_goals.primary_focus`; the topic's `exclusion_criteria` apply to every goal. New findings get the goal after the one used last; with nothing new, the daily run *revisits* the findings of the last set (still unexpired, the day's subject's only on a rotating topic) under the next goal not yet used on them, and stops (`no_findings`) once every goal has had them. The state is `goal_rotation_state` on the topic item (subject key, or `*` for the whole topic, to the goal used last, the goals used on the current set and its oldest and newest `captured_at`), written by the daily cycle. An article records its goal as `editorial_goal`, and `revisit` when it was one; a revisit's research is not counted again. Ignored on a topic with a daily editorial goal (the crypto feed) | same item | `topics create\|update --goal-rotation-json '[...]'` (`'[]'` clears it; the state is kept) | No rotation: one goal, and nothing new writes nothing |
 
 Seeding the model tables, with a sample item, is in
-[The model registry](deployment-runsheet.md#the-model-registry-seeding-and-rotation).
+[The model registry](models.md).
 
 ## The model catalog's environment variables
 
@@ -376,6 +383,77 @@ commands).
 | Actions' default `GITHUB_TOKEN` read-only; fork pull requests wait for approval | So a workflow from a stranger's pull request cannot write or deploy. |
 | Secret scanning, push protection, Dependabot alerts, private vulnerability reporting | Public repositories only, or a paid plan. |
 
+## Adapter settings
+
+A topic's `adapter_config` is an object on its item in `<prefix>-<env>-topics`, read only by the
+topic's adapter. Set it with `topics create --config-json '{...}'`. `topics update <id>
+--adapter-config-json '{...}'` replaces the whole object, so read it with `topics get <id>`, edit it,
+and send all of it back. Every key below is optional, and each adapter's docstring
+(`lambdas/common/adapters/`) is the source for them. A topic created without an adapter uses
+`web_search`. The vision adapters' keys are in [A `satellite_vision` topic](#a-satellite_vision-topic)
+and [A `rail_access` topic](#a-rail_access-topic). The optional API keys are in
+[SSM Parameter Store](#ssm-parameter-store), never in `adapter_config`.
+
+A number an adapter cannot read (a word where a number goes) fails the topic's research tick, with
+the reason in its log. The exception is `github_trending`, whose numbers fall back to their
+defaults.
+
+### A `github_trending` topic
+
+One GitHub Search API request per tick, for the most-starred repositories created in the last few
+days (`lambdas/common/adapters/github_trending.py`). A tick is material when a repository never
+reported for the topic appears, or a known one gains at least 100 stars or 20%.
+
+| Key | Default | What it does |
+|---|---|---|
+| `language` | none | Only repositories in this language, e.g. `"python"`, as GitHub names it (`"Jupyter Notebook"` works). |
+| `created_within_days` | 7 | How far back "new" reaches, 1 to 30. A value outside that range is moved to the nearest end. |
+| `min_stars` | 0 | Leave out repositories with fewer stars than this. |
+| `keywords` | none | Keep only repositories whose name or description mentions one of these as a whole word; a trailing `*` matches a prefix (`"crypto*"`). With keywords, 100 results are examined instead of 25; at most 25 are kept either way. |
+
+### A `hacker_news` topic
+
+The current Hacker News top stories, through the official API, one request per story
+(`lambdas/common/adapters/hacker_news.py`). A tick is material when a story never reported for the
+topic appears, or a known one gains at least 100 points or 50%.
+
+| Key | Default | What it does |
+|---|---|---|
+| `keywords` | none | Keep only stories whose title mentions one of these as a whole word; a trailing `*` matches a prefix. With keywords, at most 25 of the matching stories are kept. |
+| `limit` | 25, or 60 with `keywords` | How many of the top stories to read. Without `keywords`, every story read is kept. |
+
+### A `web_search` topic
+
+Runs the topic's searches and merges the results (`lambdas/common/adapters/web_search.py`, over
+`lambdas/common/web_search.py`). A query whose search fails is skipped for that tick, and the
+others still run.
+
+| Key | Default | What it does |
+|---|---|---|
+| `queries` | the topic's name | A list of search strings, run in turn and merged. With neither `queries` nor `query`, the search is the meaningful words of the topic's name, joined with OR. |
+| `query` | none | One search string, used when `queries` is not set. |
+| `max_results` | 10 | How many results a tick keeps across all its queries, at most 25. Each query also asks for this many. |
+| `max_age_hours` | 24 | Only results published this recently. |
+| `title_keywords` | each query's own words | Keep only results whose title mentions one of these as a whole word; a trailing `*` matches a prefix. Unset, each query's own topical words are used: quoted phrases whole, without `OR`/`AND`/`NOT`, `field:value` operators, `-negated` terms and words under three letters. `[]` turns the filter off. |
+| `provider` | the `WEB_SEARCH_PROVIDER` environment variable, else `"gdelt"` | The search backend: `"gdelt"` or `"agentcore"`. When the AgentCore gateway is configured, a failed GDELT search is retried once through it. An unknown name fails every query, so the topic finds nothing. |
+| `min_new_results` | 1 | How many results never reported for the topic make a tick material. Raise it for fewer, larger Findings. |
+
+### A `crypto_feed` topic
+
+CoinGecko market data and crypto news, shaped by the day's editorial goal
+(`lambdas/common/adapters/crypto_feed.py`, `lambdas/common/editorial_goals.py`). The goal is one
+of four, drawn at random for each UTC day from the date, so the research tick and the daily cycle
+always agree on it. The anchors are always Bitcoin and Ethereum; the old `coin_ids` key is no longer
+read. The admin API forces `is_financial` on for this adapter, so every article is held for review,
+and a goal rotation (`editorial_goal_rotation`) is ignored.
+
+| Key | Default | What it does |
+|---|---|---|
+| `editorial_goal` | none: the day's draw | Pins one goal instead of the draw: `ALTCOIN_DEEP_DIVE`, `WEB_AGGREGATOR`, `TREND_INVENTOR` or `MARKET_NEWS` (any case). The research tick, the daily cycle and the fresh-data review all follow it. An unknown name is ignored, and the day's draw used. |
+| `web_search_queries` | `(bitcoin OR ethereum OR cryptocurrency OR crypto)` | The crypto news searches, a list of strings: the whole of a `WEB_AGGREGATOR` day, and the headlines beside the coin data on an `ALTCOIN_DEEP_DIVE` or `TREND_INVENTOR` day. A result's title must contain a word from the adapter's fixed crypto list. |
+| `market_news_queries` | one query on stocks, interest rates, inflation, central banks, earnings, bond yields, oil prices and the economy | The general-market news searches for a `MARKET_NEWS` day, a list of strings. A headline that mentions crypto is dropped. |
+| `web_search_provider` | as `web_search`'s `provider` | The search backend for both kinds of news search. |
+
 ## Vision and rail access
 
 The vision work (the `satellite_vision` and `rail_access` topics, the vision worker and the
@@ -396,7 +474,7 @@ turns the worker on in production at the next release: `terraform-production-rel
 value. To keep production off until the dev trial is done, set `VISION_ENABLED` to `false` on the
 `production` environment; set it to `true` there to turn it on there alone. The bootstrap must have
 been re-applied with `vision_region` first: that is what gives the deploy role the right to create
-the worker ([the runsheet's steps](deployment-runsheet.md#vision-optional)).
+the worker ([the runsheet's steps](vision-runsheet.md#turning-the-worker-on)).
 
 ### Terraform variables
 
@@ -491,7 +569,7 @@ Melbourne Tuesday and Saturday, Singapore Wednesday and Sunday, Boston Thursday)
 runs every day and writes about the day's city alone, and the topic field `findings_window_hours`
 is 192 ([DynamoDB settings](#dynamodb-settings-changed-with-no-deploy)): Boston's 7 days between
 its Thursdays plus a day, so each article drafts every Finding about its city since that city's
-last. The runsheet's [rail_access topics](deployment-runsheet.md#rail_access-topics) creates it
+last. The runsheet's [rail_access topics](vision-runsheet.md#rail_access-topics) creates it
 and says how to add a city. In dev, `rail-cities` has since moved to a city a week, written up
 from four sides ([RailVisionSeeding.md, section 7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)).
 
@@ -504,7 +582,7 @@ from four sides ([RailVisionSeeding.md, section 7](RailVisionSeeding.md#7-a-city
 | `backend` | `"opencv"` | Or `"cool"`, once a COOL worker exists. |
 | `params` | `{}` | Rail parameter overrides, any of the `RailParams` fields in [vision.md's table](enhancements/archive/vision.md#the-rail-tasks-request), within the worker contract's bounds (checked before any call); among them `stop_reach_m` (400: the straight-line walking reach of a mapped bus, tram or ferry stop, 5 minutes at 80 m a minute) and `feeder_reach_m` (2000: how far beyond a station's own reach its hinterland is read for feeder coverage; at least `reach_m`). The stop measures are reported, never material, and these two are left out of the baseline's comparability key, so changing them starts no new baseline. |
 | `reach_m` | 1000 | Walking reach of a station, straight-line metres, 200 to 5000 (the contract's bounds). Always sent to the worker; a `reach_m` in `params` wins over it. |
-| `osm_ttl_days` | 30 | How long a city's stored OpenStreetMap network serves before it is fetched again; more than 0 and at most 365. A network stored before the stops layer (every bus and tram stop as bare points) carries none, so the city's stop measures stay absent (`no_stops_layer`, not zero) and it gets no transit-reach map until that refresh or a `network_prefetch` ([the runsheet](deployment-runsheet.md#rail_access-topics)). |
+| `osm_ttl_days` | 30 | How long a city's stored OpenStreetMap network serves before it is fetched again; more than 0 and at most 365. A network stored before the stops layer (every bus and tram stop as bare points) carries none, so the city's stop measures stay absent (`no_stops_layer`, not zero) and it gets no transit-reach map until that refresh or a `network_prefetch` ([the runsheet](vision-runsheet.md#rail_access-topics)). |
 | `max_cloud_cover` | 40 | Scene-level cloud filter in the search, %. |
 | `lookback_days` | 20 | How far back to search for a scene. |
 | `coverage_floor` | 0.6 | 0 to 1. Below it a scene is never material and never part of a baseline, and never the first observation. |
