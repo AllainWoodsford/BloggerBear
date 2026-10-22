@@ -1,0 +1,91 @@
+{
+ "topics": {
+  "rail-cities": {
+   "read": "read",
+   "error": null,
+   "items": 6,
+   "cut": false
+  },
+  "ships-botany": {
+   "read": "read",
+   "error": null,
+   "items": 1,
+   "cut": false
+  }
+ },
+ "articles": [
+  {
+   "article_id": "afcc908c-e08f-457a-9594-b8140ce388fb",
+   "topic_id": "rail-cities",
+   "status": "pending_moderation",
+   "published_by": null,
+   "created_at": "2026-10-20T22:46:09.784350+00:00",
+   "published_at": null,
+   "research_captured_at": []
+  },
+  {
+   "article_id": "e5c6f5df-57bc-4764-b478-674b2590651f",
+   "topic_id": "rail-cities",
+   "status": "published",
+   "published_by": "humans",
+   "created_at": "2026-10-19T22:46:21.628777+00:00",
+   "published_at": "2026-10-20T03:40:36.311895+00:00",
+   "research_captured_at": []
+  },
+  {
+   "article_id": "5faa713a-b554-4e4b-b926-13e67df4124c",
+   "topic_id": "rail-cities",
+   "status": "published",
+   "published_by": "humans",
+   "created_at": "2026-10-18T22:46:10.124346+00:00",
+   "published_at": "2026-10-20T03:40:21.105671+00:00",
+   "research_captured_at": [
+    "2026-10-16T23:11:46.590120+00:00",
+    "2026-10-18T13:25:28.644170+00:00"
+   ]
+  },
+  {
+   "article_id": "48177e8a-3144-4ad8-a37e-8fdc0e2648ba",
+   "topic_id": "rail-cities",
+   "status": "published",
+   "published_by": "humans",
+   "created_at": "2026-10-17T22:46:14.075297+00:00",
+   "published_at": "2026-10-18T21:50:55.016303+00:00",
+   "research_captured_at": []
+  },
+  {
+   "article_id": "9b038f33-7d71-4ac2-8583-94b6a563a574",
+   "topic_id": "rail-cities",
+   "status": "published",
+   "published_by": "humans",
+   "created_at": "2026-10-17T00:42:19.150304+00:00",
+   "published_at": "2026-10-17T00:55:17.284314+00:00",
+   "research_captured_at": [
+    "2026-10-16T23:15:39.758714+00:00",
+    "2026-10-17T00:41:33.213159+00:00"
+   ]
+  },
+  {
+   "article_id": "cedc22f7-f5aa-41e9-b701-7bcb4ee05f1a",
+   "topic_id": "rail-cities",
+   "status": "published",
+   "published_by": "humans",
+   "created_at": "2026-10-16T22:25:48.847305+00:00",
+   "published_at": "2026-10-17T00:54:55.162295+00:00",
+   "research_captured_at": [
+    "2026-10-16T13:05:11.008258+00:00"
+   ]
+  },
+  {
+   "article_id": "acce7947-174e-4f5b-bc3b-86c07177dec9",
+   "topic_id": "ships-botany",
+   "status": "pending_moderation",
+   "published_by": null,
+   "created_at": "2026-10-20T22:30:14.377204+00:00",
+   "published_at": null,
+   "research_captured_at": [
+    "2026-10-20T13:13:52.639077+00:00"
+   ]
+  }
+ ]
+}
