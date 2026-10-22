@@ -10,7 +10,7 @@ article shows (its text and its maps), how to create and check it, and how it di
 Background, not repeated here: [what the rail task measures](architecture/blogger-vision.md#part-two-the-trains-explainer),
 every config key ([configuration.md, A `rail_access` topic](configuration.md#a-rail_access-topic)),
 the rota design ([dailysubject_hook.md](enhancements/archive/dailysubject_hook.md)) and the cadence in
-detail ([deployment-runsheet.md, rail_access topics](deployment-runsheet.md#rail_access-topics)).
+detail ([vision-runsheet.md, How the cadence works](vision-runsheet.md#how-the-cadence-works)).
 
 ## Contents
 
@@ -89,7 +89,7 @@ or waiting time. Both carry a fixed caption with the Copernicus and OpenStreetMa
 stored with the Finding (`figures`) and copied to the article page when it is published. A city
 whose stored network predates the stops layer has no transit-reach map (and no stop measures:
 the quality flag `no_stops_layer`) until the network is refreshed at its TTL or prefetched
-([deployment-runsheet.md, rail_access topics](deployment-runsheet.md#rail_access-topics)).
+([vision-runsheet.md, rail_access topics](vision-runsheet.md#rail_access-topics)).
 
 **What the article shows today:** `common/figures.py` `figures_for_findings` takes the figures of
 the Findings drafted, newest first, each once, at most **3** (`MAX_FIGURES_PER_ARTICLE`). Because
@@ -221,7 +221,7 @@ python scripts/admin_cli.py $A findings list rail-cities --next-article
 ```
 
 `--next-article` answers for today's city on Sydney's calendar. A city with no Finding: see
-[deployment-runsheet.md, rail_access topics](deployment-runsheet.md#rail_access-topics) (cloud
+[vision-runsheet.md, rail_access topics](vision-runsheet.md#rail_access-topics) (cloud
 cover, `last_error`, the network).
 
 **6. Optional: the first article now** (otherwise it comes at the topic's staggered daily slot:
@@ -302,7 +302,7 @@ most 1000 characters, so count them: `python -c 'import json; [print(g["name"], 
 the topic's `editorial_goals.exclusion_criteria` apply to all four). Until a city's network
 carries its stops layer, its Finding has no stop measures and no transit-reach map (`no_stops_layer`),
 so a `transit` article drafted from it has only the rail-only share to report: prefetch the
-networks first ([the runsheet](deployment-runsheet.md#rail_access-topics)):
+networks first ([the runsheet](vision-runsheet.md#rail_access-topics)):
 
 ```json
 [

@@ -314,10 +314,11 @@ would refuse its token, because the repository in the token would not match.
 
 1. Make any small change under `infra/`, `lambdas/` or `frontend/` on a branch off `dev` (a
    comment is enough: a merge that changes only docs starts no deploy), open a pull request
-   into `dev`, and watch the checks: the security scans, lint, tests,
-   Terraform validate, and the secret and personal-data scans. They need no AWS access.
-2. Merge it. The `terraform` workflow runs the same checks again, assumes the dev role and applies
-   `infra/environments/dev`. The first apply creates everything (tables, buckets, Lambdas, APIs,
+   into `dev`, and watch the checks: the security scans, Terraform validate and test, and the
+   secret and personal-data scans, and lint and tests when the change touches `lambdas/` or
+   `scripts/`. They need no AWS access ([ci-and-checks.md](ci-and-checks.md) lists every one).
+2. Merge it. The `terraform` workflow runs the security scans, lint and tests again on what is
+   about to be applied, assumes the dev role and applies `infra/environments/dev`. The first apply creates everything (tables, buckets, Lambdas, APIs,
    web ACLs, dashboards, the static site). It takes about 10 to 20 minutes, mostly CloudFront.
 3. Confirm the alarm subscription email AWS sends to `<your-email>`.
 4. Read your addresses from the dev state:
@@ -390,6 +391,10 @@ More, from building and running the original: [friction.md](friction.md).
 ## 10. Where next
 
 - **Production and your domain:** [production-runsheet.md](production-runsheet.md).
+- **Changing or rotating the model**, and how the model catalog keeps prices current:
+  [models.md](models.md).
+- **Satellite vision and the Rail Access Monitor** (off by default):
+  [vision-runsheet.md](vision-runsheet.md).
 - **Protect your branches** (pull requests only, no force-pushes): the archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md).
 - **The operator's assistant** (`<site>/ask.html`): create a user as in
   [After the first deploy](deployment-runsheet.md#5-after-the-first-deploy), step 5.

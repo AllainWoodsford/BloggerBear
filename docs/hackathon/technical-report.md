@@ -85,7 +85,7 @@ map, and a person approves every article, because the numbers are proxies.
 
 - **The operator-publisher.** One person runs BloggerBear.
   - They create the rail topic with one command (`scripts/rail_topics.example.json`, the runsheet's
-    [`rail_access` topics](../deployment-runsheet.md#rail_access-topics)), switch it to a city a
+    [`rail_access` topics](../vision-runsheet.md#rail_access-topics)), switch it to a city a
     week with three editorial goals ([RailVisionSeeding.md §7](../RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides)),
     and approve or reject each held article from the review inbox (`python scripts/admin_cli.py
     inbox`, `approve`).
@@ -376,7 +376,7 @@ the account id or the role ARN), from the export's `provenance.json`]
 
 **Deployment is opt-in.** Nothing of vision is created until the `VISION_ENABLED` repository
 variable is `true`; the bootstrap is re-applied by hand with `vision_region` first
-([runsheet](../deployment-runsheet.md#vision-optional)).
+([runsheet](../vision-runsheet.md#turning-the-worker-on)).
 
 ## 6. Evaluation
 
@@ -723,7 +723,7 @@ tokens a turn, and no agent call at all unless a number moved.
 `demo-sydney`) has thresholds of 0, which exist only to make the agent run for the demonstration:
 its second clear scene goes to the agent whatever the numbers did. Its first tick is steered to an
 older clear scene with a temporary `max_cloud_cover`, so that its second tick triages on a known
-day ([runsheet: the demo topic's two-tick procedure](../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided)).
+day ([runsheet: the demo topic's two-tick procedure](../vision-runsheet.md#the-demo-topics-two-tick-procedure)).
 Its articles are rejected in the inbox, never published, and it is counted apart from the cities
 everywhere. [R2: whether the procedure ran, its dates, and that its articles were rejected]
 

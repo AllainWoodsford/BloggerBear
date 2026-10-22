@@ -360,7 +360,7 @@ attach it to distributions in the account that owns it.
 
 ## Vision (optional)
 
-The vision worker ([deployment-runsheet.md, Vision (optional)](deployment-runsheet.md#vision-optional))
+The vision worker ([vision-runsheet.md](vision-runsheet.md#turning-the-worker-on))
 is off by default and nothing of it exists until you turn it on. With two accounts:
 
 - **The bootstrap, in each account you turn it on in.** The deploy roles' rights to create the

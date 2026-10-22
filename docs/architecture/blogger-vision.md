@@ -246,7 +246,7 @@ one policy on the operator's assistant's MCP server role, to read the worker's l
 running state. The switch is a GitHub repository variable fed to Terraform as `vision_enabled`
 (`TF_VAR_vision_enabled` in both apply workflows), never a tfvars edit; the bootstrap must have
 been re-applied with `vision_region` first. The steps are in the
-[deployment runsheet](../deployment-runsheet.md#vision-optional) and the settings in
+[vision runsheet](../vision-runsheet.md#turning-the-worker-on) and the settings in
 [configuration.md](../configuration.md#vision-and-rail-access).
 
 ### The two tasks
@@ -638,7 +638,7 @@ holds a site or station name, an error's message, a news title or host, or the a
 (only its hash); the ring keeps the reason and the hosts for the page's "(unverified)" cells.
 What is recorded where, the events and the queries that read them are in
 [the evidence trail](../enhancements/archive/vision-evidence.md) and the
-[runsheet](../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided).
+[runsheet](../vision-runsheet.md#evidence-what-the-pipeline-measured-and-decided).
 
 ### Licences and credits
 

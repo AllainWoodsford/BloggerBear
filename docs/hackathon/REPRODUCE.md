@@ -143,12 +143,12 @@ commands are bash; on Windows run them in Git Bash ([setup guide](../setup-guide
 
 1. **The first deploy:** the [setup guide](../setup-guide.md) (the bootstrap, the setup script,
    a merge into `dev`).
-2. **Turn the vision worker on:** the runsheet's [Vision (optional)](../deployment-runsheet.md#vision-optional)
+2. **Turn the vision worker on:** the [vision runsheet](../vision-runsheet.md#turning-the-worker-on)
    (re-apply the bootstrap with `vision_region`, set the `VISION_ENABLED` repository variable,
    deploy).
-3. **Create the rail topic and run one tick per city:** the runsheet's
-   [`rail_access` topics](../deployment-runsheet.md#rail_access-topics), "Create the topic" and
-   "The first-deploy check". It is created from the template, `scripts/rail_topics.example.json`,
+3. **Create the rail topic and run one tick per city:** the vision runsheet's
+   [Create the topic](../vision-runsheet.md#create-the-topic) and
+   [The first-deploy check](../vision-runsheet.md#the-first-deploy-check-one-tick-per-city). It is created from the template, `scripts/rail_topics.example.json`,
    whose rota gives each city weekdays. A large city's first tick fetches its network and the next
    one measures it; each city's first clear scene is its first observation, a Finding.
    **Then switch it to a city a week, as the live topic is**, before any article is approved:
@@ -157,8 +157,8 @@ commands are bash; on Windows run them in Git Bash ([setup guide](../setup-guide
    first tick of each city's week writes its weekly reading (its newest clear scene, no change
    claimed), and the daily run holds an article for you from it each day under the next goal:
    access, then the network's flags, then the simulated links.
-4. **Read what it did:** the runsheet's
-   [evidence queries](../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided)
+4. **Read what it did:** the vision runsheet's
+   [evidence queries](../vision-runsheet.md#the-queries)
    in CloudWatch Logs Insights, or ask the operator's assistant "what did the vision agent do for
    rail access this week?" (`vision_evidence`; [the evidence trail](../enhancements/archive/vision-evidence.md#asking-the-assistant)).
 5. **See the agent decide on a known day:** the runsheet's demo topic, "The demo topic's two-tick

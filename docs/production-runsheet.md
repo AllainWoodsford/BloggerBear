@@ -167,8 +167,9 @@ For production it sets `AWS_PROD_DEPLOY_ROLE_ARN` (required), and, if you give t
 full table, and why each is a secret or a variable, is in
 [configuration.md](configuration.md#github-secrets-and-variables). Your IP is not among them: after
 production's first release, let yourself in to its admin API with
-`python scripts/admin_allowlist.py set --env production --my-ip`
-([configuration.md](configuration.md#the-admin-apis-address-allowlist)).
+`python scripts/admin_allowlist.py set --env production --my-ip --prefix <your prefix>` (and
+`--region <your region>` if it is not `ap-southeast-2`;
+[configuration.md](configuration.md#the-admin-apis-address-allowlist)).
 
 It does not ask where the web search gateway runs: unset, production's is in `ap-northeast-1`
 (Tokyo), like dev's. To choose another Region, see
@@ -232,9 +233,10 @@ Then, in order:
    `<prefix>-production-model-config`) the same way as dev's (`<prefix>` is your
    `UNIQUE_NAME_PREFIX`, `bloggerbear` by default):
    [deployment-runsheet.md, "Optional, but recommended"](deployment-runsheet.md#optional-but-recommended).
-   The model catalog fills and reprices production's registry by itself from the first Tuesday
-   (on by default); `models discover` does it now, and `model-catalog get` shows what it did
-   ([the model registry, step 4](deployment-runsheet.md#the-model-registry-seeding-and-rotation)).
+   The model catalog fills and reprices production's registry by itself from its first run
+   (every second day, 02:00 and 03:00 Sydney; on by default); `models discover` does it now, and
+   `model-catalog get` shows what it did
+   ([models.md, the model catalog](models.md#the-model-catalog-discovery-prices-and-the-weekly-cycle)).
 5. **Smoke-test in a browser**: the home page, an article, the Stats page, `/rss.xml`, a thumbs-up
    on an article (this exercises the feedback token), and `https://www.<your domain>` (should land
    on the bare domain).
@@ -297,7 +299,7 @@ and why each is needed, are in
 ## Vision (optional)
 
 The vision worker and its topics
-([deployment-runsheet.md, Vision (optional)](deployment-runsheet.md#vision-optional)) are off in
+([vision-runsheet.md](vision-runsheet.md#turning-the-worker-on)) are off in
 production by default. **Leave it off unless the dev run was satisfactory:** a vision topic that
 ran on dev for a few ticks, with a held article whose figure and numbers you read and approved,
 and no `last_error` repeating in its running state. Off by default holds only while the repository

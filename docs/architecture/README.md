@@ -11,7 +11,7 @@ same shape: why the feature exists, a diagram, the steps, and where each step li
 Two of the pages have a matching entry in the operator's assistant: ask it about the feature, and
 it walks through the same steps with this environment's resource names on screen (`architecture`
 with `feature`, in `lambdas/ops_mcp/architecture.py`): `architecture(feature="article-research")`
-and `architecture(feature="vision-pipeline")`. The other three say at the top which of the
+and `architecture(feature="vision-pipeline")`. The other five say at the top which of the
 assistant's named parts to ask about instead. Where vision is on, the assistant also reads the
 vision worker's log in `vision_region` and each vision topic's running state
 ([ops-assistant-vision.md](../enhancements/archive/ops-assistant-vision.md)).
@@ -23,6 +23,8 @@ vision worker's log in `vision_region` and each vision topic's running state
 | [The operator's assistant: the ops agent and its MCP server](ops-mcp-agent.md) | How a question becomes a spoken answer with the fixes on screen: the ask page and its sign-in, the one API, the Strands agent on Bedrock, the read-only MCP server and its tools, what they read and what comes back. What it can and cannot do, how read-only is held in IAM, and what it costs. |
 | [Alexa+: the assistant by voice](alexa-plus.md) | How the same assistant is reached through Alexa+: the add-on, OAuth discovery and account linking, every call's path, the briefing a voice cannot wait for, the firewall review in production, what is said aloud and what is not, and the limits. |
 | [The admin CLI and the admin API](admin-cli.md) | How a decision the operator types becomes a change in the pipeline: the local script and its SigV4 signing, the allowlist and IAM in front of the API, the one Lambda behind it, what each group of commands writes (topics and their schedules, decisions on articles, models and settings), and how the CLI and the assistant divide the work. |
+| [The site, the bear and reader feedback](site-and-feedback.md) | How a reader's visit and vote become the bear's mood, gear and musings: the public site and its API, a vote's path through the honeypot, the token, the comment screen and the limits, the weekly reflection that turns feedback into gear, wear and repair, the Musings page, and Professor Grizzlewick's reviews. |
+| [Stats and costs](stats-and-costs.md) | How every model call and request becomes a number on the Stats page: lineage on each article, the tracked categories, the weekly rollover, the daily Cost Explorer poll, and what to do about a missed week. |
 
 ## Adding a feature
 

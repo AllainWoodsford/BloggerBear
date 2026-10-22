@@ -42,6 +42,9 @@ python scripts/admin_allowlist.py show --env dev           # what each place hol
 python scripts/admin_allowlist.py sync --env dev           # copy the stored list out again
 ```
 
+It reads no environment variable for its names: it assumes the prefix `bloggerbear` and the region
+`ap-southeast-2` unless you pass `--prefix <your UNIQUE_NAME_PREFIX>` and `--region <your region>`.
+A fork that leaves `--prefix` out writes the original deployment's parameter name and is refused.
 It needs boto3 (`scripts/requirements.txt`) and your own AWS credentials. Why, and what it touches:
 [configuration.md](../docs/configuration.md#the-admin-apis-address-allowlist).
 
@@ -244,11 +247,11 @@ python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5
     --input-price 0.001 --output-price 0.005
 # (USD per 1K tokens. Confirm against the Bedrock price page for your region -- a
 # geographic inference profile can cost more than the provider's list price.)
-# The model catalog keeps this list and its prices current by itself
-# (docs/enhancements/model-catalog-refresh.md): every Tuesday 03:00 Sydney it adds every model the
-# account can call, from every provider, switched off; every Wednesday it reprices every model.
-# A changed price is used at once and checked 1 and 2 hours later; one a check cannot confirm
-# goes back to the old price (a failed-executions row). `models add` with the same id switches a
+# The model catalog keeps this list and its prices current by itself (docs/models.md): every
+# second day (odd days of the month) at 02:00 Sydney it adds up to 5 models the account can call,
+# from every provider, switched off; at 03:00 it reprices up to 50. A changed price is used at once
+# and checked 1 and 2 hours later; one a check cannot confirm goes back to the old price (a
+# failed-executions row). On Fridays at 04:00 it refreshes the topics' rotation lists. `models add` with the same id switches a
 # discovered model on; --lock-price keeps the reprice off a price you set on purpose.
 python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0" \
     --display-name "Claude Haiku 4.5" --provider anthropic \
@@ -286,14 +289,14 @@ that writes about one city a day, with a 192-hour `findings_window_hours`, so ea
 drafts every Finding about it since its last one)
 is a complete admin API topic body in [`rail_topics.example.json`](rail_topics.example.json).
 `topics create` takes a topic as flags, not a file:
-[docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics)
+[docs/vision-runsheet.md, `rail_access` topics](../docs/vision-runsheet.md#rail_access-topics)
 has the lines that read each field out of the file, and how to add a city and check its box.
 The file gives each city weekdays; the live `rail-cities` was switched to a city a week
 (Melbourne, Singapore, Boston, Sydney) with a weekly reading and four goals taken in turn:
 [docs/RailVisionSeeding.md §7](../docs/RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides).
 
-Setting the registry up on a new deployment, with a sample `model-config` item, is in
-[docs/deployment-runsheet.md](../docs/deployment-runsheet.md#the-model-registry-seeding-and-rotation).
+Which model a call uses, rotation, the model catalog's discovery and repricing, and setting the
+registry up on a new deployment, with a sample `model-config` item: [docs/models.md](../docs/models.md).
 
 `models`/`model-config` back the AI lineage/cost-tracking enhancement's
 DynamoDB-backed model registry (docs/project-plan.md §11) -- adding a
@@ -423,9 +426,13 @@ python scripts/admin_cli.py topics resume wow-forever
 
 Two things need a person, and both are covered:
 
-1. **Articles in the moderation queue.** Financial topics (crypto) always wait for
-   you, by design. Others land here when the compliance or fresh-data review held them, and the reasons
-   are shown. (Every article that needs a decision has a queue item, so this is all of them.)
+1. **Articles in the moderation queue.** Financial topics (crypto) always land here, by design, and
+   others when the compliance or fresh-data review held them, with the reasons shown. An article that
+   has waited two days or more may be decided for you by Professor Grizzlewick, the reviewer bear,
+   financial ones included (each he approves is flagged for you to check): turn his approvals off
+   with `reviewer set --may-approve off`, or per topic, if you want every decision yourself
+   ([docs/enhancements/reviewer-bear.md](../docs/enhancements/reviewer-bear.md)). Topics with
+   `force_manual_review` (every vision topic) always wait for you. (Every article that needs a decision has a queue item, so this is all of them.)
 2. **Prompt-change proposals** from the weekly reflection. Approving one changes how future articles on
    that topic are written.
 
@@ -516,8 +523,9 @@ python scripts/admin_cli.py refinements approve TOPIC VERSION --scope backpack  
 ```
 
 Wearing is not the same as using. The topic's rings are used in every article, but the bear takes in only
-*some* of its worn armor each time: a random number of pieces, at least one, chosen at random. The article
-records which pieces it used.
+*some* of its worn armor each time: a random number of pieces, anywhere from none to all of it, chosen at
+random, and not the same set twice running when another is possible. The article records which pieces it
+used.
 
 **Make your own gear.** You do not have to wait for readers: write the guidance yourself and it becomes gear at
 once (approved, named, given a rarity and durability) and, by default, is put on.
@@ -591,13 +599,15 @@ being *worn* is affected, so an upvote on some old article does not revive gear 
   `equipment equip` it. Gear at 0 durability can't be equipped until it is repaired.
 
 Each article records which gear was in the prompts that wrote it (`equipment_used`: topic, version and slot
-per piece; an empty list means none). Nothing reads it yet: it is there so a later change can measure whether
-gear helps, and share out wear. It is never shown publicly.
+per piece; an empty list means none). Reader feedback wears exactly that gear (a downvote costs each piece one
+point of durability, an upvote gives one back: `lambdas/common/wear.py`), and the article's page shows it as a
+small "Equipment used" record beside the lineage footer.
 
 ## Fixing a musing: `musings`
 
-A musing is written once, when its article is published, and nothing writes it again. So one that
-went out blank (a mood and a link, then no text) stays blank until you fix it here. None of these
+A musing is written once, when its article is published. One that went out blank (a mood and a link, then
+no text) stays blank until you fix it here, or until Professor Grizzlewick's next run, which writes blank
+musings from the last week again. None of these
 touch the article: no rewrite, no re-publish, no new date.
 
 ```bash
@@ -845,7 +855,7 @@ no-data cases) was not met. Both subcommands run on Windows as well as Linux and
 
 Each writes one run file (`--out DIR`, `--tag`) with the code, machine, build and inputs it ran
 on, and runs in CI on a synthetic city with scripted parts; on real data they are the operator's
-runs (the runsheet's [evaluation runs](../docs/deployment-runsheet.md#the-evaluations-real-data-runs),
+runs (the runsheet's [evaluation runs](../docs/evaluation-runsheet.md#the-evaluations-real-data-runs),
 bash and PowerShell). Every real-data run HEADs its scenes first and refuses one whose pinned ETag
 moved ("input changed"); `--cache [DIR]` answers the worker's reads from DIR after the first.
 
@@ -917,7 +927,7 @@ the counterfactuals and the stability run build on.
 Built on the same driver, each writes one run file (`--out DIR`, `--tag`) and runs in CI with
 `--synthetic` (the driver's synthetic city, the worker in this process, the model scripted, no
 network); on real data they are the operator's runs (the runsheet's
-[evaluation runs](../docs/deployment-runsheet.md#the-evaluations-real-data-runs), steps 6 to 8,
+[evaluation runs](../docs/evaluation-runsheet.md#the-evaluations-real-data-runs), steps 6 to 8,
 bash and PowerShell).
 
 ```bash
@@ -1045,7 +1055,7 @@ renders it) as Markdown, from an export (`--from`) or live (`--env`): `--scene` 
 `latest`, and `--site` is needed when the topic has several sites and the scene does not say which
 (the rotating `rail-cities`). **`agreement`** recounts `summary.json`'s agreement once the
 operator has filled `labels.csv` in (O9). The runsheet's
-[evidence export](../docs/deployment-runsheet.md#the-evidence-export-the-trace-and-the-labels-o9)
+[evidence export](../docs/evaluation-runsheet.md#the-evidence-export-the-trace-and-the-labels-o9)
 gives every command in bash and PowerShell, and what the credentials must allow.
 
 ## After changing the CLI: `generate_cli_reference.py`
@@ -1126,7 +1136,7 @@ tick failed: wait about two minutes, or until `topics findings <id>` shows
 the new Finding, before `daily_cycle`. A daily cycle started while the tick
 still runs drafts without that Finding, and if it writes an article from
 other Findings, no later window holds it
-([docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics),
+([docs/vision-runsheet.md, How the cadence works](../docs/vision-runsheet.md#how-the-cadence-works),
 "One Finding can still be missed").
 
 ## Before submitting to the competition: `submission_check.py`
