@@ -945,6 +945,20 @@
       } else if (musing.kind === "loot") {
         meta.appendChild(document.createTextNode(" · "));
         meta.appendChild(el("a", { text: "see what I am wearing", href: "#/stats" }));
+      } else if (musing.links && musing.links.length) {
+        // His report: a link to each article he published, named by its topic.
+        meta.appendChild(document.createTextNode(" · published: "));
+        musing.links.forEach(function (link, i) {
+          if (i) {
+            meta.appendChild(document.createTextNode(", "));
+          }
+          meta.appendChild(
+            el("a", {
+              text: link.topic_name || "an article",
+              href: "#/article/" + encodeURIComponent(link.article_id),
+            })
+          );
+        });
       }
       body.appendChild(meta);
       item.appendChild(body);

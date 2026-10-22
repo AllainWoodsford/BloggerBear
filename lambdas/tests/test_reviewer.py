@@ -487,6 +487,30 @@ def test_a_run_ticks_through_its_queue_and_reports_once_it_is_done(aws, monkeypa
     [report] = reports
     assert report["woken"] is True
     assert reviewer.get_state()["queue"] == []
+    assert [m["article_id"] for m in reviewer.get_state()["mentions"]] == ["a0", "a1", "a2"]
+
+
+def test_the_report_links_what_he_published_and_names_what_he_sent_back(aws):
+    put_topic(aws, "wow")
+    put_topic(aws, "f1")
+    put_article(aws, "pub", "wow")
+    put_article(aws, "back1", "f1")
+    put_article(aws, "back2", "f1")
+    state = {
+        "mentions": [
+            {"outcome": "approved", "article_id": "pub"},
+            {"outcome": "rewrite", "article_id": "back1"},
+            {"outcome": "content_rewrite", "article_id": "back2"},
+        ]
+    }
+    links, topics = reviewer.report_mentions(state)
+    assert links == [{"article_id": "pub", "topic_id": "wow"}]
+    assert topics == ["Topic f1"]
+    assert reviewer.report_facts({"approved": 1, "rewrite": 2}, topics) == [
+        "approved 1 held article",
+        "sent 2 articles back for a rewrite",
+        "the topics sent back for a rewrite: Topic f1",
+    ]
 
 
 def test_a_run_whose_tick_was_lost_is_carried_on_by_the_next(aws, monkeypatch):
@@ -535,6 +559,7 @@ def test_a_run_with_nothing_worth_saying_posts_no_report(monkeypatch):
     assert posted == []
     reviewer_handler._report({"counts": {"approved": 1}, "woken": True})
     assert posted[0]["facts"] == ["approved 1 held article"] and posted[0]["woken"] is True
+    assert posted[0]["links"] == []
 
 
 # --- task 5: the de-fanged publish ---------------------------------------------------------------

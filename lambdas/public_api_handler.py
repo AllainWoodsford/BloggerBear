@@ -741,6 +741,20 @@ def _list_musings(event: dict) -> dict:
             "created_at": m.get("created_at"),
             # A loot drop carries a snapshot of the gear it announces (already the public view).
             **({"gear": m["gear"]} if m.get("gear") else {}),
+            # His report links the articles he published, each shown by its topic's name.
+            **(
+                {
+                    "links": [
+                        {
+                            "article_id": link.get("article_id"),
+                            "topic_name": topic_names.get(link.get("topic_id")),
+                        }
+                        for link in m["links"]
+                    ]
+                }
+                if m.get("links")
+                else {}
+            ),
         }
         for m in items
     ]
