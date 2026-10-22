@@ -44,6 +44,7 @@ python scripts/admin_allowlist.py sync --env dev           # copy the stored lis
 
 It reads no environment variable for its names: it assumes the prefix `bloggerbear` and the region
 `ap-southeast-2` unless you pass `--prefix <your UNIQUE_NAME_PREFIX>` and `--region <your region>`.
+They go before the command: `python scripts/admin_allowlist.py --prefix <yours> --region <yours> set --env dev --my-ip`.
 A fork that leaves `--prefix` out writes the original deployment's parameter name and is refused.
 It needs boto3 (`scripts/requirements.txt`) and your own AWS credentials. Why, and what it touches:
 [configuration.md](../docs/configuration.md#the-admin-apis-address-allowlist).
@@ -51,7 +52,8 @@ It needs boto3 (`scripts/requirements.txt`) and your own AWS credentials. Why, a
 ## Why a CLI, not a web page
 
 The Admin API requires AWS SigV4 (IAM) auth and is additionally restricted
-to the admin's IP by a WAF allowlist. A browser page can't safely hold
+to the admin's addresses by an allowlist (the API's resource policy, plus a WAF IP set when the
+admin web ACL is on). A browser page can't safely hold
 long-lived IAM credentials to sign requests with, so this CLI signs
 requests using whatever AWS credentials your local environment already has
 configured (the same default credential chain `boto3`/`aws` CLI use --
@@ -65,8 +67,11 @@ pip install -r scripts/requirements.txt
 
 Make sure you have AWS credentials configured locally with permission to
 call the Admin API (`aws configure`, `aws sso login`, or equivalent), and
-that your IP is on the WAF allowlist Terraform configured for the
-environment you're targeting.
+that your IP is on the target environment's admin allowlist (an SSM parameter that
+`scripts/admin_allowlist.py` writes, not anything in Terraform).
+`python scripts/admin_allowlist.py show --env <env>` says whether this machine is listed;
+`set --env <env> --my-ip` puts it there (see above). `set` replaces the whole stored list, so
+name any other ranges you want to keep in the same command.
 
 ## Configuration
 
@@ -82,10 +87,12 @@ The CLI needs two things:
    Then either export it:
 
    ```bash
-   export BLOGGERBEAR_ADMIN_API_URL="https://<api-id>.execute-api.<region>.amazonaws.com"
+   export BLOGGERBEAR_ADMIN_API_URL="https://<api-id>.execute-api.<region>.amazonaws.com/<dev-or-production>"
    ```
 
-   or pass `--api-url` on every invocation.
+   or pass `--api-url` on every invocation. Copy the `admin_api_url` output exactly as it is: the
+   admin API is a REST API, so its URL ends with the stage name (`/dev` or `/production`), and the
+   CLI only appends paths such as `/topics` to it.
 
 2. **AWS region** -- read from `--region`, or falls back to `AWS_REGION` /
    `AWS_DEFAULT_REGION` (already set if you've run `aws configure`).
@@ -259,8 +266,8 @@ python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5
 python scripts/admin_cli.py models reprice     # now, even when paused, with its own two checks
 python scripts/admin_cli.py models discover    # now, even when paused
 python scripts/admin_cli.py model-catalog get  # paused or not, what each job last did, any run under review
-python scripts/admin_cli.py model-catalog set --reprice off   # pause the weekly reprice ('' or on resumes)
-python scripts/admin_cli.py model-catalog set --discover off  # pause the weekly discover
+python scripts/admin_cli.py model-catalog set --reprice off   # pause the scheduled reprice (every second day, 03:00 Sydney; '' or on resumes)
+python scripts/admin_cli.py model-catalog set --discover off  # pause the scheduled discover (every second day, 02:00 Sydney)
 python scripts/admin_cli.py model-catalog set --review-after-hours "1,2" --review-tolerance-pct 5 \
     --max-change-factor 10 --max-web-lookups 10   # the defaults; '' clears one
 python scripts/admin_cli.py model-config get
@@ -306,7 +313,8 @@ a topic's `model_id_candidates` rotation list (one picked at random per
 run, so all of one article's Bedrock calls use the same model and its
 lineage stays coherent), if set → the topic's own `model_id` override →
 the global `model-config` default → the Terraform-set `BEDROCK_MODEL_ID`
-env var. `fallback_model_id` resolves independently (topic → global).
+env var. `fallback_model_id` resolves separately: the topic's, else the global model-config's,
+else `BEDROCK_MODEL_ID` (unless that is the model already chosen).
 
 `articles publish` force-sets an article's status to `published` regardless
 of its current state -- unlike `moderation approve`, which only acts on an
@@ -317,12 +325,12 @@ the article and is still `pending`, it's marked `approved` too so the two
 records don't disagree.
 
 **Refreshing already-published pages** (for example to add the source credit line, which pages
-rendered before it existed do not have). A static article page is written once, when the article
-is published, and nothing re-renders it afterwards. The single-page view (`/#/article/<id>`), the
-topic pages and the RSS feed need no refresh: they read the credit from the API on every load.
-For the static page (`/articles/<id>.html`) the only path today is `articles publish <article_id>`,
-which renders the page again from the stored article, credit included. It is a re-publish, not a
-plain re-render, so on an article that is already published it also:
+rendered before it existed do not have). A static article page is written when the article is
+published, and only a re-publish or a `backup restore` renders it again. The single-page view
+(`/#/article/<id>`), the topic pages and the RSS feed need no refresh: they read the credit from
+the API on every load. For one static page (`/articles/<id>.html`) the path today is
+`articles publish <article_id>`, which renders the page again from the stored article, credit
+included. It is a re-publish, not a plain re-render, so on an article that is already published it also:
 
 - sets `published_at` to now, so the article's date changes and it moves to the top of its topic
   list and the RSS feed;
@@ -330,7 +338,13 @@ plain re-render, so on an article that is already published it also:
 - writes another musing about the article (one more model call).
 
 That is acceptable for a handful of pages you care about (the crypto articles, for CoinGecko's
-attribution) and wrong for a mass refresh. There is no command that only re-renders. The smallest
+attribution) and wrong for a mass refresh. `backup restore` also renders every published page
+again, with the same renderer, keeping each article's stored date and approver and calling no
+model. But it does that only after writing every row and object back from the snapshot, which
+puts every row the snapshot holds back as it was when the snapshot was taken. It also drops the
+rows' pointers to the pre-review original and to the texts that rewrites replaced, and it rewrites
+every topic's schedules unless you pass `--no-schedules`. So it is no refresh tool either. There
+is no command that only re-renders. The smallest
 follow-up is an `articles rerender <article_id>` route that calls the same renderer with the
 article's stored `published_at` and `published_by` and does nothing else.
 
@@ -375,6 +389,13 @@ that exhausted its retries and landed on the pipeline dead-letter queue
 and the raw message, for manual follow-up. There's no automatic replay; to
 retry a topic after fixing whatever caused the failure, use
 `topics trigger <topic_id> --pipeline daily_cycle` again.
+
+The list also holds a row for each model catalog review that put one or more prices back
+(`kind: model_pricing`, no topic; see `lambdas/common/model_catalog.py`). The error's `Cause`
+names each model and why, and the raw message holds the pricing run's id and the full list under
+`reverted`. Such a row has no topic to retry: if the old price is wrong too, set it with
+`models add ... --lock-price` ([docs/models.md](../docs/models.md)). A price put back quietly,
+because no review could look it up, writes no row.
 
 ## Schedules, the stagger and pausing: `topics schedule`, `reschedule`, `pause`, `resume`
 
@@ -516,7 +537,7 @@ An approved prompt change is *gear*. Only worn gear is injected into the draftin
 ```
 python scripts/admin_cli.py equipment list                        # every slot, the rings, the backpack
 python scripts/admin_cli.py equipment equip TOPIC VERSION --scope global --slot helmet
-python scripts/admin_cli.py equipment equip TOPIC VERSION         # a ring for its topic
+python scripts/admin_cli.py equipment equip TOPIC VERSION         # by its stored scope: armor in its suggested slot (else the first empty one), anything else a ring for its topic
 python scripts/admin_cli.py equipment equip TOPIC VERSION --replace OTHER_TOPIC OTHER_VERSION
 python scripts/admin_cli.py equipment unequip TOPIC VERSION       # into the backpack, no longer used
 python scripts/admin_cli.py refinements approve TOPIC VERSION --scope backpack   # approve, do not wear
@@ -559,7 +580,8 @@ for a piece later, or again:
 python scripts/admin_cli.py equipment announce TOPIC VERSION
 ```
 
-`--scope global` with no `--slot` takes the first empty armor slot. Approving with no choice made wears it
+`--scope global` with no `--slot` takes the armor slot the bear suggested, if it is empty, else the
+first empty armor slot. Approving with no choice made wears it
 as a ring for its topic (what approving always meant), or leaves it in the backpack if all five rings are
 worn. Unlike before, guidance now *stacks*: several rings for one topic, plus the armor, are all used
 together. A change approved before this existed keeps working exactly as it did (the latest one per topic)
@@ -631,6 +653,35 @@ python scripts/admin_cli.py musings edit <musing_id> --text "Fresh from the den:
 - Only the text changes. The mood, the date and the link stay, and the item gets an `edited_at`.
 - The public feed is cached for a short while, so the change takes a moment to show on the site.
 
+## When the site takes feedback: `feedback-config`
+
+How much reader feedback the site takes is a few settings you change from here, with no deploy.
+`get` shows the stored settings, the ones in force and today's usage. `set` changes any of them: a
+setting you do not send is left as it is, and `''` clears one back to its default.
+
+```bash
+python scripts/admin_cli.py feedback-config get
+python scripts/admin_cli.py feedback-config set --locked-down true --lockdown-reason "Back soon"   # no feedback anywhere; the page says so
+python scripts/admin_cli.py feedback-config set --locked-down false
+python scripts/admin_cli.py feedback-config set --daily-limit 200 --screening-limit ""
+python scripts/admin_cli.py articles feedback-lock <article_id>                    # stop feedback on one article
+python scripts/admin_cli.py articles feedback-unlock <article_id> --reset-count    # take it again
+```
+
+The defaults: at most 20 pieces of feedback per 5-minute window (`--rate-limit`,
+`--rate-window-minutes`), 100 a day (`--daily-limit`; the day starts in `--daily-timezone`,
+Australia/Sydney), 50 on one article before it is locked (`--article-limit`), and 300 comments a
+day sent to the model check (`--screening-limit`; rejected feedback does not count against the
+other limits, so this one bounds its cost). Every submission needs the token from the
+feedback-status call (`--verification-required false` switches that off, in an emergency); a
+token becomes valid at a random time 500 to 2000 ms after it is issued (`--token-delay-min-ms`,
+`--token-delay-max-ms`), and once the site is 70% of the way to its daily or rate limit, tokens
+need proof of work (`--pow-threshold-percent`; `--pow-difficulty-bits`, 16, sets how much, and 0
+never asks). `--lockdown-reason` is at most 100 characters. An article locked because it reached
+its limit stays at the limit unless `feedback-unlock` is given `--reset-count`. Every setting, the
+checks in order and the limits at the edge that this does not set:
+[docs/architecture/site-and-feedback.md](../docs/architecture/site-and-feedback.md).
+
 ## Backups, restores and article exports: `backup`
 
 Terraform builds the skeleton; a **snapshot** is the data loaded into it. It is one file,
@@ -662,7 +713,8 @@ python scripts/admin_cli.py backup resume <job_id>          # restart one shown 
 # Load a snapshot into this deployment: every row and article written back under its own key
 # (so it can be run again safely), then each topic's schedules written as `topics create` writes
 # them and every published page rendered again. No model is called. Asks first unless --yes.
-python scripts/admin_cli.py backup restore backup/bloggerbear-dev/snapshots/20261019T030000Z-schedule.jsonl.gz
+python scripts/admin_cli.py backup restore backup/bloggerbear-dev/snapshots/20261017T160000Z-schedule.jsonl.gz
+#   The name is the job's start in UTC: Sunday 3am in Sydney is Saturday 16:00 UTC (17:00 when Sydney is on standard time).
 #   --no-pages / --no-schedules skip those steps; --bucket reads it from another allowed bucket.
 
 # Copy every article (its row as JSON, its final text and figures) to a bucket, with manifest.json.
@@ -675,6 +727,18 @@ deployment's state bucket from another region or account: copy the file to the s
 `backup/`, and restore it. `--bucket` and `export --bucket` only work with a bucket named in the
 Terraform variable `backup_export_buckets` (the Lambda role is granted exactly those). Tearing down
 and rebuilding dev with a snapshot: [the deployment runsheet](../docs/deployment-runsheet.md#keeping-devs-content-across-a-teardown).
+
+## The one-time stats catch-up: `stats`
+
+```bash
+python scripts/admin_cli.py stats backfill-articles           # what the totals would be; writes nothing
+python scripts/admin_cli.py stats backfill-articles --apply   # write them
+```
+
+`stats backfill-articles` folds every existing article's already-recorded cost into StatsHistory's
+all-time total. It is a one-time catch-up: a dry run unless `--apply`, and it refuses to run twice.
+What the Stats page counts, its rows, the weekly rollover and the daily cost poll:
+[docs/architecture/stats-and-costs.md](../docs/architecture/stats-and-costs.md).
 
 ## A week the stats rollover missed: `repair_stats_week.py`
 
@@ -853,11 +917,14 @@ no-data cases) was not met. Both subcommands run on Windows as well as Linux and
 
 ## The evaluation proper: `vision_eval.py replay`, `failures`, `access-baseline`, `index`
 
-Each writes one run file (`--out DIR`, `--tag`) with the code, machine, build and inputs it ran
-on, and runs in CI on a synthetic city with scripted parts; on real data they are the operator's
-runs (the runsheet's [evaluation runs](../docs/evaluation-runsheet.md#the-evaluations-real-data-runs),
+`replay`, `failures` and `access-baseline` each write one run file (`--out DIR`, `--tag`) with the
+code, machine, build and inputs it ran on, and run in CI on a synthetic city with scripted parts;
+on real data they are the operator's runs (the runsheet's [evaluation runs](../docs/evaluation-runsheet.md#the-evaluations-real-data-runs),
 bash and PowerShell). Every real-data run HEADs its scenes first and refuses one whose pinned ETag
 moved ("input changed"); `--cache [DIR]` answers the worker's reads from DIR after the first.
+`index` writes no run file and takes no `--out` or `--tag`: it rebuilds `index.json` and
+`RESULTS.md` in `--evidence DIR` (default `docs/hackathon/evidence`) from the run files already in
+its `runs/`.
 
 ```bash
 python scripts/vision_eval.py replay --sequence sydney-demo --worker <ARN> --agent bedrock --model-id <id> --out docs/hackathon/evidence/runs --trace
@@ -975,9 +1042,11 @@ default (`--worker in-process`; it keeps no deadline, so an uncached read is onl
 worker's built-up masks are compared scene to scene and with the first; `--worker <ARN>` leaves the
 IoU unmeasured. `--synthetic --scenes N` runs N synthetic scenes.
 
-All three run on Windows (`py -3.11 scripts\vision_eval.py ...`). Their arguments are in
-`vision_eval_agent_cli.py`, which does not import the driver, so `pin` and `coverage` still run in a
-venv without boto3; `vision_eval_agent.py` is imported only to run one of the three.
+All three run on Windows (`python scripts\vision_eval.py ...` in the activated venv: `py -3.11`
+would run the global 3.11, without the venv's packages). Their arguments are in
+`vision_eval_agent_cli.py`, which does not import the driver, so `pin` (without `--list-year`) and
+`index` still run in a venv without boto3; `vision_eval_agent.py` is imported only to run one of
+the three.
 
 ## The reference check: `vision_eval.py builtup-check` (E8)
 
@@ -1037,7 +1106,11 @@ agent's reasons, the news hosts and the Finding summaries, through `redact.scrub
 unverified. A backstop replaces any ARN and any 12-digit number left, beside a hyphen too, but not
 one inside a longer hex token or a UUID, nor a code-made 12-hex `run`, `build` or `reason_sha256`
 (`summary.json`'s `redacted` says how many, 0 expected, and `redacted_at` where), and
-`pii_denylist_check.py --files` reads every file written: a hit exits 2, naming the file and line,
+`pii_denylist_check.py --files` reads every file written, against `PII_DENYLIST` if it is set, else
+your `.pii-denylist` at the repository's root (git ignores it, so a fresh checkout has none). With
+no list, or an empty one, the export is refused only at the end, after the whole read, and moved
+aside as if a term had been found, unless you pass `--no-denylist` (`agreement` takes it too),
+which writes it unchecked and says so. A hit exits 2, naming the file and line,
 puts back every network file it wrote and moves the export to `live/<date>.refused/`, which git
 ignores (the operator's `labels.csv` stays). `--networks` also writes each city's
 `scripts/vision_benchmark_networks/<site>.json` from its network object, in the fixture's shape: a
@@ -1086,9 +1159,10 @@ in the message if you forget. Two things the generator decides, both read from t
   little between Python releases, so the file records which release wrote it: the check compares
   the help exactly on that release, and by content (every flag and help string) on another.
 
-The assistant's hand-written guides (costs, gear, editorial goals, a first topic, reviewing) are in
-`cli_guide.py`; a test builds every command they mention with the real parser, so a guide that
-names a flag you removed fails too.
+The assistant's hand-written guides (costs, gear, editorial goals, vision topics, findings, a first
+topic, security, setting a topic up, reviewing, musings and model prices) are in `cli_guide.py`;
+a test builds every command they mention with the real parser, so a guide that names a flag you
+removed fails too.
 
 ### Testing the DLQ consumer manually
 

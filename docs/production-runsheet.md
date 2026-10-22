@@ -64,9 +64,9 @@ terraform init
 terraform plan  -var domain_name=example.com -var budget_alert_email=you@example.com
 ```
 
-Pass the same other variables you used for the first bootstrap apply (`aws_account_id`,
-`github_repo`, `state_bucket_name`, `unique_name_prefix`, `aws_region`, and `vision_region` if you
-set it). **Check the plan only adds the zone and the budget.** If it shows anything else being
+Pass the same other variables as your last bootstrap apply (`aws_account_id`, `github_repo`,
+`state_bucket_name`, `unique_name_prefix`, `aws_region`, and `vision_region` and
+`web_search_regions` if you set them). **Check the plan only adds the zone and the budget.** If it shows anything else being
 changed or destroyed, stop and find out why. Then:
 
 ```bash
@@ -163,12 +163,13 @@ python scripts/setup_repo.py --dry-run     # asks and checks, sets nothing
 python scripts/setup_repo.py
 ```
 
-For production it sets `AWS_PROD_DEPLOY_ROLE_ARN` (required), and, if you give them, `AWS_PROD_ACCOUNT_ID`, `TF_STATE_BUCKET_PROD` and `ALERT_EMAIL_PROD`. The
-full table, and why each is a secret or a variable, is in
+For production it sets `AWS_PROD_DEPLOY_ROLE_ARN` (required) and `TF_STATE_BUCKET_PROD` (required
+for a fork: your state bucket, the same one as dev's if you use one account). If you give them, it
+also sets `AWS_PROD_ACCOUNT_ID` and `ALERT_EMAIL_PROD`. The full table, and why each is a secret or a variable, is in
 [configuration.md](configuration.md#github-secrets-and-variables). Your IP is not among them: after
 production's first release, let yourself in to its admin API with
-`python scripts/admin_allowlist.py set --env production --my-ip --prefix <your prefix>` (and
-`--region <your region>` if it is not `ap-southeast-2`;
+`python scripts/admin_allowlist.py --prefix <your prefix> set --env production --my-ip` (and
+`--region <your region>` before `set` too, if it is not `ap-southeast-2`;
 [configuration.md](configuration.md#the-admin-apis-address-allowlist)).
 
 It does not ask where the web search gateway runs: unset, production's is in `ap-northeast-1`
@@ -215,8 +216,9 @@ python scripts/domain_check.py --expect-ns <the four from step 1>   # every line
 
 Then, in order:
 
-1. **Confirm the alert email.** AWS sends one confirmation mail to the address; nothing is delivered
-   until you click it (there is one each for the alarms and the budget).
+1. **Confirm the alert email.** AWS sends one confirmation mail to the `ALERT_EMAIL_PROD` address,
+   for the alarms' SNS topic; nothing is delivered until you click it. The budget from step 1 mails
+   its address directly and needs no confirmation.
 2. **Point the CLI at production** (each environment has its own URL; see `scripts/QUICKSTART.md`):
    ```bash
    export BLOGGERBEAR_ADMIN_API_URL=$(terraform -chdir=infra/environments/production output -raw admin_api_url)
@@ -234,8 +236,9 @@ Then, in order:
    `UNIQUE_NAME_PREFIX`, `bloggerbear` by default):
    [deployment-runsheet.md, "Optional, but recommended"](deployment-runsheet.md#optional-but-recommended).
    The model catalog fills and reprices production's registry by itself from its first run
-   (every second day, 02:00 and 03:00 Sydney; on by default); `models discover` does it now, and
-   `model-catalog get` shows what it did
+   (every second day, 02:00 and 03:00 Sydney; on by default). `models discover` adds models now
+   (disabled and unpriced), `models reprice`, run once discover has finished (a minute or two),
+   prices them, and `model-catalog get` shows what each job last did
    ([models.md, the model catalog](models.md#the-model-catalog-discovery-prices-and-the-weekly-cycle)).
 5. **Smoke-test in a browser**: the home page, an article, the Stats page, `/rss.xml`, a thumbs-up
    on an article (this exercises the feedback token), and `https://www.<your domain>` (should land
@@ -348,8 +351,9 @@ the repository's value); topics keep their state.
   example: Nameservers > **Reset to GoDaddy default nameservers**). Spreading takes the same
   minutes-to-hours as before; the Route 53 zone can stay.
 - **A bad release**: publish a new release from an earlier commit on `prod`.
-- **Tearing production down** is deliberately awkward: tables have deletion protection (set
-  `protect_data = false` and apply, then destroy) and the content bucket is not force-destroyed.
+- **Tearing production down** is deliberately awkward: tables have deletion protection (in
+  `infra/environments/production/main.tf` set `protect_data = false` on both `module "app_data"`
+  and `module "ops_assistant"`, apply, then destroy) and the content bucket is not force-destroyed.
   The DNS zone is in bootstrap with `prevent_destroy`, so it survives, and the registrar's settings
   stay valid when you rebuild.
 - **An accidental delete or overwrite**: tables can be restored to any second in the last 35 days

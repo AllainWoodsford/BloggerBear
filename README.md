@@ -33,7 +33,7 @@ In the order you are likely to need them.
 | [Admin CLI reference](scripts/README.md) | Every command: topics, the review inbox, models, pipeline settings, feedback, and the evaluation and benchmark scripts. |
 | [Models](docs/models.md) | Which model each call uses and its fallback, rotating models on a topic, and how the model catalog discovers models, prices them and prunes the registry by itself. |
 | [Vision runsheet](docs/vision-runsheet.md) | Optional: turning the vision worker on, creating vision topics, running and growing the `rail_access` topic, and reading back what the pipeline measured and decided. |
-| [Rail vision seeding](docs/RailVisionSeeding.md) | Creating the rail topic from the example, running its first ticks, and switching it to a city a week with three angles in turn. |
+| [Rail vision seeding](docs/RailVisionSeeding.md) | Creating the rail topic from the example, running its first ticks, and switching it to a city a week with four angles in turn. |
 | [Evaluation runsheet](docs/evaluation-runsheet.md) | Optional, for the OpenCV competition: the evaluation's runs on real data, and exporting the deployed system's evidence into git. |
 | [COOL benchmark runsheet](docs/cool-benchmark-runsheet.md) | Optional, for the OpenCV competition: the Graviton4 session that times the vision worker under COOL against stock OpenCV 5. |
 | [Production runsheet](docs/production-runsheet.md) | Your domain, DNS, the first production release, rolling back, what it costs. |
@@ -186,12 +186,12 @@ Articles are written by a language model through Amazon Bedrock, and every artic
 sources it drew on and says how it was written and reviewed.
 
 Built with, among others: [Requests](https://requests.readthedocs.io/),
-[Beautiful Soup](https://www.crummy.com/software/BeautifulSoup/),
 [Python-Markdown](https://python-markdown.github.io/), the
 [Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk),
 [Strands Agents](https://strandsagents.com/) and the
 [AWS Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter). Each is under its own
-licence; the pinned versions are in `lambdas/requirements*.txt` and `scripts/requirements.txt`.
+licence. The pinned versions are in `lambdas/requirements*.txt` and `scripts/requirements.txt`.
+The web adapter is a Lambda layer, and its version is in `infra/modules/ops-assistant/main.tf`.
 
 BloggerBear is an independent project. It is not affiliated with, sponsored by or endorsed by
 CoinGecko, the GDELT Project, GitHub, Y Combinator, Amazon, the Copernicus programme, the

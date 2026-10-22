@@ -1,7 +1,7 @@
 """BloggerBear's "musings" -- short, first-person, in-character reflections.
 
-Two kinds, both written to the Musings table (see common/dynamo.py) for the
-public site's reverse-chronological Musings feed:
+Several kinds (the `kind` each is stored with), all written to the Musings table
+(see common/dynamo.py) for the public site's reverse-chronological Musings feed:
 
 - Article musings: one generated every time an article gets published, from
   any of the three publish paths (daily_cycle_handler's compliant branch,
@@ -19,13 +19,17 @@ public site's reverse-chronological Musings feed:
 - Pauses and resumes: written when the operator pauses a topic or starts it again (the Admin API's
   pause and resume routes). The bear says, in a line, that it is putting that topic's research to
   one side for a while, or that it is back on it; never why, and never anything about what was found.
+- Rejections: BloggerBear, shocked, when an operator rejects one of his drafts (admin_api_handler.py).
+  It names the topic only, never the article's id or title.
 - Professor Grizzlewick's: a second character, the old reviewer bear (common/reviewer.py), with
   glasses and a mustache, woken when the admins fall behind on reviews. He reports what he did on
   each run, says so when he turns a draft away ("it did not make the pub test", and a bear joke),
   and is shocked when readers downvote an article he approved. His musings carry
   `character: "grizzlewick"`; the Musings page shows his own picture and name.
+- Replies: now and then BloggerBear replies to the Professor's report (`reply`), and the Professor
+  may answer him (`reviewer_answer`), so the feed reads as a short conversation (reviewer_handler.py).
 
-Mood is derived from real signal, not random, in both cases -- see each
+For article and feedback musings, mood is derived from real signal, not random -- see each
 function's docstring below for exactly what drives it.
 """
 

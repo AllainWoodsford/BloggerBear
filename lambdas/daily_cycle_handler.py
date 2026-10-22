@@ -28,8 +28,11 @@ model):
 4. Select: deterministically pick the first candidate (no scoring model yet).
 5. Draft: ask Bedrock for a title and a full article draft.
 6. Fresh-data review (common.fresh_review): compare the draft's claims with what
-   the source says now. Shadow mode -- recorded on the article (and its moderation
-   item), never acted on; `pipeline-config set --review-mode off` skips it.
+   the source says now. In shadow mode (the default) it is only recorded on the
+   article (and its moderation item); in enforce mode a minor problem gets one
+   checked revision pass, and a major one, a revision that fails its checks or a
+   review that could not run holds the article (_enforce_review); `off` skips it.
+   The topic's own `review_mode`, else `pipeline-config set --review-mode`.
 7. Compliance review (common.compliance.review_draft).
 8. Publish (S3 + Articles "published") or route to ModerationQueue
    (Articles "pending_moderation" + a ModerationQueue item), depending on
@@ -1242,8 +1245,9 @@ def _publish_or_moderate(
     the result; None stores and returns nothing new.
 
     `hold_reasons` are reasons to keep it from publishing regardless of the compliance
-    verdict (today: a truncated draft). Any of them sends it to moderation, listed ahead
-    of the compliance reasons, so a person sees why.
+    verdict (today: a truncated draft, a title that is not one, a topic with
+    `force_manual_review`, and an enforced fresh-data review that held it). Any of them
+    sends it to moderation, listed ahead of the compliance reasons, so a person sees why.
     """
     hold_reasons = list(hold_reasons or [])
     article_id = str(uuid.uuid4())

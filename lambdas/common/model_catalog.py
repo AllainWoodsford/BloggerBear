@@ -2,7 +2,8 @@
 itself (docs/enhancements/model-catalog-refresh.md).
 
 Two jobs, each on its own EventBridge Scheduler cron every second day (model_catalog_handler.py),
-discover first and reprice three hours later, and on demand from the admin CLI:
+discover first and reprice an hour later, and on demand from the admin CLI, and a third, cycle,
+on its own weekly cron:
 
 * **discover** adds up to `discover_max_added` (5) of the models, from every provider, that the
   account can call in this region and the registry does not have yet, `enabled: false` and
@@ -28,7 +29,7 @@ could look up at all goes back to its old price quietly, for the next reprice to
 the last review is done, the old prices of the models that kept their new one are written to the
 content bucket as `pricing/<date>-<run id>.json`.
 
-Settings (the two pause flags, the job sizes and how reviews judge) live in the `model-catalog`
+Settings (the three pause flags, the job sizes and how reviews judge) live in the `model-catalog`
 config row (SETTINGS below, all optional); what each job last did, and the run under way, in
 `model-catalog-state`. A paused job skips its scheduled run; the admin CLI's runs it anyway. Only
 one run is under way at a time: it is claimed in the state row before any price is written, so
@@ -1290,6 +1291,7 @@ def handle(event: dict, now: datetime | None = None, own_arn: str | None = None)
 
     * `{"job": "discover"|"reprice", "trigger": "schedule"}`: its schedule (every second day);
       skipped while the job is paused.
+    * `{"job": "cycle", "trigger": "schedule"}`: its weekly schedule; skipped while it is paused.
     * `{"job": "discover"|"reprice"}`: the admin API (`models discover|reprice`); runs even when
       paused.
     * `{"job": "review", "run_id": ...}`: one of a run's review schedules.

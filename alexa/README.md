@@ -287,8 +287,10 @@ From gentlest to most thorough:
 
    Access tokens already issued still work until they expire, within the hour.
 3. **Remove the Alexa client.** Set `ops_alexa_redirect_uris` back to `[]` (remove the line from
-   `terraform.tfvars`) and apply, or merge that change and let CI apply it. Terraform deletes the
-   Alexa app client. Its refresh tokens can no longer be used, and nothing can link to this
+   `terraform.tfvars`) and apply, or merge that change and let CI apply it. In dev, the merge into
+   `dev` applies it. In production, nothing changes until a release that includes the change is
+   published from `prod` (and approved), so apply by hand if it cannot wait. Still get the change
+   onto `prod`, or the next release puts the client back. Terraform deletes the Alexa app client. Its refresh tokens can no longer be used, and nothing can link to this
    environment again until you repeat step 3 of the bootstrap, which makes a new client with a new
    id and secret. As in step 2, an access token already issued may work until it expires.
 
@@ -302,7 +304,9 @@ To stop all assistant traffic at once, from Alexa and everyone else:
   wrong environment. Never put production's redirect URLs into dev's variables, or the reverse.
 - **Production requires MFA** at sign-in, and so at link time. Dev's pool has it optional, for the
   judges' shared login; treat dev's data as visible to anyone with that login.
-- **Read-only.** The scope is `bloggerbear-ops/read` and the MCP server's role can only read. A
+- **Read-only on the pipeline.** The scope is `bloggerbear-ops/read`, and the MCP server's role
+  only reads the pipeline's tables. Its only writes are to the assistant's own tables (its list of
+  suggestions and watched items, and its briefings), and it may start the agent for a briefing. A
   linked device can hear about the pipeline; it cannot change it.
 - **A device in a room speaks its answers.** Anyone near a linked Echo hears what the assistant
   says, and anyone who can talk to it can ask. Link only devices in places you control, and unlink

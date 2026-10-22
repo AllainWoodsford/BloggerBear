@@ -37,10 +37,13 @@ to Terraform, reading three names in order:
 3. else `true`.
 
 Set it under **Settings → Secrets and variables → Actions → Variables**, then **re-run the
-deploy**: a push to `dev` (or the `terraform` workflow by hand) for dev, a GitHub Release from
-`prod` for production. Nothing changes until that apply runs. Production's names may also be set
-on the `production` environment, which wins over the repository's, as any environment variable
-does.
+deploy**. For dev, run the `terraform` workflow by hand from the Actions tab, with the branch
+selector on `dev`. A push to `dev` deploys too, but only a push that changes a path the workflow
+watches: `infra/`, `lambdas/`, `frontend/`, or a few listed scripts and workflow files (the full
+list is `on.push.paths` in `.github/workflows/terraform.yml`). A push of only docs, or an empty
+commit, starts nothing. For production, publish a GitHub Release from `prod`. Nothing changes
+until that apply runs. Production's names may also be set on the `production` environment, which
+wins over the repository's, as any environment variable does.
 
 The Terraform variables are `bool`, so a typo (`ture`, `yes`) fails the plan with "a bool is
 required" instead of quietly picking a mode. Use `true` or `false`.
@@ -56,7 +59,13 @@ CloudFront ACL is production's, dev only borrows it (`web_acl_arn`), so dev pays
 either way.
 
 To undo any switch, delete the variable (or set it back to `true`) and re-run the deploy. The
-resources come back exactly as they were, under the same names.
+resources come back under the same names, but as new ones: the firewall's logs start empty, and
+the admin web ACL's IP set comes back with no addresses. That ACL blocks by default, so until the
+IP set is filled the admin API refuses every call, yours included. No deploy fills it. After the
+deploy that brings the admin web ACL back (`WAF_REGIONAL_ENABLED` and `WAF_ADMIN_ALLOWLIST` both
+on again), run `python scripts/admin_allowlist.py --prefix <your prefix> sync --env dev` (or
+`--env production`) to copy the stored list into it. Add `--region <your region>` before `sync`
+too if your region is not `ap-southeast-2`.
 
 | GitHub variable (`_DEV` / `_PROD` first, then the shared name) | Terraform variable | `false` means | Saves (US$ a month) |
 |---|---|---|---|
@@ -113,15 +122,20 @@ allowlist. Both APIs keep API Gateway's own throttling (a ceiling for the whole 
 visitor).
 
 **Lost:** per-visitor rate limits on the public API, above all on the feedback route, which can
-cost a model call; the managed rule set; the firewall's logs, so no WAF-block incidents and no
-`firewall_review` for the operator's assistant. In production, also the blocks the shared
+cost a model call; the managed rule set; the regional firewalls' logs, so no WAF-block incidents.
+In production, the operator's assistant's `firewall_review` loses the regional logs but keeps the
+CloudFront ACL's log while `WAF_SITE_ENABLED` is on; the tool goes only if that switch is off too.
+(Dev's assistant never has `firewall_review`.) In production, also the blocks the shared
 CloudFront ACL does not see, because it sits in front of the CDN and not in front of the
 execute-api address that RSS readers and scripts can still call directly.
 
 **Saves:** about US$16 a month per environment.
 
 **Set:** `WAF_REGIONAL_ENABLED_DEV` or `WAF_REGIONAL_ENABLED_PROD` (or the shared
-`WAF_REGIONAL_ENABLED`) to `false`, then re-run the deploy. **Undo:** delete it, re-run.
+`WAF_REGIONAL_ENABLED`) to `false`, then re-run the deploy. **Undo:** delete it, re-run, then
+run `admin_allowlist.py sync` for that environment
+(see [How a switch is set](#how-a-switch-is-set)). With `WAF_ADMIN_ALLOWLIST` on, the admin web
+ACL comes back empty and refuses every admin call until you do.
 
 ### `WAF_ADMIN_ALLOWLIST`
 
@@ -135,7 +149,9 @@ call. Refused attempts still show in the admin API's access log.
 **Saves:** about US$6 a month per environment.
 
 **Set:** `WAF_ADMIN_ALLOWLIST_DEV`, `WAF_ADMIN_ALLOWLIST_PROD` or `WAF_ADMIN_ALLOWLIST` to
-`false`, then re-run the deploy. **Undo:** delete it, re-run.
+`false`, then re-run the deploy. **Undo:** delete it, re-run, then run `admin_allowlist.py sync`
+for that environment (see [How a switch is set](#how-a-switch-is-set)). The admin web ACL comes
+back empty and refuses every admin call until you do.
 
 ### `WAF_SITE_ENABLED` (production only)
 

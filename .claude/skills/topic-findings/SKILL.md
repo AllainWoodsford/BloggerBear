@@ -15,7 +15,13 @@ what a topic's next article will be written from, or a vision topic's maps and p
 - AWS credentials for the environment, in the shell's default credential chain.
 - `BLOGGERBEAR_ADMIN_API_URL` and `AWS_REGION` set in the environment (the CLI reads both; see
   `scripts/README.md`, Configuration). Never pass the URL on the command line.
-- The caller's IP on the admin WAF allowlist (`scripts/README.md`, Setup).
+- The caller's IP on the admin API's address allowlist (the API's resource policy, and the admin
+  WAF IP set when that is switched on). `scripts/admin_allowlist.py` keeps it, not Terraform.
+  `python scripts/admin_allowlist.py show --env dev` says whether this machine is listed; it only
+  reads. `python scripts/admin_allowlist.py set --env dev --my-ip` writes it, but it replaces the
+  whole list with this machine's /32, so give any other addresses in the same command. A fork
+  puts `--prefix <its UNIQUE_NAME_PREFIX>` (and `--region`, if not the default) before the
+  subcommand (`scripts/README.md`, "Who may reach the admin API").
 - **Use dev unless the user names production.** Say which environment you are reading.
 
 ## Commands (read-only, in this order)
@@ -59,7 +65,7 @@ python scripts/admin_cli.py findings list <topic_id> | jq '.findings[] | {captur
 |---|---|
 | `topic_id`, `captured_at` | the key; `captured_at` is the tick's time (the age is now minus it) |
 | `expires_at` | epoch seconds; TTL 14 days after capture; deletion is lazy, and `findings list` leaves expired items out (except `--next-article`, which shows what the daily run reads, expired or not) |
-| `summary` | written by a model from the source data; for a vision topic it quotes the triage agent's reason |
+| `summary` | written by a model from the source data. For a vision topic's changed scene that the triage agent judged real, the model's prompt quotes the agent's note, and the summary may repeat it. A first observation, a weekly reading, or a topic with triage off has no agent note |
 | `raw_snapshot_s3_key` | the snapshot in the content bucket; expires with `snapshots/` after 21 days |
 | `source_refs` | `url`, `title`, `accessed_at` |
 | `research_call` | `model_id`, `input_tokens`, `output_tokens`, `used_fallback`; `stop_reason` `max_tokens` means the summary was cut off |

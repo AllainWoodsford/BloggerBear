@@ -4,7 +4,8 @@ second day to do the reviews the human admins have fallen behind on
 
 A run plans its work from the tables, then works through it a couple of tasks at a time, on
 one-shot tick schedules a few minutes apart, so it never hits the model or the site all at once.
-Four kinds of task, in this order:
+Five kinds of task, in this order (the fifth is planned in the same pass as the second, from the
+same held articles):
 
 1. **Content findings.** The assistant's content checks (ops_mcp/content.py: a title with markup,
    a body that is one code fence, a musing with no text) on articles published in the last week.
@@ -59,7 +60,7 @@ shocked musing follows it), one when he takes a downvoted article down, and a re
 
 **Settings, changed with no deploy** (SETTINGS below): the `reviewer` row of the ModelConfig table,
 read at the start of every run (`admin_cli reviewer get|set`, `GET`/`PUT /reviewer-config`). Each
-of his four tasks can be switched off, his limits changed, his scheduled runs paused (`enabled`),
+of his five tasks can be switched off, his limits changed, his scheduled runs paused (`enabled`),
 and whether he may approve (`may_approve`, the project's default; a topic's `reviewer_may_approve`
 overrides it, and a topic with `force_manual_review` always waits for a person). Whether he is
 deployed at all is Terraform's `reviewer_enabled` (the REVIEWER_ENABLED GitHub variable, on by

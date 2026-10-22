@@ -43,7 +43,8 @@ operator's, and their run files are the evidence the report cites
 from a checkout of the code being evaluated, in a venv; they use the committed Sydney network
 fixture (`scripts/vision_benchmark_networks/sydney.json`, #349) unless given
 `--network <file>`. They read the pinned scenes from `sentinel-cogs` in us-west-2 through a cache
-that the first run fills (about 54 MB a scene, eight scenes in all) and later runs read from; on the
+that the first run fills (about 54 MB a scene; the runs of steps 2, 3, 5 and 7 read eleven scenes,
+and step 8 adds the rest of the 17-scene year set) and later runs read from; on the
 Graviton instance (step 8's `$C` in the [COOL benchmark runsheet](cool-benchmark-runsheet.md)) or any machine in us-west-2 that is fast, elsewhere it is a few
 minutes a scene through a slow link. Nothing here writes to AWS.
 
@@ -71,7 +72,7 @@ packages. They spell `--cache $HOME\cogs` and `--out docs\hackathon\evidence\run
 
 Every test it names is checked to be collected, then the real
 rows run through the worker handler in this process (the cloudy and no-data scenes, the smoke
-scene, a site off the tile, a window past the rail cap, a missing key; six scenes read).
+scene, a site off the tile, a window past the rail cap, a missing key; five scenes read).
 
 ```sh
 python scripts/vision_eval.py failures $C --out $E
@@ -236,9 +237,11 @@ python scripts\vision_eval.py builtup-check --cache $HOME\cogs --out docs\hackat
 Its summary's `iou`, `precision` and `recall` compare the masks over the pixels both saw;
 `results.ours_by_reference_class` says what WorldCover calls the pixels we call built-up. "input
 changed: reference tile S36E150" means the object is not the one pinned on 17 October
-(`REFERENCE_PINS` in `scripts/vision_eval_reference.py`): check it with `curl -sI <the URL the
-message names>`, and pin the new ETag and size in a commit of its own that says why, before
-the run.
+(`REFERENCE_PINS` in `scripts/vision_eval_reference.py`). The message gives the pinned ETag and
+size and the ones found, not the URL. Check it with
+`curl -sI https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_S36E150_Map.tif`,
+and pin the new ETag (without curl's quotes) and size in a commit of its own that says why,
+before the run.
 
 ### 10. Index and commit
 
@@ -287,8 +290,12 @@ of the code being submitted, in the venv of [step 1](#1-the-venv-and-the-names) 
   (`provenance.json`); without it that commit is null, with the reason, and the export still
   finishes.
 - Your `.pii-denylist` at the repository's root (or `PII_DENYLIST`): the export runs the check on
-  every file it writes, and refuses to start writing without a list, since nothing would then check
-  the files before they are committed. `--no-denylist` writes unchecked, and says so.
+  every file it writes, and refuses without a list, since nothing would then check the files
+  before they are committed. It does not check first: without a list it still reads everything and
+  writes every file, then refuses at the end (exit 2, `refused: PII_DENYLIST is unset and
+  <repo>/.pii-denylist is missing`). The export is moved to `live/<date>.refused/`, your
+  `labels.csv` is left where it was, and every network file it wrote is put back as it was. Put
+  the list in place before you start. `--no-denylist` writes unchecked, and says so.
 
 The logs are read through Logs Insights, a few queries at a time, each batch waited for at most
 `--logs-wait` seconds (120); a 90-day scan of the three groups is a few GB at most, cents.

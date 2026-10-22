@@ -150,11 +150,15 @@ run stops before planning if they disagree.
 
 **Running Terraform on your own machine.** The environments' `backend "s3"` blocks name the
 original deployment's bucket, because a backend block cannot read a variable. CI passes yours to
-`terraform init`; a local init needs the same flag, with the bucket for that environment:
+`terraform init`, along with the bucket's region. A local init needs the same two flags: the
+bucket for that environment, and the region bootstrap put it in (your `aws_region`,
+`ap-southeast-2` unless you set it):
 
 ```bash
 cd infra/environments/dev
-terraform init -backend-config="bucket=acme-blog-terraform-state-dev"
+terraform init \
+  -backend-config="bucket=acme-blog-terraform-state-dev" \
+  -backend-config="region=ap-southeast-2"
 ```
 
 ## What the OIDC side looks like
@@ -367,8 +371,11 @@ is off by default and nothing of it exists until you turn it on. With two accoun
   worker (`<prefix>-*-vision-*` Lambda functions and log groups in `vision_region`, `us-west-2`
   by default) are part of each account's bootstrap. Re-apply it in the dev account before
   turning the worker on for dev, and in the production account before production; select the
-  account's workspace first (`terraform workspace select dev`). Pass the same `vision_region` to
-  both if you change it.
+  account's workspace first (`terraform workspace select dev`). If you change `vision_region`,
+  pass the same value to both bootstraps, and set `vision_region` to it in each environment's
+  `terraform.tfvars` too (`infra/environments/dev` and `infra/environments/production`, by pull
+  request). CI does not pass it, so an environment left at the default `us-west-2` has its apply
+  refused once the worker is on: its deploy role has no rights there.
 - **The variable, per environment.** `VISION_ENABLED` is read as a switch: `true`, in any letter
   case (GitHub Actions compares strings ignoring case), turns the worker on; any other value, or
   unset, is read as off. On the repository it turns the worker on for dev, and for production at

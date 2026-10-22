@@ -84,7 +84,7 @@ flowchart LR
     pub -- "votes, wear" --> arts
     pub -- "wear" --> refs
     fb --> refl
-    refl -- "one call per topic" --> bedrock
+    refl -- "two or three calls per topic" --> bedrock
     refl --> refs
     operator --> refs
     refs --> daily --> arts
@@ -175,8 +175,15 @@ python scripts/admin_cli.py articles feedback-lock <article_id>
 python scripts/admin_cli.py articles feedback-unlock <article_id> --reset-count   # an article at its limit
 ```
 
-Deleting the `verification-secret` row of `model-config` rotates the signing key. Tokens already
-handed out stop working.
+Deleting the `verification-secret` row of `model-config` rotates the signing key, but only in
+public API containers that load the key after the delete. A warm `<prefix>-<env>-public-api`
+container keeps the key it already loaded (`_secret_cache` in `common/feedback_verification.py`)
+for as long as it lives. It keeps signing and accepting tokens with the old key, and it refuses
+tokens from containers that have the new one. To finish a rotation, delete the row, then force new
+containers by changing the function's configuration, for example
+`aws lambda update-function-configuration --function-name <prefix>-<env>-public-api --description "rotate verification key"`.
+A Terraform apply that changes nothing recycles nothing. After that, tokens already handed out stop
+working.
 
 **At the edge**, set in Terraform and not by `feedback-config`:
 
@@ -187,11 +194,23 @@ handed out stop working.
 | API Gateway, the stage | 25 requests a second, bursts of 50 | `throttling_rate_limit`, `throttling_burst_limit` on `module "public_api"` |
 | API Gateway, the feedback POST | 2 a second, bursts of 5 | `method_throttling` |
 
-The WAF counts the visitor's address and forgets it. Behind the CDN, the address comes from the
-`x-viewer-ip` header that the CDN sets, and the WAF trusts it only with the origin-verify header.
+The WAF counts the visitor's address. It logs only the requests it blocks or counts, never the ones
+it lets through. That log keeps the address for 14 days, with the part of the request that tripped
+the rule, which for a blocked comment can be a fragment of its text. The headers that fingerprint a
+browser are redacted, but the address is not (`aws_wafv2_web_acl_logging_configuration.public_api`;
+the [Privacy Policy, section 5](../../frontend/privacy.html#firewall-and-security-logs) says the
+same). Behind the CDN, the address comes from the `x-viewer-ip` header that the CDN sets, and the
+WAF trusts it only with the origin-verify header.
 The regional WAF exists while `WAF_REGIONAL_ENABLED` is on, which is the default
-([cost-saving.md](../cost-saving.md#waf_regional_enabled)). Without it, only API Gateway's
-throttling and the settings above remain.
+([cost-saving.md](../cost-saving.md#waf_regional_enabled)). Without it, calls straight to the
+execute-api address keep only API Gateway's throttling and the settings above. Calls through the
+CDN, which is how the site calls the API, also pass the shared CloudFront web ACL
+(`<prefix>-shared`, `aws_wafv2_web_acl.this`), with or without the regional WAF. That ACL is
+attached while `WAF_SITE_ENABLED` is on in production (the default), or once `web_acl_arn` is set
+in dev ([cost-saving.md](../cost-saving.md#waf_site_enabled-production-only)). It also guards the
+site, and it sits in front of the cache. It blocks an address past 2,000 requests per 5 minutes on
+every route (`rate-limit`) and applies the AWS managed common rule set. It has no separate limit
+for the feedback POST, and it logs what it blocks the same way, in us-east-1.
 
 Two alarms watch feedback: `<prefix>-<env>-feedback-rejections-spike` and
 `<prefix>-<env>-feedback-screening-budget-used-up`. The lambda-runs dashboard counts accepted and

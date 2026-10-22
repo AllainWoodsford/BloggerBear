@@ -8,8 +8,10 @@ aggregation is trivially testable and the handler stays a thin wrapper.
 Everything is derived from per-article `lineage` (which model, how many
 tokens, on every Bedrock call that went into an article) priced against
 the *current* Models registry, so it's an *estimate of AI spend*, not AWS
-billing: it does not include Lambda/DynamoDB/S3/CloudFront/etc., and pulling
-those in (Cost Explorer) is a deliberately deferred follow-up.
+billing: it does not include Lambda/DynamoDB/S3/CloudFront/etc. Those come
+from the AWS bill instead: a daily Cost Explorer poll (cost_explorer_poll_handler.py,
+common/cost_explorer.py) writes them onto the weekly Stats rows
+(common/stats_tracking.py), not through this module.
 
 **Cost is computed per call, everywhere.** Totals, per-model, per-topic and
 per-day figures are all sums of the same per-call costs, so they always

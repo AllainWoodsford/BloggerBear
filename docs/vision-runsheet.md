@@ -6,9 +6,10 @@ creates and runs vision topics (the Rail Access Monitor's `rail_access` topics i
 back what the pipeline measured and decided. It picks up from a working dev deployment
 ([deployment-runsheet.md](deployment-runsheet.md)).
 
-Background, not repeated here: how it all fits ([architecture/blogger-vision.md](architecture/blogger-vision.md)),
-every setting ([configuration.md, Vision and rail access](configuration.md#vision-and-rail-access)), and
-creating the example `rail-cities` topic with its editorial goals
+Background, not repeated here: how it all fits ([architecture/blogger-vision.md](architecture/blogger-vision.md));
+every setting ([configuration.md, Vision and rail access](configuration.md#vision-and-rail-access)); and,
+for the example `rail-cities` topic, the full wording of its editorial goals and the reasons for
+it, what each of its articles shows, the reviewer's checklist and dev's seeding steps
 ([RailVisionSeeding.md](RailVisionSeeding.md)). Production has its own short section
 ([production-runsheet.md, Vision](production-runsheet.md#vision-optional)), and so do
 [two accounts](deployment-separate-accounts.md#vision-optional). The OpenCV competition's
@@ -69,8 +70,9 @@ docs-only merge), or `workflow_dispatch` the Terraform workflow from the `dev` b
 The apply creates, in `vision_region`: the worker (arm64, python3.12), its role (its own log group only), its log
 group, and a small artifacts bucket its package is uploaded through. In the home region it
 gives the research tick the worker's ARN (`VISION_WORKER_ARN`), and gives the right to invoke
-that one function to the pipeline's shared execution role (`lambda_exec`), which twelve
-functions use: the research tick, the daily cycle, the admin API and nine more. Both apply
+that one function to the pipeline's shared execution role (`lambda_exec`), which thirteen
+functions use (twelve when `reviewer_enabled` is false and the reviewer bear is not deployed):
+the research tick, the daily cycle, the admin API and ten more. Both apply
 workflows read the variable as a switch: `true`, in any letter case (GitHub Actions compares
 strings ignoring case, so `TRUE` and `True` count too), turns the worker on, and any other
 value, or unset, is read as off.
@@ -275,9 +277,14 @@ The run writes about that city alone: it drafts the Findings that list the city 
 since the topic's last article **on that city** (`last_article_by_subject` on the topic item, beside
 `last_article_at`), reaching back at most `findings_window_hours`
 (`lambdas/common/findings_window.py`; 24 hours when it is not set, at most 336). The day's mandate
-in its prompts names the city. With no new Finding about the day's city it stops before any model
-call (`no_findings`, naming the city) and stamps nothing, and it never borrows another city's
-Findings. A Finding that reports two cities (a tick that measured two) is drafted on each one's
+in its prompts names the city. With no new Finding about the day's city, a topic with an
+`editorial_goal_rotation`, like the example, revisits the city's current set (the Findings its
+last article on new Findings was drafted from, while they are unexpired) under the next goal not
+yet used on them, and writes and stamps an article as usual (`revisit=True` in the log). It stops
+before any model call (`no_findings`, naming the city) and stamps nothing when the city has no
+current set yet (no article on it so far), when every goal has been used on that set, or when its
+Findings have expired. A topic without a goal rotation stops there at once. Either way it never
+borrows another city's Findings. A Finding that reports two cities (a tick that measured two) is drafted on each one's
 day. The log says `daily_cycle_handler: day_subject=<city> topic_id=rail-cities`, and the held
 article keeps the city as its `subject`.
 
@@ -286,9 +293,13 @@ or a late run: 24 hours a day of it. The two-day cities are at most 4 days apart
 do), but Boston's Thursday is 7 days from the next, so the example sets 192 hours, 8 days. Four
 cities cannot all have two of the seven days; a list rota (`"rotation": ["sydney", "melbourne",
 "singapore", "boston"]`) gives each one day in four and needs 120 hours, but no city has a fixed
-weekday. The window never reaches back past the city's own last article, so no Finding is drafted
-twice: the daily cycle stamps the city and the topic with the run's start time on every article it
-writes, published or held for review (every rail article is held). One Finding can still be
+weekday. The window never reaches back past the city's own last article, so a run on new Findings
+never drafts one that an earlier article on the city used: the daily cycle stamps the city and the
+topic with the run's start time on every article it writes, published or held for review (every
+rail article is held). A revisit (above) drafts Findings again on purpose: it reads the city's
+current set back by its oldest and newest `captured_at`, not by the window, and drafts it once
+under each goal not yet used on it, never twice under the same one (`goal_rotation_state` on the
+topic item, `lambdas/common/goal_rotation.py`). One Finding can still be
 missed: the research tick dates a Finding (`captured_at`) when its fetch starts, at the start of
 the tick, and writes it at the tick's end, so a Finding whose tick is still running when the daily
 cycle starts is not there for that run and, once that run has written an article on its city, is
@@ -301,7 +312,11 @@ article's sources from the Findings of the article's own city in the same window
 `findings_window_hours` from the article's creation (`_findings_for` in
 `lambdas/common/rewrite.py`), and falls back to the whole window, saying so in its log, if none
 are left (a city since removed). Rail Findings are few (the first observation, then material
-changes), so most runs draft nothing.
+changes), but with the example's four goals each new set of a city's Findings is written up on up
+to four of that city's days: once when it is new, then revisited under each goal not yet used on
+it, until the goals run out or the Findings expire (14 days, so Boston, with one day a week,
+usually gets two). After that the city's days draft nothing until research makes a new Finding
+about it.
 
 ### When a run writes nothing
 
@@ -312,8 +327,9 @@ sees a successful invoke and does not retry it, and nothing reaches the DLQ or a
 is in the execution's output, not in the function's log (the handler's top-level guard prints
 nothing, a code follow-up in [vision.md §10](enhancements/archive/vision.md#10-still-open)); the sign is a
 city's day with a new Finding but no new item in the review inbox. A broken rota (a slot that is
-not a site, a site with no day, a zone that is not one) is such an error on every day, and the
-research tick records it on the topic's `last_error` too. A timeout (the function's `timeout` is
+not a site, a site with no day, a zone that is not one) is such an error on every day. Every
+research tick fails on it too: the research-tick log shows `unhandled exception` with the
+`ConfigError`, and the ops assistant's vision status shows it as the topic's config error. A timeout (the function's `timeout` is
 300 s) or a crash is not caught: the state machine retries it twice and then sends it to the DLQ
 (`admin_cli failed-executions list`), so it is not silent. The city's next day then still starts at
 its last article, but never more than 192 hours back. A run that found no Finding loses nothing:
@@ -595,8 +611,19 @@ articles are rejected in the inbox, never published.
    worker's lines, which carry no topic id, are told apart from the city's),
    `served_share_threshold: 0`, `desert_relative_threshold: 0`, `min_baseline: 1`,
    `max_cloud_cover: X`, `lookback_days` large enough to reach A, and Sydney's cadence.
-3. **Tick 1.** Force a tick. A is measured; it is the topic's first observation (a Finding, then
-   a held article: reject it).
+3. **Tick 1.** The demo topic has no network of its own yet: each is stored per topic and site
+   (`vision/rail-sydney-demo/demo-sydney/network.json`), so `rail-cities`' Sydney network does
+   not serve it, and Sydney's first fetch takes most of a tick's budget. So fetch it out of band
+   first: `python scripts/admin_cli.py topics trigger rail-sydney-demo --pipeline
+   network_prefetch`, and wait for its `network_prefetch rail-sydney-demo/demo-sydney: stored`
+   line in the research-tick log (run it again if the line says `failed`). Without it, the first
+   tick only fetches the network: its `vision_site` line says `deferred` for `time_budget` (or
+   `none` with `osm`, if Overpass ran out of time), and A is measured only on a later tick. Then
+   force a tick (`topics trigger rail-sydney-demo --pipeline research_tick`). A is measured; it is
+   the topic's first observation (a Finding, then a held article: reject it). Before you change
+   the config for tick 2, check that the tick's `vision_site` line says `measured` with A's
+   `scene_id`. If B is measured first, it becomes the first observation and never goes to the
+   agent.
 4. **Tick 2.** `python scripts/admin_cli.py topics update rail-sydney-demo --adapter-config-json
    '<the same config with max_cloud_cover 40 and lookback_days 20>'` (`adapter_config` is a
    whole-block replace: send all of it), then force a tick. B is not in the site's history, so
