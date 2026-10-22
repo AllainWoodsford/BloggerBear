@@ -207,6 +207,34 @@ def test_his_report_opens_with_being_woken_and_takes_the_models_words_when_usabl
     assert stored[0]["mood"] == "roused" and stored[0]["character"] == "grizzlewick"
 
 
+def test_his_report_keeps_the_links_to_what_he_published(stored, monkeypatch):
+    monkeypatch.setattr(musings, "tracked_claude", lambda *a, **k: "")
+    links = [{"article_id": "a1", "topic_id": "wow"}]
+    musings.generate_and_store_reviewer_report(
+        facts=["approved 1 held article", "the topics sent back for a rewrite: Wow Forever"],
+        woken=False,
+        model_id="m",
+        links=links,
+    )
+    assert stored[0]["links"] == links
+    assert "Wow Forever" in stored[0]["text"]  # the fallback carries the topic names
+
+
+def test_bloggerbear_replies_to_the_professor_as_a_student_never_a_flatterer(stored, monkeypatch):
+    seen = []
+    monkeypatch.setattr(musings, "tracked_claude", lambda *a, **k: seen.append(a[1]) or "")
+    for situation in ("scolded", "praised", "grateful"):
+        for tone in musings.bloggerbear_tones(situation):
+            musings.generate_and_store_bloggerbear_reply(
+                situation=situation, tone=tone, reply_to="r", model_id="m", created_at="2026-10-20T00:00:00Z"
+            )
+    for prompt in seen:
+        assert "student" in prompt and "nothing flirtatious" in prompt
+        assert "mustachioed" not in prompt  # his looks are not BloggerBear's business
+    for musing in stored:
+        assert "paws" not in musing["text"] and "honey" not in musing["text"]
+
+
 def test_his_shocked_hold_falls_back_when_the_model_fails(stored, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("unavailable")

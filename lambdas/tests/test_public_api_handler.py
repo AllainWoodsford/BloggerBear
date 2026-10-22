@@ -2629,6 +2629,22 @@ def test_a_loot_drop_musing_is_listed_with_the_gear_it_announces(aws_resources):
     assert "gear" not in by_id["m2"]  # only loot drops have any
 
 
+def test_his_report_links_each_article_he_published_by_its_topic_name(aws_resources):
+    _put_topic()
+    links = [{"article_id": "a1", "topic_id": TOPIC["topic_id"]}, {"article_id": "a2", "topic_id": "gone"}]
+    _put_musing("m1", "reviewer_report", "2026-09-22T00:00:00+00:00", character="grizzlewick", links=links)
+    _put_musing("m2", "article", "2026-09-21T00:00:00+00:00", article_id="a1")
+
+    result = public_api_handler.handler(_event("GET /musings"), None)
+
+    by_id = {m["musing_id"]: m for m in json.loads(result["body"])["musings"]}
+    assert by_id["m1"]["links"] == [
+        {"article_id": "a1", "topic_name": TOPIC["name"]},
+        {"article_id": "a2", "topic_name": None},  # a topic since deleted
+    ]
+    assert "links" not in by_id["m2"]
+
+
 # --- Observability: feedback given/rejected land on this week's Stats row -----------------------
 
 

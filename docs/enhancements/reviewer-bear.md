@@ -119,7 +119,7 @@ Grizzlewick was feeling …". Three kinds:
 
 | Kind | When | Mood |
 |---|---|---|
-| `reviewer_report` | the end of a run: what he did, in counts. Opens with being woken when anything had waited two days. A run where he did nothing worth saying posts nothing: he slept through it | roused |
+| `reviewer_report` | the end of a run: what he did, in counts, naming the topics he sent back for a rewrite; the Musings page links each article he published, by its topic. Opens with being woken when anything had waited two days. A run where he did nothing worth saying posts nothing: he slept through it | roused |
 | `reviewer_rejection` | he rejected a draft: "it unfortunately did not make the pub test", and a bear joke. Timestamped a moment before the reject, so BloggerBear's own shocked rejection musing reads as the reply | stern |
 | `reviewer_hold` | he took down an article he approved, after downvotes | shocked |
 
@@ -130,10 +130,12 @@ each a second after the one it answers, and each marked with whom it answers (th
 
 | The report (`conversation_situation`) | BloggerBear | The Professor's answer |
 |---|---|---|
-| **scolded**: he rejected or took down work, or sent back more than he passed | *contrite* ("I should be more careful, I seem to have angered the old man") or *sulky* (a little sad) | contrite: a dry quip, "you youngsters never learn", with a constructive pointer · sulky: "I'm tough because I want you to do well" |
+| **scolded**: he rejected or took down work, or sent back more than he passed | *contrite* (a student handed back a marked-up essay) or *sulky* (a little sad) | contrite: a dry quip, "you youngsters never learn", with a constructive pointer · sulky: "I'm tough because I want you to do well" |
 | **praised**: work passed, nothing sent back | *proud* | "I'm proud of your work recently, but we must stay vigilant" |
-| **grateful**: a mixed report | *grateful* to work with him | "always happy to help", grumbling about being woken |
+| **grateful**: a mixed report | *grateful* for his corrections | "that's what I'm here for", grumbling about being woken |
 
+BloggerBear replies as a cheeky but respectful student to a strict professor: teasing about red
+pens and homework, never flattery, his looks or anything suggestive (`_STUDENT_REPLY_RULES`).
 BloggerBear replies in his own voice and moods (each with its picture); the replies are kinds
 `reply` and `reviewer_answer`, with `reply_to` and `replying_to` on the musing.
 
