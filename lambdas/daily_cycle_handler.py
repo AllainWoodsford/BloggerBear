@@ -44,6 +44,7 @@ import os
 import random
 import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 
 import boto3
@@ -269,11 +270,15 @@ def _record_article_written(
     """Remember when this run began, so the next window starts there.
 
     The run's *start* (not its end) is stored: a finding captured while the article
-    was being written belongs to the next one. Never raises -- the article already
-    exists by now, and an error here would make Step Functions retry the whole run
-    and write a duplicate. For a topic that rotates, the day's subject's own stamp is
-    set too (`last_article_by_subject`), so that subject's next day reads from here
-    and the other subjects' windows stay where they were.
+    was being written belongs to the next one. Called the moment the article's row is
+    stored (`_publish_or_moderate`'s `on_stored`), before its page, musing or moderation
+    item: if one of those then fails, or the Lambda times out and Step Functions runs it
+    again, the next window still starts here, and the same Findings are not written up
+    twice. Never raises -- the article already exists by now, and an error here would
+    make Step Functions retry the whole run and write a duplicate. For a topic that
+    rotates, the day's subject's own stamp is set too (`last_article_by_subject`), so
+    that subject's next day reads from here and the other subjects' windows stay where
+    they were.
 
     With a goal rotation (common/goal_rotation.py), its state for the subject (or the topic) is
     stored too, the same way: a failure is said in the log, and the next run then picks as if this
@@ -640,8 +645,9 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         attribution=sources_for_topic(topic),
         subject_key=subject_key,
         rotation=rotation,
+        # Stamped as soon as the row exists: see _publish_or_moderate's `on_stored`.
+        on_stored=lambda: _record_article_written(topic_id, run_started, subject_key, rotation),
     )
-    _record_article_written(topic_id, run_started, subject_key, rotation)
     return result
 
 
@@ -1230,8 +1236,15 @@ def _publish_or_moderate(
     attribution: list[dict] | None = None,
     subject_key: str | None = None,
     rotation: goal_rotation.Pick | None = None,
+    on_stored: Callable[[], None] | None = None,
 ) -> dict:
     """Store the article and either publish it or send it to moderation.
+
+    `on_stored` is called the moment the article's row is written, before anything after it (the
+    static page, the musing, the model's roll forward, the moderation item) has a chance to fail.
+    The run passes its `_record_article_written` here, so a failure in those steps, which still
+    reaches the handler's guard as an error, cannot leave the article unstamped and its Findings
+    open for the next run to write up again.
 
     `attribution` is the source credit to store on the article and show on its page
     (common/attribution.py); None stores nothing, and readers fall back to the topic's adapter.
@@ -1304,6 +1317,8 @@ def _publish_or_moderate(
         **_rotation_fields(rotation),
         figures=figures,
     )
+    if on_stored is not None:
+        on_stored()
     subject = {ARTICLE_SUBJECT_FIELD: subject_key} if subject_key is not None else {}
     subject.update(_rotation_fields(rotation))
 

@@ -267,6 +267,12 @@ reason. What happens next depends on how the run started:
   without the state machine, so a failure there never reaches the queue and leaves no
   FailedExecutions record.
 
+A daily cycle that fails after it has stored the article (its static page, its musing or its
+moderation item) has still stamped `last_article_at`: the stamp is set the moment the article's
+row is written (`on_stored` in `_publish_or_moderate`). So neither the next day's run nor a retry
+after a timeout writes up the same Findings again. The article is there; what failed is in the
+run's output and the daily-cycle log.
+
 ## Where the AI agents are
 
 None of the model calls above is an agent. Each one is a single Bedrock Converse request made by a
