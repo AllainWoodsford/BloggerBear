@@ -1,5 +1,5 @@
 """The model catalog: keeps the Models registry's list of models and their prices up to date by
-itself (docs/enhancements/model-catalog-refresh.md).
+itself (docs/enhancements/archive/model-catalog-refresh.md).
 
 Two jobs, each on its own EventBridge Scheduler cron every second day (model_catalog_handler.py),
 discover first and reprice an hour later, and on demand from the admin CLI, and a third, cycle,

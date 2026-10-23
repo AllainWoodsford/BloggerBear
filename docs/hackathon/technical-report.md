@@ -631,7 +631,7 @@ REPRODUCE.md]
 - The daily cycle adds the manual-review reason to every such draft's hold reasons
   (`lambdas/daily_cycle_handler.py:554-555`), whatever the compliance review says.
 - The one path that publishes with no person, the AI reviewer (Professor Grizzlewick, built on 20
-  October for the text topics: [reviewer-bear.md](../enhancements/reviewer-bear.md)), never plans a
+  October for the text topics: [reviewer-bear.md](../enhancements/archive/reviewer-bear.md)), never plans a
   task of any kind for a topic with `force_manual_review`, published or held, and may never approve
   for one (`lambdas/common/reviewer.py:221-225`, `:505-506`). Every vision article therefore still
   waits for a person, however long it waits.

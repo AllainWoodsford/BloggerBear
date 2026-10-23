@@ -446,7 +446,7 @@ data "aws_iam_policy_document" "lambda_exec" {
     resources = ["*"]
   }
 
-  # model_catalog_handler.py (docs/enhancements/model-catalog-refresh.md): listing the models and
+  # model_catalog_handler.py (docs/enhancements/archive/model-catalog-refresh.md): listing the models and
   # inference profiles this account can call, and reading their list prices. None of these three
   # supports resource-level permissions -- AWS requires "*", there is no ARN to scope them to. All
   # read-only.
@@ -1106,7 +1106,7 @@ module "admin_api" {
     "POST /models",
     "GET /model-config",
     "PUT /model-config",
-    # The model catalog (docs/enhancements/model-catalog-refresh.md): run the reprice or discover
+    # The model catalog (docs/enhancements/archive/model-catalog-refresh.md): run the reprice or discover
     # job now, and its settings and pause flags. See admin_api_handler.py's model catalog routes and
     # `admin_cli models reprice|discover`, `admin_cli model-catalog`.
     "POST /models/reprice",
@@ -2541,7 +2541,7 @@ resource "aws_scheduler_schedule" "cost_explorer_poll" {
   }
 }
 
-# The model catalog (docs/enhancements/model-catalog-refresh.md): keeps the Models registry's list
+# The model catalog (docs/enhancements/archive/model-catalog-refresh.md): keeps the Models registry's list
 # and prices up to date. Two schedules on odd days of the month (every second day; the 31st and
 # the 1st run back to back), Sydney time: discover at 02:00 (no model calls: it adds at most 5
 # models, none once the registry holds 50), then reprice at 03:00, when no topic's daily cycle
@@ -2624,7 +2624,7 @@ resource "aws_scheduler_schedule" "model_catalog_cycle" {
 }
 
 # Professor Grizzlewick, the reviewer bear (lambdas/reviewer_handler.py, common/reviewer.py,
-# docs/enhancements/reviewer-bear.md): every second day he reviews what the admins have not --
+# docs/enhancements/archive/reviewer-bear.md): every second day he reviews what the admins have not --
 # content findings, articles held two days or more, the newest published articles, and the
 # financial articles he approved -- a couple of tasks at a time on one-shot tick schedules
 # (`<prefix>-<env>-reviewer-tick-*`, under the role's scheduler_manage grant) five minutes apart,

@@ -11,7 +11,7 @@ same shape: why the feature exists, a diagram, the steps, and where each step li
 Two of the pages have a matching entry in the operator's assistant: ask it about the feature, and
 it walks through the same steps with this environment's resource names on screen (`architecture`
 with `feature`, in `lambdas/ops_mcp/architecture.py`): `architecture(feature="article-research")`
-and `architecture(feature="vision-pipeline")`. The other six say at the top which of the
+and `architecture(feature="vision-pipeline")`. The other eight say at the top which of the
 assistant's named parts to ask about instead. Where vision is on, the assistant also reads the
 vision worker's log in `vision_region` and each vision topic's running state
 ([ops-assistant-vision.md](../enhancements/archive/ops-assistant-vision.md)).
@@ -26,6 +26,8 @@ vision worker's log in `vision_region` and each vision topic's running state
 | [The site, the bear and reader feedback](site-and-feedback.md) | How a reader's visit and vote become the bear's mood, gear and musings: the public site and its API, a vote's path through the decoy field (the honeypot), the token, the comment screen and the limits, the weekly reflection that turns feedback into a proposal, the gear it becomes once the operator approves it, wear and repair, the Musings page, and Professor Grizzlewick's reviews. |
 | [Stats and costs](stats-and-costs.md) | How every model call and request becomes a number on the Stats page: lineage on each article, the tracked categories, the weekly rollover, the daily Cost Explorer poll, and what to do about a missed week. |
 | [Security incidents](security-incidents.md) | How what the firewalls block, an attack-shaped comment and a run of failed sign-ins become security incidents: the log subscriptions that feed them, grouping by client, rule and 15 minutes, severity and the trends, the high-severity alarm and its email, the keyed hash kept instead of an address, and the commands that work through them. |
+| [Professor Grizzlewick: the reviewer bear](reviewer-bear.md) | How a second bear decides what the admins have left waiting: woken every second day, a plan made with no model call, his five tasks worked through on one-shot ticks (content findings, held articles, recent published ones, his financial flags, the de-fanged publish of long-waiting articles), how he acts through the admin API's own paths, what he never does, and his musings. |
+| [The model catalog: discovery, prices and the model fleet](model-catalog.md) | How the model registry keeps itself current: discover with its access probes, reprice from the Price List and the web, a changed price on probation until its reviews pass, the weekly rotation cycle, pruning under the cap, and what one run at a time protects. The operator's side of it is [models.md](../models.md). |
 
 ## Adding a feature
 

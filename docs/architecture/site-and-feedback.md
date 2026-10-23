@@ -17,8 +17,8 @@ readers can see it.
 What it costs, and the Stats page that shows it, are on [Stats and costs](stats-and-costs.md).
 Every setting you can change with no deploy is listed in
 [configuration.md](../configuration.md#dynamodb-settings-changed-with-no-deploy). Each command's
-options are in [scripts/README.md](../../scripts/README.md). The reviewer bear's full design is in
-[reviewer-bear.md](../enhancements/reviewer-bear.md). This page does not repeat them.
+options are in [scripts/README.md](../../scripts/README.md). The reviewer bear has
+[his own page](reviewer-bear.md). This page does not repeat them.
 
 **In the assistant.** There is no step-by-step walkthrough of this feature yet (no
 `architecture(feature=...)` entry). Ask about its parts by name instead:
@@ -377,8 +377,9 @@ schedules a few minutes apart. Each run:
 He acts through the admin API's own functions, so the pages, musings and Stats move as if you had
 done it. A topic with `force_manual_review` is never his. His report, and any back-and-forth with
 BloggerBear, go to the Musings page. `reviewer get|set` changes his settings with no deploy.
-Everything else is in [reviewer-bear.md](../enhancements/reviewer-bear.md) and
-[configuration.md](../configuration.md#the-reviewer-bear-professor-grizzlewick).
+How he works, task by task, is in [his own page](reviewer-bear.md); his settings are in
+[configuration.md](../configuration.md#the-reviewer-bear-professor-grizzlewick), and the design
+behind him in [the archived spec](../enhancements/archive/reviewer-bear.md).
 
 ## Scratch the bear's tummy
 

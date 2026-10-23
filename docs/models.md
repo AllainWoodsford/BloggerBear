@@ -5,9 +5,10 @@ Lambdas (`BEDROCK_MODEL_ID`, by default the AU Claude Haiku 4.5 inference profil
 built-in entry for that one model, and the model catalog quietly fills the registry around it.
 
 Read on when you want to change the model without a deploy, give it a fallback, try several models
-on one topic, or understand why a topic is suddenly on a model you never chose. The design, with
-every field and edge case, is
-[enhancements/model-catalog-refresh.md](enhancements/model-catalog-refresh.md).
+on one topic, or understand why a topic is suddenly on a model you never chose. How the catalog
+works across the layers is [architecture/model-catalog.md](architecture/model-catalog.md); the
+design, with every field and edge case, is
+[enhancements/archive/model-catalog-refresh.md](enhancements/archive/model-catalog-refresh.md).
 
 Most commands here are the admin CLI ([scripts/QUICKSTART.md](../scripts/QUICKSTART.md) sets it
 up). The shared rotation pool has no CLI command yet, so you set it with the AWS CLI or in the

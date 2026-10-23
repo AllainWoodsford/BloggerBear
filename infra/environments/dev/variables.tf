@@ -346,7 +346,7 @@ variable "reviewer_enabled" {
     the musings feed. On by default; false deploys neither his function nor his schedule. Set from
     the REVIEWER_ENABLED GitHub variable. His behaviour (tasks, limits, pause flag, whether he may
     approve) is the `reviewer` row of the model-config table, changed with no deploy. Design:
-    docs/enhancements/reviewer-bear.md.
+    docs/enhancements/archive/reviewer-bear.md.
   EOT
 }
 

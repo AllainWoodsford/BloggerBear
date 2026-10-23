@@ -1933,7 +1933,7 @@ def put_model_rotation_candidates(candidates: list[str]) -> None:
     table.put_item(Item={"config_id": _MODEL_ROTATION_CONFIG_ID, "candidates": candidates})
 
 
-# --- Model catalog (common/model_catalog.py, docs/enhancements/model-catalog-refresh.md) ----------
+# --- Model catalog (common/model_catalog.py, docs/enhancements/archive/model-catalog-refresh.md) ----------
 #
 # More rows in the same config table: `model-catalog` (the settings, edited by hand or from the
 # admin API/CLI), `model-catalog-state` (written only by the job, kept apart so saving the settings

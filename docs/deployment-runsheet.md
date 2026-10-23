@@ -564,7 +564,7 @@ the logs stay safe to publish.
 
 ### The reviewer bear (on by default)
 
-Professor Grizzlewick (`<prefix>-<env>-reviewer`, [reviewer-bear.md](enhancements/reviewer-bear.md))
+Professor Grizzlewick (`<prefix>-<env>-reviewer`, [reviewer-bear.md](enhancements/archive/reviewer-bear.md))
 is deployed with everything else: every second day at 05:00 Sydney he reviews what the admins have
 not, and writes to the Musings page as himself.
 

@@ -475,7 +475,7 @@ Two things need a person, and both are covered:
    (Every article that needs a decision has a queue item, so this is all of them.)
    - An article that has waited two days or more may be decided for you by Professor Grizzlewick,
      the reviewer bear, financial ones included. Each financial article he approves is flagged for
-     you to check ([docs/enhancements/reviewer-bear.md](../docs/enhancements/reviewer-bear.md)).
+     you to check ([docs/enhancements/archive/reviewer-bear.md](../docs/enhancements/archive/reviewer-bear.md)).
    - `reviewer set --may-approve off` (or, for one topic,
      `topics update <topic_id> --reviewer-may-approve off`) stops only his approvals. A topic set
      to `--reviewer-may-approve on` still lets him approve. He still sends a held article with a

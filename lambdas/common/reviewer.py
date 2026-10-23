@@ -1,6 +1,6 @@
 """Professor Grizzlewick, the reviewer bear: an old, bespectacled, mustachioed bear woken every
 second day to do the reviews the human admins have fallen behind on
-(docs/enhancements/reviewer-bear.md).
+(docs/enhancements/archive/reviewer-bear.md).
 
 A run plans its work from the tables, then works through it a couple of tasks at a time, on
 one-shot tick schedules a few minutes apart, so it never hits the model or the site all at once.

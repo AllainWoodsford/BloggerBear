@@ -1,5 +1,5 @@
 """Model catalog Lambda handler: keeps the Models registry's list of models and their prices up to
-date (common/model_catalog.py, docs/enhancements/model-catalog-refresh.md).
+date (common/model_catalog.py, docs/enhancements/archive/model-catalog-refresh.md).
 
 Invoked four ways (common/model_catalog.handle):
 

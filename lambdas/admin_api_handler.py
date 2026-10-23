@@ -2724,7 +2724,7 @@ def _put_model(event: dict) -> dict:
 _CATALOG_MODEL_FIELDS = ("region", "discovered_at", "pricing_unit", *model_catalog.ACCESS_FIELDS)
 
 
-# --- Model catalog (common/model_catalog.py, docs/enhancements/model-catalog-refresh.md) ---------
+# --- Model catalog (common/model_catalog.py, docs/enhancements/archive/model-catalog-refresh.md) ---------
 #
 # The discover and reprice jobs' settings and pause flags (the `model-catalog` config row), and
 # running either job now. A job runs in its own Lambda, invoked asynchronously: a reprice can take
@@ -2752,7 +2752,7 @@ def _put_model_catalog_config_route(event: dict) -> dict:
     return _get_model_catalog_config_route(event)
 
 
-# --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/reviewer-bear.md) -----
+# --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/archive/reviewer-bear.md) -----
 #
 # The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
 # switches and limits, his pause flag and whether he may approve. Changed with no deploy.
