@@ -18,10 +18,14 @@ what a topic's next article will be written from, or a vision topic's maps and p
 - The caller's IP on the admin API's address allowlist (the API's resource policy, and the admin
   WAF IP set when that is switched on). `scripts/admin_allowlist.py` keeps it, not Terraform.
   `python scripts/admin_allowlist.py show --env dev` says whether this machine is listed; it only
-  reads. `python scripts/admin_allowlist.py set --env dev --my-ip` writes it, but it replaces the
-  whole list with this machine's /32, so give any other addresses in the same command. A fork
-  puts `--prefix <its UNIQUE_NAME_PREFIX>` (and `--region`, if not the default) before the
-  subcommand (`scripts/README.md`, "Who may reach the admin API").
+  reads. `python scripts/admin_allowlist.py set --env dev --my-ip` is a write, so run it only when
+  the user asks: it stores the list, copies it into the WAF IP set (when there is one) and the
+  resource policy, and deploys the admin API stage. It replaces the whole list with this machine's
+  /32, so give any other addresses in the same command (`show` prints the stored list on its
+  `parameter` line). A fork puts `--prefix <its UNIQUE_NAME_PREFIX>` (and `--region <its region>`
+  if that is not `ap-southeast-2`: unlike the CLI, this script reads neither `AWS_REGION` nor
+  `AWS_DEFAULT_REGION`) before the subcommand (`scripts/README.md`, "Who may reach the admin
+  API").
 - **Use dev unless the user names production.** Say which environment you are reading.
 
 ## Commands (read-only, in this order)
@@ -111,7 +115,7 @@ python scripts/admin_cli.py findings list <topic_id> | jq '.findings[] | {captur
 - **Never copy Finding text** into files, commits, pull request bodies or issue comments.
 - No personal data in what you report.
 - Never run a write or delete command (`topics update`, `topics trigger`, `topics delete`,
-  `articles ...`) unless the user asks for it.
+  `articles ...`, `admin_allowlist.py set` or `sync`) unless the user asks for it.
 - Prefer the Admin CLI over direct DynamoDB reads: it is the audited path.
 
 ## The same view by voice

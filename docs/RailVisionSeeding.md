@@ -49,12 +49,16 @@ not edited. Its Findings and articles stay, and it can be resumed or deleted lat
 ## 2. What an article is made of
 
 Each day's article is drafted only from the day's city's Findings since that city's last article
-(at most 48, newest first). A Finding is written only for a city's first clear scene, a material
-change (a served-share move of 2 points or more, a desert-area move of 10% of its baseline median
-or more (the median counted as at least 1 km², so the smallest material move is 0.1 km²), or a
-changed station count) or, on a week rota, the city's weekly reading (section 7). A city with
-nothing new gets no article that day (`no_findings`, no model call), unless a goal rotation still
-has a goal to write its last Findings up under (section 7).
+(at most 48, newest first). A Finding is written only for:
+
+- a city's first clear scene;
+- a material change: a served-share move of 2 points or more, a changed station count, or a
+  desert-area move of 10% of its baseline median or more (the median is counted as at least 1 km²,
+  so the smallest material move is 0.1 km²);
+- on a week rota, the city's weekly reading (section 7).
+
+A city with nothing new gets no article that day (`no_findings`, no model call), unless a goal
+rotation still has a goal to write its last Findings up under (section 7).
 
 ### The text
 
@@ -91,7 +95,7 @@ or waiting time. Both carry a fixed caption with the Copernicus and OpenStreetMa
 stored with the Finding (`figures`) and copied to the article page when it is published. A city
 whose stored network predates the stops layer has no transit-reach map (and no stop measures:
 the quality flag `no_stops_layer`) until the network is refreshed at its TTL or prefetched
-([vision-runsheet.md, rail_access topics](vision-runsheet.md#rail_access-topics)).
+([vision-runsheet.md, After deploying the stops layer](vision-runsheet.md#after-deploying-the-stops-layer)).
 
 **What the article shows today:** `common/figures.py` `figures_for_findings` takes the figures of
 the Findings drafted, newest first, each once, at most **3** (`MAX_FIGURES_PER_ARTICLE`). Because
@@ -308,7 +312,7 @@ most 1000 characters, so count them: `python -c 'import json; [print(g["name"], 
 the topic's `editorial_goals.exclusion_criteria` apply to all four). Until a city's network
 carries its stops layer, its Finding has no stop measures and no transit-reach map (`no_stops_layer`),
 so a `transit` article drafted from it has only the rail-only share to report: prefetch the
-networks first ([the runsheet](vision-runsheet.md#rail_access-topics)):
+networks first ([vision-runsheet.md, After deploying the stops layer](vision-runsheet.md#after-deploying-the-stops-layer)):
 
 ```json
 [
@@ -360,15 +364,19 @@ once the city's network carries its stops) and its planner notes. The tick's dif
 from that diff, and need not start that way.
 
 **4. Optional: the first article now** (otherwise at the topic's daily slot):
-`topics trigger rail-cities --pipeline daily_cycle`. The log says `day_subject=<this week's city>`
-and `editorial_goal=access revisit=False` when the city has no `goal_rotation_state` entry yet or
-the goal it used last was `transit` (or one no longer in the list). New Findings take the goal
-after the one the city used last, so a city already written up under the day rota may start
-further down the list (`goal_rotation_state.<city>.goal` shows the goal it used last). The article
-waits in the inbox. Each later trigger revisits the same Finding (`revisit=True`) under the next
-goal not yet used on it, in list order and wrapping round (from `access`: `network`, then
-`simulations`, then `transit`). Once all four have been used on it, the next trigger writes
-nothing.
+`topics trigger rail-cities --pipeline daily_cycle`. The article waits in the inbox. New Findings
+take the goal after the one the city used last, so the log says `day_subject=<this week's city>`
+and:
+
+- `editorial_goal=access revisit=False` when the city has no `goal_rotation_state` entry yet, or
+  the goal it used last was `transit` (or one no longer in the list);
+- otherwise `revisit=False` and the goal after the one it used last
+  (`goal_rotation_state.<city>.goal` shows the goal it used last), so a city already written up
+  under the day rota may start further down the list.
+
+Each later trigger revisits the same Finding (`revisit=True`) under the next goal not yet used on
+it, in list order and wrapping round (from `access`: `network`, then `simulations`, then
+`transit`). Once all four have been used on it, the next trigger writes nothing.
 
 **Watching it:** `topics get rail-cities` shows `goal_rotation_state.<city>` (the goal used last
 and the goals used on the current Finding); the research state shows each city's

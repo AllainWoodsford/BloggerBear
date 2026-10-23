@@ -42,7 +42,8 @@ match. `ruff-autofix` skips it: it never touches the `dev` or `prod` branch.
 
 ## What gates a deploy
 
-Nothing reaches AWS without passing the security scans, lint and tests in the same workflow run.
+No deploy reaches AWS without passing the security scans, lint and tests in the same workflow
+run. Destroying dev (below) signs in to AWS as the same dev deploy role but runs none of them.
 
 **Dev** (`terraform.yml`):
 
@@ -50,8 +51,9 @@ Nothing reaches AWS without passing the security scans, lint and tests in the sa
    do not run on their own for that push; they run inside this workflow.
 2. `security` and `lint-test` run on the pushed commit. `apply-dev` needs both.
 3. `apply-dev` signs in to AWS as the dev deploy role (`AWS_DEV_DEPLOY_ROLE_ARN`), through
-   GitHub OIDC. The role trusts the `dev` branch, so the job runs in no GitHub environment: a
-   manual run must be started on the `dev` branch.
+   GitHub OIDC. The role trusts only the `dev` branch, so a manual run must be started on the
+   `dev` branch. For the same reason the job runs in no GitHub environment: a job in an
+   environment signs in as that environment, not as the branch, and the role would refuse it.
 4. It builds `frontend-dist/` (`python scripts/minify_frontend.py`), then runs `terraform init`,
    `fmt -check`, `validate`, `plan` and `apply` in `infra/environments/dev`.
 5. It deploys the admin API's stage once more, even if the apply failed, so the stage keeps the
@@ -81,9 +83,14 @@ destroys production.
 
 ## What is required to merge
 
-Which checks must pass before a pull request can merge is a repository setting, not code: see
-[GitHub repository settings](configuration.md#github-repository-settings). The workflows above
-report their results; a check blocks a merge only if the repository makes it required.
+Which checks must pass before a pull request can merge is a repository setting, not code.
+
+[GitHub repository settings](configuration.md#github-repository-settings) lists a ruleset on `dev`
+and `prod`: pull requests only, no force-push, no deletion. It names no required checks. You
+choose them and add them to that ruleset yourself.
+
+The workflows above report their results; a check blocks a merge only if the repository makes it
+required.
 
 Mind the path filters when you choose:
 
@@ -124,7 +131,8 @@ never `ruff format`.
   this repository only, not `GITHUB_TOKEN`: a push made with `GITHUB_TOKEN` starts no workflow, so
   `python-ci` would never run on the fixed commit.
 - **Without it** (report-only mode), it pushes nothing and puts the diff in the job summary. Apply
-  it with `ruff check --fix lambdas/ scripts/`.
+  it with `ruff check --fix lambdas/ scripts/`, using the Ruff version the summary names: the one
+  pinned in `lambdas/requirements-dev.txt` ([the tool versions](#the-tool-versions)).
 
 Then it runs `ruff check lambdas/ scripts/` again. It stays red when something is left that has no
 safe fix (E501 line too long, F841 unused variable): fix those by hand. In report-only mode it also
@@ -137,9 +145,12 @@ credentials, no plan, no deploy.
 
 **Start it** one of two ways:
 
-- add the `security-scan` label to a pull request (only collaborators can label);
-- Actions tab → **on-demand-scan** → **Run workflow**, on a branch, with an optional ref (a branch,
-  tag or commit), or `gh workflow run on-demand-scan.yml --ref <branch>`.
+- Add the `security-scan` label to a pull request (only collaborators can label).
+- By hand: Actions tab → **on-demand-scan** → **Run workflow**, or
+  `gh workflow run on-demand-scan.yml --ref <branch>`. Either way you pick a branch to run on, and
+  the run scans that branch. To scan another branch, tag or commit instead, give it as the
+  optional `ref` input. With `gh`, add `-f ref=<branch, tag or commit>`: gh's own `--ref` flag
+  only picks the branch to run on.
 
 **What it scans**, in four jobs:
 
@@ -208,10 +219,10 @@ pytest lambdas/ scripts/
   rewrite dozens of unrelated files ([CLAUDE.md](../CLAUDE.md)).
 - Run Ruff again after you merge `dev` into your branch: import order (I001) breaks there.
 - The tests use mocked AWS (moto) and need no credentials. Some of them check more than code:
-  `scripts/tests/test_generate_cli_reference.py` fails when `lambdas/ops_mcp/cli_reference.json`
-  is out of date (fix: `python scripts/generate_cli_reference.py`), and
-  `scripts/tests/test_setup_repo.py` fails when a workflow reads a secret or variable that
-  `scripts/setup_repo.py` does not know about.
+  - `scripts/tests/test_generate_cli_reference.py` fails when `lambdas/ops_mcp/cli_reference.json`
+    is out of date. Fix it with `python scripts/generate_cli_reference.py`.
+  - `scripts/tests/test_setup_repo.py` fails when a workflow reads a secret or variable that
+    `scripts/setup_repo.py` does not know about.
 
 ### Code and dependency scans (`security`)
 
@@ -236,9 +247,9 @@ without it the dev, ops and vision requirements are not scanned. Without `--seve
 `--severity MEDIUM,HIGH,CRITICAL --exit-code 0`, to show the MEDIUM findings without failing.
 
 ```bash
-python3 -m venv /tmp/checkov-venv
-/tmp/checkov-venv/bin/pip install "checkov==3.3.25"
-/tmp/checkov-venv/bin/checkov --config-file .checkov.yaml
+python3 -m venv /tmp/checkov-venv                          # Git Bash: python -m venv /tmp/checkov-venv
+/tmp/checkov-venv/bin/pip install "checkov==3.3.25"        # Git Bash: /tmp/checkov-venv/Scripts/pip
+/tmp/checkov-venv/bin/checkov --config-file .checkov.yaml  # Git Bash: /tmp/checkov-venv/Scripts/checkov
 ```
 
 `.checkov.yaml` names what Checkov scans (`infra/`) and what it skips, each with its reason. A
@@ -321,8 +332,9 @@ every apply. The `init` and `plan` commands for your own machine are in
 
 ## The pre-commit hook
 
-`pr-checks` runs after you push, when the content is already on GitHub. The hook runs the same
-checks before each commit. Turn it on once per clone:
+`pr-checks` runs after you push, when the content is already on GitHub. The hook runs two of the
+same checks before each commit (the personal-data check and Gitleaks), plus `python-ci`'s Ruff
+lint. It does not run Trufflehog or the Terraform checks. Turn it on once per clone:
 
 ```bash
 git config core.hooksPath .githooks

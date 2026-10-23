@@ -12,6 +12,15 @@ The third session, the Graviton4 timing of COOL against stock OpenCV 5, is the
 [COOL benchmark runsheet](cool-benchmark-runsheet.md). The evidence these leave behind, and its
 schema, is in [the evidence README](hackathon/evidence/README.md).
 
+The labels in the headings and steps are cross-references:
+
+- E3, E5 and E8 are experiments in the
+  [technical report's evaluation](hackathon/technical-report.md#6-evaluation).
+- A2, A3, S7 and O9 are rows of the [rubric tracker](hackathon/rubric-tracker.md), which the
+  commit steps say to update.
+- Numbers such as 2.5, 2.6.4 or 2.7.1, in brackets or not, are sections of the evaluation's
+  specification. The scripts' docstrings cite it by the same numbers; it is not in the repository.
+
 ## Contents
 
 - [The evaluation's real-data runs](#the-evaluations-real-data-runs)
@@ -39,14 +48,18 @@ The evaluation's subcommands (`scripts/vision_eval.py`; options in
 [scripts/README.md](../scripts/README.md#the-evaluation-proper-vision_evalpy-replay-failures-access-baseline-index))
 run in CI on a synthetic city with scripted parts. These are the runs on real data: the
 operator's, and their run files are the evidence the report cites
-([the evidence README](hackathon/evidence/README.md#running-the-evaluation-for-real)). Run them
-from a checkout of the code being evaluated, in a venv; they use the committed Sydney network
-fixture (`scripts/vision_benchmark_networks/sydney.json`, #349) unless given
-`--network <file>`. They read the pinned scenes from `sentinel-cogs` in us-west-2 through a cache
-that the first run fills (about 54 MB a scene; the runs of steps 2, 3, 5 and 7 read eleven scenes,
-and step 8 adds the rest of the 17-scene year set) and later runs read from; on the
-Graviton instance (step 8's `$C` in the [COOL benchmark runsheet](cool-benchmark-runsheet.md)) or any machine in us-west-2 that is fast, elsewhere it is a few
-minutes a scene through a slow link. Nothing here writes to AWS.
+([the evidence README](hackathon/evidence/README.md#running-the-evaluation-for-real)).
+
+Run them from a checkout of the code being evaluated, in a venv. They use the committed Sydney
+network fixture (`scripts/vision_benchmark_networks/sydney.json`, #349) unless given
+`--network <file>`. Nothing here writes to AWS.
+
+They read the pinned scenes from `sentinel-cogs` in us-west-2 through a cache. The first run fills
+it, about 54 MB a scene, and later runs read from it. The runs of steps 2, 3, 5 and 7 read eleven
+scenes, and step 8 adds the rest of the 17-scene year set. Filling the cache is fast on the
+Graviton instance of the [COOL benchmark runsheet](cool-benchmark-runsheet.md) (that runsheet's
+step 8 sets the same `$C` as step 1 below) or on any machine in us-west-2. Elsewhere it is a few
+minutes a scene through a slow link.
 
 ### 1. The venv and the names
 
@@ -98,16 +111,21 @@ python scripts\vision_eval.py access-baseline --cache $HOME\cogs --out docs\hack
 
 ### 4. The replay with the deployed worker and the real model (2.6.4)
 
-Credentials that may invoke
-the worker (`lambda:InvokeFunction` on `<prefix>-dev-vision-worker` in us-west-2) and the
-topics' model (`bedrock:InvokeModel` on the inference profile the topics use, in the home
-Region); `M` is that profile's id (`python scripts/admin_cli.py model-config get` shows it).
-An application inference profile is given by its ARN, which Converse needs; the run file and
-the trace then name no model, because that ARN carries the account id (a system profile's ARN
-is recorded as its id).
+You need credentials that may invoke two things:
+
+- the worker: `lambda:InvokeFunction` on `<prefix>-dev-vision-worker` in us-west-2 (`<prefix>`
+  is `bloggerbear`, Terraform's default `unique_name_prefix`, unless your deployment set another);
+- the topics' model: `bedrock:InvokeModel` on the inference profile the topics use, in the home
+  Region (`ap-southeast-2`, as the commands pass it).
+
+`W` is the worker's ARN, which the first command looks up. `M` is that profile's id
+(`python scripts/admin_cli.py model-config get` shows it). For an application inference profile,
+`M` is its ARN, which Converse needs. The run file and the trace then name no model, because that
+ARN carries the account id (a system profile's ARN is recorded as its id).
+
 Every site id the worker is sent is `eval-sydney`, so these runs never pass for production's in
-its logs; the run file names the worker's Region and code, never its ARN. About 10 worker calls
-and a few cents of model calls a sequence.
+its logs. The run file names the worker's Region and code, never its ARN. Each sequence costs
+about 10 worker calls and a few cents of model calls.
 
 ```sh
 W=$(aws lambda get-function --function-name <prefix>-dev-vision-worker --region us-west-2 --query Configuration.FunctionArn --output text)
@@ -156,13 +174,18 @@ profile no longer offers) names what moved.
 
 ### 6. The agent's evaluation (2.6.1-2.6.3)
 
-With the same `W` and `M`: the thirteen cases in
+With the same `W` and `M`, the command below runs the thirteen cases in
 `scripts/vision_eval_cases/` (the [evidence README](hackathon/evidence/README.md#the-agents-cases)
-lists them), each case's history through the real adapter, then its newest tick asked of the
-real model five times from the same state, against the deployed worker. C7 and C9 run their
-scripts; C8 is asked with an invalid model id on purpose; C3 and C10 count only if their scene
-passes the gate. About 55 live runs of up to five turns: a few US dollars of model calls (the
-run file totals them in USD and AUD, by the built-in price table) and cents of worker time.
+lists them) against the deployed worker. Each case's history goes through the real adapter. Then
+its newest tick is asked of the real model five times from the same state. Some cases differ:
+
+- C7 and C9 run their scripts.
+- C8 is asked with an invalid model id on purpose.
+- C3 and C10 count only if their newest scene passes the gate and so reaches the agent; otherwise
+  they are left out of the scores.
+
+That is about 55 live runs of up to five turns: a few US dollars of model calls (the run file
+totals them in USD and AUD, by the built-in price table) and cents of worker time.
 
 ```sh
 python scripts/vision_eval.py agent --worker "$W" --agent bedrock --model-id "$M" --region ap-southeast-2 --repeats 5 --out $E
@@ -172,19 +195,30 @@ python scripts/vision_eval.py agent --worker "$W" --agent bedrock --model-id "$M
 python scripts\vision_eval.py agent --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
 ```
 
-It exits 1 when an unconditional case never reached the agent, a failure case did not fail
-closed as it must, or the worker did not measure a case's newest scene (the run keeps its code
-and scores that repeat nowhere); `--case C1` (repeatable) re-runs one. Without Bedrock access
-every case ends `bedrock_error`, counted, never dropped: check the summary's
-`failed_closed_task_runs` before committing a run that only measured that. To run the worker
-in this process instead, add `$C` and pass `--worker in-process`; without a cache it is refused
-off an EC2 instance in us-west-2.
+It exits 1 when:
+
+- an unconditional case never reached the agent;
+- a failure case did not fail closed as it must; or
+- the worker did not measure a case's newest scene (the run keeps its code and scores that repeat
+  nowhere).
+
+To re-run one case, add `--case C1` (repeatable).
+
+Without Bedrock access every case ends `bedrock_error`, counted, never dropped. Check the summary's
+`failed_closed_task_runs` before committing a run that only measured that.
+
+To run the worker in this process instead, add `$C` and pass `--worker in-process`. Without a cache
+it is refused off an EC2 instance in us-west-2.
 
 ### 7. The counterfactuals (2.6.6)
 
-C1 and C10 (C4 in C10's place if C10 does not pass the gate),
-five repeats per arm with only `look_again`'s numbers differing, and the same scene clouded to
-coverage 0.62 and 0.58 in this process (arm (b), which needs the cache). About 22 model runs.
+This runs C1 and C10 (C4 in C10's place if C10 does not pass the gate) in two arms, about 22
+model runs in all:
+
+- **Arm (a), the agent:** each case's newest tick, five repeats in each of its two arms,
+  `measured` and `baseline`, which differ only in `look_again`'s numbers.
+- **Arm (b), the gate:** the same newest scene clouded to coverage 0.62 and 0.58, either side of
+  the 0.6 floor, in this process. This arm needs the cache.
 
 ```sh
 python scripts/vision_eval.py counterfactual --worker "$W" $C --agent bedrock --model-id "$M" --region ap-southeast-2 --repeats 5 --out $E
@@ -199,10 +233,10 @@ below the floor. Arm (a)'s `baseline` arm is a constructed tool output, and the 
 
 ### 8. E3, stability over the year
 
-The manifest's `year-2024` set (17 scenes) through the
-production rule, triage off, on one network, in this process so the built-up masks can be
-compared: about 1 GB read once into the cache, so run it on the Graviton instance or another
-machine in us-west-2. No model, no worker invocation.
+This step runs the manifest's `year-2024` set (17 scenes) through the production rule, with
+triage off, on one network. It runs in this process so the built-up masks can be compared. It
+reads about 1 GB once into the cache, so run it on the Graviton instance or another machine in
+us-west-2. It calls no model and invokes no worker.
 
 ```sh
 python scripts/vision_eval.py stability $C --out $E
@@ -262,9 +296,11 @@ decision it was asked about (model text, through `redact.scrub`, of up to 300 ch
 which can name a suburb or a station.
 
 Commit the run files and figures, `docs/hackathon/evidence/replay/`, `index.json` and
-`RESULTS.md`, and update the tracker's A2, A3 and S7 rows. A run file made before the submission tag
-on code that changed since in a way that matters to it goes in
-`docs/hackathon/evidence/older-code.json` with the reason, and `index` again.
+`RESULTS.md`, and update the A2, A3 and S7 rows of [the rubric tracker](hackathon/rubric-tracker.md).
+
+If a run file was made before the submission tag, on code that has changed since in a way that
+matters to it, add its run id to `docs/hackathon/evidence/older-code.json` with the reason, then
+run `index` again.
 
 ## The evidence export, the trace and the labels (O9)
 
@@ -289,13 +325,14 @@ of the code being submitted, in the venv of [step 1](#1-the-venv-and-the-names) 
 - `gh`, signed in (`gh auth status`), for the commit that deployed each function's code
   (`provenance.json`); without it that commit is null, with the reason, and the export still
   finishes.
-- Your `.pii-denylist` at the repository's root (or `PII_DENYLIST`): the export runs the check on
-  every file it writes, and refuses without a list, since nothing would then check the files
-  before they are committed. It does not check first: without a list it still reads everything and
-  writes every file, then refuses at the end (exit 2, `refused: PII_DENYLIST is unset and
-  <repo>/.pii-denylist is missing`). The export is moved to `live/<date>.refused/`, your
-  `labels.csv` is left where it was, and every network file it wrote is put back as it was. Put
-  the list in place before you start. `--no-denylist` writes unchecked, and says so.
+- Your `.pii-denylist` at the repository's root (or `PII_DENYLIST`). Put it in place before you
+  start. The export runs the check on every file it writes, and refuses without a list, since
+  nothing would then check the files before they are committed.
+  - It checks only at the end. Without a list it still reads everything and writes every file,
+    then refuses (exit 2, `refused: PII_DENYLIST is unset and <repo>/.pii-denylist is missing`).
+  - The refused export is moved to `live/<date>.refused/`, your `labels.csv` is left where it
+    was, and every network file it wrote is put back as it was.
+  - `--no-denylist` writes unchecked, and says so.
 
 The logs are read through Logs Insights, a few queries at a time, each batch waited for at most
 `--logs-wait` seconds (120); a 90-day scan of the three groups is a few GB at most, cents.
@@ -310,29 +347,42 @@ python scripts/evidence_export.py export --env dev --networks --figures 12
 python scripts\evidence_export.py export --env dev --networks --figures 12
 ```
 
-It writes `docs/hackathon/evidence/live/<UTC date>/`, and with `--networks` each city's network
-as `scripts/vision_benchmark_networks/<site>.json` (fill each new file's row in that directory's
-`NOTICE.md` from its `fetched_at`, `endpoint` and `query_url` and its sha256, which
-`provenance.json` gives under `networks`). A committed fixture is left byte for byte when it
-holds the same network (its `kept` says `unchanged`), and kept, with a line saying so, when it
-holds another: the evaluation's real-data runs pin its sha256, and `replay --agent recorded`
-refuses a file that changed, so do not pass `--replace-networks` once those runs are made. It
-prints any log read that did not complete: "not_checked" means a query did not finish within
-`--logs-wait`; run it again with `--logs-wait 300 --replace` (`--replace` removes only the
-export's own files: your `labels.csv` stays). Exit 2 with `pii-denylist: <file>:<line> contains
-denylist entry #n` means a personal string reached a file: the export is moved to
-`live/<date>.refused/` (git ignores it), your `labels.csv` is left where it was, and every
-network file it wrote is put back as it was; find where the string came from, then export
-again. Leave out `--with-notes` for the committed export unless you have read every note it
-adds (model and third-party text, scrubbed and labelled, but quoted).
+It writes `docs/hackathon/evidence/live/<UTC date>/`. With `--networks` it also writes each city's
+network as `scripts/vision_benchmark_networks/<site>.json`:
+
+- Fill each new file's row in that directory's `NOTICE.md` from its `fetched_at`, `endpoint` and
+  `query_url`, and its sha256, which `provenance.json` gives under `networks`.
+- A committed fixture that holds the same network is left byte for byte (its `kept` says
+  `unchanged`). One that holds another network is kept, with a line saying so.
+- Do not pass `--replace-networks` once the evaluation's runs are made:
+  [the evaluation's real-data runs](#the-evaluations-real-data-runs) pin each fixture's sha256,
+  and `replay --agent recorded` refuses a file that changed.
+
+It prints any log read that did not complete. "not_checked" means a query did not finish within
+`--logs-wait`: run it again with `--logs-wait 300 --replace`. `--replace` removes only the
+export's own files: your `labels.csv` stays.
+
+Exit 2 with `pii-denylist: <file>:<line> contains denylist entry #n` means a personal string
+reached a file. The export is moved to `live/<date>.refused/` (git ignores it), your `labels.csv`
+is left where it was, and every network file it wrote is put back as it was. Find where the
+string came from, then export again.
+
+Leave out `--with-notes` for the committed export unless you have read every note it adds (model
+and third-party text, scrubbed and labelled, but quoted).
 
 ### 2. Read it before committing
 
-`summary.json`'s `logs` (each `complete`), `redacted` (0
-expected; anything else, `redacted_at` names each file, line and field: find out why),
-`observed_failures.worker.not_checked` (worker runs whose own line was not read: 0 when every
-log read completed), `human_control.completeness.unmatched` (a line nothing corroborates: the
-report says so), and the traces under `traces/`.
+Check these in `summary.json`:
+
+- `logs`: each one's `state` is `complete`.
+- `redacted`: 0 expected. If it is anything else, `redacted_at` names the file, line and field of
+  each (the first 100): find out why.
+- `observed_failures.worker.not_checked`: worker runs whose own line was not read. It is 0 when
+  every log read completed.
+- `human_control.completeness.unmatched`: each entry is a line nothing corroborates. The report
+  says so.
+
+Then read the traces under `traces/`.
 
 ### 3. The trace
 
@@ -349,8 +399,10 @@ python scripts\evidence_export.py trace --topic rail-cities --site sydney --scen
 python scripts\evidence_export.py trace --env dev --topic rail-sydney-demo --scene latest
 ```
 
-The second reads live (the logs and the running state, now) and writes nothing; in the video,
-run query (c) on the same tick id the committed trace shows.
+The second reads live (the logs and the running state, now) and writes nothing. In the video, run
+query (c) from [the vision runsheet's queries](vision-runsheet.md#the-queries) on
+`/aws/lambda/<prefix>-dev-research-tick` in the home Region, with the same tick id the committed
+trace shows.
 
 ### 4. Label (optional; not done for the submission)
 
@@ -377,4 +429,5 @@ cities and the demo topic apart.
 
 Commit the export directory, `docs/hackathon/evidence/live/README.md` and the network files,
 after `python scripts/pii_denylist_check.py --staged` (PowerShell: `python
-scripts\pii_denylist_check.py --staged`). Update the tracker's O9, S7 and A3 rows.
+scripts\pii_denylist_check.py --staged`). Update the O9, S7 and A3 rows of
+[the rubric tracker](hackathon/rubric-tracker.md).

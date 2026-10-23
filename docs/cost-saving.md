@@ -37,13 +37,17 @@ to Terraform, reading three names in order:
 3. else `true`.
 
 Set it under **Settings → Secrets and variables → Actions → Variables**, then **re-run the
-deploy**. For dev, run the `terraform` workflow by hand from the Actions tab, with the branch
-selector on `dev`. A push to `dev` deploys too, but only a push that changes a path the workflow
-watches: `infra/`, `lambdas/`, `frontend/`, or a few listed scripts and workflow files (the full
-list is `on.push.paths` in `.github/workflows/terraform.yml`). A push of only docs, or an empty
-commit, starts nothing. For production, publish a GitHub Release from `prod`. Nothing changes
-until that apply runs. Production's names may also be set on the `production` environment, which
-wins over the repository's, as any environment variable does.
+deploy**. Nothing changes until that apply runs.
+
+- **Dev:** run the `terraform` workflow by hand from the Actions tab, with the branch selector on
+  `dev`. A push to `dev` deploys too, but only a push that changes a path the workflow watches:
+  `infra/`, `lambdas/`, `frontend/`, or a few listed scripts and workflow files (the full list is
+  `on.push.paths` in `.github/workflows/terraform.yml`). A push of only docs, or an empty commit,
+  starts nothing.
+- **Production:** publish a GitHub Release from `prod`.
+
+Production's names may also be set on the `production` environment, which wins over the
+repository's, as any environment variable does.
 
 The Terraform variables are `bool`, so a typo (`ture`, `yes`) fails the plan with "a bool is
 required" instead of quietly picking a mode. Use `true` or `false`.
@@ -59,13 +63,27 @@ CloudFront ACL is production's, dev only borrows it (`web_acl_arn`), so dev pays
 either way.
 
 To undo any switch, delete the variable (or set it back to `true`) and re-run the deploy. The
-resources come back under the same names, but as new ones: the firewall's logs start empty, and
-the admin web ACL's IP set comes back with no addresses. That ACL blocks by default, so until the
-IP set is filled the admin API refuses every call, yours included. No deploy fills it. After the
-deploy that brings the admin web ACL back (`WAF_REGIONAL_ENABLED` and `WAF_ADMIN_ALLOWLIST` both
-on again), run `python scripts/admin_allowlist.py --prefix <your prefix> sync --env dev` (or
-`--env production`) to copy the stored list into it. Add `--region <your region>` before `sync`
-too if your region is not `ap-southeast-2`.
+resources come back under the same names, but as new ones: the firewall's logs start empty, the
+admin web ACL's IP set comes back with no addresses, and the shared CloudFront ACL
+(`WAF_SITE_ENABLED`) gets a new ARN.
+
+The admin web ACL blocks by default, so until the IP set is filled the admin API refuses every
+call, yours included. No deploy fills it. After the deploy that brings the admin web ACL back
+(`WAF_REGIONAL_ENABLED` and `WAF_ADMIN_ALLOWLIST` both on again), copy the stored list into it:
+
+```sh
+python scripts/admin_allowlist.py --prefix <your prefix> sync --env dev
+```
+
+Use `--env production` for production. If your region is not `ap-southeast-2`, add
+`--region <your region>` before `sync` too.
+
+No deploy shares the new CloudFront ACL with dev either. If dev shared it before you turned
+`WAF_SITE_ENABLED` off (one-account setups only), copy production's new `wafv2_web_acl_arn` output
+(`terraform output wafv2_web_acl_arn` in `infra/environments/production`) into `web_acl_arn` in
+`infra/environments/dev/terraform.tfvars` after the release. Push that to `dev`: a change under
+`infra/` starts dev's deploy. Don't restore the old value from git: that ARN names an ACL that no
+longer exists.
 
 | GitHub variable (`_DEV` / `_PROD` first, then the shared name) | Terraform variable | `false` means | Saves (US$ a month) |
 |---|---|---|---|
@@ -121,13 +139,18 @@ their rows on the edge dashboard go with them. The admin API keeps its resource-
 allowlist. Both APIs keep API Gateway's own throttling (a ceiling for the whole API, not per
 visitor).
 
-**Lost:** per-visitor rate limits on the public API, above all on the feedback route, which can
-cost a model call; the managed rule set; the regional firewalls' logs, so no WAF-block incidents.
-In production, the operator's assistant's `firewall_review` loses the regional logs but keeps the
-CloudFront ACL's log while `WAF_SITE_ENABLED` is on; the tool goes only if that switch is off too.
-(Dev's assistant never has `firewall_review`.) In production, also the blocks the shared
-CloudFront ACL does not see, because it sits in front of the CDN and not in front of the
-execute-api address that RSS readers and scripts can still call directly.
+**Lost:**
+
+- Per-visitor rate limits on the public API, above all on the feedback route, which can cost a
+  model call.
+- The managed rule set.
+- The regional firewalls' logs, so no WAF-block incidents.
+- In production, the operator's assistant's `firewall_review` loses the regional logs but keeps
+  the CloudFront ACL's log while `WAF_SITE_ENABLED` is on; the tool goes only if that switch is
+  off too. (Dev's assistant never has `firewall_review`.)
+- In production, also the blocks the shared CloudFront ACL does not see, because it sits in front
+  of the CDN and not in front of the execute-api address that RSS readers and scripts can still
+  call directly.
 
 **Saves:** about US$16 a month per environment.
 
@@ -168,7 +191,9 @@ regional ACL, if on, still guards the origin.
 **Saves:** about US$7 a month.
 
 **Set:** `WAF_SITE_ENABLED_PROD` or `WAF_SITE_ENABLED` to `false`, then publish a release.
-**Undo:** delete it, release again. Dev never owns this ACL, so there is no `_DEV` name.
+**Undo:** delete it, release again, then set dev's `web_acl_arn` to the new ARN if dev shared the
+ACL (see [How a switch is set](#how-a-switch-is-set)). Dev never owns this ACL, so there is no
+`_DEV` name.
 
 ### `WAF_LOG_ALL_REQUESTS`
 

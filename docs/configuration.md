@@ -128,13 +128,15 @@ only production's domain.
 | `backup_export_buckets` | both | Buckets besides the backup bucket that `admin_cli backup export --bucket` may copy articles into and `backup restore --bucket` may read a snapshot from. Each is granted to the Lambda role; the bucket itself is made and kept outside Terraform. | `[]` |
 
 Do not set these in `terraform.tfvars`; CI supplies them from the GitHub settings above:
-`alert_email`, `aws_account_id`, `unique_name_prefix`, `aws_region`,
-`backup_bucket_name` (the `TF_STATE_BUCKET_*` secret again: backups are kept in the state bucket,
-under `backup/<prefix>-<env>/`), `vision_enabled` (the `VISION_ENABLED` variable above), `reviewer_enabled` (the `REVIEWER_ENABLED`
-variable above), `web_search_region` (the `WEB_SEARCH_REGION` variables above; `ap-northeast-1`
-when unset), and the firewall switches
-`waf_regional_enabled`, `waf_admin_allowlist`, `waf_log_all_requests` and, in production only,
-`waf_site_enabled` (the `WAF_*` variables above).
+
+- `alert_email`, `aws_account_id`, `unique_name_prefix` and `aws_region`.
+- `backup_bucket_name`: the `TF_STATE_BUCKET_*` secret again. Backups are kept in the state
+  bucket, under `backup/<prefix>-<env>/`.
+- `vision_enabled`: the `VISION_ENABLED` variable above.
+- `reviewer_enabled`: the `REVIEWER_ENABLED` variable above.
+- `web_search_region`: the `WEB_SEARCH_REGION` variables above; `ap-northeast-1` when unset.
+- `waf_regional_enabled`, `waf_admin_allowlist`, `waf_log_all_requests` and, in production only,
+  `waf_site_enabled`: the firewall switches, from the `WAF_*` variables above.
 
 `unique_name_prefix` is the `UNIQUE_NAME_PREFIX` setting: every name in the environment is
 `<prefix>-<env>-<resource>`, and its default is `bloggerbear`. It is at most 14 characters. The
@@ -159,6 +161,23 @@ follow-up ([vision.md §10](enhancements/archive/vision.md#10-still-open)).
 The times of the fixed jobs (the weekly reflection, the Stats rollover, the cost poll, the feedback
 musing, the weekly backup, the reviewer bear and the model catalog's jobs) are not variables: they
 are written in each environment's `main.tf`.
+
+### The ops assistant's limits
+
+The operator's assistant's agent Lambda (`<prefix>-<env>-ops-agent`) has three limits of its
+own. They are variables of `infra/modules/ops-assistant`, not of the environment: neither root
+passes them, so `terraform.tfvars` cannot set them. To change one, add it to the
+`module "ops_assistant"` block in `infra/environments/<env>/main.tf`, by pull request.
+
+| Variable | What it is | Default |
+|---|---|---|
+| `agent_daily_question_cap` | How many questions each signed-in user may ask per UTC day, briefings Alexa+ starts included. Past it, `POST /ask` answers 429 until midnight UTC. Terraform passes it to the agent as `OPS_AGENT_DAILY_QUESTION_CAP` (`lambdas/ops_agent/quota.py`). A whole number, 1 or more; the plan refuses anything else. | 100 |
+| `agent_reserved_concurrency` | How many questions the agent may answer at once (its reserved concurrency), or -1 for no reservation. Lambda refuses a reservation that would leave the account less than its minimum of 10 unreserved, so keep -1 until the account's [Lambda concurrency quota](#aws-account-settings) is raised. 0 is refused: it would switch the agent off. | -1 |
+| `agent_memory_size` | The agent Lambda's memory, in MB. Lambda gives CPU in proportion to it. | 1024 |
+
+Terraform owns the agent's environment, so `OPS_AGENT_DAILY_QUESTION_CAP` changed on the function
+in the console lasts only until the next apply. What the assistant costs, and the other limits on
+it, are in [Costs and limits](architecture/ops-mcp-agent.md#costs-and-limits).
 
 ## SSM Parameter Store
 
@@ -256,8 +275,9 @@ python scripts/admin_allowlist.py sync --env dev            # copy the stored li
   names it; its roles may read that one parameter). Under `open` or `off` it never looks.
 - **Credentials**: your own, for that environment's account, with `ssm:GetParameter` and
   `PutParameter`, `wafv2:ListIPSets`, `GetIPSet` and `UpdateIPSet`, `apigateway:GET`, `PATCH`
-  and `POST`, and `sts:GetCallerIdentity`. `--prefix` and `--region` default to `bloggerbear` and
-  `ap-southeast-2`: a fork must pass its own `--prefix`, or it writes a parameter nothing reads.
+  and `POST`, and `sts:GetCallerIdentity`.
+- **`--prefix` and `--region`** default to `bloggerbear` and `ap-southeast-2`: a fork must pass
+  its own `--prefix`, or it writes a parameter nothing reads.
 - **In Git Bash on Windows** nothing needs `MSYS_NO_PATHCONV`: the script builds the name itself.
 
 ## DynamoDB: settings changed with no deploy
@@ -274,15 +294,17 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | A pricing run: each changed model's old and new price, its check times and what each check found. Pruned by TTL 14 days after it closes | `<prefix>-<env>-model-config`, items `config_id` = `pricing-run#<run id>` | `model-catalog get` (the run under review) | None |
 | The global default and fallback model | `<prefix>-<env>-model-config`, item `config_id` = `default` | `model-config set --model-id … --fallback-model-id …` | No item: the model Terraform set (`BEDROCK_MODEL_ID`), no fallback. |
 | How often research really runs (`research_interval_hours`, whole hours, 1 to 168). The research schedule is only a heartbeat; each tick does work only once this much time has passed since the topic was last checked. A topic's own value wins over the pipeline-wide one, which every other topic inherits | `<prefix>-<env>-model-config`, item `config_id` = `pipeline`; a topic's own on its item in `<prefix>-<env>-topics` | `pipeline-config set --research-interval-hours N`; for one topic, `topics create\|update --research-interval-hours N` (`""` clears it) | 1 hour |
-| The stagger: the minutes between one topic's schedules and the next (`stagger_minutes`; 0 turns it off), then `topics reschedule` to apply it | same item | `pipeline-config set --stagger-minutes N`, `topics schedule`, `topics reschedule` | 5 minutes: slot 1 researches at :05 past, slot 2 at :10, ...; the daily cycles start one slot past the hour's last heartbeat (topics × 5 minutes), then one slot apart |
+| The stagger: the minutes between one topic's schedules and the next (`stagger_minutes`; 0 turns it off), then `topics reschedule` to apply it | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --stagger-minutes N`, `topics schedule`, `topics reschedule` | 5 minutes: slot 1 researches at :05 past, slot 2 at :10, ...; the daily cycles start one slot past the hour's last heartbeat (topics × 5 minutes), then one slot apart |
 | A topic's slot in the stagger (`stagger_slot`), and the schedules written for it (`research_schedule`, `daily_schedule`) | `<prefix>-<env>-topics`, one item per topic | `topics create\|update --stagger-slot N` (`""` for the next free one); `topics schedule` shows them | The next free slot when the topic is created or first edited |
 | A topic paused: no research tick, no candidate ideas, no article until it is resumed (`paused`, `paused_at`, `resumed_at`); its schedules disabled; "Paused" on its page; a musing each way | same item | `topics pause <topic_id>`, `topics resume <topic_id>` | Running |
 | The fresh-data review of each draft (`review_mode`), and what enforce mode does when a review cannot run (`review_on_unavailable`, pipeline-wide only). A topic's own `review_mode` wins over the pipeline-wide one | `<prefix>-<env>-model-config`, item `config_id` = `pipeline`; a topic's own `review_mode` on its item in `<prefix>-<env>-topics` | `pipeline-config set --review-mode off\|shadow\|enforce`, `--review-on-unavailable hold\|note`; for one topic, `topics create\|update --review-mode off\|shadow\|enforce` (`""` clears it on update) | `shadow`; hold |
-| Who may reach the operator's assistant | same item | `pipeline-config set --assistant-access open\|allowlist\|off` | `open` |
-| Security incidents: listing them, marking one seen or dealt with, opening one by hand | `<prefix>-<env>-security-events`, one item per incident | `security list`, `security acknowledge\|resolve\|reopen <event_id>`, `security open --severity … --summary …` | Opened automatically; a high one emails the alert address |
+| Who may reach the operator's assistant | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --assistant-access open\|allowlist\|off` | `open` |
+| Security incidents: listing them, marking one seen or dealt with, opening one by hand ([the pipeline](architecture/security-incidents.md)) | `<prefix>-<env>-security-events`, one item per incident | `security list`, `security acknowledge\|resolve\|reopen <event_id>`, `security open --severity … --summary …` | Opened automatically; a high one emails the alert address |
+| The key a client's address is hashed with before an incident is stored (`secret`), so the security-events table never holds an IP: an incident keeps `client_hash`, the first 16 hex characters of an HMAC-SHA256 of the address. Deleting the row makes a new key at the next incident; from then on the same client hashes differently, and its new incidents no longer group with its old ones. A backup leaves the row out, so a restored or new deployment makes its own key ([the keyed hash](architecture/security-incidents.md#the-keyed-hash-of-the-client)) | `<prefix>-<env>-model-config`, item `config_id` = `security-events-hash-key` | none: made on first use (`get_security_hash_key` in `lambdas/common/dynamo.py`); delete the row in the console to start a new key | No item until the first incident: a random 32-byte key, made with a conditional write so racing Lambdas share one |
 | A user locked out of the assistant after failed sign-ins | `<prefix>-<env>-sign-ins`, one item per sign-in event | `sign-ins list`, `sign-ins unlock <username>` | Locked after 5 failures in 15 minutes; lifts by itself |
 | Reader feedback limits and lockdown | the feedback configuration | `feedback-config set …`; for one article, `articles feedback-lock\|feedback-unlock <article_id>` | See `feedback-config --help` |
 | A topic: its adapter, schedule, time zone, editorial goals, model, rotation, whether it is financial | `<prefix>-<env>-topics`, one item per topic | `topics create`, `topics update` | Daily at 9 AM `Australia/Sydney`; hourly research heartbeat |
+| A topic whose every article waits for a person (`force_manual_review`, a Boolean). The daily cycle holds each draft with the reason "this topic's articles are always reviewed by a person before publishing" (`requires_manual_review` in `lambdas/common/compliance.py`). Unlike `is_financial`, it adds no financial guidance or disclaimer, and the compliance review still runs, so you see its verdict. The reviewer bear never publishes the topic's articles. The admin API forces it on for every `satellite_vision` and `rail_access` topic, on create and on each update | same item | No admin CLI flag. In the console, make the topic's item `force_manual_review` a Boolean both ways: `true` to turn it on, `false` (or remove the attribute) to turn it off. A String of either value, `"true"` or `"false"`, leaves it half on: the daily cycle adds no hold for it (`requires_manual_review` accepts only a Boolean `true`; a draft is still held for its other reasons, such as its compliance verdict), but the reviewer bear still treats the topic as a person's and never approves, reviews or defangs its articles (`lambdas/common/reviewer.py` tests the flag by truthiness). The admin API's `POST /topics` and `PUT /topics/{topic_id}` also take it in the body | Off; on for the vision topics |
 | Whether the reviewer bear may approve this topic's held articles himself (`reviewer_may_approve`: `true`, `false`, or unset for his `may_approve` setting). A topic with `force_manual_review` always waits for a person | same item | `topics update --reviewer-may-approve on\|off` (`""` clears it) | Unset: the project's default, on |
 | The reviewer bear's settings: his pause flag (`enabled`), whether he may approve (`may_approve`, a topic's own `reviewer_may_approve` wins), each of his five tasks (`fix_content`, `review_held`, `review_published`, `watch_flags`, `defang_held`) and his limits (`stale_after_hours`, `published_per_run`, `published_lookback`, `max_rewrites`, `content_days`, `tasks_per_tick`, `tick_minutes`, `defang_after_days`) and the bears' back-and-forth (`chat_chance_pct`, `reply_chance_pct`). Read at the start of each run | `<prefix>-<env>-model-config`, item `config_id` = `reviewer` | `reviewer get`, `reviewer set --enabled on\|off --may-approve on\|off --defang-after-days N ...` (`""` clears one) | Every switch on; 48 hours, 5 articles a run (from the newest 25), 3 rewrites, 7 days of content findings, 2 tasks a tick 5 minutes apart, 10 days before task 5 |
 | The reviewer bear's run under way: its queue of tasks, its tick, what each task came to (`run_id`, `queue`, `counts`, `woken`, `next_tick_at`). Written by his Lambda only | `<prefix>-<env>-model-config`, item `config_id` = `reviewer-state` | none (read it in the console) | No item until his first run |
@@ -293,16 +315,18 @@ then on, for good), what he cut when he published it after `defang_after_days` (
 | A topic's goal rotation (`editorial_goal_rotation`): 2 to 7 editorial goals, each `{"name", "primary_focus"}`, taken in turn so one set of findings is written up from different sides ([common/goal_rotation.py](../lambdas/common/goal_rotation.py)). Each goal's focus stands in for `editorial_goals.primary_focus`; the topic's `exclusion_criteria` apply to every goal. New findings get the goal after the one used last; with nothing new, the daily run *revisits* the findings of the last set (still unexpired, the day's subject's only on a rotating topic) under the next goal not yet used on them, and stops (`no_findings`) once every goal has had them. The state is `goal_rotation_state` on the topic item (subject key, or `*` for the whole topic, to the goal used last, the goals used on the current set and its oldest and newest `captured_at`), written by the daily cycle. An article records its goal as `editorial_goal`, and `revisit` when it was one; a revisit's research is not counted again. Ignored on a topic with a daily editorial goal (the crypto feed) | same item | `topics create\|update --goal-rotation-json '[...]'` (`'[]'` clears it; the state is kept) | No rotation: one goal, and nothing new writes nothing |
 
 Seeding the model tables, with a sample item, is in
-[The model registry](models.md).
+[Seeding the registry](models.md#seeding-the-registry).
 
 ## The model catalog's environment variables
 
-Neither is a switch, and neither needs setting: Terraform sets the first, and the code falls back
-to the same value without it. The on/off switches are in DynamoDB, not here: `discover_enabled`,
-`reprice_enabled` and `cycle_enabled` on the `model-catalog` row of `<prefix>-<env>-model-config`,
-**on unless set to `false`** (an absent row or setting is on), changed with `admin_cli.py
-model-catalog set --discover off|on --reprice off|on --cycle off|on` ([DynamoDB: settings changed
-with no deploy](#dynamodb-settings-changed-with-no-deploy)).
+The two variables in the table below are not switches, and neither needs setting: Terraform sets
+the first, and the code falls back to the same value without it.
+
+The on/off switches are in DynamoDB instead: `discover_enabled`, `reprice_enabled` and
+`cycle_enabled` on the `model-catalog` row of `<prefix>-<env>-model-config`. Each is **on unless
+set to `false`**: an absent row or setting is on. Change them with `admin_cli.py model-catalog set
+--discover off|on --reprice off|on --cycle off|on` ([DynamoDB: settings changed with no
+deploy](#dynamodb-settings-changed-with-no-deploy)).
 
 | Variable | Set on | Meaning | Default |
 |---|---|---|---|
@@ -390,8 +414,9 @@ A topic's `adapter_config` is an object on its item in `<prefix>-<env>-topics`, 
 topic's adapter. Set it with `topics create --config-json '{...}'`. `topics update <id>
 --adapter-config-json '{...}'` replaces the whole object, so read it with `topics get <id>`, edit it,
 and send all of it back. Every key below is optional, and each adapter's docstring
-(`lambdas/common/adapters/`) is the source for them. A topic created without an adapter uses
-`web_search`. The vision adapters' keys are in [A `satellite_vision` topic](#a-satellite_vision-topic)
+(`lambdas/common/adapters/`) is the source for them, except `hacker_news.py`, whose docstring
+lists none: its two keys, `keywords` and `limit`, are read in `HackerNewsAdapter.fetch_state`. A
+topic created without an adapter uses `web_search`. The vision adapters' keys are in [A `satellite_vision` topic](#a-satellite_vision-topic)
 and [A `rail_access` topic](#a-rail_access-topic). The optional API keys are in
 [SSM Parameter Store](#ssm-parameter-store), never in `adapter_config`.
 
@@ -402,8 +427,12 @@ defaults.
 ### A `github_trending` topic
 
 One GitHub Search API request per tick, for the most-starred repositories created in the last few
-days (`lambdas/common/adapters/github_trending.py`). A tick is material when a repository never
-reported for the topic appears, or a known one gains at least 100 stars or 20%.
+days (`lambdas/common/adapters/github_trending.py`).
+
+A tick is material when a repository never reported for the topic appears, or a known one gains
+at least 100 stars or 20%. Only a material tick writes a Finding: the research tick has the model
+summarise what is new and stores the summary as a Finding, which the topic's next article can be
+written from. Any other tick ends as `no_change`, with no summary and no Finding.
 
 | Key | Default | What it does |
 |---|---|---|
@@ -439,14 +468,33 @@ others still run.
 | `provider` | the `WEB_SEARCH_PROVIDER` environment variable, else `"gdelt"` | The search backend: `"gdelt"` or `"agentcore"`. When the AgentCore gateway is configured, a failed GDELT search is retried once through it. An unknown name fails every query, so the topic finds nothing. |
 | `min_new_results` | 1 | How many results never reported for the topic make a tick material. Raise it for fewer, larger Findings. |
 
+**Choose a backend with `provider`, not with `WEB_SEARCH_PROVIDER`.** `search_web`
+(`lambdas/common/web_search.py`) takes the topic's `provider` (a `crypto_feed` topic's
+`web_search_provider`) first, then the `WEB_SEARCH_PROVIDER` environment variable, then `"gdelt"`
+(`DEFAULT_PROVIDER`). Terraform never sets that variable, and it owns the whole environment of the two Lambdas that search, the research
+tick and the daily cycle (for the fresh-data review), with no `ignore_changes`. A value you add in
+the console lasts only until the next apply: in dev, every push to `dev` that touches `infra/`,
+`lambdas/` or `frontend/`. The `adapter_config` key is the only choice that lasts.
+
+An unknown name in `WEB_SEARCH_PROVIDER` fails every search of every topic that does not name its
+own backend.
+
+**`"agentcore"` turns the retry off.** A failed search is retried through the AgentCore gateway
+only when the chosen backend is not `agentcore` and the gateway is configured
+(`_fallback_configured`). With `agentcore` chosen, a failed search is not retried.
+
 ### A `crypto_feed` topic
 
 CoinGecko market data and crypto news, shaped by the day's editorial goal
 (`lambdas/common/adapters/crypto_feed.py`, `lambdas/common/editorial_goals.py`). The goal is one
 of four, drawn at random for each UTC day from the date, so the research tick and the daily cycle
-always agree on it. The anchors are always Bitcoin and Ethereum; the old `coin_ids` key is no longer
-read. The admin API forces `is_financial` on for this adapter, so every article is held for review,
-and a goal rotation (`editorial_goal_rotation`) is ignored.
+always agree on it.
+
+- The market anchors, the coins every other coin is read against, are fixed: Bitcoin and
+  Ethereum. A `MARKET_NEWS` day has none. The old `coin_ids` key is no longer read.
+- The admin API forces `is_financial` on for this adapter, so every article is held for review.
+- The daily cycle ignores a [goal rotation](#dynamodb-settings-changed-with-no-deploy)
+  (`editorial_goal_rotation`) on this topic: the day's goal takes its place.
 
 | Key | Default | What it does |
 |---|---|---|
@@ -515,7 +563,8 @@ which Terraform does not create yet, keeps what is set on it:
 
 Set by Terraform on the assistant's MCP server (`<prefix>-<env>-ops-mcp`,
 `infra/modules/ops-assistant/main.tf`); nothing to set by hand
-([ops-assistant-vision.md](enhancements/archive/ops-assistant-vision.md)).
+([ops-assistant-vision.md](enhancements/archive/ops-assistant-vision.md)). The agent Lambda's own
+setting, its daily question cap, is in [The ops assistant's limits](#the-ops-assistants-limits).
 
 | Variable | Set on | Meaning |
 |---|---|---|

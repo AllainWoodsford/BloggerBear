@@ -339,10 +339,13 @@ would refuse its token, because the repository in the token would not match.
      -backend-config="region=<your-region>"
    terraform -chdir=infra/environments/dev output
    ```
-   The output lists the site's address (`distribution_domain_name`, a bare
-   `<something>.cloudfront.net` domain: put `https://` in front of it; `public_api_cdn_url`, the
-   only `https://…cloudfront.net` URL in the list, is the public API, not the site), the admin
-   API URL (`admin_api_url`) and the operator's assistant's settings (the `ops_*` outputs).
+   The output lists:
+   - `distribution_domain_name`: the site's address, a bare `<something>.cloudfront.net` domain.
+     Put `https://` in front of it.
+   - `public_api_cdn_url`: the public API, not the site. It is the only `https://…cloudfront.net`
+     URL in the output.
+   - `admin_api_url`: the admin API URL.
+   - the `ops_*` outputs: the operator's assistant's settings.
 5. Let yourself in to the admin API. It is created locked, and only the addresses in its allowlist
    parameter get in ([configuration.md](configuration.md#the-admin-apis-address-allowlist)):
    ```bash
@@ -390,7 +393,7 @@ GitHub token) are SSM SecureStrings named `/<your-prefix>/dev/coingecko-api-key`
 |---|---|---|
 | Bootstrap: `EntityAlreadyExists` for the OIDC provider | The account already has GitHub's OIDC provider (one is allowed per account) | Import it, then apply again: `terraform -chdir=infra/bootstrap import aws_iam_openid_connect_provider.github_actions arn:aws:iam::<your-dev-account-id>:oidc-provider/token.actions.githubusercontent.com` |
 | Bootstrap: `BucketAlreadyExists` | Someone, anywhere, already has that bucket name | Pick a more unique `<your-state-bucket>` |
-| Deploy: `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The token's subject does not match the role's trust policy: wrong `github_repo` in the bootstrap, a run not on `dev`, or a different subject format | Check `github_repo` was `<your-github-owner>/<your-fork>`. CloudTrail's failed `AssumeRoleWithWebIdentity` event shows the exact subject GitHub sent. The roles expect GitHub's immutable form, `repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/dev`. If yours is the plain `repo:<owner>/<repo>:ref:refs/heads/dev`, the roles never match it (`gh api repos/<your-github-owner>/<your-fork>/actions/oidc/customization/sub` shows the setting: without `"use_immutable_subject": true` your tokens use the plain form). Edit the two `sub` values in `infra/bootstrap/main.tf` (`gha_dev_trust` and `gha_prod_trust`) to the plain form, `repo:<your-github-owner>/<your-fork>:ref:refs/heads/dev` and `repo:<your-github-owner>/<your-fork>:environment:production`, then apply the bootstrap again with the same `-var` values as in step 5 (in each account, if you use two) |
+| Deploy: `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The token's subject does not match the role's trust policy: wrong `github_repo` in the bootstrap, a run not on `dev`, or a different subject format | Check `github_repo` was `<your-github-owner>/<your-fork>`. CloudTrail's failed `AssumeRoleWithWebIdentity` event shows the exact subject GitHub sent. The roles expect GitHub's immutable form, `repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/dev`. To see which form your tokens use, run `gh api repos/<your-github-owner>/<your-fork>/actions/oidc/customization/sub`. If its answer does not include `"use_immutable_subject": true`, your tokens use the plain form, `repo:<owner>/<repo>:ref:refs/heads/dev`, which the roles never match. In that case, edit the two `sub` values in `infra/bootstrap/main.tf` (`gha_dev_trust` and `gha_prod_trust`) to the plain form, `repo:<your-github-owner>/<your-fork>:ref:refs/heads/dev` and `repo:<your-github-owner>/<your-fork>:environment:production`. Then apply the bootstrap again with the same `-var` values as your last bootstrap apply (step 5's, unless you have applied it since, for example with your domain or `web_search_regions`). If you use two accounts, apply it in each one: sign in to that account, select its workspace (`terraform workspace select dev`, then `production`) and pass that account's own values ([Bootstrap, once per account](deployment-separate-accounts.md#bootstrap-once-per-account)) |
 | Deploy: `AccessDenied` creating resources | `UNIQUE_NAME_PREFIX` differs from the bootstrap's `unique_name_prefix`, or `AWS_REGION` differs from its `aws_region` | Make them the same word / region |
 | Deploy: "AWS account ID not allowed" | The role is in a different account than `AWS_DEV_ACCOUNT_ID` | Fix whichever is wrong; the error names the real account |
 | Admin CLI: 403 | Your IP changed, or the allowlist was never set | `python scripts/admin_allowlist.py --region <your-region> --prefix <your-prefix> set --env dev --my-ip` (`--region` and `--prefix` go before `set` or `show`; leave them out only if you use the defaults); `show --env dev` says what each place holds. No deploy needed |

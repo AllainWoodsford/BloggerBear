@@ -82,11 +82,12 @@ Steps 1 to 3 are all in the table. These are steps 4 to 9 in full.
 
 ### 4. Research tick: diff first
 
-A paused topic (`topics pause`) stops here: nothing is fetched until it is resumed. So does a topic
-that is not due (`not_due`): a tick does work only once `research_interval_hours` has passed since
-the topic was last checked (the topic's own, else the pipeline-wide one, else 1 hour, less 5
-minutes for scheduler jitter). A manual `topics trigger --pipeline research_tick` always skips that
-check.
+A paused topic (`topics pause`) stops here: nothing is fetched until it is resumed.
+
+So does a topic that is not due (`not_due`). A tick does work only once the topic's research
+interval has passed since the topic was last checked, less 5 minutes for scheduler jitter. That
+interval is `research_interval_hours`: the topic's own, else the pipeline-wide one, else 1 hour. A
+manual `topics trigger --pipeline research_tick` always skips that check.
 
 Otherwise the adapter fetches the source, and a fetch that answers stamps the topic's
 `last_research_at`; one that fails stamps nothing, so the next heartbeat tries again.
@@ -123,12 +124,18 @@ To look at a topic's Findings: ask the assistant ("what did research find for X?
 ### 6. Candidate ideas
 
 Once a day, the schedule starts the daily cycle's state machine, which runs the daily-cycle Lambda
-(for retries, see [below](#runs-that-write-nothing-and-runs-that-fail)). The cycle reads the
-topic's Findings since its last article (`last_article_at`), but never from further back than its
-findings window (`findings_window_hours`, 24 hours by default, at most 336): at most 48 Findings,
-newest first, and at most 40,000 characters of their summaries, the oldest dropped first. A manual
-`topics trigger --pipeline daily_cycle --force` ignores the last article and reads the whole
-window. With nothing in the window, the run stops with `no_findings` before any model call.
+(for retries, see [below](#runs-that-write-nothing-and-runs-that-fail)).
+
+The cycle reads the topic's Findings since its last article (`last_article_at`), within three
+limits:
+
+- never from further back than its findings window (`findings_window_hours`, 24 hours by default,
+  at most 336)
+- at most 48 Findings, newest first
+- at most 40,000 characters of their summaries, the oldest dropped first
+
+A manual `topics trigger --pipeline daily_cycle --force` ignores the last article and reads the
+whole window. With nothing in the window, the run stops with `no_findings` before any model call.
 
 Three kinds of topic narrow what they read:
 
@@ -144,21 +151,33 @@ Three kinds of topic narrow what they read:
   stops with `no_findings` only when there is no set to revisit, every goal has had it, or its
   Findings have expired ([the setting](../configuration.md#dynamodb-settings-changed-with-no-deploy)).
 
-Bedrock is then asked for three angles, under the same editorial goal and relevance rule as step 5,
-and is shown the topic's last five published titles so a story already told is not told again. The
-angles are stored as candidate ideas and the first is selected. A reply with no usable angle in it
+Bedrock is then asked for three angles, under the topic's editorial goal. For a goal-rotation
+topic, the picked goal's focus stands in for the topic's own. For a crypto or rotating-subject
+topic, the day's goal or the day's subject adds its own mandate on top.
+
+The relevance rule is not step 5's. Ideation has its own, also keyed to the topic's name
+(`ideation_relevance_rule` in `common/relevance.py`), and `MANDATE_ALIGNMENT_RULE`
+(`common/editorial_resolver.py`) holds every angle to that goal.
+
+Bedrock is also shown the topic's last five published titles, so a story already told is not told
+again. The angles are stored as candidate ideas and the first is selected. A reply with no usable angle in it
 (a refusal, or no text at all) ends the run with `no_usable_angles`, and the topic's model may move
 on ([rotation](../models.md#rotation-trying-several-models)).
 
 ### 7. Drafting
 
 Bedrock drafts the article from the selected angle and the Findings' summaries, with the topic's
-model from the model registry ([which model](../models.md#which-model-a-call-uses)). The draft folds
-in the topic's editorial goal and a relevance boundary, the day's article style for a crypto or
-rotating topic, the topic's approved prompt refinements (the bear's gear, `equipment.py`), an
-excerpt of a top-voted past article, financial guidance where it applies, and what the topic's
-adapter says its articles must always do (`figure_guidance` and `drafting_guidance`: the crypto
-feed's approximate figures and its closing "At a glance" table and "Key takeaways").
+model from the model registry ([which model](../models.md#which-model-a-call-uses)). The draft's
+prompt also folds in:
+
+- the topic's editorial goal and a relevance boundary
+- the day's article style, for a crypto or rotating topic
+- the topic's approved prompt refinements (the bear's gear, `equipment.py`)
+- an excerpt of a top-voted past article
+- financial guidance, where it applies
+- what the topic's adapter says its articles must always do (`figure_guidance` and
+  `drafting_guidance`); for the crypto feed, that means approximate figures and a closing "At a
+  glance" table and "Key takeaways"
 
 The title is a separate call, made after the body, from the angle alone: it never sees the article.
 It must be one line of at most 20 words, not a refusal or a request for clarification; it is
@@ -169,19 +188,29 @@ limit, after one retry with more room, is held too.
 
 The fresh-data review runs first: the adapter re-reads its source (`review_evidence`), and a model
 is asked which claims in the title and body that fresh data shows to be stale, contradicted or
-unsupported. `off` skips it. In `shadow` mode, the default, the result is only recorded. In
-`enforce` mode, minor problems get one revision pass that plain code checks (no new figure or link,
-about the same length, the same number of headings), and a major problem, a revision that fails
-those checks, or a review that could not run holds the article, unless `review_on_unavailable` is
-`note` ([the modes](../../scripts/README.md#usage)).
+unsupported. What happens next depends on the mode ([the modes](../../scripts/README.md#usage)):
+
+- `off` skips the review.
+- `shadow`, the default, only records the result.
+- `enforce` acts on it. Minor problems get one revision pass, which plain code checks: no new
+  figure or link, about the same length, the same number of headings. A major problem, or a
+  revision that fails those checks, holds the article. So does a review that could not run, unless
+  `review_on_unavailable` is `note`.
 
 Next, a financial topic's draft gets its standing "not financial advice" disclaimer, appended in
 code.
 
 Then the compliance review: the model only nominates items (PII, a fabricated claim, investment
-advice), each with a quote from the draft, and code decides which of them hold the article; code
-also holds any figure over 20, other than a year, that is within 3% of no figure in the Findings'
-summaries. A financial topic makes no compliance call at all: its article is always held. So is an
+advice), each with a quote from the draft, and code decides which of them hold the article. Code
+also holds the article for any figure over 20, other than a year, that is not within 3% of any
+figure in the Findings' summaries.
+
+The review, both the model and those code checks, sees only the first 12,000 characters of the
+summaries (the newest Findings), while the draft is written from up to 40,000. So in a busy window,
+a real figure or claim the draft took from an older Finding can hold the article
+([a proposed fix](../enhancements/topic-token-limit-and-proof-of-work.md)).
+
+A financial topic makes no compliance call at all: its article is always held. So is an
 article with a hold reason from earlier (a truncated draft, a title that is not one, the
 fresh-data review), and every article of a topic with `force_manual_review` (the vision topics),
 whose compliance review still runs and is recorded.
@@ -225,14 +254,18 @@ a Finding. A daily cycle that writes no article returns `paused`, `no_findings` 
 reads from the last article, within its findings window.
 
 Neither handler raises: each catches its own errors and returns `"status": "error"` with the
-reason. The research tick's schedule invokes it directly, so a failed tick is tried again at a
-later heartbeat. The daily cycle's state machine retries a failed invocation twice (after 30
-seconds, then 60) and then sends it to the pipeline dead-letter queue, which
-`admin_cli failed-executions list` shows. Because the handler catches its own errors, only a
-timeout (the Lambda has 300 seconds) or a crash is retried and reaches the queue. To Step Functions
-a caught error is a successful invocation, and it shows only in the execution's output. A manual
-`topics trigger --pipeline daily_cycle` invokes the Lambda directly, without the state machine, so
-a failure there never reaches the queue and leaves no FailedExecutions record.
+reason. What happens next depends on how the run started:
+
+- **A research tick.** Its schedule invokes it directly, so a failed tick is tried again at a later
+  heartbeat.
+- **A daily cycle from its schedule.** The state machine counts only a timeout (the Lambda has 300
+  seconds) or a crash as a failed invocation. It retries a failed invocation twice (after 30
+  seconds, then 60) and then sends it to the pipeline dead-letter queue, which
+  `admin_cli failed-executions list` shows. To Step Functions a caught error is a successful
+  invocation: it is not retried, never reaches the queue, and shows only in the execution's output.
+- **A daily cycle from `topics trigger --pipeline daily_cycle`.** This invokes the Lambda directly,
+  without the state machine, so a failure there never reaches the queue and leaves no
+  FailedExecutions record.
 
 ## Where the AI agents are
 
@@ -252,12 +285,20 @@ is [vision](blogger-vision.md).
 
 ## Adding a source
 
-A new source is a new adapter (`fetch_state`, `material_diff`, `source_refs`, and the `sources` it
-credits), registered in `registry.py`. If its source is made of items, give it `item_keys` too, so
-the seen-set (step 4) knows what has been reported; without them, `material_diff` has only the
-last Finding's snapshot to compare against. Each source it credits must also be in the "Data
-sources" list on `frontend/about.html`, with the same sentence and link:
-`lambdas/tests/test_attribution.py` fails for an adapter with no `sources`, and for a source the
-About page does not name. If it needs a key, the key goes in a new SSM parameter whose
-name Terraform passes to the function. Nothing in steps 4 to 9 changes. See "Adding an adapter" in
+A new source is a new adapter, registered in `registry.py`:
+
+- It implements `fetch_state`, `material_diff` and `source_refs`, and declares the `sources` it
+  credits.
+- If its source is made of items, give it `item_keys` too, and in `material_diff` count an item as
+  new only when its key is not in `self.known_keys(old_state)`. The tick stores the seen-set
+  (step 4) from `item_keys`, but only that check in `material_diff` reads it. Without both,
+  `material_diff` has only the last Finding's snapshot to compare against, and an item that drops
+  out of the feed and comes back is reported again.
+- Each source it credits must also be in the "Data sources" list on `frontend/about.html`, with
+  the same sentence and link. `lambdas/tests/test_attribution.py` fails for an adapter with no
+  `sources`, and for a source the About page does not name.
+- If it needs a key, the key goes in a new SSM parameter whose name Terraform passes to the
+  function.
+
+Nothing in steps 4 to 9 changes. See "Adding an adapter" in
 [docs/project-plan.md](../project-plan.md) §6.

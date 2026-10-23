@@ -69,15 +69,17 @@ What it does, in order:
    confirm it. **In a fork, `gh` can pick the original repository. Read the name.**
 2. Lists what is already set, by name. A secret's value cannot be read back, by anyone, and the
    script never tries. Settings that are already set are skipped unless you ask to replace them.
-3. Asks for each setting that is left, with a short explanation and a check. The region comes
-   first (`AWS_REGION`; press Enter for the default, `ap-southeast-2`). Next is the state
-   bucket's region (`TF_STATE_REGION`; press Enter unless your state bucket is in another
-   region). Then comes the name prefix (`UNIQUE_NAME_PREFIX`; a fork must choose its own),
-   because the steps it prints later are built from the region and the prefix. Then the alert
-   emails, the two account IDs,
-   the two deploy role ARNs (with the steps to create them and the ARN it expects, which you can
-   accept by pressing Enter), the state bucket names, and `PII_DENYLIST`. Press Enter to leave
-   an optional setting unset.
+3. Asks for each setting that is left, with a short explanation and a check. Press Enter to leave
+   an optional setting unset. The two regions and the prefix come first, because the steps it
+   prints later are built from the region and the prefix. In order:
+   - `AWS_REGION`, the region. Press Enter for the default, `ap-southeast-2`.
+   - `TF_STATE_REGION`, the state bucket's region. Press Enter unless your state bucket is in a
+     region other than `AWS_REGION`.
+   - `UNIQUE_NAME_PREFIX`, the name prefix. A fork must choose its own.
+   - The alert emails, then the two account IDs.
+   - The two deploy role ARNs. It shows the steps to create them and the ARN it expects, which you
+     can accept by pressing Enter.
+   - The state bucket names, then `PII_DENYLIST`.
 4. Tells you how to turn on the git hook that stops personal data being committed, and offers to
    run that one command (`git config core.hooksPath .githooks`) for this clone. If you say yes, it
    runs with everything else, after you confirm. A dry run never runs it.
@@ -226,17 +228,21 @@ Production's can be on the `production` environment or on the repository.
 
 Set `UNIQUE_NAME_PREFIX` **before your first deploy and never change it**. Every name starts
 with it, and a bucket or a table cannot be renamed: changing the prefix later makes Terraform
-delete them and create empty ones. Write it without a hyphen at the end (`acme-blog`, not
-`acme-blog-`). Lowercase letters, digits and hyphens, starting with a letter, with no two
-hyphens in a row. No `aws`, `amazon` or `cognito` anywhere in it, not even inside a word
-(`jaws-news` is refused): the operator's assistant's sign-in host name is `<prefix>-<env>-ops`,
-and Cognito refuses one that contains them. At most 14 characters: a topic's schedule is named
-`<prefix>-production-<topic_id>-research-tick` and AWS allows 64, so a 14-character prefix leaves a topic id 24 and a shorter one leaves more. If the
-vision worker will run in production, keep it to 12: the worker's bucket,
-`<prefix>-production-vision-artifacts-<account id>-<vision_region>`, must fit S3's 63 characters,
-which leaves the prefix and `vision_region` 21 together (12 beside the default `us-west-2`; a
-home-Region `ap-southeast-2` fits only a prefix of 7 or fewer;
-[configuration.md](configuration.md#environment-terraform-variables)).
+delete them and create empty ones. The rules:
+
+- No hyphen at the end: `acme-blog`, not `acme-blog-`.
+- Lowercase letters, digits and hyphens, starting with a letter, with no two hyphens in a row.
+- No `aws`, `amazon` or `cognito` anywhere in it, not even inside a word (`jaws-news` is
+  refused). The operator's assistant's sign-in host name is `<prefix>-<env>-ops`, and Cognito
+  refuses one that contains them.
+- At most 14 characters. A topic's schedule is named
+  `<prefix>-production-<topic_id>-research-tick`, and AWS allows 64. A 14-character prefix leaves
+  a topic id 24, and a shorter one leaves more.
+- At most 12 if the vision worker will run in production. The worker's bucket,
+  `<prefix>-production-vision-artifacts-<account id>-<vision_region>`, must fit S3's 63
+  characters. That leaves the prefix and `vision_region` 21 together: 12 beside the default
+  `us-west-2`, and 7 or fewer beside a home-Region `ap-southeast-2`
+  ([configuration.md](configuration.md#environment-terraform-variables)).
 
 **Protecting the branches.** Require a pull request on `dev` and `prod`, and block force-pushes
 and deletions. GitHub offers rulesets and branch protection only on public repositories or paid
@@ -306,7 +312,8 @@ of the `apply-dev` job in `.github/workflows/terraform.yml`. Any you leave out t
 variable's default, and the plan then does not match what CI applies.
 
 ```bash
-python scripts/minify_frontend.py   # builds frontend-dist/, which the site's files are planned from
+pip install -r scripts/requirements.txt   # the minify script needs rjsmin and rcssmin from it
+python scripts/minify_frontend.py         # builds frontend-dist/, which the site's files are planned from
 export TF_VAR_aws_region=ap-southeast-2                                 # your AWS_REGION
 export TF_VAR_unique_name_prefix=acme-blog                              # your UNIQUE_NAME_PREFIX
 export TF_VAR_backup_bucket_name=yourname-bloggerbear-terraform-state   # your TF_STATE_BUCKET_DEV
@@ -321,11 +328,14 @@ terraform -chdir=infra/environments/dev plan
   `bloggerbear-terraform-state` instead of your bucket.
 - Without `TF_VAR_alert_email`, the plan removes the alert subscription.
 - `TF_VAR_aws_account_id` changes nothing in the plan. It adds CI's account check.
-- If you set any of CI's switches (`VISION_ENABLED`, `REVIEWER_ENABLED`,
-  `WEB_SEARCH_REGION[_DEV]`, `WAF_*`), pass the matching variable too (`TF_VAR_vision_enabled`,
-  `TF_VAR_reviewer_enabled`, `TF_VAR_web_search_region`, `TF_VAR_waf_regional_enabled`,
-  `TF_VAR_waf_admin_allowlist`, `TF_VAR_waf_log_all_requests`), or the plan shows it going back
-  to its default.
+- If you set any of CI's switches, pass the matching variable too, or the plan shows it going back
+  to its default:
+  - `VISION_ENABLED`: `TF_VAR_vision_enabled`
+  - `REVIEWER_ENABLED`: `TF_VAR_reviewer_enabled`
+  - `WEB_SEARCH_REGION` or `WEB_SEARCH_REGION_DEV`: `TF_VAR_web_search_region`
+  - `WAF_REGIONAL_ENABLED` or `WAF_REGIONAL_ENABLED_DEV`: `TF_VAR_waf_regional_enabled`
+  - `WAF_ADMIN_ALLOWLIST` or `WAF_ADMIN_ALLOWLIST_DEV`: `TF_VAR_waf_admin_allowlist`
+  - `WAF_LOG_ALL_REQUESTS` or `WAF_LOG_ALL_REQUESTS_DEV`: `TF_VAR_waf_log_all_requests`
 
 CI builds `frontend-dist/` (`frontend/` with its `.js` and `.css` minified) before every plan.
 Without it, a local plan shows every file of the site being removed.
@@ -339,20 +349,22 @@ Dev is up once the `terraform` workflow goes green. What is left is by hand.
    `ops_ask_url`, `ops_mcp_url`, `ops_user_pool_id`, `ops_app_client_id` and
    `ops_hosted_ui_domain`.
 2. **Confirm the alert email.** AWS sends a confirmation to `ALERT_EMAIL_DEV`; nothing is
-   delivered until you click it.
-3. **Point the admin CLI at dev** ([scripts/QUICKSTART.md](../scripts/QUICKSTART.md)):
+   delivered until you click it. What each alarm watches, and what it emails you, is in
+   [observability.md](observability.md).
+3. **Point the admin CLI at dev** ([scripts/QUICKSTART.md](../scripts/QUICKSTART.md)). The admin
+   API only answers from the addresses in its allowlist, with your own AWS credentials, so add
+   your IP first. Run the `admin_allowlist.py` line again whenever your IP changes (no deploy
+   needed):
    ```bash
    pip install -r scripts/requirements.txt
+   python scripts/admin_allowlist.py --prefix <your prefix> set --env dev --my-ip
    export AWS_REGION=ap-southeast-2
    export BLOGGERBEAR_ADMIN_API_URL=$(terraform -chdir=infra/environments/dev output -raw admin_api_url)
    python scripts/admin_cli.py topics list
    ```
-   The admin API only answers from the addresses in its allowlist, with your own AWS credentials.
-   Set yours first, and again whenever your IP changes (no deploy needed):
-   `python scripts/admin_allowlist.py --prefix <your prefix> set --env dev --my-ip`, adding
-   `--region <your region>` before `set` too if your region is not `ap-southeast-2`. Both options
-   belong to the script, not to `set`, so they must come before the subcommand. The script does
-   not read either one from your environment
+   If your region is not `ap-southeast-2`, add `--region <your region>` to the allowlist command,
+   before `set`. `--prefix` and `--region` belong to the script, not to `set`, so they must come
+   before the subcommand. The script does not read either one from your environment
    ([configuration.md](configuration.md#the-admin-apis-address-allowlist)).
 4. **Seed a topic, and run it once by hand:**
    ```bash
@@ -436,11 +448,16 @@ account and region.
 Two adapters call a public API that allows more with a key. Neither key is a GitHub secret: each
 is a `SecureString` in SSM Parameter Store, which the Lambdas read once per cold start. Terraform
 does not create the parameter (its value would end up in the state file); it only lets the
-Lambdas read that one name. Without a key each adapter uses the keyless API. A CoinGecko key
-that is rejected, rate-limited or failing at run time falls back to the keyless API. A GitHub
-token falls back to unauthenticated search only when GitHub rejects it (401). If a search with
-the token is rate-limited or fails, that tick records nothing, and the next heartbeat tries
-again. Never put a key in a topic's `adapter_config`: that is stored in DynamoDB.
+Lambdas read that one name. Never put a key in a topic's `adapter_config`: that is stored in
+DynamoDB.
+
+Without a key each adapter uses the keyless API. When a key fails, the two adapters differ:
+
+- **CoinGecko:** a key that is rejected, rate-limited or failing at run time falls back to the
+  keyless API.
+- **GitHub:** a token falls back to unauthenticated search only when GitHub rejects it (401). If a
+  search with the token is rate-limited or fails, that tick records nothing, and the next
+  heartbeat tries again.
 
 | Parameter | For | Without it |
 |---|---|---|
@@ -559,11 +576,13 @@ waiting), or turn his approvals off (`reviewer set --may-approve off`, or per to
 has already waited 10 days or more goes to the de-fanged publish (task 5) instead.
 
 - **Turn him off:** set the `REVIEWER_ENABLED` variable to `false` and deploy: his Lambda and
-  schedule are removed. On the repository, it turns him off in dev and, at the next release, in
-  production, unless the `production` environment sets its own value. On the `production`
-  environment alone, it turns him off in production only. Dev's deploy runs in no GitHub
-  environment, so it reads only the repository variable. To turn him off in dev alone, set
-  `false` on the repository and `true` on the `production` environment.
+  schedule are removed. Where you set it decides where he is off:
+  - **On the repository:** off in dev and, at the next release, in production, unless the
+    `production` environment sets its own value.
+  - **On the `production` environment alone:** off in production only.
+  - **To turn him off in dev alone:** set `false` on the repository and `true` on the
+    `production` environment. Dev's deploy runs in no GitHub environment, so it reads only the
+    repository variable.
 - **Pause him, with no deploy:** `python scripts/admin_cli.py reviewer set --enabled off`.
 - **Let him review but never approve:** `reviewer set --may-approve off` for the whole project, or
   per topic: `python scripts/admin_cli.py topics update <topic_id> --reviewer-may-approve off`.
@@ -716,17 +735,18 @@ bucket is not part of dev, so a snapshot kept there survives
 ([`admin_cli backup`](../scripts/README.md#backups-restores-and-article-exports-backup)):
 
 1. **Before:** `python scripts/admin_cli.py backup snapshot`, and note the key it prints. If you
-   want the articles as plain files too, `backup export`. By default it writes them to the
-   backup bucket, under `backup/<prefix>-dev/exports/`. To use a bucket of your own, first add it to dev's
+   want the articles as plain files too, run `backup export`. By default it writes them to the
+   same bootstrap state bucket (the CLI calls it the backup bucket), under
+   `backup/<prefix>-dev/exports/`. To use a bucket of your own instead, first add it to dev's
    `backup_export_buckets` Terraform variable (in `infra/environments/dev/terraform.tfvars`) and
    deploy, then pass `--bucket <name>`. Any other bucket is refused.
 2. Run the `destroy-dev` workflow.
 3. **After the rebuild** (the next merge to `dev` applies it), copy your allowlist into the new
-   admin API: `python scripts/admin_allowlist.py --prefix <your prefix> sync --env dev`, adding
-   `--region <your region>` before `sync` too if your region is not `ap-southeast-2`. Your
-   addresses survive the teardown, but the new API refuses every call until this runs. If your IP
-   has changed since, run `set --env dev --my-ip` in place of `sync`, with the same options before
-   it. Then point the CLI at the new Admin API URL and run
+   admin API: `python scripts/admin_allowlist.py --prefix <your prefix> sync --env dev`. If your
+   region is not `ap-southeast-2`, add `--region <your region>` before `sync` too. Your addresses
+   survive the teardown, but the new API refuses every call until this runs. If your IP has
+   changed since, run `set --env dev --my-ip` in place of `sync`, with the same options before it.
+4. **Restore:** point the CLI at the new Admin API URL and run
    `python scripts/admin_cli.py backup restore <key>`. Topics, gear, settings, costs,
    musings and articles come back; the topics' schedules are written and the published pages
    rendered again.
@@ -825,9 +845,9 @@ The COOL session has its own runsheet: **[COOL benchmark runsheet](cool-benchmar
 
 What it is for: the competition's COOL award scores COOL, OpenCV's Graviton4-tuned build ("Cloud
 Optimized OpenCV for AWS Graviton4" on AWS Marketplace). The runsheet is the by-hand session that
-shows COOL running this project's real workload: on one Graviton4 instance in us-west-2 it times
+shows COOL running this project's real workload. On one Graviton4 instance in us-west-2 it times
 the vision worker's own code under COOL and under stock OpenCV 5, on the same Sydney scenes and
-network, checks that both give the same rail metrics, and pushes the run files that prove which
+network. It checks that both give the same rail metrics and pushes the run files that prove which
 build ran and how fast. Nothing in it is in Terraform, and the deployed worker keeps running stock
 OpenCV 5 on Lambda.
 

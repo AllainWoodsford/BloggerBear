@@ -213,6 +213,19 @@ python scripts/admin_cli.py findings list crypto --days 2 --limit 10
 python scripts/admin_cli.py moderation list
 python scripts/admin_cli.py moderation approve <queue_id>
 python scripts/admin_cli.py moderation reject <queue_id>
+# Read-only counts of the moderation queue, to tune the compliance prompt from; it changes nothing.
+# It prints `total_flagged`, counts `by_status` and `by_topic`, `reason_counts` and `recent` (the 20
+# newest items with their full reasons). It counts every queue item and every reason on it, not only
+# compliance flags, and a Re-Write leaves the old item `rewritten` beside the new one, so one article
+# can count more than once. Reasons are counted exactly as written, so the fixed ones add up:
+# financial topic, "always reviewed by a person" (a topic with `force_manual_review`, which every
+# satellite_vision and rail_access topic has), sent back for a rewrite, truncated draft, implausible
+# title, held by Professor Grizzlewick. The compliance model's own reasons rarely match, so read
+# those in `recent`. Its help says "across all history", but a rejected item (and a failed rewrite
+# of a published article) expires 7 days later, so those drop out after about a week. Pending,
+# approved and rewritten items stay (docs/observability.md); unpublishing an article marks its item
+# rejected, so that one expires too.
+python scripts/admin_cli.py moderation stats
 
 python scripts/admin_cli.py articles get <article_id>       # any status, with its full text
 python scripts/admin_cli.py articles checked <article_id>   # you checked a financial article the reviewer bear approved
@@ -254,12 +267,16 @@ python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5
     --input-price 0.001 --output-price 0.005
 # (USD per 1K tokens. Confirm against the Bedrock price page for your region -- a
 # geographic inference profile can cost more than the provider's list price.)
-# The model catalog keeps this list and its prices current by itself (docs/models.md): every
-# second day (odd days of the month) at 02:00 Sydney it adds up to 5 models the account can call,
-# from every provider, switched off; at 03:00 it reprices up to 50. A changed price is used at once
-# and checked 1 and 2 hours later; one a check cannot confirm goes back to the old price (a
-# failed-executions row). On Fridays at 04:00 it refreshes the topics' rotation lists. `models add` with the same id switches a
-# discovered model on; --lock-price keeps the reprice off a price you set on purpose.
+# The model catalog keeps this list and its prices current by itself (docs/models.md):
+# - discover: every second day (odd days of the month) at 02:00 Sydney it adds up to 5 models
+#   the account can call, from every provider, switched off;
+# - reprice: the same days at 03:00 it reprices up to 50. A changed price is used at once and
+#   checked 1 and 2 hours later; one a check cannot confirm goes back to the old price (a
+#   failed-executions row);
+# - cycle: on Fridays at 04:00 it refreshes the topics' rotation lists (`model-catalog set
+#   --cycle off` pauses it).
+# `models add` with the same id switches a discovered model on; --lock-price keeps the reprice
+# off a price you set on purpose.
 python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0" \
     --display-name "Claude Haiku 4.5" --provider anthropic \
     --input-price 0.0011 --output-price 0.0055 --lock-price
@@ -338,15 +355,21 @@ included. It is a re-publish, not a plain re-render, so on an article that is al
 - writes another musing about the article (one more model call).
 
 That is acceptable for a handful of pages you care about (the crypto articles, for CoinGecko's
-attribution) and wrong for a mass refresh. `backup restore` also renders every published page
-again, with the same renderer, keeping each article's stored date and approver and calling no
-model. But it does that only after writing every row and object back from the snapshot, which
-puts every row the snapshot holds back as it was when the snapshot was taken. It also drops the
-rows' pointers to the pre-review original and to the texts that rewrites replaced, and it rewrites
-every topic's schedules unless you pass `--no-schedules`. So it is no refresh tool either. There
-is no command that only re-renders. The smallest
-follow-up is an `articles rerender <article_id>` route that calls the same renderer with the
-article's stored `published_at` and `published_by` and does nothing else.
+attribution) and wrong for a mass refresh.
+
+`backup restore` is no refresh tool either. It does render every published page again, with the
+same renderer, keeping each article's stored date and approver and calling no model. But it renders
+them only as part of a full restore, after it has:
+
+- written every row and object back from the snapshot, which puts every row the snapshot holds
+  back as it was when the snapshot was taken;
+- left those rows without their pointers to the pre-review original and to the texts that
+  rewrites replaced;
+- rewritten every topic's schedules, unless you pass `--no-schedules`.
+
+There is no command that only re-renders. The smallest follow-up is an
+`articles rerender <article_id>` route that calls the same renderer with the article's stored
+`published_at` and `published_by` and does nothing else.
 
 `articles unpublish` is the inverse: it deletes the article's static page (and
 its figures, if it has any), marks the article and its moderation-queue item
@@ -447,13 +470,20 @@ python scripts/admin_cli.py topics resume wow-forever
 
 Two things need a person, and both are covered:
 
-1. **Articles in the moderation queue.** Financial topics (crypto) always land here, by design, and
-   others when the compliance or fresh-data review held them, with the reasons shown. An article that
-   has waited two days or more may be decided for you by Professor Grizzlewick, the reviewer bear,
-   financial ones included (each he approves is flagged for you to check): turn his approvals off
-   with `reviewer set --may-approve off`, or per topic, if you want every decision yourself
-   ([docs/enhancements/reviewer-bear.md](../docs/enhancements/reviewer-bear.md)). Topics with
-   `force_manual_review` (every vision topic) always wait for you. (Every article that needs a decision has a queue item, so this is all of them.)
+1. **Articles in the moderation queue.** Financial topics (crypto) always land here, by design.
+   Others land here when the compliance or fresh-data review held them, with the reasons shown.
+   (Every article that needs a decision has a queue item, so this is all of them.)
+   - An article that has waited two days or more may be decided for you by Professor Grizzlewick,
+     the reviewer bear, financial ones included. Each financial article he approves is flagged for
+     you to check ([docs/enhancements/reviewer-bear.md](../docs/enhancements/reviewer-bear.md)).
+   - `reviewer set --may-approve off` (or, for one topic,
+     `topics update <topic_id> --reviewer-may-approve off`) stops only his approvals. A topic set
+     to `--reviewer-may-approve on` still lets him approve. He still sends a held article with a
+     real problem, or a fault in the draft, for a rewrite, and rejects it once it has had three
+     rewrites (`max_rewrites`). To make every decision yourself, also run
+     `reviewer set --review-held off`. That switch covers the whole project; there is none per
+     topic.
+   - Topics with `force_manual_review` (every vision topic) always wait for you.
 2. **Prompt-change proposals** from the weekly reflection. Approving one changes how future articles on
    that topic are written.
 
@@ -541,7 +571,25 @@ python scripts/admin_cli.py equipment equip TOPIC VERSION         # by its store
 python scripts/admin_cli.py equipment equip TOPIC VERSION --replace OTHER_TOPIC OTHER_VERSION
 python scripts/admin_cli.py equipment unequip TOPIC VERSION       # into the backpack, no longer used
 python scripts/admin_cli.py refinements approve TOPIC VERSION --scope backpack   # approve, do not wear
+python scripts/admin_cli.py refinements list                      # every proposal and piece of gear, any status
+python scripts/admin_cli.py refinements list --topic-id github-trending --status pending
+python scripts/admin_cli.py refinements reject TOPIC VERSION      # turn a pending proposal down outside the `approve` review session
 ```
+
+`TOPIC VERSION` names one proposal or piece of gear in every `refinements` and `equipment`
+command. Armor made with `equipment create` has TOPIC `global`; armor that began as a
+weekly-reflection proposal (approved or equipped with `--scope global`) keeps the topic it was
+proposed for, such as `github-trending`. VERSION is the ISO-8601 time the weekly reflection or
+`equipment create` wrote it, such as `2026-10-19T03:00:12.345678+00:00`. Copy both from
+`refinements list` or `equipment list`; the CLI percent-encodes VERSION for the URL, so pass it as
+printed.
+
+- `--status` is matched exactly against the stored status: `pending`, `approved` or `rejected`.
+  The CLI offers no choices, so a typo lists nothing.
+- `refinements approve` and `refinements reject` act only on a pending proposal, and answer 409
+  for any other.
+- A rejected proposal is kept for 7 days, then expires
+  ([what is kept](../docs/observability.md#tables)).
 
 Wearing is not the same as using. The topic's rings are used in every article, but the bear takes in only
 *some* of its worn armor each time: a random number of pieces, anywhere from none to all of it, chosen at
@@ -628,9 +676,11 @@ small "Equipment used" record beside the lineage footer.
 ## Fixing a musing: `musings`
 
 A musing is written once, when its article is published. One that went out blank (a mood and a link, then
-no text) stays blank until you fix it here, or until Professor Grizzlewick's next run, which writes blank
-musings from the last week again. None of these
-touch the article: no rewrite, no re-publish, no new date.
+no text) stays blank until you fix it here, or until Professor Grizzlewick's next run (every second
+day, 05:00 Sydney), which writes blank musings from the last week again. He never touches the
+articles of a topic with `force_manual_review` (every vision topic), so a blank musing on one of
+those stays blank until you fix it here. None of these commands touch the article: no rewrite, no
+re-publish, no new date.
 
 ```bash
 python scripts/admin_cli.py musings list                       # the newest 20, with their ids
@@ -668,18 +718,24 @@ python scripts/admin_cli.py articles feedback-lock <article_id>                 
 python scripts/admin_cli.py articles feedback-unlock <article_id> --reset-count    # take it again
 ```
 
-The defaults: at most 20 pieces of feedback per 5-minute window (`--rate-limit`,
-`--rate-window-minutes`), 100 a day (`--daily-limit`; the day starts in `--daily-timezone`,
-Australia/Sydney), 50 on one article before it is locked (`--article-limit`), and 300 comments a
-day sent to the model check (`--screening-limit`; rejected feedback does not count against the
-other limits, so this one bounds its cost). Every submission needs the token from the
-feedback-status call (`--verification-required false` switches that off, in an emergency); a
-token becomes valid at a random time 500 to 2000 ms after it is issued (`--token-delay-min-ms`,
-`--token-delay-max-ms`), and once the site is 70% of the way to its daily or rate limit, tokens
-need proof of work (`--pow-threshold-percent`; `--pow-difficulty-bits`, 16, sets how much, and 0
-never asks). `--lockdown-reason` is at most 100 characters. An article locked because it reached
-its limit stays at the limit unless `feedback-unlock` is given `--reset-count`. Every setting, the
-checks in order and the limits at the edge that this does not set:
+The defaults, and the flag that sets each:
+
+- At most 20 pieces of feedback per 5-minute window (`--rate-limit`, `--rate-window-minutes`).
+- At most 100 a day (`--daily-limit`). The day starts in `--daily-timezone`, Australia/Sydney.
+- At most 50 on one article, then it is locked (`--article-limit`). An article locked because it
+  reached its limit stays at the limit unless `feedback-unlock` is given `--reset-count`.
+- At most 300 comments a day sent to the model check (`--screening-limit`). Rejected feedback does
+  not count against the other limits, so this one bounds its cost.
+- Every submission needs the token from the feedback-status call. `--verification-required false`
+  switches that off, in an emergency.
+- A token becomes valid at a random time 500 to 2000 ms after it is issued
+  (`--token-delay-min-ms`, `--token-delay-max-ms`).
+- Once the site is 70% of the way to its daily limit, its rate limit or its daily model-check
+  budget, tokens need proof of work (`--pow-threshold-percent`). `--pow-difficulty-bits`, 16, sets
+  how much, and 0 never asks.
+
+`--lockdown-reason` is at most 100 characters. Every setting, the checks in order and the limits at
+the edge that this does not set:
 [docs/architecture/site-and-feedback.md](../docs/architecture/site-and-feedback.md).
 
 ## Backups, restores and article exports: `backup`
@@ -722,6 +778,17 @@ python scripts/admin_cli.py backup export                                   # in
 python scripts/admin_cli.py backup export --bucket my-archive --prefix dev-2026-10
 ```
 
+Each job saves where it got to in the bootstrap state bucket, even an export or restore given
+`--bucket`, as `backup/<prefix>-<env>/jobs/<job_id>.json`.
+`backup list` shows the snapshot files and the 10 most recent jobs.
+
+A running job whose saved state has not changed for 180 seconds is shown as `stalled` by
+`backup status` and `backup list`, and the progress line adds ``[STALLED: run `backup resume`]``.
+It means the job's next step was lost, or ran out of retries. `backup resume <job_id>` starts that
+step again, from where the job got to. It answers 409 for a job that has already succeeded or
+failed, or is still moving, and 404 for an unknown id. How the steps run:
+[admin-cli.md, Backup jobs](../docs/architecture/admin-cli.md#backup-jobs).
+
 A restore can take another environment's snapshot (production's into dev), or one copied into this
 deployment's state bucket from another region or account: copy the file to the same key under
 `backup/`, and restore it. `--bucket` and `export --bucket` only work with a bucket named in the
@@ -736,7 +803,11 @@ python scripts/admin_cli.py stats backfill-articles --apply   # write them
 ```
 
 `stats backfill-articles` folds every existing article's already-recorded cost into StatsHistory's
-all-time total. It is a one-time catch-up: a dry run unless `--apply`, and it refuses to run twice.
+all-time total. It was the catch-up for articles drafted before the weekly `articles` category
+existed, but it has no date cut-off. Every article drafted since then was already counted when it
+was drafted, so `--apply` would count those articles a second time. On a deployment made since
+then, a fork's included, that means every article. It is a dry run unless `--apply`, and it refuses
+to run twice, but that only stops a second run: the first run is not safe.
 What the Stats page counts, its rows, the weekly rollover and the daily cost poll:
 [docs/architecture/stats-and-costs.md](../docs/architecture/stats-and-costs.md).
 
@@ -1043,10 +1114,11 @@ worker's built-up masks are compared scene to scene and with the first; `--worke
 IoU unmeasured. `--synthetic --scenes N` runs N synthetic scenes.
 
 All three run on Windows (`python scripts\vision_eval.py ...` in the activated venv: `py -3.11`
-would run the global 3.11, without the venv's packages). Their arguments are in
-`vision_eval_agent_cli.py`, which does not import the driver, so `pin` (without `--list-year`) and
-`index` still run in a venv without boto3; `vision_eval_agent.py` is imported only to run one of
-the three.
+would run the global 3.11, without the venv's packages). `vision_eval.py` builds every
+subcommand's arguments on each run, so these three keep theirs in `vision_eval_agent_cli.py`, which
+does not import the driver (the driver imports the adapter, and so boto3). That is why `pin`
+(without `--list-year`) and `index` still run in a venv without boto3. `vision_eval_agent.py`,
+which does import the driver, is imported only to run one of the three.
 
 ## The reference check: `vision_eval.py builtup-check` (E8)
 
@@ -1106,11 +1178,12 @@ agent's reasons, the news hosts and the Finding summaries, through `redact.scrub
 unverified. A backstop replaces any ARN and any 12-digit number left, beside a hyphen too, but not
 one inside a longer hex token or a UUID, nor a code-made 12-hex `run`, `build` or `reason_sha256`
 (`summary.json`'s `redacted` says how many, 0 expected, and `redacted_at` where), and
-`pii_denylist_check.py --files` reads every file written, against `PII_DENYLIST` if it is set, else
-your `.pii-denylist` at the repository's root (git ignores it, so a fresh checkout has none). With
-no list, or an empty one, the export is refused only at the end, after the whole read, and moved
-aside as if a term had been found, unless you pass `--no-denylist` (`agreement` takes it too),
-which writes it unchecked and says so. A hit exits 2, naming the file and line,
+`pii_denylist_check.py --files` reads every file written. Its list is `PII_DENYLIST` if that is
+set, else your `.pii-denylist` at the repository's root. Git ignores that file, so a fresh checkout
+has none: put your list there before you export. With no list, or an empty one, the export is
+refused only at the end, after the whole read, and moved aside as if a term had been found. To
+write it unchecked anyway, pass `--no-denylist` (`agreement` takes it too); the command then prints
+that the files were not checked. A hit exits 2, naming the file and line,
 puts back every network file it wrote and moves the export to `live/<date>.refused/`, which git
 ignores (the operator's `labels.csv` stays). `--networks` also writes each city's
 `scripts/vision_benchmark_networks/<site>.json` from its network object, in the fixture's shape: a

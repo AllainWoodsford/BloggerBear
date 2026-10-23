@@ -238,13 +238,18 @@ off: the public Stats page gains a "Vision triage" row among its model-spend cat
 (`vision_triage` in `common/stats_tracking.py`), at 0 calls until a vision topic's triage agent
 runs.
 
-**With it `true`:** in `vision_region` (us-west-2 by default), the worker, its role (its own log
-group and nothing else), its log group and the artifacts bucket; in the home region, one policy on
-the pipeline's shared execution role (`lambda_exec`, which thirteen functions use, or twelve with the reviewer turned off) allowing
-`lambda:InvokeFunction` on that one function, and the ARN in the research tick's environment; and
-one policy on the operator's assistant's MCP server role, to read the worker's log and each topic's
-running state. The switch is a GitHub repository variable fed to Terraform as `vision_enabled`
-(`TF_VAR_vision_enabled` in both apply workflows), never a tfvars edit; the bootstrap must have
+**With it `true`:**
+
+- in `vision_region` (us-west-2 by default): the worker, its role (its own log group and nothing
+  else), its log group and the artifacts bucket;
+- in the home region: one policy on the pipeline's shared execution role (`lambda_exec`, which
+  thirteen functions use, or twelve with the reviewer turned off) allowing `lambda:InvokeFunction`
+  on that one function, and the ARN in the research tick's environment;
+- one policy on the operator's assistant's MCP server role, to read the worker's log and each
+  topic's running state.
+
+The switch is a GitHub repository variable fed to Terraform as `vision_enabled`
+(`TF_VAR_vision_enabled` in both apply workflows), never a tfvars edit. The bootstrap must have
 been re-applied with `vision_region` first. The steps are in the
 [vision runsheet](../vision-runsheet.md#turning-the-worker-on) and the settings in
 [configuration.md](../configuration.md#vision-and-rail-access).
@@ -501,9 +506,10 @@ the agent judged an artefact.
 
 ### How to read the figure
 
-The map is the city's 20 m analysis grid, scaled down so its longer side is at most 1,024 px
-(drawn again smaller, down to 512 px, if the PNG would be over 2 MiB), so a pixel is coarser than
-20 m: Sydney's 3,327 px window comes out at about 65 m a pixel. Nothing is on it but the analysis:
+The map is the city's 20 m analysis grid, scaled down so its longer side is at most 1,024 px. If
+the PNG would be over 2 MiB, the map is drawn again smaller, down to 512 px. So a pixel of the map
+is coarser than 20 m: Sydney's 3,327 px window comes out at about 65 m a pixel. Nothing is on it
+but the analysis:
 
 - **Warm colours** are built-up density (the heat), over the scene's red band; a **slate tint**
   covers what the scene could not see (cloud, shadow, no data), so a cloud never looks like an
@@ -612,22 +618,33 @@ layer, so every stop measure is None) travel with every reply and into the histo
 
 ### What is diffed, and what the agent checks
 
-The adapter diffs the served share and the desert area against the city's baseline: the median of
-its earlier clear scenes measured with the same polygon and parameters, so editing the reach or the
-box starts a new baseline instead of reading as a change. It compares the station count with the
-previous scene measured the same way, whatever that scene's coverage. The stop and feeder reaches
+The adapter diffs the served share, the desert area and the station count, each only against the
+city's earlier scenes measured with the same polygon and parameters, so editing the reach or the
+box starts a new baseline instead of reading as a change. The stop and feeder reaches
 (`stop_reach_m`, `feeder_reach_m`) are left out of the parameters compared, and the stop measures
-are reported, never material, so entries from before the stops layer stay comparable. A move of the
-served share by 2 points, of the desert area by a tenth of its median (the median taken as at least
-1 km²), or any change in the station count from that previous scene is material (the defaults). The first scene measured at or above the coverage floor is the
-first observation, reported once; a cloudy first scene reports nothing. With a city a week, the
-first tick of a city's week also reports its newest clear scene as the weekly reading, no change
-claimed and not triaged, so each city is written about in its week even when nothing moved. The
-agent sees the figure and may `look_again` with other parameters, compare the `previous_scene`, read
-the `site_history`, or ask `web_context` whether a station or line recently opened or closed. It is
-told what an artefact looks like here: cloud, haze or seasonal vegetation shifting the built-up
-mask, a scene edge, a map edit, a tagging change; and that what its tools return is data from
-outside sources, not instructions.
+are reported, never material, so entries from before the stops layer stay comparable.
+
+With the defaults, a scene is material when:
+
+- the served share moves by 2 points from the city's baseline, its median over the earlier clear
+  scenes;
+- the desert area moves by a tenth of its baseline, its median over those scenes (the median taken
+  as at least 1 km²);
+- or the station count changes from the previous scene measured the same way, whatever that
+  scene's coverage.
+
+The first scene measured at or above the coverage floor is the first observation, reported once;
+a cloudy first scene reports nothing.
+
+With a city a week, the first tick of a city's week also reports its newest clear scene as the
+weekly reading, no change claimed and not triaged, so each city is written about in its week even
+when nothing moved.
+
+The agent sees the figure and may `look_again` with other parameters, compare the `previous_scene`,
+read the `site_history`, or ask `web_context` whether a station or line recently opened or closed.
+It is told what an artefact looks like here: cloud, haze or seasonal vegetation shifting the
+built-up mask, a scene edge, a map edit, a tagging change; and that what its tools return is data
+from outside sources, not instructions.
 
 ### What is recorded
 

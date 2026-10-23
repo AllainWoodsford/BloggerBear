@@ -139,22 +139,19 @@ Alexa's redirect URLs. So:
    It prints Alexa's redirect URLs. If it insists on a client id and secret before it shows them,
    stop there and come back once the next part is done.
 2. Put those URLs into this environment's `ops_alexa_redirect_uris`, in its tracked
-   `infra/environments/<env>/terraform.tfvars`, and apply:
+   `infra/environments/<env>/terraform.tfvars`:
 
    ```hcl
    ops_alexa_redirect_uris = ["https://...", "https://..."]
    ```
 
-   ```bash
-   terraform -chdir=infra/environments/<env> apply
-   ```
-
-   Commit that line, through a pull request like any other change. The deploy workflows apply
-   from the repository and pass no `TF_VAR_ops_alexa_redirect_uris`, so URLs that live only in
-   your shell (`export TF_VAR_ops_alexa_redirect_uris='[...]'`) are fine for a quick local trial,
-   but the next CI apply sets the list back to empty and deletes the Alexa client. The URLs are
-   Amazon's addresses, not credentials. They may carry an id of your Amazon developer account;
-   that is not a secret either, but check the PII guard (`scripts/pii_denylist_check.py`) agrees.
+   Commit that line through a pull request, like any other change, and let CI apply it: dev on the
+   merge into `dev`, production at the next release from `prod`. Never apply it by hand. The
+   deploy workflows pass no `TF_VAR_ops_alexa_redirect_uris`, so the tracked file is the only place
+   the list can live: anything else is set back to empty by the next apply, which deletes the
+   Alexa client. The URLs are Amazon's addresses, not credentials. They may carry an id of your
+   Amazon developer account; that is not a secret either, but check the PII guard
+   (`scripts/pii_denylist_check.py`) agrees.
 
    Every URL must be `https://`; the variable's validation refuses anything else. The apply makes
    the Alexa app client (`aws_cognito_user_pool_client.alexa`), in this environment's pool only.
@@ -287,12 +284,15 @@ From gentlest to most thorough:
 
    Access tokens already issued still work until they expire, within the hour.
 3. **Remove the Alexa client.** Set `ops_alexa_redirect_uris` back to `[]` (remove the line from
-   `terraform.tfvars`) and apply, or merge that change and let CI apply it. In dev, the merge into
-   `dev` applies it. In production, nothing changes until a release that includes the change is
-   published from `prod` (and approved), so apply by hand if it cannot wait. Still get the change
-   onto `prod`, or the next release puts the client back. Terraform deletes the Alexa app client. Its refresh tokens can no longer be used, and nothing can link to this
-   environment again until you repeat step 3 of the bootstrap, which makes a new client with a new
-   id and secret. As in step 2, an access token already issued may work until it expires.
+   `terraform.tfvars`) and merge that change; CI applies it, never a hand apply. In dev, the merge
+   into `dev` applies it. In production, nothing changes until a release that includes the change
+   is published from `prod` and approved by the `production` environment's reviewer. Production is
+   never applied by hand. If it cannot wait, sign the user out (step 2) and turn assistant access
+   off (below) until the release lands. That refuses every assistant request, your own included,
+   so set it back to `open` afterwards. Terraform deletes the Alexa app client. Its refresh tokens
+   can no longer be used, and nothing can link to this environment again until you repeat step 3
+   of the bootstrap, which makes a new client with a new id and secret. As in step 2, an access
+   token already issued may work until it expires.
 
 To stop all assistant traffic at once, from Alexa and everyone else:
 `python scripts/admin_cli.py pipeline-config set --assistant-access off`.

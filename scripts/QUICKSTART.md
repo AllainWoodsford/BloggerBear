@@ -28,13 +28,18 @@ $env:BLOGGERBEAR_ADMIN_API_URL = terraform -chdir=infra/environments/dev output 
 ```
 
 Run these from the repo root. Use `production` instead of `dev` for prod: each environment has its own
-URL, so never reuse one for the other. To have them in every new Git Bash window, put them in
-`~/.bashrc`, but write the URL out: `export BLOGGERBEAR_ADMIN_API_URL=<the URL>`
-(`echo $BLOGGERBEAR_ADMIN_API_URL` prints it once the line above has run). A new window usually
-opens in your home folder, where `-chdir=infra/environments/dev` finds nothing, so the URL would be
-left empty. The `AWS_DEFAULT_REGION` line can go in as it is. To keep the terraform call instead,
-give `-chdir` the full path to `infra/environments/dev`. It then runs every time a window opens,
-and needs your AWS credentials.
+URL, so never reuse one for the other.
+
+To have them in every new Git Bash window, put them in `~/.bashrc`:
+
+- The `AWS_DEFAULT_REGION` line can go in as it is.
+- Don't copy the terraform line as it is. A new window usually opens in your home folder, where
+  `-chdir=infra/environments/dev` finds nothing, so the URL would be left empty.
+- Write the URL out instead: `export BLOGGERBEAR_ADMIN_API_URL=<the URL>`. Once the
+  `BLOGGERBEAR_ADMIN_API_URL` line in the Git Bash block above has run (from the repo root),
+  `echo $BLOGGERBEAR_ADMIN_API_URL` prints it.
+- Or, to keep the terraform call, give `-chdir` the full path to `infra/environments/dev`. It then
+  runs every time a window opens, and needs your AWS credentials.
 
 The CLI signs each request with your AWS credentials, so those need to be set up too (`aws configure`, or
 `export AWS_PROFILE=<name>` for a named profile). Check with `aws sts get-caller-identity`. Terraform
@@ -82,25 +87,33 @@ what to do about it. See [../docs/production-runsheet.md](../docs/production-run
 ## If a command fails
 
 - **403 from the API:** your IP is not on the admin allowlist, or your AWS credentials are wrong
-  (expired, for another account, or without permission to call the API). With no credentials at
-  all, the CLI stops before sending anything and prints "Error: No AWS credentials found". Check
-  `aws sts get-caller-identity` first. A new deploy lets nobody in until you add your IP:
-  `python scripts/admin_allowlist.py --prefix <your prefix> set --env dev --my-ip` (use
-  `--env production` for prod). The script reads neither its prefix nor its region from your
-  environment: leave out `--prefix` only if your prefix is the default `bloggerbear`, and add
-  `--region <your region>` if your region is not `ap-southeast-2`. Both go before `set`. Run it
-  again whenever your IP changes; you need no Terraform apply.
-  `python scripts/admin_allowlist.py --prefix <your prefix> show --env dev` shows whether this
-  machine is listed.
+  (expired, for another account, or without permission to call the API). Check
+  `aws sts get-caller-identity` first. With no credentials at all, the CLI stops before sending
+  anything and prints "Error: No AWS credentials found".
+
+  A new deploy lets nobody in until you add your IP:
+  `python scripts/admin_allowlist.py --prefix <your prefix> set --env dev --my-ip`
+
+  - Use `--env production` for prod.
+  - Your prefix is your `UNIQUE_NAME_PREFIX` GitHub variable. The script does not read it from your
+    environment. Leave out `--prefix` only if your prefix is the default `bloggerbear`.
+  - The script does not read your region from your environment either. Add
+    `--region <your region>` if your region is not `ap-southeast-2`.
+  - `--prefix` and `--region` go before the command (`set` or `show`).
+  - Run it again whenever your IP changes; you need no Terraform apply.
+  - `python scripts/admin_allowlist.py --prefix <your prefix> show --env dev` shows whether this
+    machine is listed.
 - **"Admin API URL not configured" or "AWS region not configured":** step 1 was not done in this
   terminal. Each new terminal needs it again unless you put it in `~/.bashrc`.
-- **`terraform output` fails:** on a fresh checkout, run `init` once for that environment first
-  (Terraform says "Backend initialization required"). The backend block names the original
-  deployment's state bucket, so in a copy of the project give `init` the bucket CI uses (your
-  `TF_STATE_BUCKET_DEV`, or `TF_STATE_BUCKET_PROD` for `production`), and its region if that is not
-  `ap-southeast-2`:
-  `terraform -chdir=infra/environments/dev init -backend-config="bucket=<your state bucket>" -backend-config="region=<its region>"`.
-  See [../docs/deployment-runsheet.md](../docs/deployment-runsheet.md#4-first-deploy-dev), section
-  4. Terraform also needs your AWS credentials to read the remote state. Check
-  `aws sts get-caller-identity`, and that you ran it from the repo root (or pass the full path to
-  `-chdir`).
+- **`terraform output` fails:** check these in turn.
+  - On a fresh checkout, run `init` once for that environment first
+    (Terraform says "Backend initialization required"). The backend block in each environment's `main.tf`
+    (`infra/environments/dev/main.tf`, `infra/environments/production/main.tf`) names the original
+    deployment's state bucket. In a copy of the project, give `init` the bucket CI uses: the one
+    named in your `TF_STATE_BUCKET_DEV` GitHub secret, or `TF_STATE_BUCKET_PROD` for `production`.
+    Give it the bucket's region too if that is not `ap-southeast-2`:
+    `terraform -chdir=infra/environments/dev init -backend-config="bucket=<your state bucket>" -backend-config="region=<its region>"`.
+    See [../docs/deployment-runsheet.md](../docs/deployment-runsheet.md#4-first-deploy-dev), section 4.
+  - Terraform needs your AWS credentials to read the remote state. Check
+    `aws sts get-caller-identity`.
+  - Check that you ran `terraform` from the repo root (or pass the full path to `-chdir`).

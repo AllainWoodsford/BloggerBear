@@ -133,8 +133,12 @@ incidents ([cost-saving.md](../cost-saving.md#waf_regional_enabled)). With `WAF_
 off, the admin ACL goes, so there are no `admin-denied` incidents. The resource policy's 403s
 still reach the access log and count toward `admin-api-errors`
 ([cost-saving.md](../cost-saving.md#waf_admin_allowlist)). `WAF_LOG_ALL_REQUESTS` changes nothing
-here, because only blocks are passed on, and blocks are logged either way. `WAF_SITE_ENABLED`
-changes nothing here either.
+here, because only blocks are passed on, and blocks are logged either way.
+
+`WAF_SITE_ENABLED` removes no source, but it changes what reaches one. With it off, the API's CDN
+has no edge ACL, so an attack sent through it goes on to the public API's regional ACL. While
+`WAF_REGIONAL_ENABLED` is on, that ACL blocks it with the same common rule set, and the block
+becomes a `waf-public-api` incident, like one sent straight to the execute-api address.
 
 ## How blocked requests become incidents
 
@@ -155,9 +159,17 @@ changes nothing here either.
 ### The client
 
 - Behind the public API's CDN, every request arrives from a CloudFront address. The visitor's own
-  address is in the `x-viewer-ip` header, which the distribution's function sets. The handler
-  believes that header only when `x-origin-verify` is on the request too, the same rule the WAF's
-  per-visitor limits follow. Otherwise it uses the connection's address.
+  address is in the `x-viewer-ip` header, which the distribution's function sets.
+- The handler believes that header whenever the request also has an `x-origin-verify` header,
+  whatever its value. The WAF log redacts that value, so the handler can see only that the header
+  is there. Without `x-origin-verify`, the handler uses the connection's address.
+- That is looser than the WAF's per-visitor limits, which trust `x-viewer-ip` only when
+  `x-origin-verify` exactly matches the distribution's secret. Comment screening in the public API
+  (`_client_ip`) uses the same presence check as the handler.
+- So a caller that goes straight to the execute-api address with any `x-origin-verify` and a
+  made-up `x-viewer-ip` is still rate-limited by the WAF on its real address. Its incidents,
+  though, are hashed under the address it claims, and it can change that address so they never
+  group.
 - The address is hashed at once ([below](#the-keyed-hash-of-the-client)) and never stored.
 - A sign-in has no address, because Cognito gives its triggers none. The user's name is hashed in
   its place, so sign-in incidents are grouped per user, and the name is not stored on them.
@@ -241,7 +253,14 @@ is still in the WAF log, for as long as that log keeps it.
    ([deployment-runsheet.md](../deployment-runsheet.md#5-after-the-first-deploy)).
 
 The email is the alarm's own notice, so it names no incident. Run `security list`, or ask the
-assistant, to see which incident it was.
+assistant, to see which incident it was. In `security list`, it is the high one whose `alerted_at`
+is just before the email.
+
+`security list` shows open incidents only unless you pass `--status`, and the assistant's
+`security_events` reads open ones only. An incident you already acknowledged or resolved can still
+turn high and send the email: a trend whose day or hour was still running, or another incident
+whose 15-minute window was. It keeps the status you gave it. So if no open incident's `alerted_at`
+matches the email, run `security list --status acknowledged` and `security list --status resolved`.
 
 The alarm emails when it goes into alarm, not once per incident. A second high incident while it
 is still in alarm sends no second email. It sends nothing when it clears.
@@ -346,7 +365,7 @@ attempts age out. The sign-in and the lockout are on
 
 | Part | Code | Infra |
 |---|---|---|
-| The Lambda | `lambdas/security_events_handler.py` | `aws_lambda_function.security_events` (`<prefix>-<env>-security-events`), its two subscription filters and their permissions, in `infra/environments/*/main.tf` |
+| The Lambda | `lambdas/security_events_handler.py` | `aws_lambda_function.security_events` (`<prefix>-<env>-security-events`), its subscription filters (one on each regional WAF log group that exists, and one on the admin API's access log: three with the default switches) and their permissions, in `infra/environments/*/main.tf` |
 | Categories, grouping, trends, alerting | `lambdas/common/security_events.py` (`PLAYBOOK`, `classify_rule`, `client_hash`, `record_incident`, `TRENDS`, `record_trend`, `open_manual_incident`, `change_status`) | |
 | The table and the key | `upsert_security_incident`, `claim_security_alert`, `list_security_incidents` and `get_security_hash_key` in `lambdas/common/dynamo.py` | `aws_dynamodb_table.security_events` (index `by_status_last_seen`) in `infra/modules/app-data/main.tf`; the `security-events-hash-key` row of `<prefix>-<env>-model-config` |
 | Comment screening | `_submit_feedback` in `lambdas/public_api_handler.py`; `lambdas/common/comment_screening.py` | `<prefix>-<env>-public-api` |

@@ -5,10 +5,18 @@ Lambdas (`BEDROCK_MODEL_ID`, by default the AU Claude Haiku 4.5 inference profil
 built-in entry for that one model, and the model catalog quietly fills the registry around it.
 
 Read on when you want to change the model without a deploy, give it a fallback, try several models
-on one topic, or understand why a topic is suddenly on a model you never chose. Every command here
-is the admin CLI ([scripts/QUICKSTART.md](../scripts/QUICKSTART.md) sets it up), and every change
-takes effect on the next run, with no deploy. The design, with every field and edge case, is
+on one topic, or understand why a topic is suddenly on a model you never chose. The design, with
+every field and edge case, is
 [enhancements/model-catalog-refresh.md](enhancements/model-catalog-refresh.md).
+
+Most commands here are the admin CLI ([scripts/QUICKSTART.md](../scripts/QUICKSTART.md) sets it
+up). The shared rotation pool has no CLI command yet, so you set it with the AWS CLI or in the
+DynamoDB console. Either way, a change takes effect on the next run, with no deploy.
+
+The one exception is the model Terraform gives the Lambdas: `BEDROCK_MODEL_ID`, and the operator's
+assistant's `OPS_AGENT_MODEL_ID`, which Terraform sets to the same value. Moving it, and with it
+every call that always uses it, takes a Terraform change and a deploy
+([below](#what-follows-the-routing-and-what-does-not)).
 
 ## Contents
 
@@ -51,19 +59,28 @@ lineage records it. Each research tick resolves its own model, so the Findings a
 from may have been summarised by other models. Each Finding records its own.
 
 Only a topic's own model (its rotation pick, or its `model_id`) is checked against the registry.
-When the registry marks that model switched off (`enabled: false`), the call is routed around it.
-It goes to the fallback, else the default, skipping either one that is switched off too. If
-neither is usable, it goes to a random active text model from the registry that no probe has found
-the account cannot call. Only that random model takes the inactive model's place on the topic (in
-its rotation list, or as its `model_id`), so the next run starts there. A model with no registry
-row counts as active, and a registry that cannot be read routes as if it were empty.
+When the registry marks that model switched off (`enabled: false`), the call is routed around it,
+to the first of these that is usable:
+
+1. the fallback, unless it is switched off too;
+2. the default, unless it is switched off too;
+3. a random active text model from the registry, leaving out any that a probe found the account
+   cannot call.
+
+Only the third takes the switched-off model's place on the topic (in its rotation list, or as its
+`model_id`), so the next run starts there. A model with no registry row counts as active, and a
+registry that cannot be read routes as if it were empty.
 
 Nothing else is checked. A call that starts from the global default or `BEDROCK_MODEL_ID` uses
 that model even when it is switched off. That happens when the topic has no model of its own, or
 the call has no topic. A switched-off fallback is also still tried when a call fails.
+
 `models disable` does not change the `default` row. So before you switch off the application's
-default or fallback, point the row at another model with `model-config set`. To move off
-`BEDROCK_MODEL_ID` itself, change Terraform ([below](#what-follows-the-routing-and-what-does-not)).
+default or fallback, point the row at another model with `model-config set`. It rewrites the whole
+row, and a flag you leave out is cleared. A cleared default or fallback falls through to
+`BEDROCK_MODEL_ID`. So pass both `--model-id` and `--fallback-model-id`, repeating the one you are
+keeping (`model-config get` shows it). To move off `BEDROCK_MODEL_ID` itself, change Terraform
+([below](#what-follows-the-routing-and-what-does-not)).
 
 ### The fallback
 
@@ -83,19 +100,22 @@ empty at its limit.
 
 | Uses the routing above | Always uses `BEDROCK_MODEL_ID` |
 |---|---|
-| The research tick's summary | The bear's musings on an article a person or Grizzlewick publishes (an approval or a force-publish), on a rejection, on a pause, on new gear, and a regenerated one |
-| The daily cycle: ideation, draft, title, compliance and fresh-data reviews, and the bear's musing on an article it publishes by itself (with no fallback) | The weekly reflection and the names it gives new gear |
+| The research tick's summary | The bear's musings on an article a person or Grizzlewick publishes (an approval or a force-publish), on a rejection, on a pause, on new gear, on readers' feedback (every 4 days), and a regenerated one |
+| The daily cycle: ideation, draft, title, compliance and fresh-data reviews, and the bear's musing on an article it publishes by itself (with no fallback) | The weekly reflection, the names it gives new gear, and the name the bear gives gear you make by hand when you give it no theme |
 | Re-Write from the review inbox | Screening a reader's comment |
 | Professor Grizzlewick, the reviewer bear | The operator's assistant (`OPS_AGENT_MODEL_ID`, which Terraform sets to the same value) |
 | The vision triage agent (the topic's model; it has no fallback, and fails closed) | |
 | The model catalog's reading of a web price (the global default, no topic) | |
 
-Three more calls have no fallback either: Professor Grizzlewick's own calls (his reads, judgements
-and musings), the Re-Write's rewriting call (its compliance and fresh-data reviews do fall back),
-and the model catalog's reading of a web price. Each runs only on the model it was given: the
-routed one, or the model you picked for a Re-Write. An error is not retried on the fallback.
-Grizzlewick leaves the article for a person or his next run, the Re-Write is marked failed, and the
-price reading counts as a lookup that could not be made.
+Three more calls have no fallback either. Each runs only on the model it was given (the routed
+one, or the model you picked for a Re-Write), and an error is not retried on the fallback:
+
+- Professor Grizzlewick's own calls (his reads, judgements and musings). On an error he leaves the
+  article for a person or his next run.
+- The Re-Write's rewriting call. On an error the Re-Write is marked failed. Its compliance and
+  fresh-data reviews do fall back.
+- The model catalog's reading of a web price. On an error it counts as a lookup that could not be
+  made.
 
 To move the right-hand column to another model you change Terraform: `bedrock_model_id`, or
 `bedrock_inference_profile_id` outside Australia
@@ -110,8 +130,11 @@ add one by hand, which switches it on.
 
 **1. Register each model you mean to use, with its price.** Prices are USD per 1,000 tokens. Check
 them against the Bedrock price page for your region, because a geographic inference profile can
-cost more than the provider's list price. `--lock-price` stops the catalog's reprice from ever
-changing a price you set on purpose.
+cost more than the provider's list price.
+
+`--lock-price` stops the catalog's reprice from ever changing a price you set on purpose. Pass it
+again every time you `models add` that model: a `models add` without it clears the lock, even one
+with `--disabled`. `models disable` keeps it.
 
 ```bash
 python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0" \
@@ -229,10 +252,14 @@ keep the topic for good, because the pool used to move a topic only after a publ
 
 ### When a model in use is switched off
 
-`models disable --model-id <id>` (or `models add ... --disabled`) takes the model out of every
-topic's rotation list (putting the cycle's next pick in its place, when there is one), clears it
-where it is a topic's `model_id` or `fallback_model_id`, and removes it from the shared pool. A
-topic left without a model falls through to the default. If the model is the application's default
+`models disable --model-id <id>` (or `models add ... --disabled`) does three things:
+
+- It takes the model out of every topic's rotation list. In its place it puts the model
+  [the weekly cycle](#the-weekly-cycle) would add next, if there is one.
+- It clears the model where it is a topic's `model_id` or `fallback_model_id`.
+- It removes the model from the shared pool.
+
+A topic left without a model falls through to the default. If the model is the application's default
 or fallback, the CLI asks first (`--yes` skips the question).
 
 ## The model catalog: discovery, prices and the weekly cycle
@@ -257,16 +284,20 @@ back to back. 03:00 is when no topic's daily cycle runs.
 
 ### Discover
 
-Discover lists every model the account can call in the deployment's region, from every provider,
-with Bedrock's `ListFoundationModels` and the system inference profiles (`au.`, `apac.`,
-`global.`, ...). It adds at most `discover_max_added` (5) that are not in the registry yet, text
-models first, each **switched off and unpriced**: discovery never puts a model in use.
+Discover lists every active model Bedrock offers in the deployment's region, from every provider:
+the on-demand models from Bedrock's `ListFoundationModels`, and the system inference profiles
+(`au.`, `apac.`, `global.`, ...). It adds at most `discover_max_added` (5) that are not in the
+registry yet, text models first, each **switched off and unpriced**: discovery never puts a model
+in use.
 
-Before it adds a text model it probes it with one 1-token Converse call. A model the account cannot
-call (access never granted, a provider agreement not accepted) is not added, and is not tried again
-for 30 days. Probes left over from the run's budget (`access_checks_per_run`, 10) check registry
-models whose access is not known yet. Image, video, speech and embedding models are listed as
-`pricing_unit: other` and never priced.
+Being listed does not mean the account can call a model. So before it adds a text model, discover
+probes it with one 1-token Converse call. A model the account cannot call (access never granted, a
+provider agreement not accepted) is not added, and is not tried again for 30 days.
+
+Probes left over from the run's budget (`access_checks_per_run`, 10) check registry text models not
+yet known to be callable: never-probed ones first, then ones a probe could not decide, then ones
+found denied, the longest ago first in each group. Image, video, speech and embedding models are
+listed as `pricing_unit: other` and never priced.
 
 A model the fleet pruned is never added back. Once the registry holds `max_models` (50), discover
 prunes instead of adding ([Pruning](#pruning-once-the-registry-is-full)). Finding nothing new is a
@@ -278,25 +309,39 @@ the next reprice price it first and then `models add` it.
 ### Reprice, and the reviews that check it
 
 Reprice queues up to `reprice_max_queued` (50) token-priced models that are not price-locked, the
-one looked up longest ago first (so a newly discovered one leads), and checks them 5 at a time on
-one-shot schedules 5 minutes apart. Each price comes from the AWS Price List API first (no model
-call), then from an AgentCore web search read by the default model. When the search results are
-the same as last time, the model does not read them and the price stays as it is. The search
-itself is still made, and it counts toward the cap: a reprice makes at most `max_web_lookups`
-(10) searches, across all its ticks. Its reviews have no cap and do not count against it: each
-review that runs searches again for every price still on probation that the Price List cannot
-give. A source that cannot price a model leaves it alone.
+one looked up longest ago first (so a newly discovered one leads). It checks them 5 at a time. Each
+batch is a **tick**: the first runs at once, and each later one on a one-shot schedule 5 minutes
+after the one before.
+
+Each price comes from the AWS Price List API first (no model call), then from an AgentCore web
+search read by the default model. In the reprice, a model neither source can price keeps the price
+it has. A review treats that as a failure (below).
+
+Web searches are capped for the reprice, but not for its reviews:
+
+- A reprice makes at most `max_web_lookups` (10) searches, across all its ticks.
+- When the search results are the same as last time, the model does not read them and the price
+  stays as it is. The search itself is still made, and it counts toward the cap.
+- Its reviews have no cap and do not count against it. Each review that runs searches again for
+  every price still on probation (see below) that the Price List cannot give.
 
 A changed price is **used at once**, and stays on probation. Each review (`review_after_hours`,
-1 and 2 hours by default) looks the price up again on its own, except that a review that would
-check half of `reprice_max_queued` or more (25 by default) is skipped unless it is the run's last.
-So a run that changed that many prices has them checked only once, at its last review:
+1 and 2 hours by default) looks the price up again on its own.
+
+One exception: a review that would check half of `reprice_max_queued` or more (25 by default) is
+skipped, unless it is the run's last. So a run that changed that many prices has them checked only
+once, at its last review.
+
+What the reviews decide:
 
 - **Every review that could look it up agrees** (within `review_tolerance_pct`, 5 %): the new
   price stays, and the old prices are kept in the content bucket at `pricing/<date>-<run id>.json`.
-- **A review disagrees**, or the price is out of range or moved more than `max_change_factor` (10)
-  times: that model goes back to its old price, and a pricing failure is written to the
-  FailedExecutions table. `failed-executions list` and the assistant's pipeline health show it.
+- **A review disagrees, or finds no price at all** (the Price List has none, and the search finds
+  nothing usable or the model reading it gives no price), or the price is out of range (the input
+  or output price not above zero, or over 0.50 USD per 1,000 tokens) or moved more than
+  `max_change_factor` (10) times, up or down: that model goes back to its old price (or to none, if
+  it had none), and a pricing failure is written to the FailedExecutions table.
+  `failed-executions list` and the assistant's pipeline health show it.
 - **A review could not look it up** (Bedrock or the search unavailable): that is not a failure. If
   no review could look it up at all, it goes back quietly and the next reprice tries again.
 
@@ -306,8 +351,8 @@ next job, so nothing can hold repricing up for good.
 ### The weekly cycle
 
 For every topic that has a rotation list: remove the models that are switched off or that a probe
-found the account cannot call, then, while the list holds fewer than `rotation_max` (10), add one
-model it does not have. The model added is an active, callable, priced text model that is nobody's
+found the account cannot call. Then, if the list holds fewer than `rotation_max` (10), add one
+model it does not have, so the cycle grows a list by at most one model a week. The model added is an active, callable, priced text model that is nobody's
 fallback: the cheapest in `value_for_money` mode (the default), the most expensive in `frontier`
 mode (`prune_mode`). A topic with no list is left alone, and so is a model with no registry row.
 
@@ -391,27 +436,39 @@ includes the research that fed it.
 | A topic's model, fallback and rotation list | `model_id`, `fallback_model_id`, `model_id_candidates` on its Topics row |
 | Old prices a pricing run replaced | `pricing/<date>-<run id>.json` in the content bucket (kept) |
 | A price put back | a `model_pricing` row in FailedExecutions (7 days) |
-| The Terraform model | `bedrock_model_id` / `bedrock_inference_profile_id` in each environment's `terraform.tfvars` |
+| The Terraform model | `bedrock_model_id` (default empty) and `bedrock_inference_profile_id` (default the AU Claude Haiku 4.5 profile), in each environment's `variables.tf`. When `bedrock_model_id` is empty, `local.bedrock_model_id` in `main.tf` builds the profile's ARN. To change the model, set one in that environment's `terraform.tfvars`: a `bedrock_model_id` you set is used as given, and the profile is ignored |
 
 ## When something looks wrong
 
-- **A topic is on a model you never set.** The shared pool moved it (after an article the daily
-  cycle published by itself, or after a run with no usable angle), or routing moved it off a switched-off model and wrote the
-  replacement onto the topic. `topics get <topic_id>` shows `model_id` and
-  `model_id_candidates`; the daily-cycle and research-tick logs say `model_routing: ... moves to`.
+- **A topic is on a model you never set.** One of these put it there:
+  - the shared pool, which rewrites `model_id` after an article the daily cycle published by
+    itself, or after a run with no usable angle;
+  - routing, which moved the topic off a switched-off model and wrote the replacement onto it;
+  - [the weekly cycle](#the-weekly-cycle) (Fridays), which adds one model a week to a topic's
+    rotation list until it holds `rotation_max` (10);
+  - `models disable` (or `models add ... --disabled`), which put the cycle's next pick in the
+    disabled model's place in a rotation list.
+
+  `topics get <topic_id>` shows `model_id` and `model_id_candidates`. Routing logs
+  `model_routing: ... moves to` in the daily-cycle and research-tick logs. `model-catalog get`
+  shows the cycle's last run (`last_cycle_result`, with `topics_changed`).
 - **Every article says `used_fallback`.** The chosen model fails every call: check its id with
   `aws bedrock list-inference-profiles`, and your account's access with the `converse` command
   under [Before you start](deployment-runsheet.md#before-you-start).
-- **An article's cost is blank.** One of its calls used a model nothing prices. `models add` it with
-  its price, then run `lineage backfill --apply`. An article's cost is worked out once, when it is
-  written, so a price added later fills in no cost already stored until the backfill recomputes it
-  from the recorded tokens. Without `--apply` it only reports what would change. The article's
-  static page keeps the figure it was rendered with. The Stats page reprices every call each time
-  it is rebuilt: after the next article is written or moderated, and after a backfill that changed
-  something. A model `models list` shows as unpriced gets a price at the next reprice, if the Price
-  List or the web has one.
-- **A price looks wrong.** `models add` it with the right price and `--lock-price`. A locked price
-  is never repriced or pruned.
+- **An article's cost is blank.** One of its calls used a model nothing prices. To fix it:
+  1. `models add` it with its price. (A model `models list` shows as unpriced also gets a price at
+     the next reprice, if the Price List or the web has one.)
+  2. Run `lineage backfill --apply`. Without `--apply` it only reports what would change.
+
+  The backfill is needed either way. An article's cost is worked out once, when it is written, so a
+  price added later fills in no cost already stored until the backfill recomputes it from the
+  recorded tokens. The article's static page keeps the figure it was rendered with.
+
+  The Stats page reprices every call each time it is rebuilt: after the next article is written or
+  moderated, and after a backfill that changed something.
+- **A price looks wrong.** `models add` it with the right price and `--lock-price`. `models add`
+  switches the model on unless you also pass `--disabled`, so add that flag for a model that is
+  switched off and should stay off. A locked price is never repriced or pruned.
 - **Discover adds nothing.** Normal when nothing new is on offer. Otherwise `model-catalog get`
   shows its last result: `full` means it pruned instead; `denied_ids` are models the account cannot
   call (grant access in the Bedrock console, then wait out the 30 days or `models add` it).

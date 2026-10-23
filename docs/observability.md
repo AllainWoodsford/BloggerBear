@@ -51,8 +51,8 @@ never alarms. All are in `infra/modules/observability/main.tf`.
 
 | Alarm | Watches | Fires when | Email says | OK email too |
 |---|---|---|---|---|
-| `<prefix>-<env>-<function>-errors` (`lambda_errors`, one per function listed below) | `AWS/Lambda` `Errors` for that function | at least 1 error in 5 minutes | the function had at least one invocation error in the last 5 minutes | yes |
-| `<prefix>-<env>-<function>-throttles` (`lambda_throttles`, one per function) | `AWS/Lambda` `Throttles` for that function | at least 1 throttle in 5 minutes | the function was throttled in the last 5 minutes | yes |
+| `<prefix>-<env>-<prefix>-<env>-<function>-errors` (`lambda_errors`, one per function listed below). The module puts `<prefix>-<env>-` in front of the function's full name, which already starts with it, so the prefix appears twice, e.g. `bloggerbear-production-bloggerbear-production-research-tick-errors` | `AWS/Lambda` `Errors` for that function | at least 1 error in 5 minutes | the function had at least one invocation error in the last 5 minutes | yes |
+| `<prefix>-<env>-<prefix>-<env>-<function>-throttles` (`lambda_throttles`, one per function, named the same way) | `AWS/Lambda` `Throttles` for that function | at least 1 throttle in 5 minutes | the function was throttled in the last 5 minutes | yes |
 | `<prefix>-<env>-pipeline-dlq-messages` | messages waiting on `<prefix>-<env>-pipeline-dlq` (the highest count in the period) | more than 0 in 5 minutes | the daily-cycle dead-letter queue has a failed execution waiting on it | yes |
 | `<prefix>-<env>-daily-cycle-executions-failed` | `AWS/States` `ExecutionsFailed` on the `<prefix>-<env>-daily-cycle` state machine | at least 1 in 5 minutes | the daily-cycle state machine had a failed execution | yes |
 | `<prefix>-<env>-schedule-invocations-dropped` | `AWS/Scheduler` `InvocationDroppedCount` for the `default` schedule group | at least 1 in 5 minutes | the scheduler dropped a scheduled run, so a job did not run | yes |
@@ -134,7 +134,7 @@ time the dashboard loads them.
 | Each API (the public API and the admin API) | Requests, 4XX and 5XX per hour. Latency against integration latency (the Lambda's share), at p50, p90 and p99. From the access log: 429s per hour, responses by status, and 4XX/5XX by route with `errorType` (who answered: `THROTTLED`, `WAF_FILTERED` and so on). A row of totals for the selected range sits above them. |
 | The public API's cache | Requests at the CDN against requests that still reached API Gateway: the gap is what the cache answered. The CDN's 4xx and 5xx error rates. The cache hit rate, only when the distribution's additional metrics are on. These read `us-east-1`. |
 | Each web ACL that exists | Allowed, blocked and counted requests. Blocked per rule, rate limits included. Allowed and counted per rule. The top blocked rule, address and path, from the WAF log. The address is the `x-viewer-ip` header for a request that came through the CDN, else the client address. |
-| The shared CloudFront ACL | The same panels, read in `us-east-1`. Its numbers are the whole site's, every distribution it is attached to. |
+| The shared CloudFront ACL | Allowed, blocked and counted requests. Blocked per rule, rate limits included. The top blocked rule, address and path, from the WAF log. All read in `us-east-1`. There is no allowed-and-counted-per-rule panel for it. Its numbers are the whole site's, every distribution it is attached to. |
 
 WAF only reports a number above zero, so a rule that blocked nothing draws no line. A web ACL
 that a cost-saving switch turned off is left off the dashboard
