@@ -382,8 +382,8 @@ A run that writes nothing stamps nothing. That covers three cases:
 
 An error the handler catches is quiet. The daily cycle returns `"status": "error"`, so Step
 Functions sees a successful invoke and does not retry it, and nothing reaches the DLQ or an alarm.
-The error is in the execution's output, not in the function's log (the handler's top-level guard
-prints nothing, a code follow-up in [vision.md §10](enhancements/archive/vision.md#10-still-open)).
+The error is in the execution's output, and the handler's top-level guard also prints it to the
+daily-cycle log (`run failed for topic_id=...`).
 The sign is a city's day with a new Finding but no new item in the review inbox.
 
 A broken rota (a slot that is not a site, a site with no day, a zone that is not one) is such an

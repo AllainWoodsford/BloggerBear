@@ -262,16 +262,28 @@ reason. What happens next depends on how the run started:
   seconds) or a crash as a failed invocation. It retries a failed invocation twice (after 30
   seconds, then 60) and then sends it to the pipeline dead-letter queue, which
   `admin_cli failed-executions list` shows. To Step Functions a caught error is a successful
-  invocation: it is not retried, never reaches the queue, and shows only in the execution's output.
+  invocation: it is not retried and never reaches the queue. It shows in the execution's output,
+  and the guard also prints it to the daily-cycle log (`run failed for topic_id=...`).
 - **A daily cycle from `topics trigger --pipeline daily_cycle`.** This invokes the Lambda directly,
   without the state machine, so a failure there never reaches the queue and leaves no
   FailedExecutions record.
 
 A daily cycle that fails after it has stored the article (its static page, its musing or its
-moderation item) has still stamped `last_article_at`: the stamp is set the moment the article's
-row is written (`on_stored` in `_publish_or_moderate`). So neither the next day's run nor a retry
-after a timeout writes up the same Findings again. The article is there; what failed is in the
-run's output and the daily-cycle log.
+moderation item) has still stamped `last_article_at`, and its goal rotation's state: both are set
+the moment the article's row is written (`on_stored` in `_publish_or_moderate`). So the next day's
+run does not write up the same Findings again, and nor does a retry after a timeout, with two
+exceptions:
+
+- A topic with a goal rotation may revisit those Findings at once under its next goal, as it
+  would on a later day.
+- A `--force` run ignores the stamp. A manual trigger is an asynchronous Lambda invoke, which
+  Lambda retries on a timeout (twice, by default), so a forced run that times out after storing
+  its article can write up its whole window again.
+
+The run's result names the stored article (`article_id`, with `article_stored: true`), the
+daily-cycle log says `article_id=... was stored, then a later step failed`, and the Stats page's
+Articles figures are rebuilt as for any article. A held article whose moderation item could not
+be written is not in the review inbox: find it with `admin_cli articles get <article_id>`.
 
 ## Where the AI agents are
 

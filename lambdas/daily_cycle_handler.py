@@ -207,7 +207,8 @@ _ARTICLE_WRITTEN_STATUSES = ("published", "pending_moderation", "rewritten")
 @track_lambda_duration("daily_cycle")
 def handler(event: dict, context) -> dict:
     result = _handle(event)
-    if result.get("status") in _ARTICLE_WRITTEN_STATUSES:
+    # A run that stored its article and then failed (article_stored) wrote one too.
+    if result.get("status") in _ARTICLE_WRITTEN_STATUSES or result.get("article_stored"):
         refresh_articles_snapshot()
     return result
 
@@ -234,6 +235,9 @@ def _handle(event: dict) -> dict:
     try:
         return _run_daily_cycle(topic_id, force=force)
     except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
+        # Said in the log too: a caught error is a successful invocation to Step Functions, so
+        # without this line it shows only in the execution's output.
+        print(f"daily_cycle_handler: run failed for topic_id={topic_id}: {exc!r}")
         return {"status": "error", "topic_id": topic_id, "error": str(exc)}
 
 
@@ -627,27 +631,51 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     lineage = build_lineage(calls, research=research)
     record_article_lineage(lineage)
 
-    result = _publish_or_moderate(
-        topic_id=topic_id,
-        topic_name=topic.get("name", topic_id),
-        title=title,
-        draft_text=draft_text,
-        findings=findings,
-        review=review,
-        model_id=model_id,
-        lineage=lineage,
-        fresh_review_record=fresh_record,
-        hold_reasons=hold_reasons,
-        original_body=original_body,
-        equipment_used=equipment_used,
-        # The topic's adapter's source credit, as declared right now: stored on the article so
-        # it keeps the credit it was written with (common/attribution.py).
-        attribution=sources_for_topic(topic),
-        subject_key=subject_key,
-        rotation=rotation,
-        # Stamped as soon as the row exists: see _publish_or_moderate's `on_stored`.
-        on_stored=lambda: _record_article_written(topic_id, run_started, subject_key, rotation),
-    )
+    stored: dict = {}
+
+    def _stored(article_id: str) -> None:
+        stored["article_id"] = article_id
+        _record_article_written(topic_id, run_started, subject_key, rotation)
+
+    try:
+        result = _publish_or_moderate(
+            topic_id=topic_id,
+            topic_name=topic.get("name", topic_id),
+            title=title,
+            draft_text=draft_text,
+            findings=findings,
+            review=review,
+            model_id=model_id,
+            lineage=lineage,
+            fresh_review_record=fresh_record,
+            hold_reasons=hold_reasons,
+            original_body=original_body,
+            equipment_used=equipment_used,
+            # The topic's adapter's source credit, as declared right now: stored on the article so
+            # it keeps the credit it was written with (common/attribution.py).
+            attribution=sources_for_topic(topic),
+            subject_key=subject_key,
+            rotation=rotation,
+            # Stamped as soon as the row exists: see _publish_or_moderate's `on_stored`.
+            on_stored=_stored,
+        )
+    except Exception as exc:
+        if "article_id" not in stored:
+            raise  # nothing was stored: the window stays open for the next run
+        # The article exists and is now the only one these Findings will get: say which it is,
+        # so a held one whose moderation item failed can still be found (`articles get`).
+        print(
+            f"daily_cycle_handler: article_id={stored['article_id']} topic_id={topic_id} was "
+            f"stored, then a later step failed: {exc!r}"
+        )
+        return {
+            "status": "error",
+            "topic_id": topic_id,
+            "article_id": stored["article_id"],
+            "article_stored": True,
+            "error": str(exc),
+            **({ARTICLE_SUBJECT_FIELD: subject_key} if subject_key is not None else {}),
+        }
     return result
 
 
@@ -1236,15 +1264,15 @@ def _publish_or_moderate(
     attribution: list[dict] | None = None,
     subject_key: str | None = None,
     rotation: goal_rotation.Pick | None = None,
-    on_stored: Callable[[], None] | None = None,
+    on_stored: Callable[[str], None] | None = None,
 ) -> dict:
     """Store the article and either publish it or send it to moderation.
 
-    `on_stored` is called the moment the article's row is written, before anything after it (the
-    static page, the musing, the model's roll forward, the moderation item) has a chance to fail.
-    The run passes its `_record_article_written` here, so a failure in those steps, which still
-    reaches the handler's guard as an error, cannot leave the article unstamped and its Findings
-    open for the next run to write up again.
+    `on_stored` is called with the article's id the moment its row is written, before anything
+    after it (the static page, the musing, the model's roll forward, the moderation item) has a
+    chance to fail. The run stamps the topic there (`_record_article_written`), so a failure in
+    those steps cannot leave the article unstamped and its Findings open for the next run to write
+    up again, and it keeps the id, so the error it returns names the article.
 
     `attribution` is the source credit to store on the article and show on its page
     (common/attribution.py); None stores nothing, and readers fall back to the topic's adapter.
@@ -1318,7 +1346,7 @@ def _publish_or_moderate(
         figures=figures,
     )
     if on_stored is not None:
-        on_stored()
+        on_stored(article_id)
     subject = {ARTICLE_SUBJECT_FIELD: subject_key} if subject_key is not None else {}
     subject.update(_rotation_fields(rotation))
 

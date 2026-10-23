@@ -478,16 +478,22 @@ def _run_a_full_cycle(
     lineage_calls=None,
     topic=NON_FINANCIAL_TOPIC,
     fail_at=None,
+    stored_at=None,
 ):
     """Run a whole cycle with everything external mocked. `lineage_calls`, if given,
     collects the (args, kwargs) build_lineage was called with. `findings=None` reads them
     from the Findings table instead (the `findings_table` fixture). `fail_at` names one of
     the steps that store or follow the article (put_article, put_moderation_item,
-    render_and_publish_article_page, generate_and_store_article_musing), which then raises."""
+    render_and_publish_article_page, generate_and_store_article_musing), which then raises.
+    `stored_at`, if given, collects when put_article was called."""
 
     def _step(name):
-        failure = RuntimeError(f"{name} failed") if fail_at == name else None
-        return patch(f"daily_cycle_handler.{name}", side_effect=failure)
+        if fail_at == name:
+            return patch(f"daily_cycle_handler.{name}", side_effect=RuntimeError(f"{name} failed"))
+        if name == "put_article" and stored_at is not None:
+            record = lambda **_: stored_at.append(datetime.now(UTC))  # noqa: E731
+            return patch(f"daily_cycle_handler.{name}", side_effect=record)
+        return patch(f"daily_cycle_handler.{name}")
 
     responses = ["Angle one\nAngle two\nAngle three", "# Draft body", "A Title"]
 
@@ -618,25 +624,58 @@ def test_failing_to_record_the_last_article_does_not_fail_the_run(s3_bucket):
         (False, "put_moderation_item"),
     ],
 )
-def test_a_step_that_fails_after_the_article_is_stored_still_records_it(s3_bucket, compliant, fail_at):
+def test_a_step_that_fails_after_the_article_is_stored_still_records_it(
+    s3_bucket, capsys, compliant, fail_at
+):
     # The article's row exists, so its Findings are spoken for: without the stamp the next run
     # would read the same window and write them up a second time.
-    before = datetime.now(UTC)
-    result, mock_set = _run_a_full_cycle(compliant=compliant, fail_at=fail_at)
+    before, stored_at = datetime.now(UTC), []
+    with patch("daily_cycle_handler.refresh_articles_snapshot") as mock_refresh:
+        result, mock_set = _run_a_full_cycle(compliant=compliant, fail_at=fail_at, stored_at=stored_at)
 
     assert result["status"] == "error" and fail_at in result["error"]
     mock_set.assert_called_once()
     topic_id, stamp = mock_set.call_args.args
     assert topic_id == "github-trending"
-    assert before <= datetime.fromisoformat(stamp)
+    # The run's start, before the article was stored: Findings captured while it was being
+    # written belong to the next article.
+    assert before <= datetime.fromisoformat(stamp) <= stored_at[0]
+    # The error names the article, in the result and the log, and the Stats snapshot counts it.
+    assert result["article_stored"] is True and result["article_id"]
+    assert f"article_id={result['article_id']}" in capsys.readouterr().out
+    mock_refresh.assert_called_once()
 
 
-def test_an_article_that_could_not_be_stored_is_not_recorded(s3_bucket):
+def test_an_article_that_could_not_be_stored_is_not_recorded(s3_bucket, capsys):
     # No row, no article: the window stays open so the next run can write it.
-    result, mock_set = _run_a_full_cycle(fail_at="put_article")
+    with patch("daily_cycle_handler.refresh_articles_snapshot") as mock_refresh:
+        result, mock_set = _run_a_full_cycle(fail_at="put_article")
+
+    assert result["status"] == "error" and "article_id" not in result
+    mock_set.assert_not_called()
+    mock_refresh.assert_not_called()
+    # The guard says what it caught, so the error is in the function's log too.
+    assert "run failed for topic_id=github-trending" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "fail_at,stored", [("render_and_publish_article_page", True), ("put_article", False)]
+)
+def test_a_goal_rotation_is_recorded_exactly_when_the_article_is_stored(s3_bucket, fail_at, stored):
+    # The rotation state moves with the stamp: recorded once the row exists, whatever fails after,
+    # and never for an article that was not stored (its goal comes round again).
+    topic = {**NON_FINANCIAL_TOPIC, "editorial_goal_rotation": _GOAL_ROTATION}
+    with patch("daily_cycle_handler.set_topic_goal_rotation_state") as mock_state:
+        result, mock_set = _run_a_full_cycle(topic=topic, fail_at=fail_at)
 
     assert result["status"] == "error"
-    mock_set.assert_not_called()
+    if stored:
+        mock_set.assert_called_once()
+        assert mock_state.call_args.args[1] == "*"
+        assert mock_state.call_args.args[2]["used"] == ["access"]
+    else:
+        mock_set.assert_not_called()
+        mock_state.assert_not_called()
 
 
 def test_no_article_means_nothing_is_recorded(s3_bucket):

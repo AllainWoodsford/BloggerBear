@@ -998,7 +998,9 @@ None of this is automatic.
     status reaches `_request`, the behaviour the worker now avoids with `_NoRedirectSession` (#298).
 16. **The daily cycle never prints the error its top-level guard catches.** `_handle` returns it as
     `{"status": "error", "error": ...}` with no log line, so it shows only in the Step Functions
-    execution's output, not in the function's log.
+    execution's output, not in the function's log. *Status: fixed since. The guard prints
+    `run failed for topic_id=...`, and a run that fails after storing its article names it
+    (`article_id`).*
 17. **The worker's bucket name can pass S3's 63 characters in production.** It is
     `<prefix>-<env>-vision-artifacts-<account id>-<vision_region>`
     (`infra/modules/vision-worker/main.tf`), so production needs the prefix and `vision_region` 21
