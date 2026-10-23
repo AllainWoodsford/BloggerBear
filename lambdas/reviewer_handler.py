@@ -106,7 +106,12 @@ def _report(state: dict, settings: dict | None = None, chance=random.random, pic
     (_converse)."""
     from common import musings
 
-    facts = reviewer.report_facts(state.get("counts") or {})
+    try:
+        links, rewrite_topics = reviewer.report_mentions(state)
+    except Exception as exc:  # noqa: BLE001 - the report goes out without its links and names
+        print(f"reviewer_handler: could not look up the report's articles: {exc!r}")
+        links, rewrite_topics = [], []
+    facts = reviewer.report_facts(state.get("counts") or {}, rewrite_topics)
     if not facts:
         return
     try:
@@ -114,6 +119,7 @@ def _report(state: dict, settings: dict | None = None, chance=random.random, pic
             facts=facts,
             woken=bool(state.get("woken")),
             model_id=_musing_model(),
+            links=links,
         )
     except Exception as exc:  # noqa: BLE001 - the run is done; never fail it over its report
         print(f"reviewer_handler: could not post the report musing: {exc!r}")

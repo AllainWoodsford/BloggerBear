@@ -1,0 +1,157 @@
+{
+ "topics": {
+  "rail-cities": {
+   "read": "read",
+   "error": null,
+   "items": 6
+  },
+  "ships-botany": {
+   "read": "read",
+   "error": null,
+   "items": 1
+  }
+ },
+ "findings": [
+  {
+   "topic_id": "rail-cities",
+   "captured_at": "2026-10-16T23:11:46.590120+00:00",
+   "expires_at": 1793401932,
+   "figure_keys": [
+    "vision/rail-cities/sydney/S2B_56HLH_20260930_0_L2A.png"
+   ],
+   "planner_notes": {
+    "ghost_line": 4,
+    "orbital_link": 3
+   },
+   "research_call": {
+    "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "input_tokens": 734,
+    "output_tokens": 267,
+    "used_fallback": false
+   },
+   "subjects": [
+    "sydney"
+   ]
+  },
+  {
+   "topic_id": "rail-cities",
+   "captured_at": "2026-10-16T23:12:28.490528+00:00",
+   "expires_at": 1793401961,
+   "figure_keys": [
+    "vision/rail-cities/melbourne/S2B_55HCU_20261016_0_L2A.png"
+   ],
+   "planner_notes": {
+    "ghost_line": 4,
+    "orbital_link": 3
+   },
+   "research_call": {
+    "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "input_tokens": 729,
+    "output_tokens": 285,
+    "used_fallback": false
+   },
+   "subjects": [
+    "melbourne"
+   ]
+  },
+  {
+   "topic_id": "rail-cities",
+   "captured_at": "2026-10-16T23:14:06.216698+00:00",
+   "expires_at": 1793402063,
+   "figure_keys": [
+    "vision/rail-cities/singapore/S2C_48NUG_20261001_0_L2A.png"
+   ],
+   "planner_notes": {
+    "feeder_corridor": 3,
+    "ghost_line": 4
+   },
+   "research_call": {
+    "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "input_tokens": 785,
+    "output_tokens": 326,
+    "used_fallback": false
+   },
+   "subjects": [
+    "singapore"
+   ]
+  },
+  {
+   "topic_id": "rail-cities",
+   "captured_at": "2026-10-16T23:15:39.758714+00:00",
+   "expires_at": 1793402150,
+   "figure_keys": [
+    "vision/rail-cities/boston/S2A_19TCG_20261015_1_L2A.png"
+   ],
+   "planner_notes": {
+    "feeder_corridor": 3,
+    "isolated_high_demand": 4
+   },
+   "research_call": {
+    "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "input_tokens": 794,
+    "output_tokens": 304,
+    "used_fallback": false
+   },
+   "subjects": [
+    "boston"
+   ]
+  },
+  {
+   "topic_id": "rail-cities",
+   "captured_at": "2026-10-17T00:41:33.213159+00:00",
+   "expires_at": 1793407299,
+   "figure_keys": [
+    "vision/rail-cities/boston/S2A_19TCG_20261015_1_L2A.png"
+   ],
+   "planner_notes": {
+    "feeder_corridor": 3,
+    "isolated_high_demand": 4
+   },
+   "research_call": {
+    "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "input_tokens": 839,
+    "output_tokens": 326,
+    "used_fallback": false
+   },
+   "subjects": [
+    "boston"
+   ]
+  },
+  {
+   "topic_id": "rail-cities",
+   "captured_at": "2026-10-18T13:25:28.644170+00:00",
+   "expires_at": 1793539535,
+   "figure_keys": [
+    "vision/rail-cities/sydney/S2B_56HLH_20260930_0_L2A.png"
+   ],
+   "planner_notes": {
+    "ghost_line": 4,
+    "orbital_link": 3
+   },
+   "research_call": {
+    "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "input_tokens": 844,
+    "output_tokens": 333,
+    "used_fallback": false
+   },
+   "subjects": [
+    "sydney"
+   ]
+  },
+  {
+   "topic_id": "ships-botany",
+   "captured_at": "2026-10-20T13:13:52.639077+00:00",
+   "expires_at": 1793711639,
+   "figure_keys": [],
+   "planner_notes": {},
+   "research_call": {
+    "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "input_tokens": 191,
+    "output_tokens": 57,
+    "used_fallback": false
+   },
+   "subjects": []
+  }
+ ],
+ "summaries": "left out (run with --with-notes)"
+}

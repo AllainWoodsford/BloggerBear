@@ -345,8 +345,9 @@ _REVIEWER_REPORT_PROMPT = """{voice}
 You have just finished your rounds. What you did:
 {facts}
 {woken}
-Tell the feed what you did, briefly, like a little report, with the numbers as given. Say \
-nothing about what any article said or what it was titled. Write your musing now.
+Tell the feed what you did, briefly, like a little report, with the numbers as given. If topics \
+were sent back for a rewrite, name them exactly as written. Say nothing about what any article \
+said or what it was titled. Write your musing now.
 """
 
 _REVIEWER_REJECTION_PROMPT = """{voice}
@@ -401,6 +402,7 @@ def _store_reviewer_musing(
     must_name: str | None = None,
     topic_id: str | None = None,
     created_at: str | None = None,
+    links: list[dict] | None = None,
 ) -> dict:
     """Write one of his musings: the model's words when they are usable (they name `must_name`,
     when given, and pass the comment screen), else `fallback`. Storing is the only thing that can
@@ -422,13 +424,17 @@ def _store_reviewer_musing(
         created_at=created_at or datetime.now(UTC).isoformat(),
         topic_id=topic_id,
         character=REVIEWER_CHARACTER,
+        links=links,
     )
 
 
-def generate_and_store_reviewer_report(*, facts: list[str], woken: bool, model_id: str) -> dict:
-    """His report on a run: `facts` are plain counts in fixed words ("approved 2 articles"), so
-    nothing a model or a reader wrote reaches the prompt. `woken` when articles had waited two days
-    or more: he opens with being woken from his slumber."""
+def generate_and_store_reviewer_report(
+    *, facts: list[str], woken: bool, model_id: str, links: list[dict] | None = None
+) -> dict:
+    """His report on a run: `facts` are plain counts in fixed words ("approved 2 articles") and the
+    names of the topics he sent back (set by admins), so nothing a model or a reader wrote reaches
+    the prompt. `woken` when articles had waited two days or more: he opens with being woken from
+    his slumber. `links` (the articles he published) are stored on the musing for the page to show."""
     prompt = _REVIEWER_REPORT_PROMPT.format(
         voice=_REVIEWER_VOICE,
         facts="\n".join(f"- {fact}" for fact in facts) or "- nothing needed doing",
@@ -436,7 +442,12 @@ def generate_and_store_reviewer_report(*, facts: list[str], woken: bool, model_i
     )
     fallback = _reviewer_report_fallback(facts or ["nothing needed doing"], woken)
     musing = _store_reviewer_musing(
-        "reviewer_report", prompt, fallback, model_id=model_id, must_name="slumber" if woken else None
+        "reviewer_report",
+        prompt,
+        fallback,
+        model_id=model_id,
+        must_name="slumber" if woken else None,
+        links=links,
     )
     return musing
 
@@ -483,31 +494,41 @@ _BLOGGERBEAR_TONES = {
         "contrite": (
             "thoughtful",
             "Professor Grizzlewick's report was a stern one: he sent work back or turned it away. "
-            "You are a little sheepish -- you should be more careful, you seem to have angered the "
-            "old man -- and you mean to do better.",
+            "Like a student handed back a marked-up essay, you are a little sheepish and promise "
+            "to do your homework properly next time.",
         ),
         "sulky": (
             "reflective",
             "Professor Grizzlewick's report was a stern one: he sent work back or turned it away. "
-            "You are a little sulky and put out about it -- hurt more than angry -- though you know "
-            "he probably has a point.",
+            "Like a student who thought the essay was better than the mark, you grumble a little, "
+            "though you concede the teacher probably has a point.",
         ),
     },
     "praised": {
         "proud": (
             "proud",
-            "Professor Grizzlewick's report was a good one: your work passed his review. You are "
-            "quietly proud -- you have done well, and even the old bear thinks so.",
+            "Professor Grizzlewick's report was a good one: your work passed his review. Like a "
+            "student who got a good mark from the strictest teacher, you are quietly chuffed and "
+            "allow yourself a little cheek about it.",
         ),
     },
     "grateful": {
         "grateful": (
             "pleased",
             "Professor Grizzlewick's report was mixed: some of your work passed, some he fixed up. "
-            "You are grateful to work with such a careful old bear, gruff as he is.",
+            "Like a student thanking a strict but fair teacher, you are grateful for the "
+            "corrections and take them on board.",
         ),
     },
 }
+# What keeps BloggerBear's replies those of a student to a teacher. Read the prompts with this in
+# mind: the model, asked to be warm to an older character, drifts into flattery and sensuality.
+_STUDENT_REPLY_RULES = (
+    "He is your teacher and mentor: speak to him as a cheeky but respectful student would to a "
+    "strict professor -- light teasing about red pens, marking and homework is fine. Never flatter "
+    "or gush, never comment on his looks, his paws or his touch, no honey or sweetness metaphors "
+    "about him, nothing flirtatious or suggestive."
+)
 # BloggerBear's tone -> (his mood, the brief for his answer).
 _REVIEWER_ANSWERS = {
     "contrite": (
@@ -528,15 +549,16 @@ _REVIEWER_ANSWERS = {
     ),
     "grateful": (
         "warm",
-        "BloggerBear has replied, grateful to work with you. Answer in the spirit of 'always happy "
-        "to help' -- gruff, fond, a little grumbling about being woken.",
+        "BloggerBear has replied, grateful for your corrections. Answer like a teacher to a "
+        "promising student: 'that's what I'm here for' -- gruff, a little grumbling about being "
+        "woken.",
     ),
 }
 _BLOGGERBEAR_FALLBACKS = {
     "contrite": "Noted, Professor! I'll sniff my sources twice before I hand in my next one.",
     "sulky": "Ouch, Professor. I did my best on those... but I'll go back and have another look.",
-    "proud": "The Professor liked my work! That's honey for the soul.",
-    "grateful": "Thank you, Professor Grizzlewick. Lucky to have such careful paws looking over my work.",
+    "proud": "A pass from Professor Grizzlewick! I'm framing that one for the den wall.",
+    "grateful": "Thank you, Professor Grizzlewick. Corrections taken on board -- I'll do my homework.",
 }
 _REVIEWER_ANSWER_FALLBACKS = {
     "contrite": "You youngsters never learn -- until you do. Check your figures, cub.",
@@ -547,9 +569,9 @@ _REVIEWER_ANSWER_FALLBACKS = {
 
 _BLOGGERBEAR_REPLY_PROMPT = """{voice}
 
-You are replying, on the musings feed, to Professor Grizzlewick, the old bespectacled, mustachioed \
-bear who reviews your articles. {brief} Address him as Professor Grizzlewick. Keep it playful and \
-warm; never say what any article said or what it was titled. Write your reply now.
+You are replying, on the musings feed, to Professor Grizzlewick, the old bear who reviews your \
+articles. {brief} {rules} Address him as Professor Grizzlewick. Keep it light and good-humoured; \
+never say what any article said or what it was titled. Write your reply now.
 """
 _REVIEWER_ANSWER_PROMPT = """{voice}
 
@@ -581,7 +603,7 @@ def generate_and_store_bloggerbear_reply(
     """BloggerBear replies to Professor Grizzlewick's report, in `tone` (one of bloggerbear_tones
     for the report's situation). In BloggerBear's own voice and moods; it names no article."""
     mood, brief = _BLOGGERBEAR_TONES.get(situation, _BLOGGERBEAR_TONES["grateful"])[tone]
-    prompt = _BLOGGERBEAR_REPLY_PROMPT.format(voice=_VOICE_GUIDANCE, brief=brief)
+    prompt = _BLOGGERBEAR_REPLY_PROMPT.format(voice=_VOICE_GUIDANCE, brief=brief, rules=_STUDENT_REPLY_RULES)
     text = _model_text("reply", prompt, model_id)
     return put_musing(
         musing_id=str(uuid.uuid4()),

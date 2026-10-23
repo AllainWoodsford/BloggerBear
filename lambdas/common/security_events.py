@@ -155,7 +155,8 @@ PLAYBOOK: dict[str, tuple[str, int, str]] = {
         100,
         "A request to the admin API from an address not on the allowlist was blocked (the WAF's "
         "default action). Usually a scanner that found the API's URL. If it is you, your IP has "
-        "changed: update the ADMIN_ALLOWED_CIDRS secret. If it persists from elsewhere, consider "
+        "changed: run `python scripts/admin_allowlist.py set --env <env> --my-ip`. If it "
+        "persists from elsewhere, consider "
         "whether the admin URL has leaked.",
     ),
     "prompt-injection": (

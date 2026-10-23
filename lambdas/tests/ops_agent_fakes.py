@@ -146,3 +146,13 @@ def tool_results(messages: list) -> list[str]:
         if "toolResult" in block
         for part in block["toolResult"].get("content", [])
     ]
+
+
+def stored_allowlist(monkeypatch, cidrs: str) -> None:
+    """The operator's addresses as the allowlist parameter holds them (comma-separated), read by
+    the handler and the server through ops_mcp/access.py, with no SSM: its name is set and the read
+    answers `cidrs`."""
+    from ops_mcp import access
+
+    monkeypatch.setenv(access.ALLOWED_CIDRS_PARAMETER_ENV, "/bloggerbear/test/admin-allowed-cidrs")
+    monkeypatch.setattr(access, "read_parameter", lambda name: cidrs)

@@ -1,0 +1,6 @@
+# Label each triaged live decision: label is agree or disagree with the agent's verdict;
+# reason is one of looks_real, network_edit, cloud_or_haze, season, other_artefact, unsure. Save as labels.csv.
+decision,verdict,figure,trace,label,reason
+rail-cities/boston/S2B_19TCG_20261018_0_L2A,artefact,figures/rail-cities__boston__S2B_19TCG_20261018_0_L2A.png,traces/rail-cities__boston__S2B_19TCG_20261018_0_L2A.md,,
+rail-cities/melbourne/S2C_55HCU_20261021_0_L2A,artefact,figures/rail-cities__melbourne__S2C_55HCU_20261021_0_L2A.png,traces/rail-cities__melbourne__S2C_55HCU_20261021_0_L2A.md,,
+rail-cities/sydney/S2B_56HLH_20261020_0_L2A,artefact,figures/rail-cities__sydney__S2B_56HLH_20261020_0_L2A.png,traces/rail-cities__sydney__S2B_56HLH_20261020_0_L2A.md,,

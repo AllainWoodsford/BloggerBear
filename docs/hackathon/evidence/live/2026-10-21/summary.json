@@ -1,0 +1,555 @@
+{
+ "schema": "bloggerbear.evidence-export/1",
+ "exported_at": "2026-10-21T11:10:15+00:00",
+ "env": "dev",
+ "window": {
+  "since": "2026-07-23T11:10:15+00:00",
+  "until": "2026-10-21T11:10:15+00:00"
+ },
+ "topics": [
+  {
+   "topic_id": "rail-cities",
+   "adapter": "rail_access",
+   "group": "cities",
+   "in_topics_table": true,
+   "state": "read",
+   "state_error": null,
+   "first_observed_at": "2026-10-16T23:11:46.590120+00:00",
+   "sites": {
+    "boston": {
+     "first_observed_at": "2026-10-16T23:15:39.758714+00:00",
+     "ring_entries": 2
+    },
+    "melbourne": {
+     "first_observed_at": "2026-10-16T23:12:28.490528+00:00",
+     "ring_entries": 3
+    },
+    "singapore": {
+     "first_observed_at": "2026-10-16T23:14:06.216698+00:00",
+     "ring_entries": 1
+    },
+    "sydney": {
+     "first_observed_at": "2026-10-16T23:11:46.590120+00:00",
+     "ring_entries": 2
+    }
+   }
+  },
+  {
+   "topic_id": "ships-botany",
+   "adapter": "satellite_vision",
+   "group": "cities",
+   "in_topics_table": true,
+   "state": "read",
+   "state_error": null,
+   "first_observed_at": "2026-10-20T13:13:52.639077+00:00",
+   "sites": {
+    "botany-bay": {
+     "first_observed_at": null,
+     "ring_entries": 1
+    }
+   }
+  }
+ ],
+ "demo_topics": [
+  "rail-sydney-demo"
+ ],
+ "logs": {
+  "decisions": {
+   "state": "complete",
+   "rows": 12,
+   "missing": [],
+   "dropped": 0
+  },
+  "ticks": {
+   "state": "complete",
+   "rows": 139,
+   "missing": [],
+   "dropped": 0
+  },
+  "sites": {
+   "state": "complete",
+   "rows": 478,
+   "missing": [],
+   "dropped": 0
+  },
+  "people": {
+   "state": "complete",
+   "rows": 11,
+   "missing": [],
+   "dropped": 0
+  },
+  "measures": {
+   "state": "complete",
+   "rows": 121,
+   "missing": [],
+   "dropped": 0
+  },
+  "tick_reports": {
+   "state": "complete",
+   "rows": 0,
+   "missing": [],
+   "dropped": 0
+  },
+  "worker_reports": {
+   "state": "complete",
+   "rows": 121,
+   "missing": [],
+   "dropped": 0
+  }
+ },
+ "decisions": {
+  "cities": {
+   "kept": 9,
+   "by_code": {
+    "first_observation": 5,
+    "below_floor": 0,
+    "baseline_building": 0,
+    "within_range": 1,
+    "reported": 0,
+    "artefact": 3
+   },
+   "triaged": 3,
+   "verdicts": {
+    "real": 0,
+    "artefact": 3,
+    "failed_closed": 0
+   },
+   "reported": 5,
+   "findings_written": 5,
+   "not_kept_copies": 0,
+   "not_kept_only": 0
+  },
+  "demo": {
+   "kept": 0,
+   "by_code": {
+    "first_observation": 0,
+    "below_floor": 0,
+    "baseline_building": 0,
+    "within_range": 0,
+    "reported": 0,
+    "artefact": 0
+   },
+   "triaged": 0,
+   "verdicts": {
+    "real": 0,
+    "artefact": 0,
+    "failed_closed": 0
+   },
+   "reported": 0,
+   "findings_written": 0,
+   "not_kept_copies": 0,
+   "not_kept_only": 0
+  },
+  "by_topic": {
+   "rail-cities": {
+    "first_observation": 4,
+    "artefact": 3,
+    "within_range": 1
+   },
+   "ships-botany": {
+    "first_observation": 1
+   }
+  },
+  "unknown_kept": 0,
+  "logs": {
+   "decisions": "complete",
+   "ticks": "complete"
+  },
+  "complete": true
+ },
+ "observed_failures": {
+  "cities": {
+   "site_turns_by_outcome": {
+    "measured": 9,
+    "deferred": 7,
+    "not_reached": 19,
+    "none": 443,
+    "no_scene": 0
+   },
+   "site_turns_by_code": {
+    "time_budget": 7,
+    "search": 0,
+    "invoke": 0,
+    "no_cool_worker": 0,
+    "reply": 0,
+    "internal": 0,
+    "unreadable_scene": 0,
+    "backend_mismatch": 0,
+    "not_cool": 0,
+    "bad_request": 0,
+    "site_outside_scene": 0,
+    "window_too_large": 0,
+    "osm": 0,
+    "network_read": 0
+   },
+   "ticks_stored_false": 3,
+   "attempts_without_research_tick_line": 0,
+   "osm_site_turns": 0,
+   "network_errors_now": {
+    "timeout": 0,
+    "http": 0,
+    "rate_limited": 0,
+    "bad_response": 0,
+    "too_large": 0,
+    "fetch": 0
+   },
+   "triage_stops": {
+    "answered": 3,
+    "malformed": 0,
+    "bedrock_error": 0,
+    "deadline": 0,
+    "turn_limit": 0,
+    "no_profile": 0,
+    "no_model": 0
+   },
+   "triage_failed": 0
+  },
+  "demo": {
+   "site_turns_by_outcome": {
+    "measured": 0,
+    "deferred": 0,
+    "not_reached": 0,
+    "none": 0,
+    "no_scene": 0
+   },
+   "site_turns_by_code": {
+    "time_budget": 0,
+    "search": 0,
+    "invoke": 0,
+    "no_cool_worker": 0,
+    "reply": 0,
+    "internal": 0,
+    "unreadable_scene": 0,
+    "backend_mismatch": 0,
+    "not_cool": 0,
+    "bad_request": 0,
+    "site_outside_scene": 0,
+    "window_too_large": 0,
+    "osm": 0,
+    "network_read": 0
+   },
+   "ticks_stored_false": 0,
+   "attempts_without_research_tick_line": 0,
+   "osm_site_turns": 0,
+   "network_errors_now": {
+    "timeout": 0,
+    "http": 0,
+    "rate_limited": 0,
+    "bad_response": 0,
+    "too_large": 0,
+    "fetch": 0
+   },
+   "triage_stops": {
+    "answered": 0,
+    "malformed": 0,
+    "bedrock_error": 0,
+    "deadline": 0,
+    "turn_limit": 0,
+    "no_profile": 0,
+    "no_model": 0
+   },
+   "triage_failed": 0
+  },
+  "worker": {
+   "refusals_by_code": {
+    "production": {
+     "bad_request": 0,
+     "backend_mismatch": 0,
+     "not_cool": 0,
+     "site_outside_scene": 0,
+     "window_too_large": 0,
+     "unreadable_scene": 0,
+     "internal": 0
+    },
+    "demo": {
+     "bad_request": 0,
+     "backend_mismatch": 0,
+     "not_cool": 0,
+     "site_outside_scene": 0,
+     "window_too_large": 0,
+     "unreadable_scene": 0,
+     "internal": 0
+    }
+   },
+   "ended_without_a_reply": {
+    "timeout": 0,
+    "out_of_memory": 0,
+    "error": 0,
+    "other": 0
+   },
+   "not_checked": 0,
+   "note": "a worker timeout never writes vision_measure: these are counted from Lambda's REPORT lines, of every caller (a run that wrote no line names no site); not_checked: REPORT lines logged while the vision_measure query did not read (it did not finish, or was cut), whose runs may have replied: never counted as ended without a reply"
+  },
+  "research_tick": {
+   "timeouts": 0,
+   "errors": 0,
+   "note": "REPORT lines of every topic's ticks: a timed-out tick writes no research_tick line"
+  },
+  "logs": {
+   "sites": "complete",
+   "ticks": "complete",
+   "decisions": "complete",
+   "measures": "complete",
+   "worker_reports": "complete",
+   "tick_reports": "complete"
+  },
+  "complete": true
+ },
+ "e11_tick_time": {
+  "cities": {
+   "with_agent": {
+    "n": 3,
+    "p50": 26980,
+    "p95": 36378,
+    "max": 36378
+   },
+   "measured_without_agent": {
+    "n": 6,
+    "p50": 13495,
+    "p95": 26501,
+    "max": 26501
+   },
+   "no_decision": {
+    "n": 130,
+    "p50": 3645,
+    "p95": 4528,
+    "max": 56661
+   }
+  },
+  "demo": {
+   "with_agent": {
+    "n": 0,
+    "p50": null,
+    "p95": null,
+    "max": null
+   },
+   "measured_without_agent": {
+    "n": 0,
+    "p50": null,
+    "p95": null,
+    "max": null
+   },
+   "no_decision": {
+    "n": 0,
+    "p50": null,
+    "p95": null,
+    "max": null
+   }
+  },
+  "unit": "ms, the research tick's own wall time (research_tick.ms), nearest-rank percentiles",
+  "logs": {
+   "ticks": "complete"
+  },
+  "complete": true
+ },
+ "worker": {
+  "rows": [
+   {
+    "caller": "eval",
+    "backend": "opencv",
+    "build": "bceed38e3a95",
+    "cpu": "Neoverse N1 (Graviton2)",
+    "runs": 99,
+    "ok": 99,
+    "refused": 0,
+    "total_ms": {
+     "n": 99,
+     "p50": 16787,
+     "p95": 19208,
+     "max": 20611
+    },
+    "billed_ms": {
+     "n": 99,
+     "p50": 16833,
+     "p95": 19252,
+     "max": 20659
+    },
+    "peak_rss_mb": 1011
+   },
+   {
+    "caller": "eval",
+    "backend": "opencv",
+    "build": "bceed38e3a95",
+    "cpu": "Neoverse V1 (Graviton3)",
+    "runs": 12,
+    "ok": 12,
+    "refused": 0,
+    "total_ms": {
+     "n": 12,
+     "p50": 14802,
+     "p95": 17621,
+     "max": 17621
+    },
+    "billed_ms": {
+     "n": 12,
+     "p50": 14840,
+     "p95": 18016,
+     "max": 18016
+    },
+    "peak_rss_mb": 1004
+   },
+   {
+    "caller": "production",
+    "backend": "opencv",
+    "build": "bceed38e3a95",
+    "cpu": "Neoverse V1 (Graviton3)",
+    "runs": 10,
+    "ok": 10,
+    "refused": 0,
+    "total_ms": {
+     "n": 10,
+     "p50": 7756,
+     "p95": 16930,
+     "max": 16930
+    },
+    "billed_ms": {
+     "n": 10,
+     "p50": 8811,
+     "p95": 18541,
+     "max": 18541
+    },
+    "peak_rss_mb": 987
+   }
+  ],
+  "unit": "ms; nearest-rank percentiles",
+  "gb_seconds": 3946.956,
+  "logs": {
+   "measures": "complete",
+   "worker_reports": "complete"
+  },
+  "complete": true
+ },
+ "human_control": {
+  "cities": {
+   "articles": 7,
+   "published": 5,
+   "published_by_humans": 5,
+   "published_otherwise": 0,
+   "held_share": 1.0,
+   "decisions": {
+    "approved": 4,
+    "rejected": 0,
+    "force_published": 0,
+    "unpublished": 0,
+    "sent_back": 3
+   },
+   "hours_from_finding_to_decision": {
+    "approved": {
+     "n": 2,
+     "p50": 1.66,
+     "p95": 76.48,
+     "max": 76.48
+    },
+    "sent_back": {
+     "n": 1,
+     "p50": 76.45,
+     "p95": 76.45,
+     "max": 76.45
+    }
+   }
+  },
+  "demo": {
+   "articles": 0,
+   "published": 0,
+   "published_by_humans": 0,
+   "published_otherwise": 0,
+   "held_share": null,
+   "decisions": {
+    "approved": 0,
+    "rejected": 0,
+    "force_published": 0,
+    "unpublished": 0,
+    "sent_back": 0
+   },
+   "hours_from_finding_to_decision": {}
+  },
+  "agreement": {
+   "cities": {
+    "triaged": 3,
+    "labelled": 0,
+    "agree": 0,
+    "share": null,
+    "wilson_low": null,
+    "wilson_high": null,
+    "disagree_reasons": {}
+   },
+   "demo": {
+    "triaged": 0,
+    "labelled": 0,
+    "agree": 0,
+    "share": null,
+    "wilson_low": null,
+    "wilson_high": null,
+    "disagree_reasons": {}
+   }
+  },
+  "completeness": {
+   "decision_lines": {
+    "kept_lines": 9,
+    "with_ring_entry": 9,
+    "ring_rolled_over": 0,
+    "unmatched": 0
+   },
+   "triage_lines": {
+    "kept_lines": 3,
+    "with_ring_entry": 3,
+    "ring_rolled_over": 0,
+    "unmatched": 0
+   },
+   "worker_request_ids": {
+    "request_ids": 9,
+    "with_vision_measure": 9,
+    "ended_without_a_reply": 0,
+    "caller_gave_up": 0,
+    "unmatched": 0,
+    "not_checked": 0
+   },
+   "unmatched": [],
+   "dropped": {
+    "decisions": 0,
+    "ticks": 0,
+    "people": 0,
+    "sites": 0,
+    "measures": 0,
+    "worker_reports": 0,
+    "tick_reports": 0
+   }
+  },
+  "worker_lines_with_build_and_cpu": {
+   "production_lines": 10,
+   "with_both": 10,
+   "share": 1.0
+  },
+  "logs": {
+   "decisions": "complete",
+   "ticks": "complete",
+   "people": "complete",
+   "measures": "complete"
+  },
+  "complete": true
+ },
+ "spend": {
+  "rate": 1.5,
+  "rate_note": "AUD at the project's fixed rate (common/costing.py)",
+  "cities": {
+   "agent_usd": 0.04482,
+   "agent_aud": 0.06723,
+   "research_usd": 0.014406,
+   "research_aud": 0.021609,
+   "research_unpriced_calls": 0
+  },
+  "demo": {
+   "agent_usd": 0,
+   "agent_aud": 0.0,
+   "research_usd": 0.0,
+   "research_aud": 0.0,
+   "research_unpriced_calls": 0
+  },
+  "logs": {
+   "decisions": "complete"
+  },
+  "complete": true
+ },
+ "redacted": 0,
+ "redacted_at": []
+}

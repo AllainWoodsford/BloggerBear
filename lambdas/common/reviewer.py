@@ -899,13 +899,38 @@ def conversation_situation(counts: dict) -> str:
     return "grateful"
 
 
-def report_facts(counts: dict) -> list[str]:
+def report_facts(counts: dict, rewrite_topics: list[str] | None = None) -> list[str]:
+    """His report's facts. `rewrite_topics` (report_mentions) are named after the rewrite counts."""
     facts = []
     for outcome, words in OUTCOMES.items():
         n = int(counts.get(outcome) or 0)
         if n:
             facts.append(words.format(n=n, s="" if n == 1 else "s"))
+    if rewrite_topics:
+        facts.append("the topics sent back for a rewrite: " + ", ".join(rewrite_topics))
     return facts
+
+
+# The outcomes his report links to (the articles he put out) and names the topics of (sent back).
+_LINKED = ("approved", "approved_flagged", "defanged")
+_REWRITES = ("rewrite", "content_rewrite")
+
+
+def report_mentions(state: dict) -> tuple[list[dict], list[str]]:
+    """(links, rewrite_topics) for his report, from the run's `mentions` (tick): a link
+    ({"article_id", "topic_id"}) to each article he published, and the names of the topics he sent
+    back for a rewrite, each once, in the order he got to them."""
+    links, topics = [], []
+    for mention in state.get("mentions") or []:
+        article = dynamo.get_article(mention.get("article_id")) or {}
+        topic_id = article.get("topic_id")
+        if mention.get("outcome") in _LINKED:
+            links.append({"article_id": mention["article_id"], "topic_id": topic_id})
+        else:
+            name = _topic_name(dynamo.get_topic(topic_id) if topic_id else None, topic_id)
+            if name not in topics:
+                topics.append(name)
+    return links, topics
 
 
 # --- a run: planned once, worked through by ticks ---------------------------------------------------
@@ -933,6 +958,7 @@ def start(now: datetime, settings: dict | None = None, *, content_findings: list
         "planned": len(planned["tasks"]),
         "woken": planned["woken"],
         "counts": {},
+        "mentions": [],
         "tick": 1,
         "next_tick_at": _iso(now),
     }
@@ -948,10 +974,13 @@ def tick(state: dict, hands: Hands, now: datetime, settings: dict | None = None)
     queue = list(state.get("queue") or [])
     batch, rest = queue[:per_tick], queue[per_tick:]
     counts = dict(state.get("counts") or {})
+    mentions = list(state.get("mentions") or [])
     for task in batch:
         outcome = do_task(task, hands, now, joke=int(counts.get("rejected") or 0), settings=settings)
         counts[outcome] = int(counts.get(outcome) or 0) + 1
-    state = {**state, "queue": rest, "counts": counts}
+        if outcome in _LINKED + _REWRITES and task.get("article_id"):
+            mentions.append({"outcome": outcome, "article_id": task["article_id"]})
+    state = {**state, "queue": rest, "counts": counts, "mentions": mentions}
     if rest:
         state["tick"] = int(state.get("tick") or 1) + 1
         state["next_tick_at"] = _iso(now + timedelta(minutes=settings["tick_minutes"]))

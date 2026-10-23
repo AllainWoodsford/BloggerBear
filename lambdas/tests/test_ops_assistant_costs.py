@@ -228,7 +228,7 @@ def test_whatever_stops_the_count_refuses(tables, monkeypatch):
 @pytest.fixture
 def open_switch(monkeypatch):
     monkeypatch.setattr(ops_agent_handler.dynamo, "get_pipeline_config", lambda: None)
-    monkeypatch.delenv("OPS_ASSISTANT_ALLOWED_CIDRS", raising=False)
+    monkeypatch.delenv("OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER", raising=False)
 
 
 def _page(question="What needs my attention?"):

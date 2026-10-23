@@ -28,6 +28,20 @@ HOME_V6 = "2001:db8:aaaa::17"
 ELSEWHERE_V4 = "198.51.100.23"
 ELSEWHERE_V6 = "2001:db8:bbbb::1"
 ALLOWLIST = ["203.0.113.7", "192.0.2.0/24", "2001:db8:aaaa::/48"]
+PARAMETER = "/bloggerbear/test/admin-allowed-cidrs"
+
+
+def store(value: str | None) -> None:
+    """The allowlist parameter holding `value` (in moto), as scripts/admin_allowlist.py writes it;
+    None deletes it. SSM holds no empty value, so "" deletes it too."""
+    ssm = boto3.client("ssm", region_name=REGION)
+    if value:
+        ssm.put_parameter(Name=PARAMETER, Value=value, Type="SecureString", Overwrite=True)
+    else:
+        try:
+            ssm.delete_parameter(Name=PARAMETER)
+        except ssm.exceptions.ParameterNotFound:
+            pass
 
 
 # --- decide: the rule ----------------------------------------------------------------------
@@ -139,12 +153,19 @@ def test_two_request_context_headers_are_trusted_no_more_than_none():
     assert access.source_ip_from_headers([one, one]) is None
 
 
-def test_the_allowlist_comes_from_the_environment(monkeypatch):
-    monkeypatch.setenv(access.ALLOWED_CIDRS_ENV, f" {HOME_V4} , 192.0.2.0/24,, 2001:db8:aaaa::/48 ,")
-    assert access.allowed_cidrs_from_env() == ALLOWLIST
+def test_the_allowlist_comes_from_the_parameter_the_environment_names(config_table, monkeypatch):
+    store(f" {HOME_V4} , 192.0.2.0/24,, 2001:db8:aaaa::/48 ,")
+    assert access.allowed_cidrs() == ALLOWLIST
 
-    monkeypatch.delenv(access.ALLOWED_CIDRS_ENV)
-    assert access.allowed_cidrs_from_env() == []
+    monkeypatch.delenv(access.ALLOWED_CIDRS_PARAMETER_ENV)
+    assert access.allowed_cidrs() == []  # no parameter named: an empty list, never a read
+
+
+def test_only_the_allowlist_setting_reads_the_parameter(config_table):
+    with patch.object(access, "read_parameter", side_effect=AssertionError("read")):
+        for setting in (None, "open", "off", "locked"):
+            assert access.allowed_cidrs_for(setting) == []
+    assert access.allowed_cidrs_for("allowlist") == ALLOWLIST
 
 
 # --- the middleware, around an app that is nothing to do with MCP --------------------------
@@ -160,11 +181,13 @@ def config_table(monkeypatch):
         "MODEL_CONFIG_TABLE": "ModelConfig",
     }.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setenv(access.ALLOWED_CIDRS_ENV, ",".join(ALLOWLIST))
+    monkeypatch.setenv(access.ALLOWED_CIDRS_PARAMETER_ENV, PARAMETER)
     import common.dynamo as dynamo_module
 
     dynamo_module._dynamodb_resource = None
+    access._ssm.cache_clear()  # a client from another test's mock would not see this one's
     with mock_aws():
+        store(",".join(ALLOWLIST))
         create_table(
             boto3.client("dynamodb", region_name=REGION),
             TableName="ModelConfig",
@@ -174,6 +197,7 @@ def config_table(monkeypatch):
         )
         yield boto3.resource("dynamodb", region_name=REGION).Table("ModelConfig")
     dynamo_module._dynamodb_resource = None
+    access._ssm.cache_clear()
 
 
 class Inner:
@@ -205,7 +229,7 @@ def test_with_no_setting_stored_any_address_is_admitted(guarded):
 
 def test_open_admits_any_address_and_costs_one_read_of_the_setting(config_table, monkeypatch):
     put_pipeline_config(assistant_access="open")
-    monkeypatch.delenv(access.ALLOWED_CIDRS_ENV)  # open needs no allowlist
+    store(None)  # open needs no allowlist
     reads = []
 
     def read_config():
@@ -237,12 +261,13 @@ def test_allowlist_admits_listed_addresses_and_refuses_others(guarded):
 
 @pytest.mark.parametrize("cidrs", [None, "", " , ", "home", f"{HOME_V4},nonsense"])
 def test_allowlist_with_an_empty_or_unreadable_list_refuses_the_operator_too(guarded, monkeypatch, cidrs):
+    """None: no parameter named. "": a parameter named but not there."""
     inner, client = guarded
     put_pipeline_config(assistant_access="allowlist")
     if cidrs is None:
-        monkeypatch.delenv(access.ALLOWED_CIDRS_ENV)
+        monkeypatch.delenv(access.ALLOWED_CIDRS_PARAMETER_ENV)
     else:
-        monkeypatch.setenv(access.ALLOWED_CIDRS_ENV, cidrs)
+        store(cidrs)
 
     assert client.get("/", headers=context_header(HOME_V4)).status_code == 403
     assert inner.reached == 0
@@ -341,8 +366,10 @@ def test_a_refusal_says_the_same_thing_whatever_the_reason_and_never_the_address
     put_pipeline_config(assistant_access="allowlist")
     refusals.append((client.get("/", headers=context_header(ELSEWHERE_V4)), access.ADDRESS_NOT_LISTED))
     refusals.append((client.get("/"), access.ADDRESS_UNKNOWN))
-    monkeypatch.setenv(access.ALLOWED_CIDRS_ENV, "")
+    store(" , ")
     refusals.append((client.get("/", headers=context_header(HOME_V4)), access.ALLOWLIST_EMPTY))
+    store(None)
+    refusals.append((client.get("/", headers=context_header(HOME_V4)), access.CONFIG_UNREADABLE))
 
     logged = capsys.readouterr().out.splitlines()
     assert len(logged) == len(refusals)  # one line each

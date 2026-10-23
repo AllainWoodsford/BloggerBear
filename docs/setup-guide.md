@@ -227,6 +227,8 @@ Read the plan before typing `yes`. Every name in it should start with `<your-pre
 `<your-state-bucket>`. **Each of `github_repo`, `state_bucket_name`, `unique_name_prefix` and
 `domain_name` defaults to the original deployment's value, so pass all four.** `domain_name=` (empty)
 creates no hosted zone, which is what you want until you set up production.
+The web search gateway's Region needs nothing here: the bootstrap allows `ap-northeast-1` (Tokyo),
+which is where the gateway goes unless you set `WEB_SEARCH_REGION` (6b).
 
 Keep the outputs (`terraform -chdir=infra/bootstrap output` shows them again):
 
@@ -271,12 +273,17 @@ What it asks for, and what to answer:
 |---|---|---|
 | `AWS_REGION` | variable | `<your-region>` |
 | `UNIQUE_NAME_PREFIX` | variable | `<your-prefix>`, **exactly** the word you gave the bootstrap |
-| `ADMIN_ALLOWED_CIDRS_DEV` / `_PROD` | secret | `["<your-ip>/32"]` |
 | `ALERT_EMAIL_DEV` / `_PROD` | secret | `<your-email>` |
 | `AWS_DEV_ACCOUNT_ID` / `AWS_PROD_ACCOUNT_ID` | secret | `<your-dev-account-id>` / `<your-prod-account-id>` |
 | `AWS_DEV_DEPLOY_ROLE_ARN` / `AWS_PROD_DEPLOY_ROLE_ARN` | secret | the bootstrap outputs |
 | `TF_STATE_BUCKET_DEV` / `TF_STATE_BUCKET_PROD` | secret | `<your-state-bucket>` (one per account if you have two) |
 | `PII_DENYLIST` | secret | optional: your own name, address and so on, one per line, so a pull request that adds one is refused |
+
+It does not ask where the web search gateway runs. Unset, both environments put it in
+`ap-northeast-1` (Tokyo), and a first deploy should leave it there. To choose `us-east-1` or
+`eu-west-1` later, per environment, set `WEB_SEARCH_REGION_DEV` / `WEB_SEARCH_REGION_PROD` (or the
+shared `WEB_SEARCH_REGION`) after re-applying the bootstrap with that Region in
+`web_search_regions`: [the steps](deployment-runsheet.md#the-web-search-gateways-region).
 
 Prefer to set them by hand? Settings → Secrets and variables → Actions. The full table, with what
 each one is for and why some are secrets, is in
@@ -322,6 +329,13 @@ would refuse its token, because the repository in the token would not match.
    ```
    The output lists the site's address (a `https://<something>.cloudfront.net` URL), the admin API
    URL and the operator's assistant's settings.
+5. Let yourself in to the admin API. It is created locked, and only the addresses in its allowlist
+   parameter get in ([configuration.md](configuration.md#the-admin-apis-address-allowlist)):
+   ```bash
+   pip install -r scripts/requirements.txt
+   python scripts/admin_allowlist.py --region <your-region> --prefix <your-prefix> set --env dev --my-ip
+   ```
+   Run it again whenever your IP changes; no deploy is needed.
 
 ---
 
@@ -365,7 +379,7 @@ GitHub token) are SSM SecureStrings named `/<your-prefix>/dev/coingecko-api-key`
 | Deploy: `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The token's subject does not match the role's trust policy: wrong `github_repo` in the bootstrap, a run not on `dev`, or a different subject format | Check `github_repo` was `<your-github-owner>/<your-fork>`. CloudTrail's failed `AssumeRoleWithWebIdentity` event shows the exact subject GitHub sent. The roles expect GitHub's immutable form, `repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/dev`; if yours is the plain `repo:<owner>/<repo>:ref:refs/heads/dev`, `gh api repos/<your-github-owner>/<your-fork>/actions/oidc/customization/sub` shows the repository's setting |
 | Deploy: `AccessDenied` creating resources | `UNIQUE_NAME_PREFIX` differs from the bootstrap's `unique_name_prefix`, or `AWS_REGION` differs from its `aws_region` | Make them the same word / region |
 | Deploy: "AWS account ID not allowed" | The role is in a different account than `AWS_DEV_ACCOUNT_ID` | Fix whichever is wrong; the error names the real account |
-| Admin CLI: 403 | Your IP changed, or is not in `ADMIN_ALLOWED_CIDRS_DEV` | Update the secret, then redeploy: merge a change under `infra/`, `lambdas/` or `frontend/`, or run the `terraform` workflow by hand on `dev` |
+| Admin CLI: 403 | Your IP changed, or the allowlist was never set | `python scripts/admin_allowlist.py set --env dev --my-ip` (with `--region` and `--prefix` if not the defaults); `show --env dev` says what each place holds. No deploy needed |
 | Articles never appear; the daily cycle errors | The model cannot be called in your region | Re-run [step 3](#3d-make-sure-your-account-can-call-the-model) |
 | `gh` set secrets on the wrong repository | `gh` picked the upstream in a fork | Re-run the script with `--repo <your-github-owner>/<your-fork>` |
 

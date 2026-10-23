@@ -1653,13 +1653,15 @@ def put_musing(
     character: str | None = None,
     reply_to: str | None = None,
     replying_to: str | None = None,
+    links: list[dict] | None = None,
 ) -> dict:
     """Write a Musings item and return it. `kind` is "article", "feedback", "loot" or "rejection" (a
     draft turned away at moderation: topic only, never an article_id), or one of Professor
     Grizzlewick's (common/musings.py's REVIEWER_KINDS). A loot musing carries `gear`, a public
     snapshot of the piece it announces. `character` is stored only for a musing that is not
     BloggerBear's ("grizzlewick"), so every existing musing keeps its shape. A reply in the bears'
-    back-and-forth carries `reply_to` (the musing it answers) and `replying_to` (whose it was)."""
+    back-and-forth carries `reply_to` (the musing it answers) and `replying_to` (whose it was). His
+    report carries `links`, the articles he published ({"article_id", "topic_id"} each)."""
     table = get_table(os.environ["MUSINGS_TABLE"])
     item = {
         "musing_id": musing_id,
@@ -1677,6 +1679,8 @@ def put_musing(
     if reply_to is not None:
         item["reply_to"] = reply_to
         item["replying_to"] = replying_to
+    if links:
+        item["links"] = links
     table.put_item(Item=item)
     return item
 

@@ -1,0 +1,2379 @@
+{
+ "schema": "bloggerbear.evidence-export/1",
+ "exported_at": "2026-10-21T11:10:15+00:00",
+ "env": "dev",
+ "prefix": "bloggerbear",
+ "regions": {
+  "home": "ap-southeast-2",
+  "vision": "us-west-2"
+ },
+ "exporter": {
+  "script": "scripts/evidence_export.py",
+  "git_sha": "92f490bf901739069b50ad16b6af7d7e59079a99",
+  "dirty": false
+ },
+ "functions": {
+  "research_tick": {
+   "region": "ap-southeast-2",
+   "FunctionName": "bloggerbear-dev-research-tick",
+   "CodeSha256": "OnL79JQCHWU8YfcThPgSALeX/ESviwfM2+ODiI7Txd8=",
+   "LastModified": "2026-10-20T07:50:45.000+0000",
+   "Version": "$LATEST",
+   "Runtime": "python3.11",
+   "Architectures": [
+    "x86_64"
+   ],
+   "MemorySize": 512,
+   "Timeout": 120,
+   "deploy": {
+    "head_sha": "4582abcdbe5395f35c2990ea2ee1ef4879b4eb3d",
+    "created_at": "2026-10-20T07:35:58Z",
+    "conclusion": "success",
+    "reason": null,
+    "rule": "the newest terraform.yml run on the branch created before the function's LastModified"
+   }
+  },
+  "admin_api": {
+   "region": "ap-southeast-2",
+   "FunctionName": "bloggerbear-dev-admin-api",
+   "CodeSha256": "OnL79JQCHWU8YfcThPgSALeX/ESviwfM2+ODiI7Txd8=",
+   "LastModified": "2026-10-20T07:49:14.000+0000",
+   "Version": "$LATEST",
+   "Runtime": "python3.11",
+   "Architectures": [
+    "x86_64"
+   ],
+   "MemorySize": 256,
+   "Timeout": 30,
+   "deploy": {
+    "head_sha": "4582abcdbe5395f35c2990ea2ee1ef4879b4eb3d",
+    "created_at": "2026-10-20T07:35:58Z",
+    "conclusion": "success",
+    "reason": null,
+    "rule": "the newest terraform.yml run on the branch created before the function's LastModified"
+   }
+  },
+  "vision_worker": {
+   "region": "us-west-2",
+   "FunctionName": "bloggerbear-dev-vision-worker",
+   "CodeSha256": "TB+SfKGu7Q5dOQ3I2he4qs4PCNYA1km6OXmswNiILYI=",
+   "LastModified": "2026-10-20T04:01:32.000+0000",
+   "Version": "$LATEST",
+   "Runtime": "python3.12",
+   "Architectures": [
+    "arm64"
+   ],
+   "MemorySize": 2048,
+   "Timeout": 60,
+   "deploy": {
+    "head_sha": "fe95a48f81be42dd45d73e3852eee6dd7730d1d6",
+    "created_at": "2026-10-20T03:48:46Z",
+    "conclusion": "success",
+    "reason": null,
+    "rule": "the newest terraform.yml run on the branch created before the function's LastModified"
+   }
+  }
+ },
+ "deploy_runs_read": 100,
+ "states": {
+  "rail-cities": {
+   "key": "snapshots/rail-cities/running-state.json",
+   "etag": "229e45c3717d8ccc6bfca9f71663b583",
+   "last_modified": "2026-10-21T10:25:32+00:00",
+   "version_id": null,
+   "bytes": 298460,
+   "read": "read",
+   "error": null
+  },
+  "ships-botany": {
+   "key": "snapshots/ships-botany/running-state.json",
+   "etag": "8fb7d0de8e2ba7007648711cda62f91a",
+   "last_modified": "2026-10-21T11:05:40+00:00",
+   "version_id": null,
+   "bytes": 2209,
+   "read": "read",
+   "error": null
+  }
+ },
+ "tables": {
+  "topics": "bloggerbear-dev-topics",
+  "articles": "bloggerbear-dev-articles",
+  "articles_index": "by_topic_created_at",
+  "findings": "bloggerbear-dev-findings"
+ },
+ "queries": {
+  "decisions-0": {
+   "kind": "decisions",
+   "region": "ap-southeast-2",
+   "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+   "start": "2026-07-23T11:10:15+00:00",
+   "end": "2026-10-21T11:10:15+00:00",
+   "query_id": "b33df099-a689-478c-9d88-3e14e5841dcf",
+   "run_ms": 1555,
+   "status": "Complete",
+   "statistics": {
+    "recordsMatched": 12.0,
+    "recordsScanned": 6323.0,
+    "bytesScanned": 875876.0
+   },
+   "rows": 12,
+   "state": "complete"
+  },
+  "ticks-1": {
+   "kind": "ticks",
+   "region": "ap-southeast-2",
+   "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+   "start": "2026-07-23T11:10:15+00:00",
+   "end": "2026-10-21T11:10:15+00:00",
+   "query_id": "f3e1be2d-3656-4459-8d4a-23bc256d9c25",
+   "run_ms": 1587,
+   "status": "Complete",
+   "statistics": {
+    "recordsMatched": 139.0,
+    "recordsScanned": 8030.0,
+    "bytesScanned": 1192860.0
+   },
+   "rows": 139,
+   "state": "complete"
+  },
+  "sites-2": {
+   "kind": "sites",
+   "region": "ap-southeast-2",
+   "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+   "start": "2026-07-23T11:10:15+00:00",
+   "end": "2026-10-21T11:10:15+00:00",
+   "query_id": "ce5cbb74-be4d-4b92-8490-1991770f617b",
+   "run_ms": 1649,
+   "status": "Complete",
+   "statistics": {
+    "recordsMatched": 478.0,
+    "recordsScanned": 7441.0,
+    "bytesScanned": 1096380.0
+   },
+   "rows": 478,
+   "state": "complete"
+  },
+  "people-3": {
+   "kind": "people",
+   "region": "ap-southeast-2",
+   "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+   "start": "2026-07-23T11:10:15+00:00",
+   "end": "2026-10-21T11:10:15+00:00",
+   "query_id": "2ce17d3e-4336-482b-ba5e-edfb86f19c87",
+   "run_ms": 1660,
+   "status": "Complete",
+   "statistics": {
+    "recordsMatched": 11.0,
+    "recordsScanned": 1014.0,
+    "bytesScanned": 129073.0
+   },
+   "rows": 11,
+   "state": "complete"
+  },
+  "measures-4": {
+   "kind": "measures",
+   "region": "us-west-2",
+   "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+   "start": "2026-07-23T11:10:15+00:00",
+   "end": "2026-10-21T11:10:15+00:00",
+   "query_id": "f6695072-b9d0-4254-9b5d-f90ae531e3cb",
+   "run_ms": 1221,
+   "status": "Complete",
+   "statistics": {
+    "recordsMatched": 121.0,
+    "recordsScanned": 493.0,
+    "bytesScanned": 145659.0
+   },
+   "rows": 121,
+   "state": "complete"
+  },
+  "tick_reports-5": {
+   "kind": "tick_reports",
+   "region": "ap-southeast-2",
+   "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+   "start": "2026-07-23T11:10:15+00:00",
+   "end": "2026-10-21T11:10:15+00:00",
+   "query_id": "f0e82fcb-2f94-41ab-bb8d-09ec443cc068",
+   "run_ms": 1770,
+   "status": "Complete",
+   "statistics": {
+    "recordsMatched": 0.0,
+    "recordsScanned": 8255.0,
+    "bytesScanned": 1231490.0
+   },
+   "rows": 0,
+   "state": "complete"
+  },
+  "worker_reports-6": {
+   "kind": "worker_reports",
+   "region": "us-west-2",
+   "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+   "start": "2026-07-23T11:10:15+00:00",
+   "end": "2026-10-21T11:10:15+00:00",
+   "query_id": "3fa1a84e-6684-45a7-957d-32d912c9d60d",
+   "run_ms": 1281,
+   "status": "Complete",
+   "statistics": {
+    "recordsMatched": 121.0,
+    "recordsScanned": 493.0,
+    "bytesScanned": 145659.0
+   },
+   "rows": 121,
+   "state": "complete"
+  }
+ },
+ "lines": {
+  "decisions.jsonl": [
+   {
+    "line": 1,
+    "from": "state",
+    "state": {
+     "key": "snapshots/rail-cities/running-state.json",
+     "etag": "229e45c3717d8ccc6bfca9f71663b583",
+     "last_modified": "2026-10-21T10:25:32+00:00",
+     "version_id": null
+    },
+    "log": {
+     "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+     "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+     "timestamp": "2026-10-16 23:15:46.882",
+     "query": "decisions-0"
+    }
+   },
+   {
+    "line": 2,
+    "from": "state",
+    "state": {
+     "key": "snapshots/rail-cities/running-state.json",
+     "etag": "229e45c3717d8ccc6bfca9f71663b583",
+     "last_modified": "2026-10-21T10:25:32+00:00",
+     "version_id": null
+    },
+    "log": {
+     "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+     "log_stream": "2026/10/18/[$LATEST]fca708b18f444929ae5c02cdf323b13d",
+     "timestamp": "2026-10-18 21:25:53.225",
+     "query": "decisions-0"
+    }
+   },
+   {
+    "line": 3,
+    "from": "state",
+    "state": {
+     "key": "snapshots/rail-cities/running-state.json",
+     "etag": "229e45c3717d8ccc6bfca9f71663b583",
+     "last_modified": "2026-10-21T10:25:32+00:00",
+     "version_id": null
+    },
+    "log": {
+     "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+     "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+     "timestamp": "2026-10-16 23:12:38.956",
+     "query": "decisions-0"
+    }
+   },
+   {
+    "line": 4,
+    "from": "state",
+    "state": {
+     "key": "snapshots/rail-cities/running-state.json",
+     "etag": "229e45c3717d8ccc6bfca9f71663b583",
+     "last_modified": "2026-10-21T10:25:32+00:00",
+     "version_id": null
+    },
+    "log": {
+     "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+     "log_stream": "2026/10/18/[$LATEST]0b55372f581d435e809b4e810906030f",
+     "timestamp": "2026-10-18 05:25:42.549",
+     "query": "decisions-0"
+    }
+   },
+   {
+    "line": 5,
+    "from": "state",
+    "state": {
+     "key": "snapshots/rail-cities/running-state.json",
+     "etag": "229e45c3717d8ccc6bfca9f71663b583",
+     "last_modified": "2026-10-21T10:25:32+00:00",
+     "version_id": null
+    },
+    "log": {
+     "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+     "log_stream": "2026/10/21/[$LATEST]603fcf626c1e43b6a4ffcfa5641bed53",
+     "timestamp": "2026-10-21 06:25:54.689",
+     "query": "decisions-0"
+    }
+   },
+   {
+    "line": 6,
+    "from": "state",
+    "state": {
+     "key": "snapshots/rail-cities/running-state.json",
+     "etag": "229e45c3717d8ccc6bfca9f71663b583",
+     "last_modified": "2026-10-21T10:25:32+00:00",
+     "version_id": null
+    },
+    "log": {
+     "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+     "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+     "timestamp": "2026-10-16 23:14:20.194",
+     "query": "decisions-0"
+    }
+   },
+   {
+    "line": 7,
+    "from": "state",
+    "state": {
+     "key": "snapshots/rail-cities/running-state.json",
+     "etag": "229e45c3717d8ccc6bfca9f71663b583",
+     "last_modified": "2026-10-21T10:25:32+00:00",
+     "version_id": null
+    },
+    "log": {
+     "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+     "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+     "timestamp": "2026-10-16 23:12:09.768",
+     "query": "decisions-0"
+    }
+   },
+   {
+    "line": 8,
+    "from": "state",
+    "state": {
+     "key": "snapshots/rail-cities/running-state.json",
+     "etag": "229e45c3717d8ccc6bfca9f71663b583",
+     "last_modified": "2026-10-21T10:25:32+00:00",
+     "version_id": null
+    },
+    "log": {
+     "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+     "log_stream": "2026/10/20/[$LATEST]0624f470a7f140f794bc4fabf15acf1b",
+     "timestamp": "2026-10-20 04:26:04.315",
+     "query": "decisions-0"
+    }
+   },
+   {
+    "line": 9,
+    "from": "state",
+    "state": {
+     "key": "snapshots/ships-botany/running-state.json",
+     "etag": "8fb7d0de8e2ba7007648711cda62f91a",
+     "last_modified": "2026-10-21T11:05:40+00:00",
+     "version_id": null
+    },
+    "log": {
+     "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+     "log_stream": "2026/10/20/[$LATEST]01cbbf44ff28443aa667ed7fa16f5612",
+     "timestamp": "2026-10-20 13:13:58.215",
+     "query": "decisions-0"
+    }
+   }
+  ],
+  "triage.jsonl": [
+   {
+    "line": 1,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]603fcf626c1e43b6a4ffcfa5641bed53",
+    "timestamp": "2026-10-21 06:25:54.689",
+    "query": "decisions-0"
+   },
+   {
+    "line": 2,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]0624f470a7f140f794bc4fabf15acf1b",
+    "timestamp": "2026-10-20 04:26:04.315",
+    "query": "decisions-0"
+   },
+   {
+    "line": 3,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]fca708b18f444929ae5c02cdf323b13d",
+    "timestamp": "2026-10-18 21:25:53.225",
+    "query": "decisions-0"
+   }
+  ],
+  "ticks.jsonl": [
+   {
+    "line": 1,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]7fb025bffc6d4b419f16f323a3a59690",
+    "timestamp": "2026-10-21 11:05:39.528",
+    "query": "ticks-1"
+   },
+   {
+    "line": 2,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]4fc6680d688942e6b2bc3af49571e724",
+    "timestamp": "2026-10-21 10:25:31.719",
+    "query": "ticks-1"
+   },
+   {
+    "line": 3,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]c623a14f43114f6c95ea2289d94b64e6",
+    "timestamp": "2026-10-21 10:05:39.345",
+    "query": "ticks-1"
+   },
+   {
+    "line": 4,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]9867f1ad5d9545ea901ba803a8b222db",
+    "timestamp": "2026-10-21 09:25:31.478",
+    "query": "ticks-1"
+   },
+   {
+    "line": 5,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]5faa0f498a7d4109b995525747fce7cc",
+    "timestamp": "2026-10-21 09:05:39.464",
+    "query": "ticks-1"
+   },
+   {
+    "line": 6,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]3adb13b5bb9d4ec486d201e07e96ddd2",
+    "timestamp": "2026-10-21 08:25:31.206",
+    "query": "ticks-1"
+   },
+   {
+    "line": 7,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]049686b0a7f947bb8b178e52046455b2",
+    "timestamp": "2026-10-21 08:05:39.282",
+    "query": "ticks-1"
+   },
+   {
+    "line": 8,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]f3b20a1359a74a01bf5febf34e23250d",
+    "timestamp": "2026-10-21 07:25:32.211",
+    "query": "ticks-1"
+   },
+   {
+    "line": 9,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]604f28bf46704c8293e1857b6e93ece1",
+    "timestamp": "2026-10-21 07:05:39.504",
+    "query": "ticks-1"
+   },
+   {
+    "line": 10,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]603fcf626c1e43b6a4ffcfa5641bed53",
+    "timestamp": "2026-10-21 06:25:54.802",
+    "query": "ticks-1"
+   },
+   {
+    "line": 11,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]7c0ba07c3974479db9699220ef802389",
+    "timestamp": "2026-10-21 06:05:39.654",
+    "query": "ticks-1"
+   },
+   {
+    "line": 12,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]3537f488a1974c30ae2529f2848ae106",
+    "timestamp": "2026-10-21 05:25:31.282",
+    "query": "ticks-1"
+   },
+   {
+    "line": 13,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]9e0d3449c17d439485471b3cbd216c9e",
+    "timestamp": "2026-10-21 05:05:39.387",
+    "query": "ticks-1"
+   },
+   {
+    "line": 14,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]3c833b77903748efac0e53f8fe55f149",
+    "timestamp": "2026-10-21 04:25:31.040",
+    "query": "ticks-1"
+   },
+   {
+    "line": 15,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]fb743b93be9e4bcb97f4b9aac07e38c2",
+    "timestamp": "2026-10-21 04:05:39.440",
+    "query": "ticks-1"
+   },
+   {
+    "line": 16,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]f00a54a78aff4f2198cb7d919918ea01",
+    "timestamp": "2026-10-21 03:25:31.399",
+    "query": "ticks-1"
+   },
+   {
+    "line": 17,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]6870afa167a745c38e0f800d83baff28",
+    "timestamp": "2026-10-21 03:05:39.693",
+    "query": "ticks-1"
+   },
+   {
+    "line": 18,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]3aa77feff3584e6cadd02396f9026e86",
+    "timestamp": "2026-10-21 02:25:31.793",
+    "query": "ticks-1"
+   },
+   {
+    "line": 19,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]017e5231097045ff9e83c3ee3464bc16",
+    "timestamp": "2026-10-21 02:05:39.240",
+    "query": "ticks-1"
+   },
+   {
+    "line": 20,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]8b1970dba8d842259a86e7a2e2d4190e",
+    "timestamp": "2026-10-21 01:25:31.969",
+    "query": "ticks-1"
+   },
+   {
+    "line": 21,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]64b55263148b4b3081377a07296e7f70",
+    "timestamp": "2026-10-21 01:05:39.221",
+    "query": "ticks-1"
+   },
+   {
+    "line": 22,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]c530dca1f3364ed49c8b107706c33390",
+    "timestamp": "2026-10-21 00:25:31.561",
+    "query": "ticks-1"
+   },
+   {
+    "line": 23,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/21/[$LATEST]5bfc62ad36d94118a087957c441575db",
+    "timestamp": "2026-10-21 00:05:39.221",
+    "query": "ticks-1"
+   },
+   {
+    "line": 24,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]460d198f29e047f19539448a5e5f2196",
+    "timestamp": "2026-10-20 23:25:31.702",
+    "query": "ticks-1"
+   },
+   {
+    "line": 25,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]94e77389f3c041e88e54ac3b075c4f38",
+    "timestamp": "2026-10-20 23:05:39.508",
+    "query": "ticks-1"
+   },
+   {
+    "line": 26,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]73b0cefca9da4955a4b69637971526a9",
+    "timestamp": "2026-10-20 22:25:31.167",
+    "query": "ticks-1"
+   },
+   {
+    "line": 27,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]cd1df159da5a4ff0a870a9b9d21b6394",
+    "timestamp": "2026-10-20 22:05:39.225",
+    "query": "ticks-1"
+   },
+   {
+    "line": 28,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]0ad2876cb1f3497d8bdb8a9b20fb8762",
+    "timestamp": "2026-10-20 21:25:31.295",
+    "query": "ticks-1"
+   },
+   {
+    "line": 29,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]f5c3a56e554c4e8285d5e31491267513",
+    "timestamp": "2026-10-20 21:05:39.990",
+    "query": "ticks-1"
+   },
+   {
+    "line": 30,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]64ca699f7b8a41c0a446c81deac8b6a6",
+    "timestamp": "2026-10-20 20:25:31.215",
+    "query": "ticks-1"
+   },
+   {
+    "line": 31,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]cfec288350114838bfbf6cdde5b36e19",
+    "timestamp": "2026-10-20 20:05:39.543",
+    "query": "ticks-1"
+   },
+   {
+    "line": 32,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]95b7785b552942a18f3b1e2a1e5ed159",
+    "timestamp": "2026-10-20 19:25:31.933",
+    "query": "ticks-1"
+   },
+   {
+    "line": 33,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]805acf67ae4f49c3b0488969705f127d",
+    "timestamp": "2026-10-20 19:05:39.275",
+    "query": "ticks-1"
+   },
+   {
+    "line": 34,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]87c3f99555ee4d28a66d8a87e9a10b76",
+    "timestamp": "2026-10-20 18:25:31.345",
+    "query": "ticks-1"
+   },
+   {
+    "line": 35,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]6316ba2d2c454f389d1db879a837ea29",
+    "timestamp": "2026-10-20 18:05:39.189",
+    "query": "ticks-1"
+   },
+   {
+    "line": 36,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]5b650da2c6b741e5b9084f775e6e8404",
+    "timestamp": "2026-10-20 17:25:31.556",
+    "query": "ticks-1"
+   },
+   {
+    "line": 37,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]0f90f95fb88a4ec7bfe6d71ee0feabef",
+    "timestamp": "2026-10-20 17:05:39.590",
+    "query": "ticks-1"
+   },
+   {
+    "line": 38,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]6b5b425531354f118d94f9d81fc99b19",
+    "timestamp": "2026-10-20 16:25:31.667",
+    "query": "ticks-1"
+   },
+   {
+    "line": 39,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]95e0771a22464f5b8b60d5f310f546e5",
+    "timestamp": "2026-10-20 16:05:39.172",
+    "query": "ticks-1"
+   },
+   {
+    "line": 40,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]4b96f68bfac044e0acafc69e773cda8b",
+    "timestamp": "2026-10-20 15:25:32.043",
+    "query": "ticks-1"
+   },
+   {
+    "line": 41,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]e5a0bf3cb7c64404ba095db1e6dc47ab",
+    "timestamp": "2026-10-20 15:05:39.642",
+    "query": "ticks-1"
+   },
+   {
+    "line": 42,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]64b97011d2c94ce39af9e843326da668",
+    "timestamp": "2026-10-20 14:25:31.501",
+    "query": "ticks-1"
+   },
+   {
+    "line": 43,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]d9af4a9071c34736bcd690c2e52d84a6",
+    "timestamp": "2026-10-20 14:05:38.632",
+    "query": "ticks-1"
+   },
+   {
+    "line": 44,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]b41356edc51545b49c7ea3b0027f3c37",
+    "timestamp": "2026-10-20 13:25:31.350",
+    "query": "ticks-1"
+   },
+   {
+    "line": 45,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]01cbbf44ff28443aa667ed7fa16f5612",
+    "timestamp": "2026-10-20 13:13:59.568",
+    "query": "ticks-1"
+   },
+   {
+    "line": 46,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]a5ac51e4d4424ec6b397ef8c9bbada31",
+    "timestamp": "2026-10-20 12:25:31.649",
+    "query": "ticks-1"
+   },
+   {
+    "line": 47,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]018da1c2c4704e81a8816a5f76e061a8",
+    "timestamp": "2026-10-20 11:25:31.449",
+    "query": "ticks-1"
+   },
+   {
+    "line": 48,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]4ae9e138a33d444dac665713f85bde57",
+    "timestamp": "2026-10-20 10:25:31.630",
+    "query": "ticks-1"
+   },
+   {
+    "line": 49,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]4508646867e24adb883a76c530c354e4",
+    "timestamp": "2026-10-20 09:25:31.341",
+    "query": "ticks-1"
+   },
+   {
+    "line": 50,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]2e3b398d067449e09efa35fcb3cddea4",
+    "timestamp": "2026-10-20 08:25:31.514",
+    "query": "ticks-1"
+   },
+   {
+    "line": 51,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]cd4b333a61f84c8db760c5c9b6a98520",
+    "timestamp": "2026-10-20 07:25:31.614",
+    "query": "ticks-1"
+   },
+   {
+    "line": 52,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]dccda148f9d3462fbba2fa38c1e0b137",
+    "timestamp": "2026-10-20 06:25:31.660",
+    "query": "ticks-1"
+   },
+   {
+    "line": 53,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]c9f7346e28da4c9790c0e4a0955fef44",
+    "timestamp": "2026-10-20 05:25:31.159",
+    "query": "ticks-1"
+   },
+   {
+    "line": 54,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]0624f470a7f140f794bc4fabf15acf1b",
+    "timestamp": "2026-10-20 04:26:04.440",
+    "query": "ticks-1"
+   },
+   {
+    "line": 55,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]6d5ddb1bc30f4c3f8f83e60c62da3ae9",
+    "timestamp": "2026-10-20 03:25:32.055",
+    "query": "ticks-1"
+   },
+   {
+    "line": 56,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]d698354924ba4ee89c48da49c6565581",
+    "timestamp": "2026-10-20 02:25:30.987",
+    "query": "ticks-1"
+   },
+   {
+    "line": 57,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]0419e118695940a29eb1bee85f2560d9",
+    "timestamp": "2026-10-20 01:25:31.633",
+    "query": "ticks-1"
+   },
+   {
+    "line": 58,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/20/[$LATEST]327d54a72fc0474eb9f674e6f0f05c45",
+    "timestamp": "2026-10-20 00:25:31.578",
+    "query": "ticks-1"
+   },
+   {
+    "line": 59,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]d3d04e706c09453587d2afae841dc39a",
+    "timestamp": "2026-10-19 23:25:31.216",
+    "query": "ticks-1"
+   },
+   {
+    "line": 60,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]50f11f88f3a14a8e912eeb61a6cbcbf4",
+    "timestamp": "2026-10-19 22:25:31.911",
+    "query": "ticks-1"
+   },
+   {
+    "line": 61,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]393b7b56517f4c63acb61672acc9ceb2",
+    "timestamp": "2026-10-19 21:25:31.781",
+    "query": "ticks-1"
+   },
+   {
+    "line": 62,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]844651fabbcb4fd79669fbaf48a01653",
+    "timestamp": "2026-10-19 20:25:31.630",
+    "query": "ticks-1"
+   },
+   {
+    "line": 63,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]ce40a581b20d4acf93858222b1caf584",
+    "timestamp": "2026-10-19 19:25:32.268",
+    "query": "ticks-1"
+   },
+   {
+    "line": 64,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]ed31391dd95249efb409e9ccfdb7c155",
+    "timestamp": "2026-10-19 18:25:31.973",
+    "query": "ticks-1"
+   },
+   {
+    "line": 65,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]60fd8b1199b042aa959c426a5d3c1504",
+    "timestamp": "2026-10-19 17:25:31.732",
+    "query": "ticks-1"
+   },
+   {
+    "line": 66,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]4ca4147f80fb4ddb89708d5a0113459a",
+    "timestamp": "2026-10-19 16:25:31.657",
+    "query": "ticks-1"
+   },
+   {
+    "line": 67,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]3097eaa03baf4206836589d01288b0d9",
+    "timestamp": "2026-10-19 15:25:31.874",
+    "query": "ticks-1"
+   },
+   {
+    "line": 68,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]bc59b2dbf6514efa97543ab456e08f1d",
+    "timestamp": "2026-10-19 14:25:31.600",
+    "query": "ticks-1"
+   },
+   {
+    "line": 69,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]5c7a9c8b53f14a4586f6bd9c3067cb99",
+    "timestamp": "2026-10-19 13:25:31.624",
+    "query": "ticks-1"
+   },
+   {
+    "line": 70,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]0e5f8101269942229af685f8075a0725",
+    "timestamp": "2026-10-19 12:25:32.305",
+    "query": "ticks-1"
+   },
+   {
+    "line": 71,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]93736b784eec42538ebbbde00f206774",
+    "timestamp": "2026-10-19 11:25:31.589",
+    "query": "ticks-1"
+   },
+   {
+    "line": 72,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]4f1e0c74f7ed42248959415e7009860d",
+    "timestamp": "2026-10-19 10:25:31.794",
+    "query": "ticks-1"
+   },
+   {
+    "line": 73,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]bfbd21158cc84ad09bbaab6882829c5d",
+    "timestamp": "2026-10-19 09:25:31.667",
+    "query": "ticks-1"
+   },
+   {
+    "line": 74,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]606f113316544051ae5ac8095cf086a6",
+    "timestamp": "2026-10-19 08:25:30.958",
+    "query": "ticks-1"
+   },
+   {
+    "line": 75,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]fa8b4ee2eede4e668ef181fcc222e87c",
+    "timestamp": "2026-10-19 07:25:31.252",
+    "query": "ticks-1"
+   },
+   {
+    "line": 76,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]0b89b0d89cf34205a6e01644cc427b2d",
+    "timestamp": "2026-10-19 06:25:31.267",
+    "query": "ticks-1"
+   },
+   {
+    "line": 77,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]28cb8605986047e4b2dd0180fe3d56a4",
+    "timestamp": "2026-10-19 05:25:31.050",
+    "query": "ticks-1"
+   },
+   {
+    "line": 78,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]b4066dcc41504899b462bf435b1a6e52",
+    "timestamp": "2026-10-19 04:25:31.231",
+    "query": "ticks-1"
+   },
+   {
+    "line": 79,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]09785ba7f9754031a17ebadf5fa9c887",
+    "timestamp": "2026-10-19 03:25:31.371",
+    "query": "ticks-1"
+   },
+   {
+    "line": 80,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]80395fad858a49c08295a33291796d8b",
+    "timestamp": "2026-10-19 02:25:31.301",
+    "query": "ticks-1"
+   },
+   {
+    "line": 81,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]8107f69591d0404b80f1d3b2e4b75d8d",
+    "timestamp": "2026-10-19 01:25:31.548",
+    "query": "ticks-1"
+   },
+   {
+    "line": 82,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/19/[$LATEST]c0f4b8e0555846b7b4f095ccd87c35f7",
+    "timestamp": "2026-10-19 00:25:31.898",
+    "query": "ticks-1"
+   },
+   {
+    "line": 83,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]c5fea709b5774b869e3898cfbe274a5b",
+    "timestamp": "2026-10-18 23:25:31.926",
+    "query": "ticks-1"
+   },
+   {
+    "line": 84,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]0d07720a451346679f60f45b3c16474e",
+    "timestamp": "2026-10-18 22:25:31.375",
+    "query": "ticks-1"
+   },
+   {
+    "line": 85,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]fca708b18f444929ae5c02cdf323b13d",
+    "timestamp": "2026-10-18 21:25:53.333",
+    "query": "ticks-1"
+   },
+   {
+    "line": 86,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]55685d4bf936452981c5bb5ac3c1f03e",
+    "timestamp": "2026-10-18 20:25:31.860",
+    "query": "ticks-1"
+   },
+   {
+    "line": 87,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]74c79155d0bb439393f249f5c6803f83",
+    "timestamp": "2026-10-18 19:25:32.271",
+    "query": "ticks-1"
+   },
+   {
+    "line": 88,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]dfeb1212e4034a4aafe04eed2f523d87",
+    "timestamp": "2026-10-18 18:25:32.210",
+    "query": "ticks-1"
+   },
+   {
+    "line": 89,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]22830672e8d74996955e6214950c4f4b",
+    "timestamp": "2026-10-18 17:25:31.909",
+    "query": "ticks-1"
+   },
+   {
+    "line": 90,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]2ba910f3a0524131a8a65438e277b593",
+    "timestamp": "2026-10-18 16:25:31.739",
+    "query": "ticks-1"
+   },
+   {
+    "line": 91,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]2ea971b4749b430089640de36860b5e2",
+    "timestamp": "2026-10-18 15:25:32.294",
+    "query": "ticks-1"
+   },
+   {
+    "line": 92,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]43d494aec7e041fbb87103d2ac48298b",
+    "timestamp": "2026-10-18 14:25:32.142",
+    "query": "ticks-1"
+   },
+   {
+    "line": 93,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]dc27910de17d49ecaf7b1ec04ad9967c",
+    "timestamp": "2026-10-18 13:25:35.626",
+    "query": "ticks-1"
+   },
+   {
+    "line": 94,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]434b2251a6614be297e7343225abaea9",
+    "timestamp": "2026-10-18 12:25:32.007",
+    "query": "ticks-1"
+   },
+   {
+    "line": 95,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]1ec82939238949ceaf28d420d83f68c1",
+    "timestamp": "2026-10-18 11:25:32.307",
+    "query": "ticks-1"
+   },
+   {
+    "line": 96,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]1bc783dbace844ec808577b59c195c70",
+    "timestamp": "2026-10-18 10:25:32.161",
+    "query": "ticks-1"
+   },
+   {
+    "line": 97,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]fb60abf7f65c491bb4db3d456b3e903d",
+    "timestamp": "2026-10-18 09:25:30.955",
+    "query": "ticks-1"
+   },
+   {
+    "line": 98,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]a4cdd06523b54c69a7c35392a6a5875a",
+    "timestamp": "2026-10-18 08:25:32.289",
+    "query": "ticks-1"
+   },
+   {
+    "line": 99,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]f77b360cf4854247834db6e91e778bce",
+    "timestamp": "2026-10-18 07:25:31.999",
+    "query": "ticks-1"
+   },
+   {
+    "line": 100,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]61af18c70d5b450d9dcbd99f7c94dc74",
+    "timestamp": "2026-10-18 06:25:32.252",
+    "query": "ticks-1"
+   },
+   {
+    "line": 101,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]0b55372f581d435e809b4e810906030f",
+    "timestamp": "2026-10-18 05:25:42.668",
+    "query": "ticks-1"
+   },
+   {
+    "line": 102,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]c1187fcd34ce40828970d4ba7db5b56a",
+    "timestamp": "2026-10-18 04:25:31.983",
+    "query": "ticks-1"
+   },
+   {
+    "line": 103,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]7a4362eea7c84b7093e51bbc6b69a8d1",
+    "timestamp": "2026-10-18 03:25:32.020",
+    "query": "ticks-1"
+   },
+   {
+    "line": 104,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]86e2d21ddfc34fad821fddb79bf0c72b",
+    "timestamp": "2026-10-18 02:25:31.511",
+    "query": "ticks-1"
+   },
+   {
+    "line": 105,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]b2ecc9f46b4341058d2d84834edfc589",
+    "timestamp": "2026-10-18 01:25:31.826",
+    "query": "ticks-1"
+   },
+   {
+    "line": 106,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/18/[$LATEST]133cdbfa4c1f4eeea75d1be95ecfe1ab",
+    "timestamp": "2026-10-18 00:25:32.186",
+    "query": "ticks-1"
+   },
+   {
+    "line": 107,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]cb5b822f53344ad6a24e27a008b424a7",
+    "timestamp": "2026-10-17 23:25:32.213",
+    "query": "ticks-1"
+   },
+   {
+    "line": 108,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]fc69bcd2c49f4bb08c7c08f160f53030",
+    "timestamp": "2026-10-17 22:25:32.014",
+    "query": "ticks-1"
+   },
+   {
+    "line": 109,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]aac2493db1aa47c5888bcec972b9aba4",
+    "timestamp": "2026-10-17 21:25:31.538",
+    "query": "ticks-1"
+   },
+   {
+    "line": 110,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]8f82b5fbad3a44819c51262f4f587914",
+    "timestamp": "2026-10-17 20:25:31.473",
+    "query": "ticks-1"
+   },
+   {
+    "line": 111,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]b88e1a90a87e4e31892b202b0729a74e",
+    "timestamp": "2026-10-17 19:25:31.725",
+    "query": "ticks-1"
+   },
+   {
+    "line": 112,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]849514c06ce14a739b9bc015c4235be1",
+    "timestamp": "2026-10-17 18:25:31.515",
+    "query": "ticks-1"
+   },
+   {
+    "line": 113,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]a954f95b46bd45a1a150ad9321bf2915",
+    "timestamp": "2026-10-17 17:25:31.489",
+    "query": "ticks-1"
+   },
+   {
+    "line": 114,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]57b665a3c34e4e308aa72ba2478cab08",
+    "timestamp": "2026-10-17 16:25:31.666",
+    "query": "ticks-1"
+   },
+   {
+    "line": 115,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]5e0cb7599cbd4ad9a9853cb2d897d3e9",
+    "timestamp": "2026-10-17 15:25:31.519",
+    "query": "ticks-1"
+   },
+   {
+    "line": 116,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]7569cd307ba9419ab81e78e65e6c5f5a",
+    "timestamp": "2026-10-17 14:25:31.880",
+    "query": "ticks-1"
+   },
+   {
+    "line": 117,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]98c5ea2662f243d28211b6ffefd8c399",
+    "timestamp": "2026-10-17 13:25:32.011",
+    "query": "ticks-1"
+   },
+   {
+    "line": 118,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]d4554960152249dcb77297ea678383b5",
+    "timestamp": "2026-10-17 12:25:31.590",
+    "query": "ticks-1"
+   },
+   {
+    "line": 119,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]b966ca2301974060965d20590d813073",
+    "timestamp": "2026-10-17 11:25:32.149",
+    "query": "ticks-1"
+   },
+   {
+    "line": 120,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]a34005871c2a40d1a492fe8bcae642c4",
+    "timestamp": "2026-10-17 10:25:31.775",
+    "query": "ticks-1"
+   },
+   {
+    "line": 121,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]bebd2676b6e64aab90159d305f5d7238",
+    "timestamp": "2026-10-17 09:25:31.725",
+    "query": "ticks-1"
+   },
+   {
+    "line": 122,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]c9dfc314a3ea46b5952ad42b61e5ff0c",
+    "timestamp": "2026-10-17 08:25:31.880",
+    "query": "ticks-1"
+   },
+   {
+    "line": 123,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]01594761848e4c5686d3026aad2e1fe4",
+    "timestamp": "2026-10-17 07:25:32.157",
+    "query": "ticks-1"
+   },
+   {
+    "line": 124,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]71ee6b02bc4541fd87bc01655abc62a5",
+    "timestamp": "2026-10-17 06:25:32.595",
+    "query": "ticks-1"
+   },
+   {
+    "line": 125,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]bf76d324f3d541668a619ac507d4ebfa",
+    "timestamp": "2026-10-17 05:25:32.522",
+    "query": "ticks-1"
+   },
+   {
+    "line": 126,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]2bbbed30e97f47ec8fb36d5e4782e9c5",
+    "timestamp": "2026-10-17 04:25:31.911",
+    "query": "ticks-1"
+   },
+   {
+    "line": 127,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]47ff6f7cfb5c4e22b6572a7be0a51cbc",
+    "timestamp": "2026-10-17 03:25:32.388",
+    "query": "ticks-1"
+   },
+   {
+    "line": 128,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]08c56442bc054708b8364b137e593ef5",
+    "timestamp": "2026-10-17 02:25:31.716",
+    "query": "ticks-1"
+   },
+   {
+    "line": 129,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]79fbb88a307c4247a90cf6d9e03b81b4",
+    "timestamp": "2026-10-17 01:25:28.600",
+    "query": "ticks-1"
+   },
+   {
+    "line": 130,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]1a21c4bf44df47318b4a7b358bf14865",
+    "timestamp": "2026-10-17 00:41:39.857",
+    "query": "ticks-1"
+   },
+   {
+    "line": 131,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/17/[$LATEST]7f5e3f0a51ec471cb229b97bfa8f413b",
+    "timestamp": "2026-10-17 00:25:31.904",
+    "query": "ticks-1"
+   },
+   {
+    "line": 132,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+    "timestamp": "2026-10-16 23:25:27.208",
+    "query": "ticks-1"
+   },
+   {
+    "line": 133,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+    "timestamp": "2026-10-16 23:15:50.559",
+    "query": "ticks-1"
+   },
+   {
+    "line": 134,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+    "timestamp": "2026-10-16 23:15:31.204",
+    "query": "ticks-1"
+   },
+   {
+    "line": 135,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+    "timestamp": "2026-10-16 23:14:23.633",
+    "query": "ticks-1"
+   },
+   {
+    "line": 136,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+    "timestamp": "2026-10-16 23:13:53.668",
+    "query": "ticks-1"
+   },
+   {
+    "line": 137,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+    "timestamp": "2026-10-16 23:12:41.917",
+    "query": "ticks-1"
+   },
+   {
+    "line": 138,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/16/[$LATEST]f98d626bddc04ace9ba7f96a6b5f938a",
+    "timestamp": "2026-10-16 23:12:12.993",
+    "query": "ticks-1"
+   },
+   {
+    "line": 139,
+    "log_group": "/aws/lambda/bloggerbear-dev-research-tick",
+    "log_stream": "2026/10/16/[$LATEST]d3758683378543d29617988bf6c4d81a",
+    "timestamp": "2026-10-16 22:53:19.174",
+    "query": "ticks-1"
+   }
+  ],
+  "people.jsonl": [
+   {
+    "line": 1,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/20/[$LATEST]80b347657ebc40308dcacdcfac500a33",
+    "timestamp": "2026-10-20 13:13:45.146",
+    "query": "people-3"
+   },
+   {
+    "line": 2,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/20/[$LATEST]073c52ab31fe4f4f8309fd503b917ede",
+    "timestamp": "2026-10-20 03:40:38.165",
+    "query": "people-3"
+   },
+   {
+    "line": 3,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/20/[$LATEST]073c52ab31fe4f4f8309fd503b917ede",
+    "timestamp": "2026-10-20 03:40:23.385",
+    "query": "people-3"
+   },
+   {
+    "line": 4,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/20/[$LATEST]073c52ab31fe4f4f8309fd503b917ede",
+    "timestamp": "2026-10-20 03:39:09.004",
+    "query": "people-3"
+   },
+   {
+    "line": 5,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/20/[$LATEST]073c52ab31fe4f4f8309fd503b917ede",
+    "timestamp": "2026-10-20 03:38:44.504",
+    "query": "people-3"
+   },
+   {
+    "line": 6,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/18/[$LATEST]3e5aa4ba603e4da3a9c4970aa4474daf",
+    "timestamp": "2026-10-18 21:50:57.133",
+    "query": "people-3"
+   },
+   {
+    "line": 7,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/18/[$LATEST]3e5aa4ba603e4da3a9c4970aa4474daf",
+    "timestamp": "2026-10-18 21:49:40.732",
+    "query": "people-3"
+   },
+   {
+    "line": 8,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/17/[$LATEST]7c5a08528314456096f677615be37324",
+    "timestamp": "2026-10-17 01:05:10.224",
+    "query": "people-3"
+   },
+   {
+    "line": 9,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/17/[$LATEST]7c5a08528314456096f677615be37324",
+    "timestamp": "2026-10-17 00:55:18.902",
+    "query": "people-3"
+   },
+   {
+    "line": 10,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/17/[$LATEST]867832066332471a8f24cc2b38ff20e3",
+    "timestamp": "2026-10-17 00:41:21.020",
+    "query": "people-3"
+   },
+   {
+    "line": 11,
+    "log_group": "/aws/lambda/bloggerbear-dev-admin-api",
+    "log_stream": "2026/10/16/[$LATEST]8f9a9cb0ae1f498ab8720c2070fd58bc",
+    "timestamp": "2026-10-16 22:52:05.215",
+    "query": "people-3"
+   }
+  ],
+  "worker.jsonl": [
+   {
+    "line": 1,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/21/[$LATEST]7a7e06176ab44175acbbfd630e3a642d",
+    "timestamp": "2026-10-21 06:25:41.538",
+    "query": "measures-4"
+   },
+   {
+    "line": 2,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:31:53.023",
+    "query": "measures-4"
+   },
+   {
+    "line": 3,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:31:20.900",
+    "query": "measures-4"
+   },
+   {
+    "line": 4,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:30:48.197",
+    "query": "measures-4"
+   },
+   {
+    "line": 5,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:30:15.752",
+    "query": "measures-4"
+   },
+   {
+    "line": 6,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:29:45.123",
+    "query": "measures-4"
+   },
+   {
+    "line": 7,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:29:14.118",
+    "query": "measures-4"
+   },
+   {
+    "line": 8,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:28:47.504",
+    "query": "measures-4"
+   },
+   {
+    "line": 9,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:28:15.716",
+    "query": "measures-4"
+   },
+   {
+    "line": 10,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:27:41.805",
+    "query": "measures-4"
+   },
+   {
+    "line": 11,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:27:14.482",
+    "query": "measures-4"
+   },
+   {
+    "line": 12,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:26:54.219",
+    "query": "measures-4"
+   },
+   {
+    "line": 13,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:26:33.899",
+    "query": "measures-4"
+   },
+   {
+    "line": 14,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:26:14.077",
+    "query": "measures-4"
+   },
+   {
+    "line": 15,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:24:57.941",
+    "query": "measures-4"
+   },
+   {
+    "line": 16,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:24:15.787",
+    "query": "measures-4"
+   },
+   {
+    "line": 17,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:23:50.595",
+    "query": "measures-4"
+   },
+   {
+    "line": 18,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:23:26.476",
+    "query": "measures-4"
+   },
+   {
+    "line": 19,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:23:00.209",
+    "query": "measures-4"
+   },
+   {
+    "line": 20,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:22:31.862",
+    "query": "measures-4"
+   },
+   {
+    "line": 21,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:22:01.996",
+    "query": "measures-4"
+   },
+   {
+    "line": 22,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:21:35.097",
+    "query": "measures-4"
+   },
+   {
+    "line": 23,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:21:11.876",
+    "query": "measures-4"
+   },
+   {
+    "line": 24,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:20:47.001",
+    "query": "measures-4"
+   },
+   {
+    "line": 25,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:20:27.457",
+    "query": "measures-4"
+   },
+   {
+    "line": 26,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:20:08.743",
+    "query": "measures-4"
+   },
+   {
+    "line": 27,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:19:48.017",
+    "query": "measures-4"
+   },
+   {
+    "line": 28,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:18:19.141",
+    "query": "measures-4"
+   },
+   {
+    "line": 29,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:17:52.466",
+    "query": "measures-4"
+   },
+   {
+    "line": 30,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:17:24.326",
+    "query": "measures-4"
+   },
+   {
+    "line": 31,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:16:57.109",
+    "query": "measures-4"
+   },
+   {
+    "line": 32,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:16:26.649",
+    "query": "measures-4"
+   },
+   {
+    "line": 33,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:16:06.814",
+    "query": "measures-4"
+   },
+   {
+    "line": 34,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:15:44.999",
+    "query": "measures-4"
+   },
+   {
+    "line": 35,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:15:24.180",
+    "query": "measures-4"
+   },
+   {
+    "line": 36,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:15:03.179",
+    "query": "measures-4"
+   },
+   {
+    "line": 37,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:14:43.819",
+    "query": "measures-4"
+   },
+   {
+    "line": 38,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:14:22.325",
+    "query": "measures-4"
+   },
+   {
+    "line": 39,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:14:02.980",
+    "query": "measures-4"
+   },
+   {
+    "line": 40,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:13:44.122",
+    "query": "measures-4"
+   },
+   {
+    "line": 41,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:13:23.409",
+    "query": "measures-4"
+   },
+   {
+    "line": 42,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:13:04.029",
+    "query": "measures-4"
+   },
+   {
+    "line": 43,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:12:43.106",
+    "query": "measures-4"
+   },
+   {
+    "line": 44,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:12:23.323",
+    "query": "measures-4"
+   },
+   {
+    "line": 45,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:12:03.075",
+    "query": "measures-4"
+   },
+   {
+    "line": 46,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:11:41.861",
+    "query": "measures-4"
+   },
+   {
+    "line": 47,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:11:22.767",
+    "query": "measures-4"
+   },
+   {
+    "line": 48,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:11:03.184",
+    "query": "measures-4"
+   },
+   {
+    "line": 49,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:10:43.186",
+    "query": "measures-4"
+   },
+   {
+    "line": 50,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:10:23.672",
+    "query": "measures-4"
+   },
+   {
+    "line": 51,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:09:55.422",
+    "query": "measures-4"
+   },
+   {
+    "line": 52,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:09:24.743",
+    "query": "measures-4"
+   },
+   {
+    "line": 53,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:08:55.174",
+    "query": "measures-4"
+   },
+   {
+    "line": 54,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:08:28.462",
+    "query": "measures-4"
+   },
+   {
+    "line": 55,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:07:57.505",
+    "query": "measures-4"
+   },
+   {
+    "line": 56,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:07:28.988",
+    "query": "measures-4"
+   },
+   {
+    "line": 57,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:06:57.735",
+    "query": "measures-4"
+   },
+   {
+    "line": 58,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:06:27.096",
+    "query": "measures-4"
+   },
+   {
+    "line": 59,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:05:56.751",
+    "query": "measures-4"
+   },
+   {
+    "line": 60,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:05:26.454",
+    "query": "measures-4"
+   },
+   {
+    "line": 61,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:04:55.764",
+    "query": "measures-4"
+   },
+   {
+    "line": 62,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:04:26.344",
+    "query": "measures-4"
+   },
+   {
+    "line": 63,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:03:58.567",
+    "query": "measures-4"
+   },
+   {
+    "line": 64,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:03:30.044",
+    "query": "measures-4"
+   },
+   {
+    "line": 65,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:03:02.475",
+    "query": "measures-4"
+   },
+   {
+    "line": 66,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:02:41.145",
+    "query": "measures-4"
+   },
+   {
+    "line": 67,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:02:18.018",
+    "query": "measures-4"
+   },
+   {
+    "line": 68,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:01:46.216",
+    "query": "measures-4"
+   },
+   {
+    "line": 69,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:01:18.360",
+    "query": "measures-4"
+   },
+   {
+    "line": 70,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:00:41.792",
+    "query": "measures-4"
+   },
+   {
+    "line": 71,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 14:00:13.707",
+    "query": "measures-4"
+   },
+   {
+    "line": 72,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:59:44.586",
+    "query": "measures-4"
+   },
+   {
+    "line": 73,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:59:14.926",
+    "query": "measures-4"
+   },
+   {
+    "line": 74,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:58:45.672",
+    "query": "measures-4"
+   },
+   {
+    "line": 75,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:58:13.537",
+    "query": "measures-4"
+   },
+   {
+    "line": 76,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:57:44.094",
+    "query": "measures-4"
+   },
+   {
+    "line": 77,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:57:13.659",
+    "query": "measures-4"
+   },
+   {
+    "line": 78,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:56:45.399",
+    "query": "measures-4"
+   },
+   {
+    "line": 79,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:56:17.370",
+    "query": "measures-4"
+   },
+   {
+    "line": 80,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:55:49.520",
+    "query": "measures-4"
+   },
+   {
+    "line": 81,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:55:22.511",
+    "query": "measures-4"
+   },
+   {
+    "line": 82,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:54:56.480",
+    "query": "measures-4"
+   },
+   {
+    "line": 83,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:54:28.673",
+    "query": "measures-4"
+   },
+   {
+    "line": 84,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:54:01.288",
+    "query": "measures-4"
+   },
+   {
+    "line": 85,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:53:32.176",
+    "query": "measures-4"
+   },
+   {
+    "line": 86,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:53:04.557",
+    "query": "measures-4"
+   },
+   {
+    "line": 87,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:52:32.669",
+    "query": "measures-4"
+   },
+   {
+    "line": 88,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:52:05.430",
+    "query": "measures-4"
+   },
+   {
+    "line": 89,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:51:38.434",
+    "query": "measures-4"
+   },
+   {
+    "line": 90,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:51:09.748",
+    "query": "measures-4"
+   },
+   {
+    "line": 91,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:50:40.297",
+    "query": "measures-4"
+   },
+   {
+    "line": 92,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:50:15.196",
+    "query": "measures-4"
+   },
+   {
+    "line": 93,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:49:48.035",
+    "query": "measures-4"
+   },
+   {
+    "line": 94,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:49:20.302",
+    "query": "measures-4"
+   },
+   {
+    "line": 95,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:48:50.871",
+    "query": "measures-4"
+   },
+   {
+    "line": 96,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:48:23.856",
+    "query": "measures-4"
+   },
+   {
+    "line": 97,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:47:58.331",
+    "query": "measures-4"
+   },
+   {
+    "line": 98,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:47:36.214",
+    "query": "measures-4"
+   },
+   {
+    "line": 99,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:47:17.251",
+    "query": "measures-4"
+   },
+   {
+    "line": 100,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]971b331fe94b4b89aa5d87bb6587338c",
+    "timestamp": "2026-10-20 13:46:58.921",
+    "query": "measures-4"
+   },
+   {
+    "line": 101,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:40:01.588",
+    "query": "measures-4"
+   },
+   {
+    "line": 102,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:39:44.465",
+    "query": "measures-4"
+   },
+   {
+    "line": 103,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:39:20.039",
+    "query": "measures-4"
+   },
+   {
+    "line": 104,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:39:03.254",
+    "query": "measures-4"
+   },
+   {
+    "line": 105,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:38:29.849",
+    "query": "measures-4"
+   },
+   {
+    "line": 106,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:38:12.945",
+    "query": "measures-4"
+   },
+   {
+    "line": 107,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:37:47.226",
+    "query": "measures-4"
+   },
+   {
+    "line": 108,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:37:29.980",
+    "query": "measures-4"
+   },
+   {
+    "line": 109,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:36:36.426",
+    "query": "measures-4"
+   },
+   {
+    "line": 110,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:36:08.241",
+    "query": "measures-4"
+   },
+   {
+    "line": 111,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:35:41.452",
+    "query": "measures-4"
+   },
+   {
+    "line": 112,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]2acbe0c16a6f41d48a94e2af70b09203",
+    "timestamp": "2026-10-20 13:35:21.803",
+    "query": "measures-4"
+   },
+   {
+    "line": 113,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]60f53f52c8c742ea939015108fd07912",
+    "timestamp": "2026-10-20 13:13:57.307",
+    "query": "measures-4"
+   },
+   {
+    "line": 114,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/20/[$LATEST]e1de7a6f6b534c1ca1168075636cc996",
+    "timestamp": "2026-10-20 04:25:50.313",
+    "query": "measures-4"
+   },
+   {
+    "line": 115,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/18/[$LATEST]3bef18a8c58d443fa3e43ddf2c460bc1",
+    "timestamp": "2026-10-18 21:25:40.523",
+    "query": "measures-4"
+   },
+   {
+    "line": 116,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/18/[$LATEST]6d625c8426314db08a63f0fdc3b854d2",
+    "timestamp": "2026-10-18 05:25:41.319",
+    "query": "measures-4"
+   },
+   {
+    "line": 117,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/16/[$LATEST]b1e62054792d4467a0b533138159dd41",
+    "timestamp": "2026-10-16 23:15:46.639",
+    "query": "measures-4"
+   },
+   {
+    "line": 118,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/16/[$LATEST]b1e62054792d4467a0b533138159dd41",
+    "timestamp": "2026-10-16 23:14:19.923",
+    "query": "measures-4"
+   },
+   {
+    "line": 119,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/16/[$LATEST]b1e62054792d4467a0b533138159dd41",
+    "timestamp": "2026-10-16 23:12:38.582",
+    "query": "measures-4"
+   },
+   {
+    "line": 120,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/16/[$LATEST]b1e62054792d4467a0b533138159dd41",
+    "timestamp": "2026-10-16 23:12:08.665",
+    "query": "measures-4"
+   },
+   {
+    "line": 121,
+    "log_group": "/aws/lambda/bloggerbear-dev-vision-worker",
+    "log_stream": "2026/10/16/[$LATEST]2d7b0bd0cdb746ac864b0ce8063fbd7e",
+    "timestamp": "2026-10-16 13:05:32.972",
+    "query": "measures-4"
+   }
+  ]
+ },
+ "figures": {
+  "figures/rail-cities__melbourne__S2C_55HCU_20261021_0_L2A.png": {
+   "key": "vision/rail-cities/melbourne/S2C_55HCU_20261021_0_L2A.png",
+   "etag": "f8321b2c03ef4818638373fa165592a4",
+   "last_modified": "2026-10-21T06:25:43+00:00"
+  },
+  "figures/rail-cities__sydney__S2B_56HLH_20261020_0_L2A.png": {
+   "key": "vision/rail-cities/sydney/S2B_56HLH_20261020_0_L2A.png",
+   "etag": "7b5eba71e11a4a4e7119af8acc889f30",
+   "last_modified": "2026-10-20T04:25:52+00:00"
+  },
+  "figures/rail-cities__boston__S2B_19TCG_20261018_0_L2A.png": {
+   "key": "vision/rail-cities/boston/S2B_19TCG_20261018_0_L2A.png",
+   "etag": "f634e330aad2924f5b82d2797cc15490",
+   "last_modified": "2026-10-18T21:25:42+00:00"
+  },
+  "figures/ships-botany__botany-bay__S2B_56HLH_20261020_0_L2A.png": {
+   "key": "vision/ships-botany/botany-bay/S2B_56HLH_20261020_0_L2A.png",
+   "etag": "e009815d9d29ccf635f66c4e46d67cc6",
+   "last_modified": "2026-10-20T13:13:59+00:00"
+  },
+  "figures/rail-cities__boston__S2A_19TCG_20261015_1_L2A.png": {
+   "key": "vision/rail-cities/boston/S2A_19TCG_20261015_1_L2A.png",
+   "etag": "39cd25a370b59e4055dd13bfb0a59725",
+   "last_modified": "2026-10-16T23:15:47+00:00"
+  },
+  "figures/rail-cities__singapore__S2C_48NUG_20261001_0_L2A.png": {
+   "key": "vision/rail-cities/singapore/S2C_48NUG_20261001_0_L2A.png",
+   "etag": "bb6f3412a293378ce2d90675c52cb4fa",
+   "last_modified": "2026-10-16T23:14:21+00:00"
+  },
+  "figures/rail-cities__melbourne__S2B_55HCU_20261016_0_L2A.png": {
+   "key": "vision/rail-cities/melbourne/S2B_55HCU_20261016_0_L2A.png",
+   "etag": "21af52e4b467a1b2c63f44c0a7e5bbbd",
+   "last_modified": "2026-10-16T23:12:39+00:00"
+  },
+  "figures/rail-cities__sydney__S2B_56HLH_20260930_0_L2A.png": {
+   "key": "vision/rail-cities/sydney/S2B_56HLH_20260930_0_L2A.png",
+   "etag": "71d8b36fb868712ad8dcaf942888adcd",
+   "last_modified": "2026-10-16T23:12:10+00:00"
+  }
+ },
+ "networks": {
+  "scripts/vision_benchmark_networks/boston.json": {
+   "topic_id": "rail-cities",
+   "site_id": "boston",
+   "from": "vision/rail-cities/boston/network.json",
+   "written": false,
+   "kept": "differs: the file holds another network; --replace-networks writes over it",
+   "sha256": "c360e8a9dc01333b6fa6807ac6e390b536298b2865922b43095716d35397165a",
+   "fetched_at": "2026-10-16T23:14:41.854480+00:00"
+  },
+  "scripts/vision_benchmark_networks/melbourne.json": {
+   "topic_id": "rail-cities",
+   "site_id": "melbourne",
+   "from": "vision/rail-cities/melbourne/network.json",
+   "written": false,
+   "kept": "differs: the file holds another network; --replace-networks writes over it",
+   "sha256": "24c78fa8d7d06716a79d0aa9b15eb0b9679f0bc03639a86ddd2a8c8d8d77f867",
+   "fetched_at": "2026-10-16T23:09:21.194021+00:00"
+  },
+  "scripts/vision_benchmark_networks/singapore.json": {
+   "topic_id": "rail-cities",
+   "site_id": "singapore",
+   "from": "vision/rail-cities/singapore/network.json",
+   "written": false,
+   "kept": "differs: the file holds another network; --replace-networks writes over it",
+   "sha256": "f0bb671b438f6cc42c438a769e974ede919315531664ab223056b5a5d2f83ce1",
+   "fetched_at": "2026-10-16T23:12:57.075350+00:00"
+  },
+  "scripts/vision_benchmark_networks/sydney.json": {
+   "topic_id": "rail-cities",
+   "site_id": "sydney",
+   "from": "vision/rail-cities/sydney/network.json",
+   "written": false,
+   "kept": "differs: the file holds another network; --replace-networks writes over it",
+   "sha256": "bfc3c7f868f52f755eb3c1a8836729bf4dcc5ee079cf466cf51968921fd77eb4",
+   "fetched_at": "2026-10-16T23:09:21.194021+00:00"
+  }
+ }
+}

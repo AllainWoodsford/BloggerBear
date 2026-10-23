@@ -160,13 +160,14 @@ resource "aws_api_gateway_integration" "this" {
 }
 
 # Cost saving (docs/cost-saving.md): an optional resource policy on the API itself. The admin API
-# passes a Deny of every call from outside the operator's addresses (var.admin_allowed_cidrs),
-# which costs nothing and stays in force whether or not the admin WAF web ACL is created, so
-# turning the firewall switches off never leaves the admin API reachable from elsewhere. A
-# resource policy only takes effect on the next deployment, hence its hash in the triggers below.
+# passes a Deny of every call, which scripts/admin_allowlist.py later narrows to the calls from
+# outside the operator's addresses; it costs nothing and stays in force whether or not the admin
+# WAF web ACL is created, so turning the firewall switches off never leaves the admin API
+# reachable from elsewhere. Terraform writes the policy once and then leaves it to the script
+# (ignore_changes below), so an address change needs no apply.
 resource "aws_api_gateway_rest_api_policy" "this" {
-  # From the flag, not from var.resource_policy: the policy is sensitive (it carries addresses),
-  # and Terraform refuses a count decided by a sensitive value (see the variable).
+  # From the flag, not from var.resource_policy, which may be sensitive (see the variable), and
+  # Terraform refuses a count decided by a sensitive value.
   count = var.resource_policy_enabled ? 1 : 0
 
   rest_api_id = aws_api_gateway_rest_api.this.id
@@ -175,6 +176,12 @@ resource "aws_api_gateway_rest_api_policy" "this" {
   # full ARN, which Terraform would then read back as a change on every plan, so it is written
   # out in full here: this API, every stage, method and path.
   policy = replace(var.resource_policy, "execute-api:/*", "${aws_api_gateway_rest_api.this.execution_arn}/*")
+
+  # The policy Terraform writes is where the API starts, not what it must stay: the operator's
+  # addresses are put in by scripts/admin_allowlist.py, which an apply must not undo.
+  lifecycle {
+    ignore_changes = [policy]
+  }
 }
 
 # API Gateway v1 deployments are immutable snapshots -- redeploying on any
@@ -191,13 +198,18 @@ resource "aws_api_gateway_deployment" "this" {
       methods      = { for k, m in aws_api_gateway_method.this : k => m.id }
       integrations = { for k, i in aws_api_gateway_integration.this : k => i.id }
       # The policy's text, not the policy resource's id: the id is the API's and never changes,
-      # while an edit to the allowlist must redeploy for the new policy to be enforced.
+      # while a new starting policy must redeploy to be enforced. Edits made after it (the admin
+      # allowlist's) are deployed by whatever makes them: scripts/admin_allowlist.py does.
       policy = var.resource_policy_enabled ? sha1(var.resource_policy) : ""
+      # Deploy after the policy is attached, never before. By its id, not a depends_on on the
+      # whole resource: a depends_on makes every attribute relevant to the plan, so a policy the
+      # script changed would be printed, addresses and all, in the public apply log as a change
+      # made outside Terraform. The id is the API's and never changes.
+      # Indexed, not a splat: a splat refers to the whole resource and would make the policy
+      # relevant again.
+      attached = try(aws_api_gateway_rest_api_policy.this[0].id, "")
     }))
   }
-
-  # A policy change is what the hash above is for: deploy after it is written, never before.
-  depends_on = [aws_api_gateway_rest_api_policy.this]
 
   lifecycle {
     create_before_destroy = true

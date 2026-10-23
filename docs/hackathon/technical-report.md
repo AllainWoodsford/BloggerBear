@@ -526,12 +526,16 @@ mask shifted due to seasonal vegetation or atmospheric differences between scene
   (measured) and 4 of 5 (baseline, one failed closed), C10 `artefact` in all 10. This is not
   evidence that the re-measurement is ignored; it is evidence that the agent rarely asks for one.
 
-**Human control and observability** (live). [R2: from the export's `summary.json`, the demo topic
-apart: the share of vision articles published by a person (expected 100 %); the person's
-decisions with the time from Finding to decision; the operator's agreement with the agent on every
-triaged live decision, k of n with a Wilson interval; the completeness of the evidence (every kept
-decision with its ring entry, every worker request with its `vision_measure` or `REPORT` line), and
-the lines left unmatched]
+**Human control and observability** (live), from the export of 21 October
+([`summary.json`](evidence/live/2026-10-21/summary.json)), the 90 days to that day. The human control is the article inbox:
+all 7 of the rail topic's articles were held for the owner, and all 5 published were published by
+a person, none otherwise. The owner approved 4 and sent 3 back to be rewritten (from Finding to
+decision, a median of 1.7 hours for the approvals timed, 76 at most). The 3 decisions the agent
+triaged live were all artefact calls, so they drafted no article and no person reviewed them; the
+owner did not label them, since the inbox, not a one-off audit, is the control, and the agent's
+accuracy is measured on the 13 cases above. The evidence is complete: all 9 kept decisions and all
+3 triage lines have their ring entry, all 9 worker requests their `vision_measure` line, every log
+read finished, and nothing is left unmatched.
 
 **The live run.** [R2: from the export: the rotating topic's ticks and decisions per city since its
 creation; for Sydney's measured scene, the coverage, built-up, served and desert km², the served
@@ -639,7 +643,12 @@ REPRODUCE.md]
 - The evidence trail records *that* a person decided, and when (approved, rejected, unpublished,
   sent back), never *who*; a topic change that switches the agent or the news off is logged by key,
   never by content (`moderation_decision`, `topic_changed`).
-- [R2: the operator's labels on every triaged live decision, and the agreement rate in §6]
+- The agent's artefact calls draft nothing, so no person sees them: a real change the agent
+  wrongly dismisses is not caught by the inbox, only by the next clear scene. The owner did not
+  label the live ones (§6): at 10 m a pixel, a change of a square kilometre or two in the built-up
+  area beyond reach is not something a person can judge by eye from the figure, so a label would
+  only repeat the measurement. What tells a real change from an artefact is whether it persists
+  in the next clear scenes, which the pipeline measures anyway.
 
 **AI disclosure.** Articles are written by a model from measurements and approved by a person. Each
 article's page shows its lineage: the models, their cost, and `published_by`. The agent's reason
@@ -846,9 +855,10 @@ triage (O3) has not run.
 - **Observability.** One JSON line per step, 90 days, in both Regions; the decision ring in the
   running state; and the operator's assistant reads it back on the page and by voice
   (`vision_evidence`: three fixed Logs Insights queries by field equality, one 12-second limit for
-  the whole call). [R2: the evidence's completeness, from §6]
-- **Human control.** A person approves every article (§8). [R2: the share published by a person,
-  and the operator's labels]
+  the whole call). The live export found every kept decision, triage and worker request with its
+  matching line, nothing unmatched (§6).
+- **Human control.** A person approves every article (§8). Live: 7 of 7 articles held, 5 of 5
+  published by a person, 3 sent back (§6).
 
 ## Appendix C. Reproduce
 

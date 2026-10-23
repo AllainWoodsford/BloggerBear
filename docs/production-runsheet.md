@@ -23,6 +23,7 @@ the domain stands. It reads the domain from production's `terraform.tfvars` (or 
 - [5. GitHub setup for production (you)](#5-github-setup-for-production-you)
 - [6. Release to production (you approve, CI applies)](#6-release-to-production-you-approve-ci-applies)
 - [7. After the first apply](#7-after-the-first-apply)
+- [The web search gateway's region](#the-web-search-gateways-region)
 - [Vision (optional)](#vision-optional)
 - [Rolling back](#rolling-back)
 - [What it costs (list prices, roughly)](#what-it-costs-list-prices-roughly)
@@ -162,10 +163,16 @@ python scripts/setup_repo.py --dry-run     # asks and checks, sets nothing
 python scripts/setup_repo.py
 ```
 
-For production it sets `AWS_PROD_DEPLOY_ROLE_ARN` and `ADMIN_ALLOWED_CIDRS_PROD` (both required),
-and, if you give them, `AWS_PROD_ACCOUNT_ID`, `TF_STATE_BUCKET_PROD` and `ALERT_EMAIL_PROD`. The
+For production it sets `AWS_PROD_DEPLOY_ROLE_ARN` (required), and, if you give them, `AWS_PROD_ACCOUNT_ID`, `TF_STATE_BUCKET_PROD` and `ALERT_EMAIL_PROD`. The
 full table, and why each is a secret or a variable, is in
-[configuration.md](configuration.md#github-secrets-and-variables).
+[configuration.md](configuration.md#github-secrets-and-variables). Your IP is not among them: after
+production's first release, let yourself in to its admin API with
+`python scripts/admin_allowlist.py set --env production --my-ip`
+([configuration.md](configuration.md#the-admin-apis-address-allowlist)).
+
+It does not ask where the web search gateway runs: unset, production's is in `ap-northeast-1`
+(Tokyo), like dev's. To choose another Region, see
+[The web search gateway's region](#the-web-search-gateways-region) below.
 
 Also worth doing while you are in Settings:
 
@@ -265,6 +272,27 @@ that has waited two days or more**: clear what you want to decide yourself first
 off for the release (`python scripts/admin_cli.py reviewer set --may-approve off` against production,
 which needs no release, or `topics update <id> --reviewer-may-approve off`). The switches and what to do with his financial
 approvals are in [the deployment runsheet](deployment-runsheet.md#the-reviewer-bear-on-by-default).
+
+## The web search gateway's region
+
+Production's AgentCore web search gateway is in `ap-northeast-1` (Tokyo) unless you set
+otherwise; AWS offers the Web Search Tool only there, in `us-east-1` and in `eu-west-1`. To move
+production's alone:
+
+1. Re-apply the bootstrap by hand with the new Region added to `web_search_regions`
+   (`-var='web_search_regions=["ap-northeast-1","us-east-1"]'`, plus your usual variables), in
+   production's account if it has its own. Keep `ap-northeast-1` in the list while dev, or the
+   gateway being replaced, is still there.
+2. Set `WEB_SEARCH_REGION_PROD` (on the `production` environment or the repository) to the new
+   Region. Production reads `WEB_SEARCH_REGION_PROD`, then `WEB_SEARCH_REGION` (the `production`
+   environment's, else the repository's), then `ap-northeast-1`, so a shared `WEB_SEARCH_REGION`
+   set on the repository for dev moves production too at its next release.
+3. Publish a release. The apply replaces the gateway in the new Region and points the Lambdas at
+   it; it holds no data. An `AccessDenied` on `bedrock-agentcore` means step 1 is missing.
+
+To move back, remove the variable (or set it to `ap-northeast-1`) and release again. Dev's steps,
+and why each is needed, are in
+[the deployment runsheet](deployment-runsheet.md#the-web-search-gateways-region).
 
 ## Vision (optional)
 

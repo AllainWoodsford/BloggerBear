@@ -23,7 +23,7 @@ import boto3
 import pytest
 import uvicorn
 from moto import mock_aws
-from ops_agent_fakes import ScriptedModel
+from ops_agent_fakes import ScriptedModel, stored_allowlist
 from table_schemas import create_table
 
 import common.dynamo as dynamo_module
@@ -263,7 +263,7 @@ def test_under_allowlist_the_agent_gets_through_by_vouching_for_the_operators_ad
     url, recorder = ops_server
     key = "k" * 40
     monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", key)
-    monkeypatch.setenv("OPS_ASSISTANT_ALLOWED_CIDRS", "203.0.113.7")
+    stored_allowlist(monkeypatch, "203.0.113.7")
     put_pipeline_config(assistant_access="allowlist")
 
     with agent.mcp_client(url, TOKEN, access.forwarding_headers("203.0.113.7")) as client:

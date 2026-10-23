@@ -8,10 +8,10 @@ Settings live in six places:
 
 | Where | What kind of setting | How you set it |
 |---|---|---|
-| [GitHub secrets and variables](#github-secrets-and-variables) | Which account, region, bucket and name prefix a deploy uses; who may reach the admin API | `python scripts/setup_repo.py`, or Settings → Secrets and variables → Actions |
+| [GitHub secrets and variables](#github-secrets-and-variables) | Which account, region, bucket and name prefix a deploy uses | `python scripts/setup_repo.py`, or Settings → Secrets and variables → Actions |
 | [Bootstrap variables](#bootstrap-variables) | The state bucket, the deploy roles, the DNS zone | `-var` on the one-time local `terraform apply` |
 | [Environment Terraform variables](#environment-terraform-variables) | The domain, the model, a few switches | `infra/environments/<env>/terraform.tfvars`, by pull request |
-| [SSM Parameter Store](#ssm-parameter-store) | API keys for the data sources | `aws ssm put-parameter`, or the console |
+| [SSM Parameter Store](#ssm-parameter-store) | API keys for the data sources; [who may reach the admin API](#the-admin-apis-address-allowlist) | `aws ssm put-parameter`, or the console; the allowlist with `python scripts/admin_allowlist.py` |
 | [DynamoDB](#dynamodb-settings-changed-with-no-deploy) | Models, pipeline behaviour, topics | `python scripts/admin_cli.py`, or the console |
 | [The model catalog's environment variables](#the-model-catalogs-environment-variables) | Which Lambda `models reprice` and `models discover` start (not on/off switches; nothing to set) | Terraform, with a default in the code |
 | [Your own machine](#your-own-machine) | Where the admin CLI points | Environment variables |
@@ -42,9 +42,8 @@ be on the `production` environment or on the repository.
 | `TF_STATE_REGION` | variable | repo | The region of the state bucket, only if it is not `AWS_REGION`. Optional, and rarely needed. | `eu-west-1` |
 | `VISION_ENABLED` | variable | repo | Set to `true` to deploy the vision worker (OpenCV on arm64 in `vision_region`, for the `satellite_vision` and `rail_access` topics; [the vision docs](enhancements/archive/vision.md)). Read as a switch: `true`, in any letter case (GitHub Actions compares strings ignoring case), turns the worker on; any other value, or unset, is read as off, so nothing of it is created and a deployed worker is removed on the next apply. The bootstrap must have been re-applied with `vision_region` first. Set on the repository, it also turns the worker on in production at the next release: the release job runs in the `production` environment, whose `vars.VISION_ENABLED` falls back to the repository's value. To keep production off until the dev trial is done, set `VISION_ENABLED` to `false` on the `production` environment. Set to `true` on the `production` environment alone, it turns the worker on there alone. | `true` |
 | `REVIEWER_ENABLED` | variable | repo or environment | Deploys Professor Grizzlewick, the reviewer bear ([reviewer-bear.md](enhancements/reviewer-bear.md)). **On unless set to `false`** (any letter case): the opposite reading to `VISION_ENABLED`, so a deployment that never set it gets him. `false` deploys neither his Lambda nor his schedule, and removes them on the next apply. Set on the `production` environment alone to differ there. | `false` |
+| `WEB_SEARCH_REGION` | variable | repo or `production` | Where the AgentCore web search gateway runs (the fallback search when GDELT fails). **Optional: unset, it is `ap-northeast-1` (Tokyo)**, where it has always been. Only `us-east-1`, `eu-west-1` or `ap-northeast-1`, the three Regions AWS offers the Web Search Tool in; anything else fails the plan. Read as `WEB_SEARCH_REGION_DEV` / `WEB_SEARCH_REGION_PROD` first, then this shared name, then `ap-northeast-1`, so each environment can have its own. The bootstrap's `web_search_regions` must include it, re-applied by hand first, or the apply is refused. Changing it moves the gateway: the next apply replaces it in the new Region. [The web search gateway's region](deployment-runsheet.md#the-web-search-gateways-region) has the steps. | `us-east-1` |
 | `UNIQUE_NAME_PREFIX` | variable | repo | What every resource name starts with: `<prefix>-<env>-<resource>`. Optional: unset, it is `bloggerbear`. **Required for a fork.** Bucket names and the sign-in host name must be unique across all of AWS, and the default ones are taken. Lowercase letters, digits and hyphens, starting with a letter, at most 14, with no hyphen at the end (at most 12 if the vision worker will run in production: [the bucket that limits it](#environment-terraform-variables)). No two hyphens in a row, and no `aws`, `amazon` or `cognito` in it: the plan refuses them. Must be the same as bootstrap's `unique_name_prefix`. Set it before the first deploy and never change it. | `acme-blog` |
-| `ADMIN_ALLOWED_CIDRS_DEV` | secret | repo | Your public IP, as a Terraform list. Without it nothing can call dev's admin API. | `["203.0.113.7/32"]` |
-| `ADMIN_ALLOWED_CIDRS_PROD` | secret | `production` | The same, for production. | `["203.0.113.7/32"]` |
 | `WAF_REGIONAL_ENABLED` | variable | repo or `production` | A cost-saving switch ([cost-saving.md](cost-saving.md)): `false` creates no regional web ACL in front of the environment's two APIs. Read as `WAF_REGIONAL_ENABLED_DEV` / `WAF_REGIONAL_ENABLED_PROD` first, then this shared name, then `true`. Only `true` or `false`; anything else fails the plan. Optional: unset is the firewall as it has always been. | `false` |
 | `WAF_ADMIN_ALLOWLIST` | variable | repo or `production` | A cost-saving switch: `false` keeps the admin API's address allowlist as its resource policy alone, with no admin web ACL. `WAF_ADMIN_ALLOWLIST_DEV` / `WAF_ADMIN_ALLOWLIST_PROD` first, then this, then `true`. | `false` |
 | `WAF_SITE_ENABLED` | variable | repo or `production` | A cost-saving switch, production only: `false` creates no shared CloudFront web ACL for the site and the public API's CDN. `WAF_SITE_ENABLED_PROD` first, then this, then `true`. | `false` |
@@ -55,9 +54,11 @@ be on the `production` environment or on the repository.
 | `RUFF_AUTOFIX_TOKEN` | secret | repo | A fine-grained token with contents:write on this repository only, so the `ruff-autofix` workflow can push safe lint fixes to a pull request's branch. Optional: without it the workflow only reports the fixes. Not set by the setup script. | not shown |
 | `CLAUDE_CODE_OAUTH_TOKEN` | secret | repo | For the `claude-issue-worker` workflow, which only the repository owner can trigger. Optional: leave it unset and the workflow is unused. Not set by the setup script. | not shown |
 
-**Not in this table, on purpose: the CoinGecko API key and the GitHub API token.** The data
-sources' keys are not GitHub secrets and the setup script does not set them. They are kept in
-AWS, one per environment: see [SSM Parameter Store](#ssm-parameter-store) below.
+**Not in this table, on purpose: the CoinGecko API key, the GitHub API token and your IP
+address.** None is a GitHub secret and the setup script sets none of them. They are kept in AWS,
+one per environment: see [SSM Parameter Store](#ssm-parameter-store) below. (The IP used to be the
+`ADMIN_ALLOWED_CIDRS_DEV` and `ADMIN_ALLOWED_CIDRS_PROD` secrets. Nothing reads them now: once
+[the allowlist parameter](#the-admin-apis-address-allowlist) is set, delete them.)
 
 Why some are secrets and some are variables:
 
@@ -100,6 +101,7 @@ account ([separate AWS accounts](deployment-separate-accounts.md#bootstrap-once-
 | `separate_environment_permissions` | Whether each deploy role is refused the other environment's resources (the dev role production's, and the reverse). Deny only: it changes nothing a role may do in its own environment. Pass `false` to detach it if a deploy is ever refused by it. | `true` |
 | `bedrock_budget_limit_usd` | The monthly Bedrock spend, in USD, that triggers the budget alert. | `20` |
 | `aws_region` | Region for the state bucket and the one the deploy roles may work in. Must match `AWS_REGION`. | `ap-southeast-2` |
+| `web_search_regions` | The Regions the deploy roles may create the web search gateway in, as a list: `-var='web_search_regions=["ap-northeast-1","us-east-1"]'`. Every `WEB_SEARCH_REGION` value you use, dev's and production's, must be in it. Only `us-east-1`, `eu-west-1` and `ap-northeast-1`. | `["ap-northeast-1"]` |
 
 Its outputs feed the other tables: `dev_deploy_role_arn`, `prod_deploy_role_arn`,
 `state_bucket_name`, `hosted_zone_id`, `hosted_zone_name_servers`.
@@ -124,9 +126,10 @@ only production's domain.
 | `vision_region` | both | Where the vision worker runs, beside the Sentinel-2 imagery. Must match the bootstrap's `vision_region`. In production, with the worker on, it and the prefix must fit one bucket name (below). | `"us-west-2"` |
 
 Do not set these in `terraform.tfvars`; CI supplies them from the GitHub settings above:
-`admin_allowed_cidrs`, `alert_email`, `aws_account_id`, `unique_name_prefix`, `aws_region`,
+`alert_email`, `aws_account_id`, `unique_name_prefix`, `aws_region`,
 `vision_enabled` (the `VISION_ENABLED` variable above), `reviewer_enabled` (the `REVIEWER_ENABLED`
-variable above), and the firewall switches
+variable above), `web_search_region` (the `WEB_SEARCH_REGION` variables above; `ap-northeast-1`
+when unset), and the firewall switches
 `waf_regional_enabled`, `waf_admin_allowlist`, `waf_log_all_requests` and, in production only,
 `waf_site_enabled` (the `WAF_*` variables above).
 
@@ -155,8 +158,9 @@ musing and the model catalog's jobs) are not variables: they are written in each
 
 ## SSM Parameter Store
 
-The API keys for the data sources. Both are optional: without one, the adapter uses the public
-API with no key, at a lower rate limit.
+The API keys for the data sources, and [the admin API's address
+allowlist](#the-admin-apis-address-allowlist) (below). The keys are optional: without one, the
+adapter uses the public API with no key, at a lower rate limit.
 
 Each is a `SecureString` parameter that **you create by hand, once per environment**, in that
 environment's AWS account and region. Terraform never creates them and they are not GitHub
@@ -199,6 +203,54 @@ aws ssm put-parameter --name /bloggerbear/production/github-api-token --type Sec
 
 The longer explanation is in the deployment runsheet:
 [API keys for the data sources](deployment-runsheet.md#api-keys-for-the-data-sources).
+
+### The admin API's address allowlist
+
+Only your addresses may call the admin API (what `admin_cli.py` talks to). The list is one
+`SecureString` parameter per environment, and **`scripts/admin_allowlist.py` is the one thing
+that writes it**. Terraform is never given an address: no variable, no GitHub secret, nothing in
+a plan. (Its state still records what a refresh reads back from the IP set and the policy, in the
+private state bucket, as it did before.)
+
+| Parameter | What it is | Without it |
+|---|---|---|
+| `/<prefix>/dev/admin-allowed-cidrs` | Your public IPv4 ranges, comma-separated (`203.0.113.7/32`). | Nothing can call dev's admin API (it fails closed). |
+| `/<prefix>/production/admin-allowed-cidrs` | The same, for production. | The same, for production. |
+
+```bash
+python scripts/admin_allowlist.py set --env dev --my-ip     # this machine's address, as a /32
+python scripts/admin_allowlist.py set --env production 203.0.113.7/32 198.51.100.0/28
+python scripts/admin_allowlist.py show --env dev            # what each place holds; only reads
+python scripts/admin_allowlist.py sync --env dev            # copy the stored list out again
+```
+
+- **Run `set` after the first deploy of an environment, and whenever your IP changes.** No apply
+  and no pull request: the change is in force when the command returns.
+- **Moving from the old `ADMIN_ALLOWED_CIDRS_*` secrets**: run `set` for each environment
+  **before** the change that removed them deploys there (dev on merge, production on its release).
+  The apply keeps what the IP set and the policy already hold, so the admin API is never shut;
+  but an environment whose `assistant_access` is `allowlist` refuses the assistant until the
+  parameter exists (it fails closed). Then delete the two secrets.
+- **What `set` does**: it writes the parameter, then copies the list into the two places that
+  enforce it: the WAF IP set `<prefix>-<env>-admin-allowlist` (when the `WAF_ADMIN_ALLOWLIST`
+  switch is on; it applies at once) and the admin API's resource policy, a Deny of every call
+  from any other address. A resource policy is enforced only from the next deployment, so it also
+  deploys the stage. `sync` does the copying alone, from what is stored.
+- **Terraform creates both places locked** (an empty IP set and a Deny of every call) and then
+  ignores what is in them, so an apply never undoes `set`. After each apply, CI deploys the admin
+  API's stage once more, so the stage keeps the policy the API holds (the `terraform.yml` and
+  release workflows' "Redeploy the admin API" step).
+- **IPv4 only**, because the IP set is. A bare address is its `/32`; `0.0.0.0/0` is refused, and
+  anything wider than `/16` needs `--allow-wide`.
+- **The ops assistant's `allowlist` mode uses the same list.** The mode itself
+  (`assistant_access`: `open`, `allowlist` or `off`) is a separate setting in
+  [DynamoDB](#dynamodb-settings-changed-with-no-deploy), `open` by default. Only under `allowlist`
+  does the assistant read this parameter, on each request (`OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER`
+  names it; its roles may read that one parameter). Under `open` or `off` it never looks.
+- **Credentials**: your own, for that environment's account, with `ssm:GetParameter` and
+  `PutParameter`, `wafv2:ListIPSets`, `GetIPSet` and `UpdateIPSet`, and `apigateway:GET`, `PATCH`
+  and `POST`. `--prefix` and `--region` default to `bloggerbear` and `ap-southeast-2`.
+- **In Git Bash on Windows** nothing needs `MSYS_NO_PATHCONV`: the script builds the name itself.
 
 ## DynamoDB: settings changed with no deploy
 

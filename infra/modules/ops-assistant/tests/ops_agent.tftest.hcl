@@ -53,10 +53,13 @@ variables {
   mfa_configuration             = "OPTIONAL"
   throttling_rate_limit         = 5
   throttling_burst_limit        = 10
-  allowed_cidrs                 = ["203.0.113.0/24", "2001:db8::/32"]
-  agent_model_id                = "au.example.test-model-v1:0"
-  agent_allowed_origin          = "https://example.com"
-  agent_forward_key             = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+  allowed_cidrs_parameter = {
+    name = "/bloggerbear/test/admin-allowed-cidrs"
+    arn  = "arn:aws:ssm:ap-southeast-2:123456789012:parameter/bloggerbear/test/admin-allowed-cidrs"
+  }
+  agent_model_id       = "au.example.test-model-v1:0"
+  agent_allowed_origin = "https://example.com"
+  agent_forward_key    = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
 }
 
 run "the_agent_role_can_invoke_the_model_and_read_one_row" {
@@ -67,10 +70,11 @@ run "the_agent_role_can_invoke_the_model_and_read_one_row" {
     condition = toset(flatten(data.aws_iam_policy_document.ops_agent.statement[*].actions)) == toset([
       "bedrock:InvokeModel",
       "dynamodb:GetItem",
+      "ssm:GetParameter",
       "logs:CreateLogStream",
       "logs:PutLogEvents",
     ])
-    error_message = "the agent's role allows something other than: invoke the model, read the access switch, write its log"
+    error_message = "the agent's role allows something other than: invoke the model, read the access switch and the allowlist, write its log"
   }
 
   assert {
@@ -254,7 +258,7 @@ run "the_agent_is_told_what_it_needs_and_tracing_is_not_switched_on" {
       "OPS_MCP_URL",
       "OPS_AGENT_ALLOWED_ORIGIN",
       "MODEL_CONFIG_TABLE",
-      "OPS_ASSISTANT_ALLOWED_CIDRS",
+      "OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER",
       "OPS_AGENT_FORWARD_KEY",
       "OPS_BRIEFINGS_TABLE",
       "OPS_AGENT_DAILY_QUESTION_CAP",
@@ -301,15 +305,24 @@ run "the_agent_is_told_what_it_needs_and_tracing_is_not_switched_on" {
     error_message = "the handler reads the access switch from the config table, so it must be told its name"
   }
 
-  # The same list, joined the same way, as the MCP server is given.
+  # The parameter's name, the same one the MCP server is given: never the addresses themselves.
   assert {
-    condition     = nonsensitive(aws_lambda_function.ops_agent.environment[0].variables.OPS_ASSISTANT_ALLOWED_CIDRS) == "203.0.113.0/24,2001:db8::/32"
-    error_message = "the agent is given the operator's addresses for the allowlist setting"
+    condition     = aws_lambda_function.ops_agent.environment[0].variables.OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER == "/bloggerbear/test/admin-allowed-cidrs"
+    error_message = "the agent is told which parameter holds the operator's addresses"
   }
 
   assert {
-    condition     = nonsensitive(aws_lambda_function.ops_agent.environment[0].variables.OPS_ASSISTANT_ALLOWED_CIDRS == aws_lambda_function.ops_mcp.environment[0].variables.OPS_ASSISTANT_ALLOWED_CIDRS)
-    error_message = "the agent and the MCP server must be given the same allowlist"
+    condition     = aws_lambda_function.ops_agent.environment[0].variables.OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER == aws_lambda_function.ops_mcp.environment[0].variables.OPS_ASSISTANT_ALLOWED_CIDRS_PARAMETER
+    error_message = "the agent and the MCP server must read the same allowlist"
+  }
+
+  # Each may read that one parameter, and nothing else in SSM.
+  assert {
+    condition = alltrue([
+      for statements in [data.aws_iam_policy_document.ops_agent.statement, data.aws_iam_policy_document.ops_mcp.statement] :
+      toset(flatten([for statement in statements : statement.resources if contains(statement.actions, "ssm:GetParameter")])) == toset(["arn:aws:ssm:ap-southeast-2:123456789012:parameter/bloggerbear/test/admin-allowed-cidrs"])
+    ])
+    error_message = "both roles may read the allowlist parameter, and no other"
   }
 }
 

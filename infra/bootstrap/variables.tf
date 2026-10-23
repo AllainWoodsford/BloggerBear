@@ -188,3 +188,15 @@ variable "vision_region" {
     error_message = "vision_region must look like an AWS region, e.g. us-west-2."
   }
 }
+
+variable "web_search_regions" {
+  type        = list(string)
+  default     = ["ap-northeast-1"]
+  description = "The Regions the deploy roles may create the AgentCore web search gateway in (bedrock-agentcore:*, infra/modules/web-search): each environment's web_search_region (the WEB_SEARCH_REGION GitHub variables) must be in this list. The Web Search Tool is only offered in us-east-1, eu-west-1 and ap-northeast-1. Not sensitive."
+
+  validation {
+    # AWS offers the Web Search Tool in these three Regions only.
+    condition     = length(var.web_search_regions) > 0 && alltrue([for r in var.web_search_regions : contains(["us-east-1", "eu-west-1", "ap-northeast-1"], r)])
+    error_message = "web_search_regions must list one or more of the Web Search Tool's regions: us-east-1, eu-west-1, ap-northeast-1."
+  }
+}

@@ -3,7 +3,7 @@
     python scripts/setup_repo.py --dry-run     # step through everything; changes nothing
     python scripts/setup_repo.py               # the real thing
     python scripts/setup_repo.py --repo your-name/your-fork
-    python scripts/setup_repo.py --only ADMIN_ALLOWED_CIDRS_DEV ADMIN_ALLOWED_CIDRS_PROD
+    python scripts/setup_repo.py --only ALERT_EMAIL_DEV ALERT_EMAIL_PROD
 
 It needs Python 3.11+ and the GitHub CLI (`gh`), signed in. It never changes anything in AWS: its
 one AWS-side step, the optional CoinGecko API key, only reads (and only if the AWS CLI is there)
@@ -38,8 +38,6 @@ How it is built, and why:
 from __future__ import annotations
 
 import argparse
-import ipaddress
-import json
 import re
 import subprocess
 import sys
@@ -117,12 +115,6 @@ class Setting:
 # (a topic's schedule name in production must fit EventBridge Scheduler's 64 characters).
 PREFIX_MAX = 14
 
-_CIDR_HELP = (
-    "The public IP addresses allowed to call the admin API. Everything else is blocked, and with\n"
-    "this unset nothing can call it at all. Give one or more IPv4 ranges separated by commas, such\n"
-    "as 203.0.113.7/32 for a single address (/32 means exactly that one). Find yours by searching\n"
-    "for \"what is my IP\"."
-)
 _EMAIL_HELP = (
     "Where alarm emails go. AWS sends a confirmation email first; alarms only arrive after you\n"
     "click the link in it."
@@ -169,10 +161,6 @@ SETTINGS: tuple[Setting, ...] = (
             "touch resources whose names start with it. It is a variable, not a secret: it ends up in\n"
             "public names.",
             tf_var="unique_name_prefix"),
-    Setting("ADMIN_ALLOWED_CIDRS_DEV", "secret", "repo", "required", "cidrs",
-            _CIDR_HELP, env="dev", tf_var="admin_allowed_cidrs"),
-    Setting("ADMIN_ALLOWED_CIDRS_PROD", "secret", PRODUCTION, "required", "cidrs",
-            _CIDR_HELP, env="prod", same_as="ADMIN_ALLOWED_CIDRS_DEV", tf_var="admin_allowed_cidrs"),
     Setting("ALERT_EMAIL_DEV", "secret", "repo", "optional", "email",
             _EMAIL_HELP, env="dev", tf_var="alert_email"),
     Setting("ALERT_EMAIL_PROD", "secret", PRODUCTION, "optional", "email",
@@ -215,6 +203,13 @@ NOT_ASKED = {
     "WAF_LOG_ALL_REQUESTS_PROD",
     "WAF_SITE_ENABLED",
     "WAF_SITE_ENABLED_PROD",
+    # Where the web search gateway runs (docs/configuration.md): WEB_SEARCH_REGION_DEV /
+    # WEB_SEARCH_REGION_PROD, else the shared name, else ap-northeast-1. The default is what a
+    # first deploy wants, and another Region needs the bootstrap re-applied first, so this script
+    # does not ask.
+    "WEB_SEARCH_REGION",
+    "WEB_SEARCH_REGION_DEV",
+    "WEB_SEARCH_REGION_PROD",
     # GitHub creates this for every workflow run. Nobody sets it.
     "GITHUB_TOKEN",
     # Only claude-issue-worker.yml reads it. That workflow is an optional extra with its own
@@ -250,53 +245,6 @@ _NEED_LABEL = {"required": "required", "fork": "required for a fork", "optional"
 
 class Invalid(ValueError):
     """An answer failed its check. The message is shown to the person; it never repeats the answer."""
-
-
-def check_cidrs(raw: str) -> str:
-    """One or more IPv4 ranges -> the Terraform list the workflow passes on, e.g. ["203.0.113.7/32"].
-
-    IPv6 is recognised and refused rather than passed through: the allowlist is a WAF IP set with
-    ip_address_version = "IPV4" (infra/environments/*/main.tf), so one IPv6 entry fails the whole
-    apply. A /0 is refused too: it would open the admin API to everyone, and AWS WAF rejects it."""
-    text = raw.strip()
-    if text.startswith("["):  # already a Terraform/JSON list, as the docs show it
-        try:
-            parts = json.loads(text)
-        except ValueError:
-            raise Invalid("That list is not valid. Type the ranges separated by commas.") from None
-        if not isinstance(parts, list) or not all(isinstance(part, str) for part in parts):
-            raise Invalid("That list is not valid. Type the ranges separated by commas.")
-    else:
-        parts = [part for part in re.split(r"[,\s]+", text) if part]
-    if not parts:
-        raise Invalid("Give at least one range, such as 203.0.113.7/32.")
-    ranges: list[str] = []
-    for position, part in enumerate(parts, start=1):
-        try:
-            network = ipaddress.ip_network(part.strip(), strict=True)
-        except ValueError:
-            raise Invalid(
-                f"Range {position} is not valid. Use an address and a size, such as 203.0.113.7/32. "
-                "The address must be the first one in its range."
-            ) from None
-        if network.version == 6:
-            raise Invalid(
-                f"Range {position} is IPv6. The admin allowlist only takes IPv4 ranges; "
-                "an IPv6 one would make the deploy fail."
-            )
-        if network.prefixlen == 0:
-            raise Invalid(
-                "STOP: 0.0.0.0/0 is every address on the internet. It would open the admin API to "
-                "everyone, and AWS refuses it. Give your own address, such as 203.0.113.7/32."
-            )
-        if str(network) not in ranges:
-            ranges.append(str(network))
-    return json.dumps(ranges)
-
-
-def wide_ranges(value: str) -> int:
-    """How many of a checked CIDR answer's ranges cover more than 65,536 addresses."""
-    return sum(1 for item in json.loads(value) if ipaddress.ip_network(item).prefixlen < 16)
 
 
 def check_email(raw: str) -> str:
@@ -455,7 +403,6 @@ def check_denylist(raw: str) -> str:
 
 
 CHECKS: dict[str, Callable[..., str]] = {
-    "cidrs": check_cidrs,
     "email": check_email,
     "account_id": check_account_id,
     "role_arn": check_role_arn,
@@ -477,9 +424,6 @@ def mask(value: str) -> str:
 def shown(setting: Setting, value: str) -> str:
     if setting.kind == "variable":
         return value  # public by definition: it prints in every log
-    if setting.check == "cidrs":
-        count = len(json.loads(value))
-        return f"{count} range{'s' if count != 1 else ''}"
     if setting.check == "denylist":
         count = len(value.splitlines())
         return f"{count} entr{'ies' if count != 1 else 'y'}"
@@ -901,10 +845,6 @@ def ask_setting(
         except Invalid as problem:
             prompter.say(f"  {problem}")
             continue
-        if setting.check == "cidrs" and wide_ranges(value):
-            prompter.say("  WARNING: at least one of those ranges covers more than 65,000 addresses.")
-            if not prompter.yes("  Allow all of them to reach the admin API?", False):
-                continue
         return value
 
 
@@ -1319,8 +1259,8 @@ def build_parser() -> argparse.ArgumentParser:
             "      The same, then set them after you confirm.\n"
             "  python scripts/setup_repo.py --repo your-name/your-fork\n"
             "      Name the repository instead of letting gh work it out.\n"
-            "  python scripts/setup_repo.py --only ADMIN_ALLOWED_CIDRS_DEV ADMIN_ALLOWED_CIDRS_PROD\n"
-            "      Just these, for example after your IP address changed.\n\n"
+            "  python scripts/setup_repo.py --only ALERT_EMAIL_DEV ALERT_EMAIL_PROD\n"
+            "      Just these, for example after your alarm address changed.\n\n"
             "settings: " + ", ".join(setting.name for setting in SETTINGS) + "\n\n"
             "There is no --yes: secrets are only ever set after you have seen the summary."
         ),
