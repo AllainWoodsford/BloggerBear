@@ -25,8 +25,9 @@ is in the [deployment runsheet](../deployment-runsheet.md#the-reviewer-bear-on-b
 reasons behind the design are in the archived spec,
 [reviewer-bear.md](../enhancements/archive/reviewer-bear.md). This page does not repeat them.
 
-**In the assistant.** There is no step-by-step walkthrough of this feature (no
-`architecture(feature=...)` entry). Ask about its parts by name instead:
+**In the assistant.** `architecture(feature="reviewer-bear")` walks through the steps below with
+this environment's resource names on screen. Asked what he does, the assistant gives this
+walk-through, because no guide describes him. Ask about a part by name for more:
 `architecture(name="reviewer")` for his Lambda, what he does and when he runs, or the same call
 with `name` set to `"model-config"` (the table that holds his two rows), `"moderation-queue"`,
 `"articles"` or `"musings"`. These help too:

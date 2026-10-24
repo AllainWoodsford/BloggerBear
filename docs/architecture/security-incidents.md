@@ -18,11 +18,12 @@ reaches the admin API is on [The admin CLI and the admin API](admin-cli.md). The
 what an incident records. [SECURITY.md](../../SECURITY.md#testing-the-live-site) tells anyone
 testing the live site that their blocked requests are recorded. This page does not repeat them.
 
-**In the assistant.** This page has no `feature` entry yet. Ask about its parts by name instead:
-`architecture(name="security-events")` (the table and the Lambda, which share the name),
-`"sign-in-events"`, `"sign-ins"`, `"waf-public-api"`, `"waf-admin"`, `"waf-shared"`,
-`"admin-api-access"`, `"public-api-acl"` or `"admin-acl"`. You can also ask about the layer that
-holds the firewalls (`edge`).
+**In the assistant.** `architecture(feature="security-incidents")` walks through the steps below
+with this environment's resource names on screen, with grouping and recording (3 and 4) as one
+step. Ask about a part by name for more: `architecture(name="security-events")` (the table and the
+Lambda, which share the name), `"sign-in-events"`, `"sign-ins"`, `"waf-public-api"`, `"waf-admin"`,
+`"waf-shared"`, `"admin-api-access"`, `"public-api-acl"` or `"admin-acl"`. You can also ask about
+the layer that holds the firewalls (`edge`).
 - `security_events` lists the open incidents last seen in the last 7 days (1 to 30), by severity.
   It is part of a briefing. Each high incident is a finding, and so is a medium one that is a trend
   or was opened by hand. It reads open incidents only, so one you acknowledge drops off it.

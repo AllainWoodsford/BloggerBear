@@ -3,7 +3,7 @@ what it is called in this environment, and where to look when something goes wro
 
     architecture   one resource described (a table, a function, an API, a dashboard, a log group,
                    ...), or every resource of a kind, as a table on screen; the layers; or a
-                   feature (article research) step by step across them
+                   feature (article research, the reviewer bear, ...) step by step across them
 
 runsheets.py builds on the same catalogue for `investigate`: where to look when the assistant cannot
 look itself.
@@ -1132,11 +1132,15 @@ def resolve_layer(raw) -> str | None:
 #
 # The owner's ask: a layer answers "what is this made of?", not "how does this one thing work?".
 # A feature is a smaller, logical grouping that cuts across the layers: the parts that together
-# make one thing the project does, told in the order the work flows through them. The first is
-# article research (from a topic's data source to an article in S3); the second the vision pipeline
-# (from a satellite site to a map in an article, docs/architecture/blogger-vision.md). More can be
-# added the same way ("prompts as assets" is the next one the owner has in mind) by adding a
-# Feature below; resolve_feature picks the feature with the longest alias the words hold.
+# make one thing the project does, told in the order the work flows through them. There are seven,
+# each told from its page under docs/architecture/: article research (from a topic's data source to
+# an article in S3), the vision pipeline (from a satellite site to a map in an article,
+# blogger-vision.md), the site and reader feedback, stats and costs, security incidents, the
+# reviewer bear and the model catalog. The other three pages there (the admin CLI, this assistant
+# and Alexa+) have no entry: they name the parts to ask about instead. More can be added the same
+# way ("prompts as assets" is the next one the owner has in mind) by adding a Feature below, as
+# docs/architecture/README.md's "Adding a feature" says; resolve_feature picks the feature with the
+# longest alias the words hold.
 #
 # A step's `parts` are catalogue resources as "kind:key" (tests/test_ops_mcp_architecture.py
 # holds that each exists, so a feature cannot name a resource the catalogue lost) and, for what is
@@ -1295,7 +1299,7 @@ FEATURES: tuple[Feature, ...] = (
             "research pipeline", "writing pipeline", "authoring", "how articles are written",
             "how an article is written", "how is an article written", "how are articles written",
             "how is an article researched", "how are articles researched", "findings",
-            "candidate ideas",
+            "candidate ideas", "review", "reviews", "compliance review", "fresh data review",
         ),
     ),
     # docs/architecture/blogger-vision.md's steps, as the assistant tells them.
@@ -1386,6 +1390,468 @@ FEATURES: tuple[Feature, ...] = (
             "vision findings", "satellite", "satellite vision", "satellite imagery",
             "satellite research", "rail", "rail access", "rail access monitor", "rail findings",
             "opencv", "sentinel", "ships",
+        ),
+    ),
+    # docs/architecture/site-and-feedback.md's steps, as the assistant tells them: its twelve, with
+    # the token's three (status, the wait, the decoy) made one and drafting with gear and wear one.
+    Feature(
+        key="site-and-feedback",
+        title="The site and reader feedback (from a vote to the bear's gear and musings)",
+        said="the site and reader feedback",
+        summary="How a reader's visit and vote become the bear's gear and musings: every vote passes "
+        "cheap checks before it is kept, and a week of feedback becomes a proposal that the bear "
+        "wears only once you approve it.",
+        steps=(
+            # frontend/index.html and app.js (the hash routes); render_and_publish_article_page in
+            # common/static_pages.py.
+            Step(
+                "The site",
+                "A static single-page app served from the site bucket, with pages for the topics, an "
+                "article, the musings and the stats. Every published article also gets a static page "
+                "of its own, rendered when it is published.",
+                ("bucket:site", "frontend/ (index.html, app.js, article-widgets.js)"),
+            ),
+            # public_api_handler._ROUTES and _response (a max-age only where the route sets one);
+            # infra/modules/api-cdn/; aws_wafv2_web_acl.public_api's rate rules.
+            Step(
+                "The public API",
+                "One anonymous REST API with eleven routes, all answered by one Lambda. Its CDN caches "
+                "only what the Lambda marks cacheable, and the regional firewall limits each visitor to "
+                "500 requests and 10 feedback posts in 5 minutes.",
+                ("api:public-api", "function:public-api", "firewall:public-api-acl"),
+            ),
+            # public_api_handler._feedback_status and _submit_feedback (HONEYPOT_FIELD);
+            # common/feedback_verification.py (issue, verify); frontend/verify.js.
+            Step(
+                "Feedback status and the token",
+                "Before the form shows, the page asks whether feedback is open and, if it is, gets a "
+                "signed one-use token, valid after a random 0.5 to 2 seconds, with proof of work when "
+                "the site is busy. A post that fills the hidden decoy field is told it worked, and "
+                "nothing is kept.",
+                ("table:model-config", "frontend/verify.js"),
+            ),
+            # common/comment_screening.py (screen_comment); feedback_limits.take_screening_slot;
+            # security_events.record_incident and record_trend, from _submit_feedback.
+            Step(
+                "The comment screen",
+                "A comment is checked by code, then by one model call that must answer KEEP, only while "
+                "today's model-check budget lasts. A dropped comment refuses the whole submission, vote "
+                "and all, and an attack-shaped one also opens a security incident.",
+                (
+                    "Comment screening (common/comment_screening.py)",
+                    "Amazon Bedrock (Converse API)",
+                    "table:security-events",
+                ),
+            ),
+            # feedback_limits.acquire; put_feedback and update_article_net_votes in common/dynamo.py;
+            # stats_tracking.record_feedback_given.
+            Step(
+                "Counted and stored",
+                "Only then is it counted against the article, the day and the rate window. The vote and "
+                "any comment are stored with no identifier of any kind, the article's net votes move by "
+                "one, and the week's feedback count goes up.",
+                ("table:feedback", "table:articles", "table:stats-current"),
+            ),
+            # weekly_reflection_handler.py (_LOOKBACK_DAYS); gear.generate_identity and roll_rarity.
+            Step(
+                "The weekly reflection",
+                "Mondays at 13:00 Sydney time it reads the last 7 days of feedback and, for each topic "
+                "with some, asks a model for a change, the comments passed as data. Each is stored as a "
+                "pending proposal, already named as gear, with a rarity code rolls.",
+                (
+                    "function:weekly-reflection",
+                    "table:prompt-refinements",
+                    "Amazon Bedrock (Converse API)",
+                ),
+            ),
+            # admin_api_handler._resolve_prompt_refinement and _announce_drop; equipment.plan_equip.
+            Step(
+                "Your decision",
+                "A proposal changes nothing until you approve it with the Admin CLI. With no choice made "
+                "it is worn as a ring for its topic, or parked in the backpack when all five rings are "
+                "worn, and the first time a piece is put on, the bear posts a loot drop unless you skip "
+                "it.",
+                ("function:admin-api", "table:prompt-refinements", "table:musings"),
+            ),
+            # daily_cycle_handler._get_approved_guidance; equipment.guidance_for and pick_armor
+            # (MAX_GUIDANCE_CHARS); wear.apply_feedback.
+            Step(
+                "Gear: drafting and wear",
+                "Each draft wears its topic's rings and a random part of the worn armor, up to about "
+                "4,000 characters, recorded on the article. A downvote costs each of those pieces one "
+                "durability and an upvote gives one back; a piece at none is taken off.",
+                ("function:daily-cycle", "table:articles", "table:prompt-refinements"),
+            ),
+            # common/musings.py (_MAX_MUSING_CHARS); musing_feedback_handler.py;
+            # public_api_handler._list_musings; frontend/moods.js.
+            Step(
+                "Musings",
+                "Short posts in the bear's voice, 280 characters at most, each with a mood: when an "
+                "article is published or rejected, a topic is paused or resumed or gear drops, every "
+                "4 days about feedback, and from Professor Grizzlewick.",
+                ("table:musings", "function:musing-feedback", "function:reviewer"),
+            ),
+        ),
+        aliases=(
+            "site and feedback", "site and reader feedback", "site", "public site", "website",
+            "public api", "reader feedback", "feedback", "votes", "vote", "voting",
+            "comment screening", "comment screen", "honeypot", "decoy field", "proof of work",
+            "feedback token", "weekly reflection", "prompt refinements", "refinements", "proposals",
+            "gear", "equipment", "armor", "rings", "wear", "loot drops", "mood", "moods", "musings",
+            "musing",
+        ),
+    ),
+    # docs/architecture/stats-and-costs.md's steps, as the assistant tells them: its nine, with the
+    # API and the page made one.
+    Feature(
+        key="stats-and-costs",
+        title="Stats and costs (from a model call to the Stats page)",
+        said="stats and costs",
+        summary="How every model call and request becomes a number on the Stats page: an article's "
+        "cost is kept on the article, everything else goes onto one weekly row, a Monday rollover "
+        "keeps each week, and a daily poll reads the AWS bill.",
+        steps=(
+            # bedrock.invoke_model_tracked; costing.build_lineage; stats_tracking.record_article_lineage,
+            # from daily_cycle_handler.py and common/rewrite.py.
+            Step(
+                "An article's own cost",
+                "Every model call that goes into an article is recorded in its lineage with its tokens "
+                "and cost; one call nothing can price leaves the whole article unpriced, never "
+                "part-summed. The article's whole cost is also added onto this week's row.",
+                ("table:articles", "function:daily-cycle", "common/costing.py"),
+            ),
+            # stats_tracking.tracked_claude, record_model_usage and record_assistant_run
+            # (BEDROCK_CATEGORIES).
+            Step(
+                "Spend on no article",
+                "Each model call outside an article is tracked with a category, such as musings, "
+                "comment screening or this assistant, and its tokens and cost are added onto this "
+                "week's row. A call with no price is counted as unpriced, never as free.",
+                ("table:stats-current", "common/stats_tracking.py (tracked_claude)"),
+            ),
+            # stats_tracking's record_* counters (AGENTCORE_WEB_SEARCH_USD_PER_QUERY);
+            # lambda_timing.track_lambda_duration.
+            Step(
+                "Activity and run time",
+                "Plain counters go onto the same row: feedback kept and rejected, loot drops, and web "
+                "searches, each AgentCore one at US$0.007. The pipeline's Lambdas time themselves and "
+                "add their milliseconds.",
+                ("table:stats-current", "common/lambda_timing.py"),
+            ),
+            # increment_current_stats and get_current_stats in common/dynamo.py (STATS_CURRENT_SHARDS).
+            Step(
+                "This week's row",
+                "Every increment is added onto one of 8 shard rows picked at random, so no one item is "
+                "hot. Reading the week sums them with the base row, which holds the cost poll's "
+                "readings.",
+                ("table:stats-current",),
+            ),
+            # stats_rollover_handler.py; stats_tracking.split_for_rollover.
+            Step(
+                "The weekly rollover",
+                "Mondays at 13:15 Sydney time, after the weekly reflection, the week's row is copied "
+                "into history under its Monday and added onto the all-time row, then cleared for the "
+                "new week.",
+                ("function:stats-rollover", "table:stats-history"),
+            ),
+            # cost_explorer_poll_handler.py; cost_explorer.fetch_costs (COMPLETE_WEEKS, us-east-1);
+            # stats_tracking.record_aws_bill.
+            Step(
+                "The daily cost poll",
+                "Every day at 10:00 UTC it reads the AWS bill by service from Cost Explorer, up to "
+                "yesterday. This week's bill goes onto this week's row, each of the last six complete "
+                "weeks onto its history row, and the all-time bill is added up again.",
+                ("function:cost-explorer-poll", "AWS Cost Explorer (us-east-1)", "table:stats-history"),
+            ),
+            # stats.build_stats; stats_tracking.refresh_articles_snapshot, from daily_cycle_handler.py
+            # and the admin API's publish, unpublish and moderation routes.
+            Step(
+                "The Articles snapshot",
+                "The Articles section is built from every article at the model registry's prices and "
+                "stored as one row. It is rebuilt when an article is drafted or rewritten, and when one "
+                "is published, approved, rejected or taken down.",
+                ("table:stats-history", "table:articles", "table:models"),
+            ),
+            # public_api_handler._stats (_STATS_CACHE_SECONDS); renderStats in frontend/app.js.
+            Step(
+                "The Stats page",
+                "GET /stats reads three rows, the Articles snapshot, this week's and the all-time one, "
+                "and may be cached for 5 minutes. The page draws Total Stats, Weekly Stats, Articles "
+                "and the bear's gear, and adds no money up itself.",
+                ("function:public-api", "bucket:site"),
+            ),
+        ),
+        aliases=(
+            "stats", "stats page", "statistics", "costs", "cost", "spend", "spending", "ai spend",
+            "article cost", "article costs", "articles cost", "cost tracking", "aws bill", "bill",
+            "cost explorer", "cost poll", "daily cost poll", "rollover", "weekly rollover",
+            "stats rollover", "lineage",
+        ),
+    ),
+    # docs/architecture/security-incidents.md's steps, as the assistant tells them: its eight, with
+    # grouping and recording made one.
+    Feature(
+        key="security-incidents",
+        title="Security incidents (from a blocked request to an incident you work through)",
+        said="security incidents",
+        summary="How what the firewalls block, an attack-shaped comment and failed sign-ins become "
+        "security incidents: grouped by client, rule and 15 minutes, graded, kept with a keyed hash "
+        "in place of an address, and emailed to you when high.",
+        steps=(
+            # aws_wafv2_web_acl.public_api and .admin, with their logging configurations
+            # (infra/environments/*/main.tf).
+            Step(
+                "Blocked by a firewall",
+                "The public API's regional firewall blocks a client over a rate limit, or a request "
+                "AWS's common rule set catches; the admin API's blocks every address not on the "
+                "allowlist. Each logs the block as one record.",
+                (
+                    "firewall:public-api-acl",
+                    "firewall:admin-acl",
+                    "log_group:waf-public-api",
+                    "log_group:waf-admin",
+                ),
+            ),
+            # aws_cloudwatch_log_subscription_filter.security_events and
+            # .security_events_admin_api_errors.
+            Step(
+                "The block reaches the Lambda",
+                "A log subscription on each regional firewall's log sends only its BLOCK records to "
+                "the security-events Lambda, and another sends the admin API access log's 4xx lines.",
+                ("function:security-events", "log_group:admin-api-access"),
+            ),
+            # security_events_handler.py (_window_key); common/security_events.py (record_incident,
+            # classify_rule, client_hash, PLAYBOOK); dynamo.upsert_security_incident.
+            Step(
+                "Grouped into incidents",
+                "Blocks are grouped by rule, client and 15-minute window into one incident each, with a "
+                "category, a severity and fixed next steps; it turns high once it reaches its "
+                "category's count. The client is kept only as a keyed hash, never its address.",
+                ("table:security-events", "table:model-config"),
+            ),
+            # public_api_handler._submit_feedback; sign_in_events_handler.py;
+            # security_events_handler._record_access_log; record_trend and open_manual_incident.
+            Step(
+                "The other sources",
+                "The public API records an attack-shaped comment and counts dropped comments as a daily "
+                "trend; repeated failed sign-ins to this assistant and a lockout are recorded too; the "
+                "admin API's errors are an hourly trend; and you can open one by hand.",
+                ("function:public-api", "function:sign-in-events", "function:admin-api"),
+            ),
+            # dynamo.claim_security_alert; the security_high_severity metric filter and alarm in
+            # infra/modules/observability/main.tf.
+            Step(
+                "High severity emails you",
+                "The first time an incident is high, the Lambda that wrote it logs one SECURITY_ALERT "
+                "line; a metric filter counts it, and the high-severity alarm emails the alert address. "
+                "Lower severities are only recorded.",
+                ("topic:alerts", "CloudWatch metric filter and alarm (security-high-severity)"),
+            ),
+            # admin_api_handler._list_security_incidents and _set_security_incident_status;
+            # security_events.change_status; security_events in ops_mcp/account.py.
+            Step(
+                "You work through it",
+                "With the Admin CLI you list the open incidents, acknowledge one when you start looking "
+                "and resolve it when it is dealt with. This assistant's security_events reads the open "
+                "ones.",
+                ("function:admin-api", "function:ops-mcp"),
+            ),
+            # security_events.RETENTION_DAYS; the table's TTL on expires_at (infra/modules/app-data).
+            Step(
+                "It expires",
+                "DynamoDB's TTL removes an incident 120 days after it was last seen.",
+                ("table:security-events",),
+            ),
+        ),
+        aliases=(
+            "security", "incidents", "incident", "security events", "firewall", "firewalls", "waf",
+            "attacks", "attack", "blocked requests", "what was blocked", "failed sign ins",
+            "sign in failures", "lockout", "lockouts", "high severity", "security alert",
+            "security alarm",
+        ),
+    ),
+    # docs/architecture/reviewer-bear.md's steps, as the assistant tells them, in the page's order:
+    # task 5 is planned with task 2, from the same held articles, so it comes after it.
+    Feature(
+        key="reviewer-bear",
+        title="The reviewer bear (from a waiting article to Professor Grizzlewick's decision)",
+        said="the reviewer bear",
+        summary="How Professor Grizzlewick decides what the admins have left waiting: woken every "
+        "second day, he plans with no model call, works through five tasks a few at a time, acts "
+        "through the admin API's own paths and reports on the Musings page.",
+        steps=(
+            # aws_scheduler_schedule.reviewer (cron(0 5 1/2 * ? *)); reviewer_handler.handle.
+            Step(
+                "Woken",
+                "His schedule invokes his Lambda at 05:00 Sydney time on odd days of the month. With "
+                "his enabled setting off, the run stops there.",
+                ("function:reviewer", "EventBridge Scheduler"),
+            ),
+            # common/reviewer.py start and plan; the reviewer-state row of model-config (STATE_ID).
+            Step(
+                "The plan",
+                "He reads the tables and queues the run's tasks, with no model call, and saves the "
+                "queue. A run still under way is left alone.",
+                ("table:model-config", "table:moderation-queue", "table:articles"),
+            ),
+            # common/reviewer.tick; reviewer_handler._advance and schedule_tick.
+            Step(
+                "The ticks",
+                "Each tick does the next few tasks, two by default, then makes a one-shot schedule for "
+                "the next tick, five minutes later by default. The first tick runs straight after the "
+                "plan.",
+                ("function:reviewer", "One-shot schedules (reviewer-tick-<run id>-<n>)"),
+            ),
+            # common/reviewer._content; content_checks in ops_mcp/content.py.
+            Step(
+                "Content findings",
+                "A broken title or body that this assistant's content checks found is sent for a "
+                "rewrite with a fixed instruction, and a blank musing is written again.",
+                ("table:articles", "table:musings"),
+            ),
+            # common/reviewer._held, held_issues, judge_majors, judge_published, may_approve; a
+            # rewrite runs in the daily-cycle Lambda.
+            Step(
+                "Held articles",
+                "An article held two days or more is judged by the topic's model: a real problem sends "
+                "it for a rewrite, or after three rewrites rejects it; with none, he reads it and "
+                "approves it if he may, flagging a financial one for you.",
+                (
+                    "table:moderation-queue",
+                    "Amazon Bedrock (the topic's model)",
+                    "function:daily-cycle",
+                ),
+            ),
+            # common/reviewer._defang, judge_defang, cut_sentences; reviewer_replace_body in
+            # admin_api_handler.py.
+            Step(
+                "The de-fanged publish",
+                "An article held ten days or more is published with the sentences that carry its real "
+                "problems deleted, approved as it is, or rejected. Its original body is kept beside it "
+                "in the content bucket.",
+                ("bucket:content", "bucket:site", "Amazon Bedrock (the topic's model)"),
+            ),
+            # common/reviewer._published and judge_published.
+            Step(
+                "Recently published",
+                "He reads a few of the newest published articles he has not reviewed: a fine one is "
+                "tagged, and one that is not is sent for a rewrite.",
+                ("table:articles", "Amazon Bedrock (the topic's model)"),
+            ),
+            # common/reviewer._flag; reviewer_hold in admin_api_handler.py;
+            # dynamo.list_reviewer_flagged_articles.
+            Step(
+                "His flags",
+                "He watches each financial article he approved. If a reader has downvoted it with a "
+                "comment since, he takes it down and puts it back in the inbox for a person.",
+                ("table:feedback", "table:articles", "table:moderation-queue"),
+            ),
+            # reviewer_handler._report and _converse; common/musings.py.
+            Step(
+                "His report",
+                "When the queue is empty he posts what he did, in counts, on the Musings page. "
+                "BloggerBear may reply, and he may answer.",
+                ("table:musings",),
+            ),
+        ),
+        aliases=(
+            "reviewer", "ai reviewer", "professor", "professor grizzlewick", "grizzlewick",
+            "second bear", "bear review", "bear reviews", "held articles", "review inbox",
+            "de fanged publish", "defang", "reviewer musings", "reviewer report", "reviewer flags",
+        ),
+    ),
+    # docs/architecture/model-catalog.md's steps, as the assistant tells them: its thirteen, with
+    # catching up made part of what invokes it, discover's listing and probe one, looking a price up
+    # and applying it one, and the reviews and the run's close one.
+    Feature(
+        key="model-catalog",
+        title="The model catalog (from a newly listed model to a checked price)",
+        said="the model catalog",
+        summary="How the model registry keeps itself current: one Lambda finds the models the account "
+        "can call, looks their prices up again, puts a doubtful price back, keeps the registry "
+        "under its cap and keeps the topics' rotations working.",
+        steps=(
+            # model_catalog_handler.py; model_catalog.handle and settle_overdue (OVERDUE_AFTER); the
+            # aws_scheduler_schedule.model_catalog_* in main.tf; _start_model_catalog_job in
+            # admin_api_handler.py.
+            Step(
+                "What invokes it",
+                "Fixed schedules start discover and reprice every second day and the rotation cycle on "
+                "Fridays, and the admin API starts discover or reprice on demand. Before any job, a "
+                "pricing step more than 30 minutes late is run on the spot.",
+                ("function:model-catalog", "function:admin-api", "EventBridge Scheduler"),
+            ),
+            # model_catalog.account_models, discover and probe_access (DENIED_RECHECK);
+            # dynamo.add_model_if_missing.
+            Step(
+                "Discover",
+                "Bedrock lists every active model and inference profile, and each new text model is "
+                "called once for one token. One the account cannot call is not added, nor tried again "
+                "for 30 days; up to 5 others are added, switched off and unpriced.",
+                ("table:models", "Amazon Bedrock (the model listings, a one-token probe)"),
+            ),
+            # model_fleet.prune, prune_order and protected_models; dynamo.archive_models.
+            Step(
+                "Pruning when full",
+                "Once the registry is at its cap, 50 models by default, discover removes models instead "
+                "of adding them, never one in use, and archives each one's price first.",
+                ("table:models", "table:model-config"),
+            ),
+            # model_catalog.queue_order, reprice, advance and schedule_tick (CHECKS_PER_TICK,
+            # TICK_MINUTES).
+            Step(
+                "The reprice queue",
+                "Reprice claims the one run slot and queues up to 50 models, the one looked up longest "
+                "ago first, then checks 5 at a time, 5 minutes apart, on one-shot schedules.",
+                ("function:model-catalog", "table:model-config"),
+            ),
+            # model_catalog.PriceList, WebPrices, PriceLookup and price_models;
+            # web_search.AgentCoreProvider.
+            Step(
+                "Looking a price up",
+                "The AWS Price List first, with no model call, then an AgentCore web search read by a "
+                "model, skipped when the results have not changed. A different price is written at "
+                "once, and is on probation.",
+                ("AWS Price List API (us-east-1)", "Bedrock AgentCore web search", "table:models"),
+            ),
+            # model_catalog.schedule_reviews, review, _check, _revert, _record_failure, _finalise and
+            # write_snapshot.
+            Step(
+                "The reviews",
+                "One and two hours after the queue is done, each changed price is looked up again, and "
+                "one that fails goes back to its old price, with a failed-executions row. When the run "
+                "closes, the old prices of those that kept their new one go to the content bucket.",
+                ("table:failed-executions", "bucket:content"),
+            ),
+            # model_fleet.cycle and rotation_picks.
+            Step(
+                "The weekly cycle",
+                "On Fridays every topic with a rotation list loses the models that are switched off or "
+                "that the account cannot call, and gains one new model while it has room.",
+                ("table:topics", "table:models"),
+            ),
+            # _put_model in admin_api_handler.py; model_fleet.deactivated; _route_around in
+            # common/model_routing.py.
+            Step(
+                "Disabling a model in use",
+                "Disabling a model takes it out of every topic and the shared rotation pool at once, "
+                "and a call whose topic still names a switched-off model is routed to another.",
+                ("function:admin-api", "table:topics", "common/model_routing.py"),
+            ),
+            # costing.pricing_for and calculate_lineage_cost_aud; stats.build_stats.
+            Step(
+                "Where a price is used",
+                "An article's cost is worked out once, when it is written, so a new price reaches only "
+                "later articles; the Stats page prices every call again each time it is rebuilt.",
+                ("common/costing.py", "table:articles", "table:stats-history"),
+            ),
+        ),
+        aliases=(
+            "model catalog", "model catalogue", "models", "model registry", "registry",
+            "model prices", "model pricing", "prices", "price", "pricing", "reprice", "repricing",
+            "price checks", "price reviews", "discover", "discovery", "model discovery",
+            "new models", "model rotation", "rotation", "rotations", "rotation cycle",
+            "weekly cycle", "pruning", "prune", "model fleet", "fleet",
         ),
     ),
 )
@@ -1732,11 +2198,13 @@ def _layers_overview(env: str | None) -> dict:
     rows = [
         [layer.title, layer.summary, ", ".join(name for name, _ in layer.services)] for layer in LAYERS
     ]
+    # Every feature is named, and the words are counted (test_ops_mcp_architecture.py): with seven,
+    # "step by step across the layers" no longer fits in what can be listened to.
     return {
         "spoken": (
             f"BloggerBear is built in {len(LAYERS)} layers: {listed}. They're on screen with what "
             "each does. Which would you like to hear about, or everything in detail? I can also "
-            f"walk through {features}, step by step across the layers."
+            f"walk through {features}."
         ),
         "findings": [],
         "environment": env,
@@ -1874,8 +2342,8 @@ def architecture(
     described (a name can mean several, like a function and its state machine). With only
     `kind`: every resource of that kind. With `layer`: that layer of the architecture (its
     services and our resources in it), or every resource in one table for "everything". With
-    `feature`: one feature, step by step across the layers (article research). With nothing: the
-    layers, and the question of which to go into."""
+    `feature`: one feature, step by step across the layers (FEATURES: article research, the
+    reviewer bear, ...). With nothing: the layers, and the question of which to go into."""
     env = environment()
     named = isinstance(name, str) and bool(name.strip())
     if feature is not None and not named and kind is None:

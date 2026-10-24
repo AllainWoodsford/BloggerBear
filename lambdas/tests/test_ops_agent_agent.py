@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 from ops_agent_fakes import CutOff, FakeTool, ScriptedModel, finding, tool_results
 
 from ops_agent import agent, policy
-from ops_mcp import cli_guide
+from ops_mcp import architecture, cli_guide
 
 QUIET = {"spoken": "Every topic published on time.", "findings": []}
 EMPTY_INBOX = {"spoken": "Nothing is waiting in the inbox.", "findings": []}
@@ -849,6 +849,28 @@ def test_the_model_is_told_how_to_see_the_vision_pipeline():
     ):
         assert rule in prompt, rule
     assert "vision_status" not in policy.DEEP_DIVE_TOOLS
+
+
+def test_the_model_is_told_which_feature_walks_through_each_flow():
+    """Each of the other walk-throughs shares its words with a tool or a guide ("how are costs
+    tracked?" reads like spend), so the prompt names the question that reaches it. No guide
+    describes the reviewer bear, so what he does is his walk-through, not "no guide for that"."""
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        'call architecture with `feature` "article-research"',
+        "how a reader's vote becomes the bear's gear and musings (`feature` \"site-and-feedback\")",
+        'how costs reach the Stats page ("stats-and-costs")',
+        'how what the firewalls block becomes a security incident ("security-incidents")',
+        'how the model catalog finds, prices and rotates models ("model-catalog")',
+        "No guide describes the reviewer bear, Professor Grizzlewick, so asked what he does or how "
+        'he works, call architecture with `feature` "reviewer-bear" instead of cli_guides',
+        "For what is happening now (an incident, the spend, a reprice), call the tool for it",
+    ):
+        assert rule in prompt, rule
+    for key in architecture.FEATURE_KEYS:
+        assert f'"{key}"' in prompt, key
+    # The rule that what a feature is comes from its guide still holds for the rest.
+    assert "a feature is not an AWS resource, so do not call architecture for it" in prompt
 
 
 def test_the_model_is_told_how_to_answer_what_research_found():
