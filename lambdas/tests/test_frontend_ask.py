@@ -113,7 +113,10 @@ def test_productions_assistant_requires_mfa_and_is_the_only_one_with_account_wid
     assert re.search(r"^\s*account_wide_data\s*=\s*true$", module, re.M)
     assert re.search(r'^\s*environment_name\s*=\s*"production"$', module, re.M)
     dev_module = re.search(r'^module "ops_assistant" \{\n(.*?)^\}', dev, re.S | re.M).group(1)
-    assert "account_wide_data" not in dev_module and "waf_log_groups" not in dev_module
+    assert not re.search(r"^\s*account_wide_data\s*=", dev_module, re.M)
+    # Dev's assistant reads its own firewall logs only behind OPS_FIREWALL_REVIEW_DEV (off by
+    # default), and never the shared one: test_terraform_wiring.py holds the groups.
+    assert re.search(r"^\s*waf_log_groups\s*=\s*var\.ops_firewall_review \?", dev_module, re.M)
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
