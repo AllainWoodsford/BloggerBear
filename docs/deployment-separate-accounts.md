@@ -150,11 +150,20 @@ run stops before planning if they disagree.
 
 **Running Terraform on your own machine.** The environments' `backend "s3"` blocks name the
 original deployment's bucket, because a backend block cannot read a variable. CI passes yours to
-`terraform init`; a local init needs the same flag, with the bucket for that environment:
+`terraform init`, along with the bucket's region. A local init needs the same two flags: the
+bucket for that environment, and the region bootstrap put it in (your `aws_region`,
+`ap-southeast-2` unless you set it).
+
+Sign in to that environment's account first, as you did for its bootstrap. The init uses
+whatever credentials are active, and the other account's are refused the bucket:
 
 ```bash
+export AWS_PROFILE=acme-dev                       # the dev account
+aws sts get-caller-identity --query Account       # expect 111111111111
 cd infra/environments/dev
-terraform init -backend-config="bucket=acme-blog-terraform-state-dev"
+terraform init \
+  -backend-config="bucket=acme-blog-terraform-state-dev" \
+  -backend-config="region=ap-southeast-2"
 ```
 
 ## What the OIDC side looks like
@@ -360,15 +369,19 @@ attach it to distributions in the account that owns it.
 
 ## Vision (optional)
 
-The vision worker ([deployment-runsheet.md, Vision (optional)](deployment-runsheet.md#vision-optional))
+The vision worker ([vision-runsheet.md](vision-runsheet.md#turning-the-worker-on))
 is off by default and nothing of it exists until you turn it on. With two accounts:
 
 - **The bootstrap, in each account you turn it on in.** The deploy roles' rights to create the
   worker (`<prefix>-*-vision-*` Lambda functions and log groups in `vision_region`, `us-west-2`
   by default) are part of each account's bootstrap. Re-apply it in the dev account before
-  turning the worker on for dev, and in the production account before production; select the
-  account's workspace first (`terraform workspace select dev`). Pass the same `vision_region` to
-  both if you change it.
+  turning the worker on for dev, and in the production account before production. Select the
+  account's workspace first (`terraform workspace select dev`).
+- **If you change `vision_region`, set it in four places.** Pass the same value to both
+  bootstraps. Set `vision_region` to it in each environment's `terraform.tfvars` too
+  (`infra/environments/dev` and `infra/environments/production`, by pull request). CI does not
+  pass it, so an environment left at the default `us-west-2` has its apply refused once the
+  worker is on: its deploy role has no rights there.
 - **The variable, per environment.** `VISION_ENABLED` is read as a switch: `true`, in any letter
   case (GitHub Actions compares strings ignoring case), turns the worker on; any other value, or
   unset, is read as off. On the repository it turns the worker on for dev, and for production at

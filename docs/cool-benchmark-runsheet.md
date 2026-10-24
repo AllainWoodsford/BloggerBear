@@ -36,7 +36,7 @@ report's COOL numbers come only from those files.
 
 COOL (OpenCV's Graviton-tuned OpenCV 5, "Cloud Optimized OpenCV for AWS Graviton4" on AWS
 Marketplace) is what the competition's COOL award scores, and it is measured against the stock
-worker (the [deployment runsheet's Vision section](deployment-runsheet.md#vision-optional)) on
+worker (the [vision runsheet](vision-runsheet.md#turning-the-worker-on)) on
 one Graviton4 instance, in one session. Nothing here is in Terraform; these are by hand, and every
 command below is what the session runs, in this order. The evidence it leaves
 behind is listed at the end; the run files it writes are the only source of the COOL numbers in
@@ -208,7 +208,7 @@ Two inputs must be in that checkout before the runs:
   The rest of this item is how it was taken, for a fresh capture. It is the network the
   deployed worker was sent, taken from Sydney's network object after the first Sydney tick
   (each city's network is its own object, `vision/<topic>/<site>/network.json`, not part of the
-  running state: [`rail_access` topics](deployment-runsheet.md#rail_access-topics), "Where things land"), on your own
+  running state: [Where things land](vision-runsheet.md#where-things-land)), on your own
   machine. For the example topic the object is `vision/rail-cities/sydney/network.json`; for
   dev's `trains-sydney`, `vision/trains-sydney/sydney/network.json`, once a tick after the
   day-subject round has moved it there:
@@ -458,7 +458,7 @@ with the cache from step 8:
 - give the instance role, for this hour only, one statement: `bedrock:InvokeModel` on the one
   inference profile the topics use and its foundation models, and remove it afterwards;
 - `~/cool/bin/python scripts/vision_eval.py replay --sequence sydney-demo --agent bedrock --model-id $M --region ap-southeast-2 --worker in-process --backend cool --cool-sha $SHA $C --out $E --tag cool`
-  (`M` as in [the evaluation's runs](deployment-runsheet.md#the-evaluations-real-data-runs), step 4):
+  (`M` as in [the evaluation's runs](evaluation-runsheet.md#the-evaluations-real-data-runs), step 4):
   COOL then executes the agent's `look_again` re-measurements inside the agentic loop, in
   us-west-2, with production's deadline;
 - `~/stock/bin/python scripts/vision_eval.py stability --set year-2024 $C --out $E`: the year of

@@ -1,8 +1,9 @@
 """Screening for anonymous feedback comments (docs/project-plan.md section 7).
 
 A comment is kept only if it is a civil, genuine piece of feedback on the article. Anything
-else is dropped: not stored, not redacted-and-stored, not logged, not echoed back. The vote
-that came with it still counts (a thumb is not the comment).
+else is dropped: not stored, not redacted-and-stored, not logged, not echoed back. A dropped
+comment takes the whole submission with it: public_api_handler.py's _submit_feedback answers a
+bare 422, does not record the vote that came with it, and counts nothing against the limits.
 
 Two layers, cheapest first, so a hostile or junk comment costs no model call:
 

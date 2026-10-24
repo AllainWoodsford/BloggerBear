@@ -21,7 +21,7 @@ falls through to the next step rather than failing. `os.environ[
 final safety net and always works. It is also the fallback whenever none is
 configured and the picked model is a different one.
 
-**An inactive model is routed around** (docs/enhancements/model-catalog-refresh.md, "Pruning and
+**An inactive model is routed around** (docs/enhancements/archive/model-catalog-refresh.md, "Pruning and
 cycling"). When the model a topic's rotation (or its own `model_id`) gives is one the Models
 registry marks `enabled: false`, the call goes to the fallback if one is configured, else to the
 default. If those are inactive too, it goes to a random active model from the registry, which

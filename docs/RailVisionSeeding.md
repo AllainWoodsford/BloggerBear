@@ -10,7 +10,7 @@ article shows (its text and its maps), how to create and check it, and how it di
 Background, not repeated here: [what the rail task measures](architecture/blogger-vision.md#part-two-the-trains-explainer),
 every config key ([configuration.md, A `rail_access` topic](configuration.md#a-rail_access-topic)),
 the rota design ([dailysubject_hook.md](enhancements/archive/dailysubject_hook.md)) and the cadence in
-detail ([deployment-runsheet.md, rail_access topics](deployment-runsheet.md#rail_access-topics)).
+detail ([vision-runsheet.md, How the cadence works](vision-runsheet.md#how-the-cadence-works)).
 
 ## Contents
 
@@ -49,11 +49,16 @@ not edited. Its Findings and articles stay, and it can be resumed or deleted lat
 ## 2. What an article is made of
 
 Each day's article is drafted only from the day's city's Findings since that city's last article
-(at most 48, newest first). A Finding is written only for a city's first clear scene, a material
-change (a served-share move of 2 points or more, a desert-area move of 10% (at least 1 km²) or more,
-or a changed station count) or, on a week rota, the city's weekly reading (section 7). A city with
-nothing new gets no article that day (`no_findings`, no model call), unless a goal rotation still
-has a goal to write its last Findings up under (section 7).
+(at most 48, newest first). A Finding is written only for:
+
+- a city's first clear scene;
+- a material change: a served-share move of 2 points or more, a changed station count, or a
+  desert-area move of 10% of its baseline median or more (the median is counted as at least 1 km²,
+  so the smallest material move is 0.1 km²);
+- on a week rota, the city's weekly reading (section 7).
+
+A city with nothing new gets no article that day (`no_findings`, no model call), unless a goal
+rotation still has a goal to write its last Findings up under (section 7).
 
 ### The text
 
@@ -62,13 +67,14 @@ What the drafting model can cite, all of it in the Finding's summary:
 | Data | Where it comes from | Use in the article |
 |---|---|---|
 | Served share (% of built-up area within `reach_m` of a station) | Worker: NDBI/NDVI built-up mask × station reach | The headline number |
-| Built-up area beyond reach (km²), built-up area (km²) | Worker | The "transit desert" size |
+| Built-up area beyond reach (km²) | Worker | The "transit desert" size. The total built-up area is measured and kept in the state, but the summary does not carry it, so an article cannot cite it |
 | Station count | OpenStreetMap network | Context; a change is material on its own |
-| With the network's `stops` layer: the share of built-up area within reach of any mapped stop or station beside the rail-only share, the area beyond all of them, the bus, tram and ferry stop counts, the built-up km² within stop reach per 100 stops and the overlap with station reach, and how many of the largest rail deserts the stops mostly cover (half or more of the patch within stop reach) | Worker: a distance transform over every mapped bus and tram stop and the ferry terminals, 400 m by default (`stop_reach_m`) | The transit angle. Reach is straight-line distance; minutes are that distance at 80 m a minute, never a journey time. Reported, never material; absent (not zero) until the city's network carries the layer |
-| Scene date, coverage | Sentinel-2 STAC item | Always stated: it dates every figure |
+| With the network's `stops` layer: the share of built-up area within reach of any mapped stop or station beside the rail-only share, the area beyond all of them, the bus, tram and ferry stop counts, the built-up km² within stop reach per 100 stops, and how many of the largest rail deserts the stops mostly cover (half or more of the patch within stop reach). The overlap with station reach is measured and kept in the state, but the summary does not carry it | Worker: a distance transform over every mapped bus and tram stop and the ferry terminals, 400 m by default (`stop_reach_m`) | The transit angle. Reach is straight-line distance; minutes are that distance at 80 m a minute, never a journey time. Reported, never material; absent (not zero) until the city's network carries the layer |
+| Scene date | Sentinel-2 STAC item | Always stated: it dates every figure |
+| Coverage (the share of the site the scene could see: not cloud, cloud shadow, cirrus, saturation or no data in its SCL band; not the STAC item's cloud cover) | Worker: `vision/rail_analyse.py` `analyse_rail_access` | Always stated beside the scene's figures; a scene below `coverage_floor` is never material |
 | Change against the baseline (median of earlier clear scenes) | `material_diff` | What changed, if anything |
 | Flags: `single_point_of_failure`, `isolated_high_demand`, `ghost_line` | `vision/rail_analyse.py` `flag_stations`, phrased by `common/rail_notes.py` | One paragraph each, the station named in quotes; an isolated-high-demand flag also carries the station's feeder coverage and multimodal isolation weight (the rail weight discounted by the share of its hinterland the stops reach) |
-| Simulations: `orbital_link`, `feeder_corridor`, each `theoretical`, with its justification (both stations' distance to a hub, the fall in mean hub distance, how many stations come closer; a feeder's two isolation weights and feeder coverage) and what its straight line crosses (`water_share`, `water_km`, `unmeasured_share`) | `rail_analyse.suggest`, phrased by `rail_notes.py` | Always theoretical: a what-if on the mapped graph and straight lines, never a route, an alignment or a recommendation; conditional words ("the simulation suggests…") |
+| Simulations: `orbital_link`, `feeder_corridor`, each `theoretical`, with its justification (both stations' distance to a hub and the fall in mean hub distance; a feeder's two isolation weights and feeder coverage) and what its straight line crosses (`water_share`, `water_km`, `unmeasured_share`) | `rail_analyse.suggest`, phrased by `rail_notes.py` | Always theoretical: a what-if on the mapped graph and straight lines, never a route, an alignment or a recommendation; conditional words ("the simulation suggests…") |
 | The triage agent's note | `common/vision_triage.py` | Quoted, as "not a measurement" |
 
 The planner notes are capped at 4 flags and 3 simulations per scene, in a fixed order. The summary
@@ -89,7 +95,7 @@ or waiting time. Both carry a fixed caption with the Copernicus and OpenStreetMa
 stored with the Finding (`figures`) and copied to the article page when it is published. A city
 whose stored network predates the stops layer has no transit-reach map (and no stop measures:
 the quality flag `no_stops_layer`) until the network is refreshed at its TTL or prefetched
-([deployment-runsheet.md, rail_access topics](deployment-runsheet.md#rail_access-topics)).
+([vision-runsheet.md, After deploying the stops layer](vision-runsheet.md#after-deploying-the-stops-layer)).
 
 **What the article shows today:** `common/figures.py` `figures_for_findings` takes the figures of
 the Findings drafted, newest first, each once, at most **3** (`MAX_FIGURES_PER_ARTICLE`). Because
@@ -221,7 +227,7 @@ python scripts/admin_cli.py $A findings list rail-cities --next-article
 ```
 
 `--next-article` answers for today's city on Sydney's calendar. A city with no Finding: see
-[deployment-runsheet.md, rail_access topics](deployment-runsheet.md#rail_access-topics) (cloud
+[vision-runsheet.md, rail_access topics](vision-runsheet.md#rail_access-topics) (cloud
 cover, `last_error`, the network).
 
 **6. Optional: the first article now** (otherwise it comes at the topic's staggered daily slot:
@@ -236,7 +242,11 @@ The log says `daily_cycle_handler: day_subject=<city> topic_id=rail-cities`, and
 in the inbox with its city as `subject`.
 
 From then on the hourly research heartbeat measures each city as new scenes arrive, whatever the
-day, and the daily run writes about the day's city whenever it has a new Finding.
+day, and the daily run writes about the day's city whenever it has a new Finding. With the goal
+rotation set in step 2, the city's day with nothing new is not empty: the run revisits the
+Findings that city's last new article was drafted from, under the next goal not yet used on them
+(`revisit=True`). This goes on until all four goals have been used on them or they expire (14
+days), and only then does the run stop with `no_findings`.
 
 ## 5. Reviewer checklist (before `approve`)
 
@@ -302,7 +312,7 @@ most 1000 characters, so count them: `python -c 'import json; [print(g["name"], 
 the topic's `editorial_goals.exclusion_criteria` apply to all four). Until a city's network
 carries its stops layer, its Finding has no stop measures and no transit-reach map (`no_stops_layer`),
 so a `transit` article drafted from it has only the rail-only share to report: prefetch the
-networks first ([the runsheet](deployment-runsheet.md#rail_access-topics)):
+networks first ([vision-runsheet.md, After deploying the stops layer](vision-runsheet.md#after-deploying-the-stops-layer)):
 
 ```json
 [
@@ -348,14 +358,25 @@ written up as before, apart from the wording.
 
 **3. The weekly reading now:** `topics trigger rail-cities --pipeline research_tick`. The log's
 `research_tick` line says `material_change`, and `findings list rail-cities --limit 1` shows a
-Finding that starts "Weekly reading" about this week's city, with its figures (one map, or two
-once the city's network carries its stops) and its planner notes.
+Finding about this week's city, its `subjects` naming that city, with its figures (one map, or two
+once the city's network carries its stops) and its planner notes. The tick's diff summary opens
+"Weekly reading (no change claimed).", but the stored summary is the model's own wording, written
+from that diff, and need not start that way.
 
 **4. Optional: the first article now** (otherwise at the topic's daily slot):
-`topics trigger rail-cities --pipeline daily_cycle`. The log says `day_subject=<this week's city>`
-and `editorial_goal=access revisit=False`; the article waits in the inbox. Triggered again, it
-revisits under `network` (`revisit=True`); a third time, `simulations`; a fourth, `transit`; a
-fifth writes nothing.
+`topics trigger rail-cities --pipeline daily_cycle`. The article waits in the inbox. New Findings
+take the goal after the one the city used last, so the log says `day_subject=<this week's city>`
+and:
+
+- `editorial_goal=access revisit=False` when the city has no `goal_rotation_state` entry yet, or
+  the goal it used last was `transit` (or one no longer in the list);
+- otherwise `revisit=False` and the goal after the one it used last
+  (`goal_rotation_state.<city>.goal` shows the goal it used last), so a city already written up
+  under the day rota may start further down the list.
+
+Each later trigger revisits the same Finding (`revisit=True`) under the next goal not yet used on
+it, in list order and wrapping round (from `access`: `network`, then `simulations`, then
+`transit`). Once all four have been used on it, the next trigger writes nothing.
 
 **Watching it:** `topics get rail-cities` shows `goal_rotation_state.<city>` (the goal used last
 and the goals used on the current Finding); the research state shows each city's

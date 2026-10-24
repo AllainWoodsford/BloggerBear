@@ -1,5 +1,5 @@
 """The assistant's view of the model catalog (common/model_catalog.py,
-docs/enhancements/model-catalog-refresh.md): whether discover and reprice are paused, when they
+docs/enhancements/archive/model-catalog-refresh.md): whether discover and reprice are paused, when they
 run, what each last did, and the pricing run under review with when its next check is.
 
 Read-only: one read of the catalog's rows in the ModelConfig table (its settings, its state and

@@ -1478,20 +1478,21 @@ GUIDES: dict[str, dict] = {
         ),
         "explanation": [
             # common/model_catalog.py's module docstring; infra's model_catalog_* schedules.
-            "The model catalog runs twice a week at 3 am Sydney time. On Tuesdays discover adds "
-            "every model the account can call, from every provider, switched off; on Wednesdays "
-            "reprice looks up the price of every model in the registry. Prices come from the AWS "
-            "Price List first, then a web search read by a model.",
+            "The model catalog runs every second day, Sydney time. At 2 am discover adds up to 5 "
+            "models the account can call, from every provider, switched off; at 3 am reprice looks "
+            "up the prices of up to 50 models, 5 every 5 minutes. On Fridays at 4 am it refreshes "
+            "the topics' model rotations. Prices come from the AWS Price List first, then a web "
+            "search read by a model.",
             # model_catalog.review, _revert, write_snapshot; FAILURE_KIND.
             "A changed price is used at once and checked again 1 and 2 hours later. If a check "
             "cannot confirm it, the old price goes back and the failure shows in failed-executions "
             "and the assistant's pipeline health; if both pass, the old prices are kept in the "
             "content bucket under pricing/.",
             # model_catalog.SETTINGS; admin_api_handler's model catalog routes.
-            "model-catalog set pauses either job (it stops its weekly run only) and changes the "
-            "checks; models reprice and models discover run a job now, even when paused, with "
-            "its own two checks. models add switches a discovered model on; --lock-price keeps "
-            "the reprice off a price you set on purpose.",
+            "model-catalog set pauses any of the three jobs (it stops its scheduled runs only) and "
+            "changes the checks; models reprice and models discover run a job now, even when "
+            "paused, with its own two checks. models add switches a discovered model on; "
+            "--lock-price keeps the reprice off a price you set on purpose.",
         ],
         "commands": [
             "model-catalog get",
@@ -1508,7 +1509,7 @@ GUIDES: dict[str, dict] = {
                 "ask": [],
             },
             {
-                "say": "Pause or resume the weekly reprice",
+                "say": "Pause or resume the scheduled reprice",
                 "command": "model-catalog set",
                 "options": {},
                 "ask": ["reprice"],

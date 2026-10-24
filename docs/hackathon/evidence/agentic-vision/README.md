@@ -3,7 +3,7 @@
 The evaluation's real-data runs for the Agentic Vision award, made on 20 October 2026 with the
 deployed dev vision worker (stock OpenCV 5.0, arm64 Lambda in us-west-2) and Claude Haiku 4.5 on
 Amazon Bedrock. They follow steps 2 to 7 of
-[the evaluation's real-data runs](../../../deployment-runsheet.md#the-evaluations-real-data-runs),
+[the evaluation's real-data runs](../../../evaluation-runsheet.md#the-evaluations-real-data-runs),
 with `--out` pointed here. [RESULTS.md](RESULTS.md) indexes every run file
 (`python scripts/vision_eval.py index --evidence docs/hackathon/evidence/agentic-vision`); the
 [technical report](../../technical-report.md#appendix-b-agentic-vision) cites them.
