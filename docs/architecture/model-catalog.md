@@ -207,7 +207,7 @@ It never removes a model in use. Protected, by canonical id:
 - the application's default and fallback: the `default` row of `model-config`, and
   `BEDROCK_MODEL_ID`;
 - every topic's `model_id`, `fallback_model_id` and `model_id_candidates`;
-- every model in the shared rotation pool (the `model-rotation` row);
+- every model in the shared rotation pool (the `model-rotation` row, set with `model-rotation set`);
 - any row with `price_locked`.
 
 A run that cannot reach its target because of that says so (`short_by`).

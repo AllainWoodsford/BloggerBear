@@ -1923,8 +1923,8 @@ def set_last_armor_versions(versions: list[str]) -> None:
 
 # A fourth row in the same table: the shared pool of model ids daily_cycle_handler.py rolls a
 # topic's `model_id` (Topics table) forward to, at random, once it has published an article --
-# see that module's _assign_rotated_model. Edited by hand in DynamoDB (or the admin CLI/API,
-# once it grows a route for it) rather than by Terraform, same as the "default" row above.
+# see that module's _assign_rotated_model. Set from the admin API (GET/PUT /model-rotation,
+# `admin_cli model-rotation`) rather than by Terraform, same as the "default" row above.
 _MODEL_ROTATION_CONFIG_ID = "model-rotation"
 
 
@@ -1936,10 +1936,13 @@ def get_model_rotation_candidates() -> list[str]:
     return list(item["candidates"]) if item and item.get("candidates") is not None else []
 
 
-def put_model_rotation_candidates(candidates: list[str]) -> None:
-    """Set (or, with [], clear) the pool of model ids rotation may pick from."""
+def put_model_rotation_candidates(candidates: list[str]) -> dict:
+    """Set (or, with [], clear) the pool of model ids rotation may pick from, and return the row it
+    wrote."""
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])
-    table.put_item(Item={"config_id": _MODEL_ROTATION_CONFIG_ID, "candidates": candidates})
+    item = {"config_id": _MODEL_ROTATION_CONFIG_ID, "candidates": candidates}
+    table.put_item(Item=item)
+    return item
 
 
 # --- Model catalog (common/model_catalog.py, docs/enhancements/archive/model-catalog-refresh.md) ----------
