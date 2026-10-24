@@ -1,17 +1,20 @@
 # =============================================================================
 # firewall_review: the deep dive into the firewall's logs (lambdas/ops_mcp/firewall.py;
-# docs/enhancements/archive/alexa-plus.md, section 4.4). Production only.
+# docs/enhancements/archive/alexa-plus.md, section 4.4).
 #
-# The operator's rule: dev's assistant must not be able to see or reason about the firewall;
-# production's may. The firewall's logs are not one environment's (the CloudFront firewall in
-# front of both sites logs to one shared group), so this is held three ways, any one of which is
-# enough to keep dev out:
+# The operator's rule: production's assistant reads its own firewall logs and the CloudFront
+# firewall's shared one; dev's reads nothing of the firewall unless the operator turns it on
+# (OPS_FIREWALL_REVIEW_DEV), and then only dev's own logs. The shared log is not one
+# environment's (the CloudFront firewall in front of both sites logs to it), so only an
+# assistant with account_wide_data may read it. Held three ways, any one of which is enough:
 #
-#   1. this policy exists only where account_wide_data is on and log groups are given (dev
-#      passes neither): dev's role has no right to start a query on any WAF log group;
+#   1. this policy exists only where log groups are given (dev's root passes none unless the
+#      switch is on), and the variable refuses the shared group without account_wide_data and
+#      any other environment's group: dev's role never has a right to the shared log;
 #   2. the function is told the groups only then (OPS_WAF_LOG_GROUPS), and registers the tool
-#      only when it has them and may report account-wide data;
-#   3. the function refuses a group that is neither this environment's nor the shared one.
+#      only when it has them;
+#   3. the function refuses a group that is neither this environment's nor the shared one, and
+#      the shared one where it may not report account-wide data.
 #
 # Logs Insights' GetQueryResults and StopQuery take no resource (they act on a query id), so they
 # are on "*"; without StartQuery on a group there is no query of the role's own to read. The
@@ -19,7 +22,7 @@
 # =============================================================================
 
 locals {
-  firewall_enabled = var.account_wide_data && length(var.waf_log_groups) > 0
+  firewall_enabled = length(var.waf_log_groups) > 0
 }
 
 data "aws_iam_policy_document" "ops_mcp_firewall" {

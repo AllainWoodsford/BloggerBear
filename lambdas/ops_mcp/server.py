@@ -477,10 +477,10 @@ def build_server() -> MCPServer:
         log_review next with the function it names. Read-only."""
         return remembered(ctx, api_errors.api_errors(api, status, hours, start, end))
 
-    # The firewall deep dive (firewall.py): production only. Registered only where this assistant
-    # may report account-wide data and has been given log groups of its own environment (or the
-    # shared one) to read, so dev's assistant does not have the tool at all. A deep dive: never
-    # offered on a briefing (ops_agent/policy.py).
+    # The firewall deep dive (firewall.py): production's always, dev's only when the operator turns
+    # it on (OPS_FIREWALL_REVIEW_DEV). Registered only where this assistant has been given log
+    # groups of its own environment to read, and the shared CloudFront one only where it may report
+    # account-wide data. A deep dive: never offered on a briefing (ops_agent/policy.py).
     if firewall.available():
 
         @server.tool(annotations=_READ_ONLY, structured_output=True)

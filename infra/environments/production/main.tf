@@ -3164,9 +3164,10 @@ resource "aws_lambda_function" "sign_in_events" {
 # docs/enhancements/archive/alexa-plus.md. Read-only on the pipeline; its own sign-in, with MFA required.
 #
 # Production's assistant reads production only, plus two things that belong to the account and
-# that only production's may report (account_wide_data): the AWS bill, and the firewall's logs,
-# including the CloudFront firewall both sites share. Dev's assistant has neither (the module's
-# isolation.tf and firewall.tf, and dev's root, which passes neither setting).
+# that only production's may report (account_wide_data): the AWS bill, and the CloudFront
+# firewall's log, which both sites share. Dev's assistant has neither (the module's isolation.tf
+# and firewall.tf). It may read dev's own firewall logs, and only when the operator turns that on
+# (OPS_FIREWALL_REVIEW_DEV); production's always has its own.
 # =========================================================================
 
 module "ops_assistant" {

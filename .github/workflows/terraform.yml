@@ -132,6 +132,11 @@ jobs:
     # and ap-northeast-1, and the plan refuses anything else; the bootstrap's web_search_regions
     # must include it, or the deploy role is refused (docs/configuration.md). Changing it moves
     # the gateway: the next apply replaces it in the new Region.
+    # TF_VAR_ops_firewall_review: whether dev's assistant may read dev's own firewall logs
+    # (firewall_review: the admin API's and the public API's WAF logs, never the CloudFront
+    # firewall's shared one). Read like VISION_ENABLED: only `true`, in any letter case, turns it
+    # on; unset or anything else is `false`, the variable's own default (docs/configuration.md).
+    # Production's assistant always has the tool, so the release workflow does not read it.
     env:
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_DEV || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
@@ -146,6 +151,7 @@ jobs:
       TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}
       TF_VAR_reviewer_enabled: ${{ vars.REVIEWER_ENABLED == 'false' && 'false' || 'true' }}
       TF_VAR_web_search_region: ${{ vars.WEB_SEARCH_REGION_DEV || vars.WEB_SEARCH_REGION || 'ap-northeast-1' }}
+      TF_VAR_ops_firewall_review: ${{ vars.OPS_FIREWALL_REVIEW_DEV == 'true' && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

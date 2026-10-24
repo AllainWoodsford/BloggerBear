@@ -3040,6 +3040,15 @@ module "ops_assistant" {
 
   mfa_configuration = var.ops_assistant_mfa
 
+  # firewall_review over dev's own firewall logs, only when the operator turns it on
+  # (var.ops_firewall_review, the OPS_FIREWALL_REVIEW_DEV variable), and only the logs that exist.
+  # Never the CloudFront firewall's shared log: it carries production's visitors too, so only an
+  # assistant with account_wide_data may read it (the module refuses it here), and dev has neither.
+  waf_log_groups = var.ops_firewall_review ? concat(
+    [for _ in(local.waf_admin_enabled ? [1] : []) : { region = var.aws_region, name = aws_cloudwatch_log_group.waf_admin[0].name }],
+    [for _ in(local.waf_public_api_enabled ? [1] : []) : { region = var.aws_region, name = aws_cloudwatch_log_group.waf_public_api[0].name }],
+  ) : []
+
   # Alexa+ account linking (docs/enhancements/archive/alexa-plus.md, alexa/README.md): dev's own Alexa
   # add-on, signing in to dev's pool only. Empty until the one-time bootstrap prints them.
   alexa_redirect_uris = var.ops_alexa_redirect_uris

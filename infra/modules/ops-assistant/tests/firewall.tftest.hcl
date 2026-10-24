@@ -1,8 +1,10 @@
 # firewall_review's IAM (firewall.tf), planned with a mocked AWS provider like the other tests here.
-# The operator's rule: dev's assistant must not see the firewall; production's may. Held here: no
-# policy and no log groups for the function unless account_wide_data is on and groups are given;
-# with both, StartQuery on exactly those groups; and a group that belongs to another environment
-# is refused before anything is planned.
+# The operator's rule: production's assistant reads its own firewall logs and the CloudFront
+# firewall's shared one; dev's reads only its own, and only when its root passes them (the
+# OPS_FIREWALL_REVIEW_DEV switch). Held here: no policy and no log groups for the function unless
+# groups are given; with them, StartQuery on exactly those groups; and the shared group without
+# account_wide_data, or a group that belongs to another environment, is refused before anything
+# is planned.
 
 mock_provider "aws" {
   mock_data "aws_iam_policy_document" {
@@ -55,7 +57,7 @@ variables {
   agent_model_id                = "au.example.test-model-v1:0"
 }
 
-run "dev_has_no_right_to_any_firewall_log_and_no_groups_to_read" {
+run "dev_by_default_has_no_right_to_any_firewall_log_and_no_groups_to_read" {
   command = plan
 
   variables {
@@ -63,18 +65,71 @@ run "dev_has_no_right_to_any_firewall_log_and_no_groups_to_read" {
     stage_name              = "dev"
     hosted_ui_domain_prefix = "bloggerbear-dev-ops"
     account_wide_data       = false
-    waf_log_groups          = [{ region = "ap-southeast-2", name = "aws-waf-logs-bloggerbear-dev-admin" }]
   }
 
   assert {
     condition     = length(aws_iam_role_policy.ops_mcp_firewall) == 0 && length(data.aws_iam_policy_document.ops_mcp_firewall) == 0
-    error_message = "without account_wide_data there is no firewall policy, whatever groups are passed"
+    error_message = "no groups (dev's default), no firewall policy"
   }
 
   assert {
     condition     = aws_lambda_function.ops_mcp.environment[0].variables["OPS_WAF_LOG_GROUPS"] == ""
     error_message = "and the function is told no groups, so it registers no tool"
   }
+}
+
+run "dev_switched_on_may_query_exactly_its_own_groups" {
+  command = plan
+
+  variables {
+    environment_name        = "dev"
+    stage_name              = "dev"
+    hosted_ui_domain_prefix = "bloggerbear-dev-ops"
+    account_wide_data       = false
+    waf_log_groups = [
+      { region = "ap-southeast-2", name = "aws-waf-logs-bloggerbear-dev-admin" },
+      { region = "ap-southeast-2", name = "aws-waf-logs-bloggerbear-dev-public-api" },
+    ]
+  }
+
+  assert {
+    condition = toset(flatten([
+      for statement in data.aws_iam_policy_document.ops_mcp_firewall[0].statement : statement.resources if statement.sid == "QueryFirewallLogs"
+      ])) == toset([
+      "arn:aws:logs:ap-southeast-2:111111111111:log-group:aws-waf-logs-bloggerbear-dev-admin",
+      "arn:aws:logs:ap-southeast-2:111111111111:log-group:aws-waf-logs-bloggerbear-dev-admin:*",
+      "arn:aws:logs:ap-southeast-2:111111111111:log-group:aws-waf-logs-bloggerbear-dev-public-api",
+      "arn:aws:logs:ap-southeast-2:111111111111:log-group:aws-waf-logs-bloggerbear-dev-public-api:*",
+    ])
+    error_message = "StartQuery on dev's own two groups only"
+  }
+
+  assert {
+    condition     = aws_lambda_function.ops_mcp.environment[0].variables["OPS_WAF_LOG_GROUPS"] == "ap-southeast-2:aws-waf-logs-bloggerbear-dev-admin,ap-southeast-2:aws-waf-logs-bloggerbear-dev-public-api"
+    error_message = "the function is told dev's groups"
+  }
+
+  assert {
+    condition     = aws_lambda_function.ops_mcp.environment[0].variables["OPS_ACCOUNT_WIDE_DATA"] == "false"
+    error_message = "and it still may not report account-wide data"
+  }
+}
+
+run "dev_may_never_read_the_shared_cloudfront_log" {
+  command = plan
+
+  variables {
+    environment_name        = "dev"
+    stage_name              = "dev"
+    hosted_ui_domain_prefix = "bloggerbear-dev-ops"
+    account_wide_data       = false
+    waf_log_groups = [
+      { region = "ap-southeast-2", name = "aws-waf-logs-bloggerbear-dev-admin" },
+      { region = "us-east-1", name = "aws-waf-logs-bloggerbear-shared" },
+    ]
+  }
+
+  expect_failures = [var.waf_log_groups]
 }
 
 run "production_without_groups_has_no_policy_either" {

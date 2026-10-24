@@ -30,8 +30,10 @@ holds the firewalls (`edge`).
 - `alarms` shows whether `<prefix>-<env>-security-high-severity` is firing.
 - `investigate(symptom="security")` is the runsheet: the firewalls' logs and console pages, with a
   query for what was blocked.
-- `firewall_review`, in production only, reads the firewalls' own logs, the shared CloudFront
-  ACL's included.
+- `firewall_review` reads the firewalls' own logs. Production's reads its regional ACLs' logs and
+  the shared CloudFront ACL's. Dev's has the tool only when `OPS_FIREWALL_REVIEW_DEV` is on
+  ([configuration.md](../configuration.md#github-secrets-and-variables)), and then reads dev's
+  regional logs only.
 - `cli_guides(topic="security")` walks you through the commands.
 
 Resource names below use `<prefix>` (your `unique_name_prefix`) and `<env>` (`dev` or
@@ -123,7 +125,7 @@ Lambda in its own Region. A request it blocks stops at the edge and never reache
 ACL, so it is not an incident either. It runs the same AWS managed common rule set. So a
 cross-site scripting attempt sent through the API's CDN is blocked at the edge and leaves no
 incident, while the same attempt sent straight to the execute-api address becomes one. In
-production, the assistant's `firewall_review` reads that log.
+production, the assistant's `firewall_review` reads that log; dev's never does.
 
 **Only the admin API's access log is a source.** The public API's 4xx answers are not counted.
 

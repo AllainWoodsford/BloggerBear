@@ -222,6 +222,9 @@ NOT_ASKED = {
     # Professor Grizzlewick, the reviewer bear (docs/configuration.md). On unless set to "false": a
     # first deploy wants the default, so this script does not ask.
     "REVIEWER_ENABLED",
+    # Whether dev's assistant may read dev's own firewall logs (docs/configuration.md). Off unless
+    # someone sets it to "true" by hand; a first deploy never needs it, so this script does not ask.
+    "OPS_FIREWALL_REVIEW_DEV",
 }
 
 # Secrets the workflows still read as `secrets.X || vars.X`, left over from when they were

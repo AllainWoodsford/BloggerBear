@@ -1,7 +1,8 @@
-"""firewall_review (ops_mcp/firewall.py): production's deep dive into the firewall's logs.
+"""firewall_review (ops_mcp/firewall.py): the deep dive into the firewall's logs.
 
-What is held: the tool exists only where account-wide data is allowed and every log group is this
-environment's own or the shared one (so dev's assistant never has it); the queries are fixed text;
+What is held: the tool exists only where log groups are given and every one is this environment's
+own, or the shared one where account-wide data is allowed (so dev's assistant, switched on, reads
+its own logs and never the shared one); the queries are fixed text;
 what comes back is counts, with paths marked untrusted and never spoken; a spike is decided in
 code; and a query that fails or does not finish is said, not hidden.
 """
@@ -21,6 +22,11 @@ PRODUCTION_GROUPS = (
     "ap-southeast-2:aws-waf-logs-bloggerbear-production-admin,"
     "ap-southeast-2:aws-waf-logs-bloggerbear-production-public-api,"
     "us-east-1:aws-waf-logs-bloggerbear-shared"
+)
+# What dev's root passes when OPS_FIREWALL_REVIEW_DEV is on: its own two, never the shared one.
+DEV_GROUPS = (
+    "ap-southeast-2:aws-waf-logs-bloggerbear-dev-admin,"
+    "ap-southeast-2:aws-waf-logs-bloggerbear-dev-public-api"
 )
 
 
@@ -43,13 +49,28 @@ def test_production_with_its_own_groups_has_the_tool(production):
     ]
 
 
+def test_dev_switched_on_has_the_tool_over_its_own_groups_only(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
+    monkeypatch.setenv("OPS_ACCOUNT_WIDE_DATA", "false")
+    monkeypatch.setenv(firewall.LOG_GROUPS_ENV, DEV_GROUPS)
+
+    assert firewall.available()
+    assert firewall.log_groups() == [
+        ("ap-southeast-2", "aws-waf-logs-bloggerbear-dev-admin"),
+        ("ap-southeast-2", "aws-waf-logs-bloggerbear-dev-public-api"),
+    ]
+
+
 @pytest.mark.parametrize(
     "environment, account_wide, groups",
     [
-        # Dev as deployed: no account-wide data, no groups.
+        # Dev as deployed by default: no account-wide data, no groups.
         ("dev", "false", ""),
-        # Dev given groups anyway: still no account-wide data.
-        ("dev", "false", "ap-southeast-2:aws-waf-logs-bloggerbear-dev-admin"),
+        # Dev given the shared CloudFront log, which carries production's visitors too.
+        ("dev", "false", DEV_GROUPS + ",us-east-1:aws-waf-logs-bloggerbear-shared"),
+        ("dev", "false", "us-east-1:aws-waf-logs-bloggerbear-shared"),
+        # Production told it may not report account-wide data keeps its own, not the shared one.
+        ("production", "false", PRODUCTION_GROUPS),
         # Dev told it may report account-wide data, but asking for production's group.
         ("dev", "true", "ap-southeast-2:aws-waf-logs-bloggerbear-production-admin"),
         # Production with one group that is not its own spoils the list.
@@ -75,7 +96,7 @@ def test_anywhere_else_there_is_no_tool(monkeypatch, environment, account_wide, 
     assert result["available"] is False and result["spoken"] == firewall.NOT_AVAILABLE
 
 
-def _registered(monkeypatch, environment: str) -> set[str]:
+def _registered(monkeypatch, environment: str, groups: str | None = None) -> set[str]:
     from ops_mcp import server
 
     if environment == "production":
@@ -85,13 +106,17 @@ def _registered(monkeypatch, environment: str) -> set[str]:
     else:
         monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
         monkeypatch.setenv("OPS_ACCOUNT_WIDE_DATA", "false")
-        monkeypatch.delenv(firewall.LOG_GROUPS_ENV, raising=False)
+        if groups is None:
+            monkeypatch.delenv(firewall.LOG_GROUPS_ENV, raising=False)
+        else:
+            monkeypatch.setenv(firewall.LOG_GROUPS_ENV, groups)
     return {tool.name for tool in asyncio.run(server.build_server().list_tools())}
 
 
-def test_only_production_lists_the_tool_and_it_is_a_deep_dive(monkeypatch):
+def test_production_and_dev_switched_on_list_the_tool_and_it_is_a_deep_dive(monkeypatch):
     assert "firewall_review" in _registered(monkeypatch, "production")
     assert "firewall_review" not in _registered(monkeypatch, "dev")
+    assert "firewall_review" in _registered(monkeypatch, "dev", DEV_GROUPS)
     assert "firewall_review" in policy.DEEP_DIVE_TOOLS
     assert "firewall_review" not in policy.offered(["pipeline_health", "firewall_review"], policy.BRIEFING)
     assert "firewall_review" in policy.offered(["pipeline_health", "firewall_review"], policy.FOLLOW_UP)

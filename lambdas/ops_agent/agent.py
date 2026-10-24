@@ -253,8 +253,8 @@ SYSTEM_PROMPT = "\n".join(
         "When the operator asks how to check something themselves, call investigate with their "
         "words (and `status` if they named one) and say that a runsheet is on screen, naming "
         "the first place to look. Use investigate too for what no tool reads, such as metrics.",
-        # Security incidents: production's firewall_review and the access logs; addresses only as
-        # the tools masked them.
+        # Security incidents: firewall_review where it is registered (production's, and dev's when
+        # switched on) and the access logs; addresses only as the tools masked them.
         "For a security incident, look at security_events, api_errors and, where it exists, "
         "firewall_review. An address is only ever said as the tools gave it, by its last part "
         "(\"an address ending in .34\"), never whole.",

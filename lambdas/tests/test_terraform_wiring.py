@@ -2117,13 +2117,13 @@ def test_the_briefings_rights_are_one_table_and_one_function_for_each_role():
     assert re.search(r"maximum_retry_attempts\s*=\s*0", text)
 
 
-def test_the_firewall_policy_is_production_only_and_queries_named_groups():
+def test_the_firewall_policy_queries_named_groups_only_where_a_root_gives_them():
     """firewall_review (firewall.tf; docs/enhancements/archive/alexa-plus.md, section 4.4). The policy
-    exists only where account_wide_data is on and groups are given; StartQuery is on those groups
-    by ARN; the two query-id actions are the only ones on "*"; dev's root passes neither."""
+    exists only where groups are given; StartQuery is on those groups by ARN; the two query-id
+    actions are the only ones on "*"; the shared CloudFront log needs account_wide_data."""
     text = _uncommented(_read("modules", "ops-assistant", "firewall.tf"))
 
-    enabled = r"firewall_enabled\s*=\s*var\.account_wide_data && length\(var\.waf_log_groups\) > 0"
+    enabled = r"firewall_enabled\s*=\s*length\(var\.waf_log_groups\) > 0"
     assert re.search(enabled, text)
     assert len(re.findall(r"count\s*=\s*local\.firewall_enabled \? 1 : 0", text)) == 2
     actions = set(re.findall(r'"(logs:[A-Za-z]+)"', text))
@@ -2132,9 +2132,37 @@ def test_the_firewall_policy_is_production_only_and_queries_named_groups():
     star = re.search(on_star, text)
     assert star, "only the query-id actions are on *"
     assert text.count('["*"]') == 1
+    variables = _uncommented(_read("modules", "ops-assistant", "variables.tf"))
+    shared_rule = (
+        r"condition\s*=\s*var\.account_wide_data \|\| !contains\(\[for group in var\.waf_log_groups : "
+        r'group\.name\], "aws-waf-logs-bloggerbear-shared"\)'
+    )
+    assert re.search(shared_rule, variables)
+
+
+def test_dev_reads_its_own_firewall_logs_only_when_switched_on_and_never_the_shared_one():
+    """Dev's root passes waf_log_groups only under var.ops_firewall_review (off by default, from the
+    OPS_FIREWALL_REVIEW_DEV variable), only its own two regional groups, and never account_wide_data."""
     dev = _uncommented(_read("environments", "dev", "main.tf"))
     module = re.search(r'^module "ops_assistant" \{\n(.*?)^\}', dev, re.S | re.M).group(1)
-    assert not re.search(r"^\s*(waf_log_groups|account_wide_data)\s*=", module, re.M)
+    assert not re.search(r"^\s*account_wide_data\s*=", module, re.M)
+    switched = r"^\s*waf_log_groups\s*=\s*var\.ops_firewall_review \? concat\((.*?)^\s*\) : \[\]$"
+    groups = re.search(switched, module, re.S | re.M)
+    assert groups, "dev's groups only under the switch, and none without it"
+    named = re.findall(r"aws_cloudwatch_log_group\.(\w+)\[0\]\.name", groups.group(1))
+    assert named == ["waf_admin", "waf_public_api"]
+    assert "waf_shared" not in module and "us-east-1" not in module
+
+    variables = _read("environments", "dev", "variables.tf")
+    switch = re.search(r'^variable "ops_firewall_review" \{\n(.*?)^\}', variables, re.S | re.M).group(1)
+    assert re.search(r"^\s*type\s*=\s*bool$", switch, re.M)
+    assert re.search(r"^\s*default\s*=\s*false$", switch, re.M)
+
+    workflow = (ROOT / ".github" / "workflows" / "terraform.yml").read_text(encoding="utf-8")
+    line = "TF_VAR_ops_firewall_review: ${{ vars.OPS_FIREWALL_REVIEW_DEV == 'true' && 'true' || 'false' }}"
+    assert line in workflow
+    release = (ROOT / ".github" / "workflows" / "terraform-production-release.yml").read_text("utf-8")
+    assert "OPS_FIREWALL_REVIEW_DEV" not in release and "ops_firewall_review" not in release
 
 
 def test_the_logs_policy_queries_readable_environments_logs_by_tag_and_nothing_else():
