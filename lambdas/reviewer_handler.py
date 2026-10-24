@@ -1,5 +1,5 @@
 """Professor Grizzlewick's Lambda: the reviewer bear (common/reviewer.py,
-docs/enhancements/reviewer-bear.md).
+docs/enhancements/archive/reviewer-bear.md).
 
 Invoked two ways:
 

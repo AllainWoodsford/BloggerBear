@@ -982,9 +982,10 @@ def test_ci_runs_index_check_on_a_pull_request_that_adds_only_run_files():
         assert "until python-ci also lists" not in text, path
 
 
-RUNSHEET = ROOT / "docs" / "deployment-runsheet.md"
-RUNSHEET_EVAL = RUNSHEET.read_text(encoding="utf-8").split("### The evaluation's real-data runs", 1)[1]
-RUNSHEET_EVAL = RUNSHEET_EVAL.split("\n## ", 1)[0]
+# The real-data runs and the evidence export (O9): their own runsheet, which the deployment
+# runsheet's old headings now point to.
+RUNSHEET = ROOT / "docs" / "evaluation-runsheet.md"
+RUNSHEET_EVAL = RUNSHEET.read_text(encoding="utf-8").split("\n## The evaluation's real-data runs\n", 1)[1]
 
 
 def test_the_runsheets_powershell_runs_the_venvs_python_and_checks_what_bash_checks():

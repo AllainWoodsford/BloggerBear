@@ -63,7 +63,7 @@ Decide these before you start, and write them down. Each one is used several tim
 | Placeholder | What it is | Example shape | Rules |
 |---|---|---|---|
 | `<your-github-owner>/<your-fork>` | Your fork's `owner/repo` on GitHub | `octo-dev/my-blog-bot` | Exactly as GitHub shows it |
-| `<your-prefix>` | What every AWS resource name starts with: `<your-prefix>-dev-topics` | `acme-blog` | Lowercase letters, digits, hyphens; starts with a letter; at most 14 characters (12 if the vision worker will run in production: [configuration.md](configuration.md#environment-terraform-variables)); **no** hyphen at the end. **Never change it after the first deploy.** |
+| `<your-prefix>` | What every AWS resource name starts with: `<your-prefix>-dev-topics` | `acme-blog` | Lowercase letters, digits, hyphens; starts with a letter; at most 14 characters (12 if the vision worker will run in production: [configuration.md](configuration.md#environment-terraform-variables)); **no** hyphen at the end and never two hyphens in a row; must not contain `aws`, `amazon` or `cognito`. **Never change it after the first deploy.** |
 | `<your-region>` | The AWS region everything runs in | `ap-southeast-2` | Must offer Amazon Bedrock and the model you choose ([step 3](#3d-make-sure-your-account-can-call-the-model)) |
 | `<your-dev-account-id>` | The 12-digit AWS account for dev | `111111111111` | `aws sts get-caller-identity` shows it |
 | `<your-prod-account-id>` | The account for production (the same as dev's if you use one account) | `123456789012` | Same |
@@ -206,7 +206,14 @@ This creates, in the account your profile points at:
 - two **deploy roles**:
   - `gha-<your-prefix>-dev-deploy`, which only workflow runs on your fork's `dev` branch may assume;
   - `gha-<your-prefix>-prod-deploy`, which only runs in your fork's `production` environment may assume.
-  Both may only touch resources named `<your-prefix>-*`;
+  Only some of what they may change is limited to names starting `<your-prefix>-`: tables,
+  functions, log groups, IAM roles, queues, topics, schedules, state machines, alarms and
+  dashboards. S3, CloudFront, WAF, Route 53 and ACM are not limited by name or Region: the roles
+  may change any of those in the account. REST APIs (API Gateway), Cognito user pools and Lambda
+  event source mappings are limited only to `<your-region>`, and the web search gateway
+  (`bedrock-agentcore`) only to the web search Regions (`ap-northeast-1` unless you set
+  `web_search_regions`). Each role is also refused the other environment's resources, matched by
+  name or by their `Environment` tag;
 - optionally a Route 53 hosted zone (production's domain) and a Bedrock budget alarm.
 
 ```bash
@@ -223,9 +230,10 @@ terraform apply \
 cd ../..
 ```
 
-Read the plan before typing `yes`. Every name in it should start with `<your-prefix>`, or be
-`<your-state-bucket>`. **Each of `github_repo`, `state_bucket_name`, `unique_name_prefix` and
-`domain_name` defaults to the original deployment's value, so pass all four.** `domain_name=` (empty)
+Read the plan before typing `yes`. Every name in it should start with `<your-prefix>` or
+`gha-<your-prefix>` (the two deploy roles), or be `<your-state-bucket>`. **Each of `github_repo`,
+`state_bucket_name`, `unique_name_prefix` and `domain_name` defaults to the original deployment's
+value, so pass all four.** `domain_name=` (empty)
 creates no hosted zone, which is what you want until you set up production.
 The web search gateway's Region needs nothing here: the bootstrap allows `ap-northeast-1` (Tokyo),
 which is where the gateway goes unless you set `WEB_SEARCH_REGION` (6b).
@@ -302,7 +310,10 @@ AWS STS AssumeRoleWithWebIdentity(role = AWS_DEV_DEPLOY_ROLE_ARN)
   ▼
 short-lived credentials (about an hour) ──> terraform init (state in TF_STATE_BUCKET_DEV)
   ──> terraform plan/apply, refused if the account is not AWS_DEV_ACCOUNT_ID
-  ──> may only create or change resources named <your-prefix>-*
+  ──> may create or change resources named <your-prefix>-*; any S3, CloudFront, WAF, Route 53
+      or ACM resource in the account; and any REST API, Cognito user pool or Lambda event
+      source mapping in <your-region> (and the web search gateway in its Region)
+  ──> but is refused production's resources, matched by name or by their Environment tag
 ```
 
 Nothing long-lived ever leaves AWS. If someone copied your workflow into another repository, AWS
@@ -314,10 +325,11 @@ would refuse its token, because the repository in the token would not match.
 
 1. Make any small change under `infra/`, `lambdas/` or `frontend/` on a branch off `dev` (a
    comment is enough: a merge that changes only docs starts no deploy), open a pull request
-   into `dev`, and watch the checks: the security scans, lint, tests,
-   Terraform validate, and the secret and personal-data scans. They need no AWS access.
-2. Merge it. The `terraform` workflow runs the same checks again, assumes the dev role and applies
-   `infra/environments/dev`. The first apply creates everything (tables, buckets, Lambdas, APIs,
+   into `dev`, and watch the checks: the security scans, Terraform validate and test, and the
+   secret and personal-data scans, and lint and tests when the change touches `lambdas/` or
+   `scripts/`. They need no AWS access ([ci-and-checks.md](ci-and-checks.md) lists every one).
+2. Merge it. The `terraform` workflow runs the security scans, lint and tests again on what is
+   about to be applied, assumes the dev role and applies `infra/environments/dev`. The first apply creates everything (tables, buckets, Lambdas, APIs,
    web ACLs, dashboards, the static site). It takes about 10 to 20 minutes, mostly CloudFront.
 3. Confirm the alarm subscription email AWS sends to `<your-email>`.
 4. Read your addresses from the dev state:
@@ -327,8 +339,13 @@ would refuse its token, because the repository in the token would not match.
      -backend-config="region=<your-region>"
    terraform -chdir=infra/environments/dev output
    ```
-   The output lists the site's address (a `https://<something>.cloudfront.net` URL), the admin API
-   URL and the operator's assistant's settings.
+   The output lists:
+   - `distribution_domain_name`: the site's address, a bare `<something>.cloudfront.net` domain.
+     Put `https://` in front of it.
+   - `public_api_cdn_url`: the public API, not the site. It is the only `https://…cloudfront.net`
+     URL in the output.
+   - `admin_api_url`: the admin API URL.
+   - the `ops_*` outputs: the operator's assistant's settings.
 5. Let yourself in to the admin API. It is created locked, and only the addresses in its allowlist
    parameter get in ([configuration.md](configuration.md#the-admin-apis-address-allowlist)):
    ```bash
@@ -376,10 +393,10 @@ GitHub token) are SSM SecureStrings named `/<your-prefix>/dev/coingecko-api-key`
 |---|---|---|
 | Bootstrap: `EntityAlreadyExists` for the OIDC provider | The account already has GitHub's OIDC provider (one is allowed per account) | Import it, then apply again: `terraform -chdir=infra/bootstrap import aws_iam_openid_connect_provider.github_actions arn:aws:iam::<your-dev-account-id>:oidc-provider/token.actions.githubusercontent.com` |
 | Bootstrap: `BucketAlreadyExists` | Someone, anywhere, already has that bucket name | Pick a more unique `<your-state-bucket>` |
-| Deploy: `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The token's subject does not match the role's trust policy: wrong `github_repo` in the bootstrap, a run not on `dev`, or a different subject format | Check `github_repo` was `<your-github-owner>/<your-fork>`. CloudTrail's failed `AssumeRoleWithWebIdentity` event shows the exact subject GitHub sent. The roles expect GitHub's immutable form, `repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/dev`; if yours is the plain `repo:<owner>/<repo>:ref:refs/heads/dev`, `gh api repos/<your-github-owner>/<your-fork>/actions/oidc/customization/sub` shows the repository's setting |
+| Deploy: `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The token's subject does not match the role's trust policy: wrong `github_repo` in the bootstrap, a run not on `dev`, or a different subject format | Check `github_repo` was `<your-github-owner>/<your-fork>`. CloudTrail's failed `AssumeRoleWithWebIdentity` event shows the exact subject GitHub sent. The roles expect GitHub's immutable form, `repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/dev`. To see which form your tokens use, run `gh api repos/<your-github-owner>/<your-fork>/actions/oidc/customization/sub`. If its answer does not include `"use_immutable_subject": true`, your tokens use the plain form, `repo:<owner>/<repo>:ref:refs/heads/dev`, which the roles never match. In that case, edit the two `sub` values in `infra/bootstrap/main.tf` (`gha_dev_trust` and `gha_prod_trust`) to the plain form, `repo:<your-github-owner>/<your-fork>:ref:refs/heads/dev` and `repo:<your-github-owner>/<your-fork>:environment:production`. Then apply the bootstrap again with the same `-var` values as your last bootstrap apply (step 5's, unless you have applied it since, for example with your domain or `web_search_regions`). If you use two accounts, apply it in each one: sign in to that account, select its workspace (`terraform workspace select dev`, then `production`) and pass that account's own values ([Bootstrap, once per account](deployment-separate-accounts.md#bootstrap-once-per-account)) |
 | Deploy: `AccessDenied` creating resources | `UNIQUE_NAME_PREFIX` differs from the bootstrap's `unique_name_prefix`, or `AWS_REGION` differs from its `aws_region` | Make them the same word / region |
 | Deploy: "AWS account ID not allowed" | The role is in a different account than `AWS_DEV_ACCOUNT_ID` | Fix whichever is wrong; the error names the real account |
-| Admin CLI: 403 | Your IP changed, or the allowlist was never set | `python scripts/admin_allowlist.py set --env dev --my-ip` (with `--region` and `--prefix` if not the defaults); `show --env dev` says what each place holds. No deploy needed |
+| Admin CLI: 403 | Your IP changed, or the allowlist was never set | `python scripts/admin_allowlist.py --region <your-region> --prefix <your-prefix> set --env dev --my-ip` (`--region` and `--prefix` go before `set` or `show`; leave them out only if you use the defaults); `show --env dev` says what each place holds. No deploy needed |
 | Articles never appear; the daily cycle errors | The model cannot be called in your region | Re-run [step 3](#3d-make-sure-your-account-can-call-the-model) |
 | `gh` set secrets on the wrong repository | `gh` picked the upstream in a fork | Re-run the script with `--repo <your-github-owner>/<your-fork>` |
 
@@ -390,6 +407,10 @@ More, from building and running the original: [friction.md](friction.md).
 ## 10. Where next
 
 - **Production and your domain:** [production-runsheet.md](production-runsheet.md).
+- **Changing or rotating the model**, and how the model catalog keeps prices current:
+  [models.md](models.md).
+- **Satellite vision and the Rail Access Monitor** (off by default):
+  [vision-runsheet.md](vision-runsheet.md).
 - **Protect your branches** (pull requests only, no force-pushes): the archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md).
 - **The operator's assistant** (`<site>/ask.html`): create a user as in
   [After the first deploy](deployment-runsheet.md#5-after-the-first-deploy), step 5.

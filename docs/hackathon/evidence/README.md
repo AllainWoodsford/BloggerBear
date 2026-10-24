@@ -102,7 +102,7 @@ from. They need the Sydney network fixture, `scripts/vision_benchmark_networks/s
 `scripts/requirements.txt`, and for `failures`' collection check pytest and moto
 (`lambdas/requirements-dev.txt`, which holds all three `lambdas/` files). The exact session,
 with each command's PowerShell line, is the runsheet's
-[evaluation runs](../../deployment-runsheet.md#the-evaluations-real-data-runs).
+[evaluation runs](../../evaluation-runsheet.md#the-evaluations-real-data-runs).
 
 - **`replay --sequence sydney-winter | sydney-demo | sydney-c1`** (2.6.4): the real adapter over
   06-27, 08-21b, 08-26 and 08-31, through `fetch_state` then `material_diff`, one tick per scene,
@@ -214,7 +214,7 @@ not be measured is left out and listed under `results.not_measured`, never writt
 `scripts/evidence_export.py export --env dev` writes what the deployed system measured, decided and
 did into `live/<UTC date>/`. It is read-only against AWS; the owner runs it on Saturday 24 October
 (O9) and again by Thursday 29, with the commands and the credentials the runsheet's
-[evidence export](../../deployment-runsheet.md#the-evidence-export-the-trace-and-the-labels-o9) gives.
+[evidence export](../../evaluation-runsheet.md#the-evidence-export-the-trace-and-the-labels-o9) gives.
 Every file holds only schema fields: codes, ids, times and numbers, each through the evidence
 writer's own kinds (`lambdas/common/evidence.py`); never a log's `@log` (it names the account),
 `@ptr` or raw message, a site's or a station's name, a news title or URL, a summary or the agent's

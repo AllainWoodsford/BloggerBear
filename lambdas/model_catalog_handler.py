@@ -1,10 +1,12 @@
 """Model catalog Lambda handler: keeps the Models registry's list of models and their prices up to
-date (common/model_catalog.py, docs/enhancements/model-catalog-refresh.md).
+date (common/model_catalog.py, docs/enhancements/archive/model-catalog-refresh.md).
 
 Invoked four ways (common/model_catalog.handle):
 
-* by two static EventBridge Scheduler crons, every second day, discover at 03:00 Sydney and
-  reprice at 06:00, with `{"job": ..., "trigger": "schedule"}` -- skipped while that job is paused;
+* by three static EventBridge Scheduler crons in Sydney time, with
+  `{"job": ..., "trigger": "schedule"}` -- skipped while that job is paused: discover at 02:00 and
+  reprice at 03:00 every second day (the odd days of the month), and the weekly cycle (the topics'
+  model rotations, common/model_fleet.py) at 04:00 on Fridays;
 * by the admin API's POST /models/discover and POST /models/reprice, with `{"job": ...}`, which run
   the job now even when it is paused;
 * by the one-shot review schedules a pricing run creates (1 and 2 hours later by default), with

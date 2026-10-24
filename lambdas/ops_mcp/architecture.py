@@ -1179,11 +1179,13 @@ FEATURES: tuple[Feature, ...] = (
                 "satellite imagery (see the vision pipeline).",
                 ("table:topics", "Adapters (common/adapters/)"),
             ),
-            # common/scheduler.py, from admin_api_handler.py on topic create, update and delete.
+            # common/scheduler.py, from admin_api_handler.py on topic create, update and delete
+            # (research_cadence, rate(1 hour) by default); common/research_schedule.py says when due.
             Step(
                 "Schedules",
-                "Creating a topic makes its two EventBridge schedules: a research heartbeat at its "
-                "interval, and the daily cycle at its time and timezone.",
+                "Creating a topic makes its two EventBridge schedules: a research heartbeat (hourly "
+                "by default), and the daily cycle at its time and timezone. The heartbeat is not the "
+                "research interval: each tick decides whether the topic is due.",
                 ("schedule:topic-schedules", "function:admin-api"),
             ),
             # crypto_feed.py COINGECKO_API_KEY_PARAMETER, github_trending.py GITHUB_API_TOKEN_PARAMETER,
@@ -1200,41 +1202,50 @@ FEATURES: tuple[Feature, ...] = (
                     "Bedrock AgentCore web search",
                 ),
             ),
-            # research_tick_handler.py: diff-first (rule 2), snapshots/{topic_id}/{captured_at}.json.
+            # research_tick_handler.py: diff-first (rule 2) against the last Finding's snapshot and
+            # its seen-set (_merge_seen, SEEN_KEY); _not_due skips a topic that is not due.
             Step(
                 "Research tick: diff first",
-                "The adapter fetches the source now and compares it with the last snapshot in the "
-                "content bucket. Nothing new: it stops, and no model is called. Something new: it "
-                "stores the raw snapshot under snapshots/ in the content bucket.",
+                "Unless the topic is paused or not due, the adapter fetches the source now and "
+                "compares it with the snapshot of the topic's last finding in the content bucket, "
+                "and with the items already reported (the seen-set), so an item that comes back is "
+                "not new again. Nothing new: it stops, and no model is called.",
                 ("function:research-tick", "bucket:content"),
             ),
+            # research_tick_handler.py: the summary first, then snapshots/{topic_id}/{captured_at}.json,
+            # then the Finding.
             Step(
                 "Findings",
-                "Bedrock summarises only what is new, and the summary is written as a finding with "
-                "where its snapshot is and its sources. Findings expire after 14 days, snapshots "
-                "after 21.",
+                "Bedrock summarises only what is new. Only once the summary is back is the raw "
+                "snapshot stored under snapshots/ in the content bucket, and the summary written as "
+                "a finding with where its snapshot is and its sources. Findings expire after 14 "
+                "days, snapshots after 21.",
                 ("table:findings", "Amazon Bedrock (Converse API)"),
             ),
-            # daily_cycle_handler.py steps 2-4; the state machine retries, then the DLQ.
+            # daily_cycle_handler.py steps 2-4 (MAX_WINDOW_FINDINGS), common/findings_window.py. The
+            # state machine retries twice, then the DLQ, but the handler catches its own errors, so
+            # only a timeout or a crash is retried and reaches the DLQ.
             Step(
                 "Candidate ideas",
-                "Once a day, through the daily-cycle state machine, the daily cycle reads every "
-                "finding since the topic's last article, at most its findings window back (a day "
-                "unless the topic sets a wider one, up to 14 days), asks Bedrock for three "
-                "candidate angles, stores them as candidate ideas and selects one. Ideas expire "
-                "after 7 days.",
+                "Once a day, through the daily-cycle state machine, the daily cycle reads the "
+                "topic's findings since its last article, but only within its findings window "
+                "(findings_window_hours: a day unless the topic sets a wider one, up to 14 days), "
+                "at most 48 of them, newest first. It asks Bedrock for three candidate angles, "
+                "stores them as candidate ideas and selects the first. Ideas expire after 7 days.",
                 (
                     "state_machine:daily-cycle",
                     "function:daily-cycle",
                     "table:candidate-ideas",
                 ),
             ),
-            # common/model_routing.py, gear.py, equipment.py; the few-shot excerpt.
+            # daily_cycle_handler._draft_article and _draft_title; common/model_routing.py,
+            # equipment.py (the gear worn), compliance.py (financial guidance); the few-shot excerpt.
             Step(
                 "Drafting",
-                "Bedrock drafts the title and article with the topic's model from the model "
-                "registry, folding in the topic's approved prompt refinements (the bear's gear), a "
-                "top-voted past excerpt, and financial guidance where it applies.",
+                "Bedrock drafts the article with the topic's model from the model registry, folding "
+                "in the topic's approved prompt refinements (the bear's gear), a top-voted past "
+                "excerpt, and financial guidance where it applies. The title is a separate call, "
+                "after the body; a title that is not one, or a draft cut off, holds the article.",
                 (
                     "table:models",
                     "table:model-config",
@@ -1242,20 +1253,24 @@ FEATURES: tuple[Feature, ...] = (
                     "Amazon Bedrock (Converse API)",
                 ),
             ),
-            # common/fresh_review.py, common/compliance.py (rule 3 and rule 4).
+            # common/fresh_review.py, common/compliance.py (rule 3 and rule 4); common/reviewer.py.
             Step(
                 "Reviews",
-                "A fresh-data review checks the draft's claims against what the source says now; "
-                "a compliance review decides publish or hold. A financial topic is always held for "
-                "a person, whatever the review says.",
+                "A fresh-data review checks the draft's claims against what the source says now "
+                "(only recorded in shadow mode, the default; enforce mode revises or holds); then a "
+                "compliance review decides publish or hold. A financial topic's article is always "
+                "held when drafted, whatever the review says; the reviewer bear may approve it "
+                "after 48 hours, and flags it for a person to check.",
                 ("Fresh-data review (common/fresh_review.py)", "Compliance review (common/compliance.py)"),
             ),
-            # daily_cycle_handler._publish_or_moderate; common/static_pages.py; stats_tracking.py.
+            # daily_cycle_handler._publish_or_moderate; common/static_pages.py; stats_tracking.py;
+            # common/reviewer.py (stale_after_hours, 48 by default).
             Step(
                 "The article in S3",
                 "The body is written to the content bucket as articles/<id>.md and the article's "
                 "row records its lineage, tokens and cost. Published, a static page goes to the "
-                "site bucket; held, it waits in the moderation queue for admin_cli approve.",
+                "site bucket; held, it waits in the moderation queue for a person (admin_cli "
+                "approve) or, after 48 hours, the reviewer bear.",
                 (
                     "bucket:content",
                     "table:articles",
@@ -1264,12 +1279,14 @@ FEATURES: tuple[Feature, ...] = (
                     "table:stats-current",
                 ),
             ),
-            # The ops assistant: ops_agent/ (Strands) and ops_mcp/ (the MCP server), read-only.
+            # The ops assistant: ops_agent/ (Strands) and ops_mcp/ (the MCP server), read-only. The
+            # vision triage agent: common/vision_triage.py.
             Step(
                 "Where the AI agents are",
-                "Every model call above is one Bedrock request from a Lambda, not an agent. The "
+                "Every model call above is one Bedrock request from a Lambda, not an agent. One "
                 "agent is this assistant: a Strands agent calling the MCP server's read-only tools, "
-                "which read the same topics, findings, ideas and articles, and change none of them.",
+                "which read the same topics, findings, ideas and articles, and change none of them. "
+                "The other is the vision triage agent, inside a vision topic's research tick.",
                 ("function:ops-agent", "function:ops-mcp"),
             ),
         ),

@@ -20,8 +20,9 @@ practical after that.
 
 Testing the live site is welcome within reason: no denial of service, no load testing, no
 automated scanning at volume, and no attempts to read or change other people's data. The public
-API is rate-limited by WAF, and blocked requests are logged as security incidents
-(see `lambdas/common/security_events.py`), so a noisy test will be noticed.
+API is rate-limited by WAF, and requests the regional firewalls block are logged as security
+incidents ([how incidents work](docs/architecture/security-incidents.md)), so a noisy test will be
+noticed.
 
 ## Supported versions
 

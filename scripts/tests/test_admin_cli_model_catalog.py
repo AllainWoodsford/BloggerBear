@@ -1,5 +1,5 @@
 """The Admin CLI's model catalog commands: `models reprice`, `models discover` and `model-catalog
-get|set` (docs/enhancements/model-catalog-refresh.md)."""
+get|set` (docs/enhancements/archive/model-catalog-refresh.md)."""
 
 from __future__ import annotations
 

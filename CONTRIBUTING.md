@@ -19,10 +19,11 @@ The code is under the [Apache License 2.0](LICENSE). To run it yourself:
   one-time bootstrap to a working dev environment, and
   [docs/production-runsheet.md](docs/production-runsheet.md) from there to the first production
   release. Every setting is in [docs/configuration.md](docs/configuration.md).
-- **Running the checks locally:** the runsheet's
-  [Local development](docs/deployment-runsheet.md#local-development) section has the same commands
-  CI runs: pytest (moto-mocked, no AWS credentials needed), ruff, bandit, checkov and
-  `terraform validate`.
+- **Running the checks locally:** [docs/ci-and-checks.md](docs/ci-and-checks.md) lists every
+  workflow, what it runs and when, and the same commands to run on your own machine: pytest
+  (moto-mocked, no AWS credentials needed), ruff, bandit, checkov, Trivy, `terraform validate` and
+  `terraform test`, and the secret and personal-data scans. The runsheet's
+  [Local development](docs/deployment-runsheet.md#local-development) section is the short version.
 - **Lint before you push:** `ruff check --fix lambdas/ scripts/` with the ruff pinned in
   `lambdas/requirements-dev.txt` applies the safe fixes CI would otherwise fail on.
 - **How it's built and why:** [docs/project-plan.md](docs/project-plan.md) covers the

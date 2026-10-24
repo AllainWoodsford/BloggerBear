@@ -2,7 +2,7 @@
 
 **Status:** built · **First draft:** 2026-10-19 · **Throttled:** 2026-10-20 (see
 [Throttling](#throttling-2026-10-20))
-**Background:** the Models registry and its prices ([project-plan.md §11](../project-plan.md),
+**Background:** the Models registry and its prices ([project-plan.md §11](../../project-plan.md),
 "AI lineage/cost tracking"), which until now were only filled in by hand (`admin_cli.py models add`).
 
 ## What it does
@@ -149,7 +149,7 @@ finish, so pausing never strands an applied-but-unchecked price.
 **SQS was considered and not used.** The ticks are a queue drained at a fixed pace by one-shot
 schedules, which this Lambda already creates for its reviews under an existing grant: no new
 queue, event source mapping, DLQ or IAM. If the dispatcher work queue
-([dispatcher-sqs-enhancement.md](dispatcher-sqs-enhancement.md)) is built, the ticks can become
+([dispatcher-sqs-enhancement.md](../dispatcher-sqs-enhancement.md)) is built, the ticks can become
 delayed messages on it.
 
 `admin_cli.py model-catalog get` shows the run under way: its queue left, its next tick, and when
@@ -242,7 +242,7 @@ schedule. The new Lambda joins the observability function list. Nothing else is 
 - it can already `PutObject` to the content bucket, for the snapshot.
 
 Two environment variables, neither a switch and neither needing to be set
-([configuration.md](../configuration.md#the-model-catalogs-environment-variables)):
+([configuration.md](../../configuration.md#the-model-catalogs-environment-variables)):
 `MODEL_CATALOG_FUNCTION_NAME` tells the Admin API which Lambda to start (Terraform sets it; unset,
 it is `<prefix>-<env>-model-catalog`), and `MODEL_CATALOG_FUNCTION_ARN` would point the review
 schedules elsewhere (unset, they invoke the Lambda's own ARN, from its context). The switches are

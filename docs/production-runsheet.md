@@ -56,7 +56,15 @@ Two things about the account that are worth knowing before the first release:
 
 Bootstrap is always applied by hand, never by CI. If you gave it your domain and an alert email the
 first time, this step is already done: `terraform -chdir=infra/bootstrap output hosted_zone_id`
-prints a zone ID. Otherwise:
+prints a zone ID. Otherwise, run the `plan` and the `apply` below.
+
+Add the same other variables as your last bootstrap apply to both commands: `aws_account_id`,
+`github_repo`, `state_bucket_name`, `unique_name_prefix` and `aws_region`, and `vision_region`,
+`web_search_regions` and `separate_environment_permissions` if you set them.
+
+The budget's monthly limit is `bedrock_budget_limit_usd`, US$20 unless you pass another value. The
+budget emails you when actual Bedrock spend passes 80% of it, and again when the month's forecast
+passes 100% ([Bootstrap variables](configuration.md#bootstrap-variables)).
 
 ```bash
 cd infra/bootstrap
@@ -64,9 +72,7 @@ terraform init
 terraform plan  -var domain_name=example.com -var budget_alert_email=you@example.com
 ```
 
-Pass the same other variables you used for the first bootstrap apply (`aws_account_id`,
-`github_repo`, `state_bucket_name`, `unique_name_prefix`, `aws_region`, and `vision_region` if you
-set it). **Check the plan only adds the zone and the budget.** If it shows anything else being
+**Check the plan only adds the zone and the budget.** If it shows anything else being added,
 changed or destroyed, stop and find out why. Then:
 
 ```bash
@@ -163,12 +169,16 @@ python scripts/setup_repo.py --dry-run     # asks and checks, sets nothing
 python scripts/setup_repo.py
 ```
 
-For production it sets `AWS_PROD_DEPLOY_ROLE_ARN` (required), and, if you give them, `AWS_PROD_ACCOUNT_ID`, `TF_STATE_BUCKET_PROD` and `ALERT_EMAIL_PROD`. The
-full table, and why each is a secret or a variable, is in
-[configuration.md](configuration.md#github-secrets-and-variables). Your IP is not among them: after
-production's first release, let yourself in to its admin API with
-`python scripts/admin_allowlist.py set --env production --my-ip`
-([configuration.md](configuration.md#the-admin-apis-address-allowlist)).
+For production it sets:
+
+- `AWS_PROD_DEPLOY_ROLE_ARN` (required).
+- `TF_STATE_BUCKET_PROD` (required for a fork). It is your state bucket: the same one as dev's if
+  you use one account.
+- `AWS_PROD_ACCOUNT_ID` and `ALERT_EMAIL_PROD`, if you give them.
+
+The full table, and why each is a secret or a variable, is in
+[configuration.md](configuration.md#github-secrets-and-variables). Your IP is not among them. You
+add it in [step 7](#7-after-the-first-apply), after the first release.
 
 It does not ask where the web search gateway runs: unset, production's is in `ap-northeast-1`
 (Tokyo), like dev's. To choose another Region, see
@@ -214,35 +224,48 @@ python scripts/domain_check.py --expect-ns <the four from step 1>   # every line
 
 Then, in order:
 
-1. **Confirm the alert email.** AWS sends one confirmation mail to the address; nothing is delivered
-   until you click it (there is one each for the alarms and the budget).
-2. **Point the CLI at production** (each environment has its own URL; see `scripts/QUICKSTART.md`):
+1. **Confirm the alert email.** AWS sends one confirmation mail to the `ALERT_EMAIL_PROD` address,
+   for the alarms' SNS topic; nothing is delivered until you click it. The budget from step 1 mails
+   its address directly and needs no confirmation. What each alarm watches, and what it emails
+   you, is in [observability.md](observability.md).
+2. **Let yourself in to the admin API.** Nothing can call it until you do
+   ([configuration.md](configuration.md#the-admin-apis-address-allowlist)):
+   ```bash
+   python scripts/admin_allowlist.py --prefix <your prefix> set --env production --my-ip
+   ```
+   If your region is not `ap-southeast-2`, also put `--region <your region>` before `set`.
+3. **Point the CLI at production** (each environment has its own URL; see `scripts/QUICKSTART.md`):
    ```bash
    export BLOGGERBEAR_ADMIN_API_URL=$(terraform -chdir=infra/environments/production output -raw admin_api_url)
    python scripts/admin_cli.py topics list
    ```
-3. **Seed the topics** you want
+4. **Seed the topics** you want
    ([deployment-runsheet.md, step 5](deployment-runsheet.md#5-after-the-first-deploy)). Creating a
    topic creates its schedules; after that it runs unattended. Trigger one by hand first:
    `topics trigger <id> --pipeline research_tick`, then `daily_cycle`.
-4. **Optional, but recommended: the API keys and the model registry.** Each is per environment,
+5. **Optional, but recommended: the API keys and the model registry.** Each is per environment,
    so what you set up for dev is not here yet. Store production's CoinGecko key and GitHub token
    (`/<prefix>/production/coingecko-api-key`, `/<prefix>/production/github-api-token`) and
    seed production's model tables (`<prefix>-production-models`,
    `<prefix>-production-model-config`) the same way as dev's (`<prefix>` is your
    `UNIQUE_NAME_PREFIX`, `bloggerbear` by default):
    [deployment-runsheet.md, "Optional, but recommended"](deployment-runsheet.md#optional-but-recommended).
-   The model catalog fills and reprices production's registry by itself from the first Tuesday
-   (on by default); `models discover` does it now, and `model-catalog get` shows what it did
-   ([the model registry, step 4](deployment-runsheet.md#the-model-registry-seeding-and-rotation)).
-5. **Smoke-test in a browser**: the home page, an article, the Stats page, `/rss.xml`, a thumbs-up
+
+   The model catalog fills and reprices production's registry by itself from its first run. It is
+   on by default and runs every second day: discover at 02:00 Sydney time, reprice at 03:00. To
+   run it now instead of waiting, in this order
+   ([models.md, the model catalog](models.md#the-model-catalog-discovery-prices-and-the-weekly-cycle)):
+   - `models discover` adds models now, disabled and unpriced. It takes a minute or two.
+   - `models reprice` prices them. Run it once discover has finished.
+   - `model-catalog get` then shows what each job last did.
+6. **Smoke-test in a browser**: the home page, an article, the Stats page, `/rss.xml`, a thumbs-up
    on an article (this exercises the feedback token), and `https://www.<your domain>` (should land
    on the bare domain).
-6. **Optional:** production creates the shared CloudFront web ACL. In a one-account setup, put
+7. **Optional:** production creates the shared CloudFront web ACL. In a one-account setup, put
    `terraform output wafv2_web_acl_arn` into `infra/environments/dev/terraform.tfvars` as
    `web_acl_arn` if you want dev to share it. It cannot be shared across accounts.
 
-7. **The operator's assistant** (`/ask.html`; [how it works](architecture/ops-mcp-agent.md)). Its
+8. **The operator's assistant** (`/ask.html`; [how it works](architecture/ops-mcp-agent.md)). Its
    user pool has self-sign-up off and MFA required, so make your own user by hand:
    ```bash
    POOL=$(terraform -chdir=infra/environments/production output -raw ops_user_pool_id)
@@ -260,7 +283,7 @@ Then, in order:
    lock it to your addresses. Five failed sign-ins in fifteen minutes lock a user and email the
    alert address; `sign-ins unlock <you>` clears it
    ([deployment-runsheet.md, step 5](deployment-runsheet.md#5-after-the-first-deploy)).
-8. **Optional: Alexa+.** Production's own add-on, linked to production's pool only, is a one-time
+9. **Optional: Alexa+.** Production's own add-on, linked to production's pool only, is a one-time
    bootstrap: [alexa/README.md](../alexa/README.md). Putting Alexa's redirect URLs in
    `ops_alexa_redirect_uris` also keeps the MCP function warm (about 8,600 invocations a month).
 
@@ -297,7 +320,7 @@ and why each is needed, are in
 ## Vision (optional)
 
 The vision worker and its topics
-([deployment-runsheet.md, Vision (optional)](deployment-runsheet.md#vision-optional)) are off in
+([vision-runsheet.md](vision-runsheet.md#turning-the-worker-on)) are off in
 production by default. **Leave it off unless the dev run was satisfactory:** a vision topic that
 ran on dev for a few ticks, with a held article whose figure and numbers you read and approved,
 and no `last_error` repeating in its running state. Off by default holds only while the repository
@@ -346,8 +369,9 @@ the repository's value); topics keep their state.
   example: Nameservers > **Reset to GoDaddy default nameservers**). Spreading takes the same
   minutes-to-hours as before; the Route 53 zone can stay.
 - **A bad release**: publish a new release from an earlier commit on `prod`.
-- **Tearing production down** is deliberately awkward: tables have deletion protection (set
-  `protect_data = false` and apply, then destroy) and the content bucket is not force-destroyed.
+- **Tearing production down** is deliberately awkward: tables have deletion protection (in
+  `infra/environments/production/main.tf` set `protect_data = false` on both `module "app_data"`
+  and `module "ops_assistant"`, apply, then destroy) and the content bucket is not force-destroyed.
   The DNS zone is in bootstrap with `prevent_destroy`, so it survives, and the registrar's settings
   stay valid when you rebuild.
 - **An accidental delete or overwrite**: tables can be restored to any second in the last 35 days

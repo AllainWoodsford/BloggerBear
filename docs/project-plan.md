@@ -509,7 +509,7 @@ row keyed by profile id.
   left unpriced -- never guessed.
 - *The registry keeps itself up to date.* Every second day the model catalog discovers up to
   five new models from any provider (added disabled, up to 50 in all) and reprices up to 50,
-  a few at a time, keeping a changed price only if two later reviews confirm it -- see [model-catalog-refresh.md](enhancements/model-catalog-refresh.md).
+  a few at a time, keeping a changed price only if two later reviews confirm it -- see [model-catalog-refresh.md](enhancements/archive/model-catalog-refresh.md).
 - *Research is a running tally, bundled into the article.* Each Finding records the
   Bedrock call behind its summary (`research_call`: model, tokens). When an article is
   written, the daily cycle sums the calls of every Finding in its window (before any
@@ -2114,7 +2114,7 @@ below it. The frontend caps at three as well, so an older API response cannot fl
 
 ### Professor Grizzlewick, the reviewer bear (2026-10-20)
 
-**Status: built** ([reviewer-bear.md](enhancements/reviewer-bear.md)). A second character: an old,
+**Status: built** ([reviewer-bear.md](enhancements/archive/reviewer-bear.md)). A second character: an old,
 bespectacled, mustachioed bear, woken every second day to do the reviews the admins have fallen
 behind on. He fixes the assistant's content findings, decides articles held two days or more
 (skeptical of every major flag; approve, rewrite, or reject after three rewrites), reads the newest

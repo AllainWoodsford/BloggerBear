@@ -909,7 +909,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `vision/rail_analyse.py`, `rail_annotate.py`, `vision_worker_handler.py`,
   `adapters/rail_access.py`, `rail_notes.py`; [RailVisionSeeding.md §7](RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides);
   on `claude/wonderful-brahmagupta-9vt5t3`, to merge after the hackathon results)
-- [x] The model registry keeps itself up to date ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md)):
+- [x] The model registry keeps itself up to date ([model-catalog-refresh.md](enhancements/archive/model-catalog-refresh.md)):
   a new `model-catalog` Lambda, on two weekly schedules (03:00 Sydney). On Tuesdays it adds every
   model the account can call, from every provider (Bedrock `ListFoundationModels` and
   `ListInferenceProfiles`), as `enabled: false`. On Wednesdays it reprices every token-priced model
@@ -927,8 +927,8 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   at most 5 models and none once the registry holds 50, and no longer prices; reprice queues at
   most 50 models, oldest looked up first, and checks them 5 every 5 minutes on one-shot tick
   schedules, reviews too; a lookup that errors defers a model instead of failing it
-  ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md#throttling-2026-10-20))
-- [x] The model fleet ([model-catalog-refresh.md](enhancements/model-catalog-refresh.md#pruning-and-cycling-2026-10-20)):
+  ([model-catalog-refresh.md](enhancements/archive/model-catalog-refresh.md#throttling-2026-10-20))
+- [x] The model fleet ([model-catalog-refresh.md](enhancements/archive/model-catalog-refresh.md#pruning-and-cycling-2026-10-20)):
   once the registry holds `max_models` (50), discover prunes instead, inactive and unpriced models
   first, then by `prune_mode` (`value_for_money` keeps the cheaper models, `frontier` the high-end
   ones), never a default, fallback, topic or rotation model; pruned prices are archived for the
@@ -955,7 +955,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   Stats, the review inbox and `admin_cli` all keep working through the generic paths)
   ([project-plan.md](project-plan.md#removed-the-trending-everywhere-digest-2026-10-20))
 
-- [x] Professor Grizzlewick, the reviewer bear ([reviewer-bear.md](enhancements/reviewer-bear.md)):
+- [x] Professor Grizzlewick, the reviewer bear ([reviewer-bear.md](enhancements/archive/reviewer-bear.md)):
   a new character (his own picture, `frontend/bears/grizzlewick.svg`, and musings) and Lambda,
   every second day, tasks a few at a time on one-shot ticks: fixes content findings, decides
   articles held two days or more (approves, rewrites, or rejects after three rewrites), reviews the

@@ -281,8 +281,9 @@ def build_server() -> MCPServer:
     @server.tool(annotations=_READ_ONLY, structured_output=True)
     def model_catalog() -> dict[str, Any]:
         """The model catalog, which keeps the model registry's list and prices current: whether
-        discover (Tuesdays) and reprice (Wednesdays) are paused, what each last did, and the
-        pricing run under review with when its next check is. Use it when the operator asks about
+        discover (every second day, 2 am Sydney), reprice (3 am) and the rotation cycle (Fridays)
+        are paused, what each last did, and the pricing run under review with when its next check
+        is. Use it when the operator asks about
         model prices being updated, new models, or a reprice; a price it put back is in
         pipeline_health. How to pause or rerun it is cli_guides `model-prices`."""
         return model_prices.model_catalog_status()

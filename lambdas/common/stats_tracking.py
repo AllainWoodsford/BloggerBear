@@ -3,18 +3,23 @@ plus a few reader-activity counters, all rolled into one weekly running total.
 
 Per-article cost (ideation, drafting, title, review, revision) has always been tracked --
 common/costing.py builds it into each Articles item's own `lineage`, and the public Stats page
-aggregates those. Four other Bedrock-calling code paths were never tracked at all, because they
-don't belong to any one article:
+aggregates those. Other Bedrock-calling code paths were never tracked at all, because they don't
+belong to any one article. There were four at first; there are eight now (BEDROCK_CATEGORIES below):
 
-    musings            common/musings.py    (an article, loot-drop or feedback musing)
+    musings            common/musings.py    (every kind of musing)
     weekly_reflection  weekly_reflection_handler.py  (a topic's rationale + suggested change)
     gear_identity      common/gear.py       (naming a new piece of gear, and the name-safety check)
     comment_screening  common/comment_screening.py   (KEEP/DROP on a reader's comment)
+    model_pricing      common/model_catalog.py       (reading a model's price out of search results)
+    reviewer           reviewer_handler.py  (the reviewer bear judging articles, common/reviewer.py)
+    assistant          ops_agent/agent.py   (one assistant run of several calls: record_assistant_run)
+    vision_triage      common/vision_triage.py  (one triage decision's calls: record_model_usage)
 
-`tracked_claude` below is what each of those now calls instead of `common.bedrock.invoke_claude`
+`tracked_claude` below is what most of those now call instead of `common.bedrock.invoke_claude`
 directly -- same signature, same return (just the text), but the call's tokens and cost are also
 tallied onto this week's StatsCurrent row (common/dynamo.py's increment_current_stats) under
-`category`. `record_feedback_given`, `record_feedback_rejected` and `record_loot_drop` tally the
+`category`. The assistant and the vision triage make several calls per run, so they tally a run's
+total instead. `record_feedback_given`, `record_feedback_rejected` and `record_loot_drop` tally the
 non-Bedrock reader-activity counters the same way.
 
 Every function here fails open: if recording fails, it is logged and swallowed, never raised --

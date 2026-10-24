@@ -1,5 +1,5 @@
 """The model fleet: keeps the Models registry inside its cap and the topics' model rotations
-working and fresh (docs/enhancements/model-catalog-refresh.md, "Pruning and cycling").
+working and fresh (docs/enhancements/archive/model-catalog-refresh.md, "Pruning and cycling").
 
 * **Pruning** (prune, run by discover once the registry holds `max_models`): removes models until
   the next discover has room again, at most `prune_max_per_run` a run. Inactive models go first,
