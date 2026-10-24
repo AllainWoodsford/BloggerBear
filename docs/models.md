@@ -11,8 +11,7 @@ design, with every field and edge case, is
 [enhancements/archive/model-catalog-refresh.md](enhancements/archive/model-catalog-refresh.md).
 
 Most commands here are the admin CLI ([scripts/QUICKSTART.md](../scripts/QUICKSTART.md) sets it
-up). The shared rotation pool has no CLI command yet, so you set it with the AWS CLI or in the
-DynamoDB console. Either way, a change takes effect on the next run, with no deploy.
+up). A change takes effect on the next run, with no deploy.
 
 The one exception is the model Terraform gives the Lambdas: `BEDROCK_MODEL_ID`, and the operator's
 assistant's `OPS_AGENT_MODEL_ID`, which Terraform sets to the same value. Moving it, and with it
@@ -206,7 +205,7 @@ There are two ways to rotate, and they do different jobs.
 |---|---|---|
 | What it is | `model_id_candidates` on one topic | the `model-rotation` row: one list for every topic |
 | When it moves | every run picks at random from the list | after each article the daily cycle publishes by itself (not one held for moderation, nor one a moderator approves later), and after a run whose model proposed no usable angle, the topic's `model_id` is set to a random pick from the pool |
-| Set with | `topics update --model-candidates` | by hand in DynamoDB (no CLI command yet) |
+| Set with | `topics update --model-candidates` | `model-rotation set --candidates` |
 | Kept fresh by | [the weekly cycle](#the-weekly-cycle) | only you |
 | Good for | comparing models on one topic | moving every topic on from a model that stopped working for it |
 
@@ -231,21 +230,21 @@ left exactly as you wrote it.
 
 ### The shared rotation pool
 
-The pool is one row in the model-config table. Nothing creates it; until you do, nothing rotates
-this way. To set it:
+The pool is one row in the model-config table. Nothing creates it; until you set it, nothing
+rotates this way. To set it:
 
 ```bash
-aws dynamodb put-item --region ap-southeast-2 --table-name <prefix>-dev-model-config --item '{
-  "config_id": {"S": "model-rotation"},
-  "candidates": {"L": [
-    {"S": "au.anthropic.claude-haiku-4-5-20251001-v1:0"},
-    {"S": "au.anthropic.claude-sonnet-4-5-20250929-v1:0"}
-  ]}
-}'
+python scripts/admin_cli.py model-rotation set --candidates "<model id>,<model id>"
+python scripts/admin_cli.py model-rotation get    # the pool as stored; [] when there is none
 ```
 
-To stop it, delete the item, or set `candidates` to an empty list. Topics keep whatever `model_id`
-the pool last gave them: clear it with `topics update <topic_id> --model-id ""`.
+`set` replaces the whole pool. Each model must be registered and enabled (`models list`), named
+once, and the pool holds at most 50. Anything else is refused with the reason, and the pool stays
+as it was. Like the registry, the pool is per environment: set it in each.
+
+To stop it, clear the pool with `model-rotation set --candidates ""` (deleting the row in the
+DynamoDB console does the same). Topics keep whatever `model_id` the pool last gave them: clear it
+with `topics update <topic_id> --model-id ""`.
 
 Why the move after a failed run: a model that cannot propose an angle for a topic would otherwise
 keep the topic for good, because the pool used to move a topic only after a publish
@@ -450,9 +449,9 @@ includes the research that fed it.
   - `models disable` (or `models add ... --disabled`), which put the cycle's next pick in the
     disabled model's place in a rotation list.
 
-  `topics get <topic_id>` shows `model_id` and `model_id_candidates`. Routing logs
-  `model_routing: ... moves to` in the daily-cycle and research-tick logs. `model-catalog get`
-  shows the cycle's last run (`last_cycle_result`, with `topics_changed`).
+  `topics get <topic_id>` shows `model_id` and `model_id_candidates`, and `model-rotation get`
+  the pool. Routing logs `model_routing: ... moves to` in the daily-cycle and research-tick logs.
+  `model-catalog get` shows the cycle's last run (`last_cycle_result`, with `topics_changed`).
 - **Every article says `used_fallback`.** The chosen model fails every call: check its id with
   `aws bedrock list-inference-profiles`, and your account's access with the `converse` command
   under [Before you start](deployment-runsheet.md#before-you-start).

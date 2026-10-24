@@ -1914,8 +1914,8 @@ def set_last_armor_versions(versions: list[str]) -> None:
 
 # A fourth row in the same table: the shared pool of model ids daily_cycle_handler.py rolls a
 # topic's `model_id` (Topics table) forward to, at random, once it has published an article --
-# see that module's _assign_rotated_model. Edited by hand in DynamoDB (or the admin CLI/API,
-# once it grows a route for it) rather than by Terraform, same as the "default" row above.
+# see that module's _assign_rotated_model. Set from the admin API (GET/PUT /model-rotation,
+# `admin_cli model-rotation`) rather than by Terraform, same as the "default" row above.
 _MODEL_ROTATION_CONFIG_ID = "model-rotation"
 
 

@@ -1118,6 +1118,11 @@ module "admin_api" {
     "POST /models",
     "GET /model-config",
     "PUT /model-config",
+    # The shared rotation pool (the `model-rotation` row): the models the daily cycle moves a
+    # topic's model_id to. See admin_api_handler.py's _*_model_rotation_route and
+    # `admin_cli model-rotation`.
+    "GET /model-rotation",
+    "PUT /model-rotation",
     # The model catalog (docs/enhancements/archive/model-catalog-refresh.md): run the reprice or discover
     # job now, and its settings and pause flags. See admin_api_handler.py's model catalog routes and
     # `admin_cli models reprice|discover`, `admin_cli model-catalog`.

@@ -574,6 +574,7 @@ FILLER = {
     "editorial_goals_json": cli_guide.STAR_COUNT_GOAL,
     "config_json": {"queries": ["vegetable garden watering"], "title_keywords": ["water*"]},
     "fallback_model_id": "a-fallback-model-id",
+    "candidates": "a-model-id,another-model-id",
     "musing_id": "762825f7-8358-43b3-b169-25c0fc624b64",
     "article": "f5e88f3a",
     "adapter_config_json": {"sites": [{"id": "sydney", "polygon": [[150.86, -33.58]]}]},
