@@ -1380,9 +1380,11 @@ def test_a_stalled_articles_read_ends_by_the_deadline_with_one_attempt(monkeypat
 
 # --- the whole call, held to its limit, for real ---------------------------------------------------
 
-# The limit and the wait for the calls below: the production values scaled down so each takes about a
-# second. Everything else is the production default path (no seam passed), against a loopback AWS.
-SMALL_LIMIT, SMALL_WAIT = 1.0, 0.3
+# The limit and the wait for the calls below: the production values scaled down so each takes about
+# two seconds. Everything else is the production default path (no seam passed), against a loopback
+# AWS. Every request builds its own boto3 client, so a slow CI runner spends part of the limit on
+# that: at 1.0 and 0.3, client builds 100 ms slower than usual failed the throttled-poll test.
+SMALL_LIMIT, SMALL_WAIT = 2.0, 0.6
 # What a call may run past its limit here: the read timeout's floor, a client's build and the
 # answer's own work (a connect to loopback is immediate).
 TOLERANCE = 0.75

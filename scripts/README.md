@@ -289,6 +289,13 @@ python scripts/admin_cli.py model-catalog set --review-after-hours "1,2" --revie
     --max-change-factor 10 --max-web-lookups 10   # the defaults; '' clears one
 python scripts/admin_cli.py model-config get
 python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+# The shared rotation pool: after an article the daily cycle publishes by itself, or a run whose
+# model proposed no usable angle, the topic's model_id becomes one of these at random. Each must be
+# a registered, enabled, callable (not `access: denied`) text model. `set` replaces the whole pool;
+# '' clears it.
+python scripts/admin_cli.py model-rotation get
+python scripts/admin_cli.py model-rotation set --candidates "model-id-a,model-id-b"
+python scripts/admin_cli.py model-rotation set --candidates ""
 
 # Per-topic: pin one model, set a fallback, or rotate between several
 # (one picked at random per daily run). '' clears a value.
@@ -1248,7 +1255,7 @@ message shaped like what the state machine's `Catch` state produces:
 QUEUE_URL=$(terraform -chdir=infra/environments/dev output -raw pipeline_dlq_url)
 aws sqs send-message \
   --queue-url "$QUEUE_URL" \
-  --message-body '{"topic_id": "test-topic", "error": {"Error": "States.TaskFailed", "Cause": "synthetic test message"}}'
+  --message-body '{"topic_id": "test-topic", "execution": {"id": "synthetic"}, "error": {"Error": "States.TaskFailed", "Cause": "synthetic test message"}}'
 ```
 
 Then confirm it landed:

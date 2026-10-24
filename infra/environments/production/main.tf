@@ -1002,6 +1002,18 @@ resource "aws_lambda_function" "daily_cycle" {
   }
 }
 
+# Only the Admin API invokes this function asynchronously: a manual `topics trigger <id>
+# daily_cycle` and a Re-Write (`{"action": "rewrite"}`, common/rewrite.py). The scheduled runs go
+# through aws_sfn_state_machine.daily_cycle, whose own Retry this does not touch. Lambda retries a
+# failed async invoke twice by default, and the handler never raises, so only a timeout or a crash
+# was retried, as a whole second run: a `--force` run that timed out after storing its article
+# wrote the same window up again (force ignores last_article_at), and a rewrite called its model
+# again. A rewrite that times out is released by release_stale_rewrites after 15 minutes, as before.
+resource "aws_lambda_function_event_invoke_config" "daily_cycle" {
+  function_name          = aws_lambda_function.daily_cycle.function_name
+  maximum_retry_attempts = 0
+}
+
 # =========================================================================
 # Phase 2 -- Admin console API: a third Lambda (from the same shared
 # deployment package above) fronted by an IAM-authenticated API Gateway
@@ -1205,6 +1217,11 @@ module "admin_api" {
     "POST /models",
     "GET /model-config",
     "PUT /model-config",
+    # The shared rotation pool (the `model-rotation` row): the models the daily cycle moves a
+    # topic's model_id to. See admin_api_handler.py's _*_model_rotation_route and
+    # `admin_cli model-rotation`.
+    "GET /model-rotation",
+    "PUT /model-rotation",
     # The model catalog (docs/enhancements/archive/model-catalog-refresh.md): run the reprice or discover
     # job now, and its settings and pause flags. See admin_api_handler.py's model catalog routes and
     # `admin_cli models reprice|discover`, `admin_cli model-catalog`.
@@ -1446,14 +1463,27 @@ resource "aws_iam_role_policy" "states_exec" {
   policy = data.aws_iam_policy_document.states_exec.json
 }
 
+# NameTheRun adds the execution's id to the input (`execution.id`) and keeps the rest, so the
+# daily-cycle Lambda gets {"topic_id": ..., "execution": {"id": ...}}, and every retry of
+# RunDailyCycle carries the same id. The Lambda stores the id with the article it writes
+# (the topic's last_article_run), so a retry after that article was stored writes nothing and
+# returns already_written. The DLQ message carries `execution` too (lambdas/dlq_handler.py).
 resource "aws_sfn_state_machine" "daily_cycle" {
   # checkov:skip=CKV_AWS_285:a failed run goes to the pipeline DLQ and FailedExecutions, and Step Functions keeps execution history itself for 90 days; CloudWatch delivery would bill per event
   name     = "${var.unique_name_prefix}-production-daily-cycle"
   role_arn = aws_iam_role.states_exec.arn
 
   definition = jsonencode({
-    StartAt = "RunDailyCycle"
+    StartAt = "NameTheRun"
     States = {
+      NameTheRun = {
+        Type = "Pass"
+        Parameters = {
+          "id.$" = "$$.Execution.Id"
+        }
+        ResultPath = "$.execution"
+        Next       = "RunDailyCycle"
+      }
       RunDailyCycle = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
@@ -3152,9 +3182,10 @@ resource "aws_lambda_function" "sign_in_events" {
 # docs/enhancements/archive/alexa-plus.md. Read-only on the pipeline; its own sign-in, with MFA required.
 #
 # Production's assistant reads production only, plus two things that belong to the account and
-# that only production's may report (account_wide_data): the AWS bill, and the firewall's logs,
-# including the CloudFront firewall both sites share. Dev's assistant has neither (the module's
-# isolation.tf and firewall.tf, and dev's root, which passes neither setting).
+# that only production's may report (account_wide_data): the AWS bill, and the CloudFront
+# firewall's log, which both sites share. Dev's assistant has neither (the module's isolation.tf
+# and firewall.tf). It may read dev's own firewall logs, and only when the operator turns that on
+# (OPS_FIREWALL_REVIEW_DEV); production's always has its own.
 # =========================================================================
 
 module "ops_assistant" {

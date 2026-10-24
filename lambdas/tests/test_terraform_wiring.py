@@ -1595,6 +1595,42 @@ def test_the_github_token_is_read_from_ssm_not_passed_in(env):
     assert sorted(told) == ["daily_cycle", "research_tick"]
 
 
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_an_async_daily_cycle_invoke_that_fails_is_not_retried(env):
+    """A manual run or a rewrite is invoked asynchronously; a retry after a timeout would be a whole
+    second run (a forced run writing its window up again, a rewrite calling its model again)."""
+    text = _read("environments", env, "main.tf")
+    config = _resource_block(text, "aws_lambda_function_event_invoke_config", "daily_cycle")
+    function = r"^\s*function_name\s*=\s*aws_lambda_function\.daily_cycle\.function_name$"
+    assert re.search(function, config, re.M)
+    assert re.search(r"^\s*maximum_retry_attempts\s*=\s*0$", config, re.M)
+    # The scheduled runs keep the state machine's own retries.
+    machine = _resource_block(text, "aws_sfn_state_machine", "daily_cycle")
+    assert "MaxAttempts     = 2" in machine
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_daily_cycle_state_machine_names_the_run_before_its_task(env):
+    """Every retry of RunDailyCycle must carry the same execution id, so the Lambda can tell a retry
+    of a run that already stored its article from a new run. A Pass state before the Task adds it at
+    $.execution and keeps the schedule's input ({"topic_id": ...}) as it is."""
+    machine = _resource_block(_read("environments", env, "main.tf"), "aws_sfn_state_machine", "daily_cycle")
+
+    assert re.search(r'^\s*StartAt = "NameTheRun"$', machine, re.M)
+    name = re.search(r"^      NameTheRun = \{\n(.*?)^      \}", machine, re.S | re.M).group(1)
+    assert re.search(r'^\s*Type = "Pass"$', name, re.M)
+    assert re.search(r'^\s*"id\.\$" = "\$\$\.Execution\.Id"$', name, re.M)
+    # A ResultPath below the root adds the id beside the input; "$" or none would replace it.
+    assert re.search(r'^\s*ResultPath = "\$\.execution"$', name, re.M)
+    assert re.search(r'^\s*Next\s*= "RunDailyCycle"$', name, re.M)
+    assert "InputPath" not in name and "OutputPath" not in name
+
+    task = re.search(r"^      RunDailyCycle = \{\n(.*?)^      \}", machine, re.S | re.M).group(1)
+    assert re.search(r'^\s*Type\s*= "Task"$', task, re.M)
+    assert re.search(r'^\s*"Payload\.\$"\s*= "\$"$', task, re.M)
+    assert "MaxAttempts     = 2" in task and 'Next        = "SendToDeadLetterQueue"' in task
+
+
 def test_no_workflow_passes_a_coingecko_key_any_more():
     workflows = ROOT / ".github" / "workflows"
     for path in workflows.glob("*.yml"):
@@ -2103,13 +2139,13 @@ def test_the_briefings_rights_are_one_table_and_one_function_for_each_role():
     assert re.search(r"maximum_retry_attempts\s*=\s*0", text)
 
 
-def test_the_firewall_policy_is_production_only_and_queries_named_groups():
+def test_the_firewall_policy_queries_named_groups_only_where_a_root_gives_them():
     """firewall_review (firewall.tf; docs/enhancements/archive/alexa-plus.md, section 4.4). The policy
-    exists only where account_wide_data is on and groups are given; StartQuery is on those groups
-    by ARN; the two query-id actions are the only ones on "*"; dev's root passes neither."""
+    exists only where groups are given; StartQuery is on those groups by ARN; the two query-id
+    actions are the only ones on "*"; the shared CloudFront log needs account_wide_data."""
     text = _uncommented(_read("modules", "ops-assistant", "firewall.tf"))
 
-    enabled = r"firewall_enabled\s*=\s*var\.account_wide_data && length\(var\.waf_log_groups\) > 0"
+    enabled = r"firewall_enabled\s*=\s*length\(var\.waf_log_groups\) > 0"
     assert re.search(enabled, text)
     assert len(re.findall(r"count\s*=\s*local\.firewall_enabled \? 1 : 0", text)) == 2
     actions = set(re.findall(r'"(logs:[A-Za-z]+)"', text))
@@ -2118,9 +2154,37 @@ def test_the_firewall_policy_is_production_only_and_queries_named_groups():
     star = re.search(on_star, text)
     assert star, "only the query-id actions are on *"
     assert text.count('["*"]') == 1
+    variables = _uncommented(_read("modules", "ops-assistant", "variables.tf"))
+    shared_rule = (
+        r"condition\s*=\s*var\.account_wide_data \|\| !contains\(\[for group in var\.waf_log_groups : "
+        r'group\.name\], "aws-waf-logs-bloggerbear-shared"\)'
+    )
+    assert re.search(shared_rule, variables)
+
+
+def test_dev_reads_its_own_firewall_logs_only_when_switched_on_and_never_the_shared_one():
+    """Dev's root passes waf_log_groups only under var.ops_firewall_review (off by default, from the
+    OPS_FIREWALL_REVIEW_DEV variable), only its own two regional groups, and never account_wide_data."""
     dev = _uncommented(_read("environments", "dev", "main.tf"))
     module = re.search(r'^module "ops_assistant" \{\n(.*?)^\}', dev, re.S | re.M).group(1)
-    assert not re.search(r"^\s*(waf_log_groups|account_wide_data)\s*=", module, re.M)
+    assert not re.search(r"^\s*account_wide_data\s*=", module, re.M)
+    switched = r"^\s*waf_log_groups\s*=\s*var\.ops_firewall_review \? concat\((.*?)^\s*\) : \[\]$"
+    groups = re.search(switched, module, re.S | re.M)
+    assert groups, "dev's groups only under the switch, and none without it"
+    named = re.findall(r"aws_cloudwatch_log_group\.(\w+)\[0\]\.name", groups.group(1))
+    assert named == ["waf_admin", "waf_public_api"]
+    assert "waf_shared" not in module and "us-east-1" not in module
+
+    variables = _read("environments", "dev", "variables.tf")
+    switch = re.search(r'^variable "ops_firewall_review" \{\n(.*?)^\}', variables, re.S | re.M).group(1)
+    assert re.search(r"^\s*type\s*=\s*bool$", switch, re.M)
+    assert re.search(r"^\s*default\s*=\s*false$", switch, re.M)
+
+    workflow = (ROOT / ".github" / "workflows" / "terraform.yml").read_text(encoding="utf-8")
+    line = "TF_VAR_ops_firewall_review: ${{ vars.OPS_FIREWALL_REVIEW_DEV == 'true' && 'true' || 'false' }}"
+    assert line in workflow
+    release = (ROOT / ".github" / "workflows" / "terraform-production-release.yml").read_text("utf-8")
+    assert "OPS_FIREWALL_REVIEW_DEV" not in release and "ops_firewall_review" not in release
 
 
 def test_the_logs_policy_queries_readable_environments_logs_by_tag_and_nothing_else():

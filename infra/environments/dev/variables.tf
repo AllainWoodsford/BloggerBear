@@ -294,6 +294,18 @@ variable "bedrock_inference_profile_id" {
   EOT
 }
 
+variable "ops_firewall_review" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Whether dev's assistant may read dev's own firewall logs with firewall_review: the admin API's
+    and the public API's WAF log groups, the ones that exist (the cost-saving switches). Never the
+    CloudFront firewall's shared log, which carries production's visitors too: that one is
+    production's only. Off by default, which gives dev's MCP role no right to any WAF log group and
+    registers no tool. The OPS_FIREWALL_REVIEW_DEV repository variable (docs/configuration.md).
+  EOT
+}
+
 variable "vision_enabled" {
   type        = bool
   default     = false

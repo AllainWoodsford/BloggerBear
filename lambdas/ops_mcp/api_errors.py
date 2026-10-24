@@ -20,8 +20,9 @@ HTTP status (a whole number from 100 to 599) put into them:
 
 **What to do next is said, not done.** A 5XX the Lambda answered is in the Lambda's own log:
 the finding says so and names `log_review` with that function, for the agent to follow (or the
-operator to ask). Firewall blocks in production point at `firewall_review`. The words are fixed
-here; the suggestions are the catalogue's (`api_<cause>`).
+operator to ask). Firewall blocks point at `firewall_review` where it is registered (production,
+and dev when switched on). The words are fixed here; the suggestions are the catalogue's
+(`api_<cause>`).
 
 **Check it yourself**: the same queries as `how_to` cards, for the same log groups and window, with
 a console link: the runsheet for exactly what was looked at.
@@ -34,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from ops_mcp import architecture, logs, redact
+from ops_mcp import architecture, firewall, logs, redact
 from ops_mcp.suggestions import finding
 
 HOW_TO = "how_to"
@@ -81,9 +82,9 @@ CAUSES = {
         "firewall_blocked",
         "requests the firewall blocked",
         "security",
-        "The firewall (WAF) refused them before they reached the API. In production, ask about the "
-        "firewall for which rule and how many addresses; a burst from one address is someone "
-        "probing, a steady trickle across many is the managed rules doing their job.",
+        "The firewall (WAF) refused them before they reached the API. Where the firewall review is "
+        "on, ask about the firewall for which rule and how many addresses; a burst from one address "
+        "is someone probing, a steady trickle across many is the managed rules doing their job.",
     ),
     "throttled": Cause(
         "throttled",
@@ -279,11 +280,11 @@ def api_errors(
         rows.append(row)
         totals["requests"] += row["requests"]
         totals["errors"] += row["errors"]
-        findings += _findings(target, row, when, env)
+        findings += _findings(target, row, when)
     findings.sort(key=lambda item: -item["root_cause"]["count"])
     findings = findings[:FINDINGS_MAX]
 
-    spoken = _spoken(rows, chosen, status, when, totals, complete, refused, env)
+    spoken = _spoken(rows, chosen, status, when, totals, complete, refused)
     for row in rows:
         del row["_by_cause"]
     return {
@@ -364,7 +365,7 @@ def _work_out(api: Api, breakdown: list[dict], total: list[dict], timeline: list
     }
 
 
-def _findings(api: Api, row: dict, when: logs.Window, env: str) -> list[dict]:
+def _findings(api: Api, row: dict, when: logs.Window) -> list[dict]:
     out = []
     for key, count in row["_by_cause"].most_common():
         if not count:
@@ -385,7 +386,7 @@ def _findings(api: Api, row: dict, when: logs.Window, env: str) -> list[dict]:
                 "end": when.end.isoformat(),
             }
         elif key == "firewall_blocked":
-            follow = {"tool": "firewall_review"} if env == "production" else None
+            follow = {"tool": "firewall_review"} if firewall.available() else None
         item["root_cause"] = {
             "cause": key,
             "fix_type": found.fix_type,
@@ -498,7 +499,7 @@ def _join(items: list[str]) -> str:
     return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
-def _spoken(rows, chosen, status, when, totals, complete, refused, env) -> str:
+def _spoken(rows, chosen, status, when, totals, complete, refused) -> str:
     which = chosen[0].words if len(chosen) == 1 else "the APIs"
     what = f"{status} responses" if status else "errors"
     words = []
@@ -523,7 +524,7 @@ def _spoken(rows, chosen, status, when, totals, complete, refused, env) -> str:
             words.append(f"{lead} {count} {found.label}: that looks like {FIX_WORDS[found.fix_type]}.")
         if any(key in merged for key in ("lambda_failed", "integration_timeout")):
             words.append("The Lambda's own log has the cause of the 5XXs; I can read it next.")
-        if "firewall_blocked" in merged and env == "production":
+        if "firewall_blocked" in merged and firewall.available():
             words.append("I can look at the firewall for which rule blocked them.")
         started = [row["first_error_hour"] for row in rows if row["first_error_hour"]]
         if started and when.hours > 2:

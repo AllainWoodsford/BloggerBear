@@ -1,12 +1,13 @@
-"""firewall_review: the deep dive into what the firewall (AWS WAF) has been doing. Production only
-(docs/enhancements/archive/alexa-plus.md, section 4.4).
+"""firewall_review: the deep dive into what the firewall (AWS WAF) has been doing
+(docs/enhancements/archive/alexa-plus.md, section 4.4). Production's assistant always has it; dev's
+only when the operator turns it on (OPS_FIREWALL_REVIEW_DEV, docs/configuration.md).
 
-**Only where it may be.** The firewall's logs are not one environment's: the CloudFront firewall
-in front of both sites logs to one shared group. So the tool exists only where the deployment says
-this assistant may report account-wide data (production) **and** has been given log groups to
-read; dev's assistant never has it, and its role has no right to any WAF log group either
-(infra/modules/ops-assistant/firewall.tf). Every configured group must also be named for this
-environment or be the shared one, or the tool is not registered at all.
+**Only where it may be.** The tool exists only where the deployment has given this assistant log
+groups to read (infra/modules/ops-assistant/firewall.tf), and its role may query exactly those.
+Every group must be named for this environment or be the shared one, or the tool is not registered
+at all. The shared one is not one environment's: the CloudFront firewall in front of both sites
+logs to it, so it is accepted only where the deployment says this assistant may report account-wide
+data (production). Dev's assistant, switched on, reads dev's own firewall logs and nothing else.
 
 **Fixed queries, counts out.** The model never writes a query: the Logs Insights queries are the
 ones below, over a window the tool clamps. What comes back is counts per action and per rule, a
@@ -94,8 +95,9 @@ def _logs(region: str):
 
 def log_groups() -> list[tuple[str, str]] | None:
     """The configured (region, log group) pairs, or None if anything about them is wrong: no
-    environment, an entry that does not parse, or a group that is neither this environment's nor
-    the shared one. None means the tool is not registered."""
+    environment, an entry that does not parse, a group that is neither this environment's nor
+    the shared one, or the shared one where this assistant may not report account-wide data. None
+    means the tool is not registered."""
     environment = os.environ.get(ENVIRONMENT_ENV, "")
     if not re.fullmatch(r"[a-z][a-z0-9]{1,31}", environment):
         return None
@@ -110,14 +112,15 @@ def log_groups() -> list[tuple[str, str]] | None:
         region, _, name = entry.partition(":")
         if not _REGION.match(region) or not (own.match(name) or name == SHARED_LOG_GROUP):
             return None
+        if name == SHARED_LOG_GROUP and not account_wide_data():
+            return None
         pairs.append((region, name))
     return pairs
 
 
 def available() -> bool:
-    """Whether firewall_review is registered here: account-wide data allowed, and log groups that
-    pass log_groups()."""
-    return account_wide_data() and log_groups() is not None
+    """Whether firewall_review is registered here: log groups that pass log_groups()."""
+    return log_groups() is not None
 
 
 def _clamp_hours(hours) -> int:

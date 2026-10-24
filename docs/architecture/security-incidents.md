@@ -18,11 +18,12 @@ reaches the admin API is on [The admin CLI and the admin API](admin-cli.md). The
 what an incident records. [SECURITY.md](../../SECURITY.md#testing-the-live-site) tells anyone
 testing the live site that their blocked requests are recorded. This page does not repeat them.
 
-**In the assistant.** This page has no `feature` entry yet. Ask about its parts by name instead:
-`architecture(name="security-events")` (the table and the Lambda, which share the name),
-`"sign-in-events"`, `"sign-ins"`, `"waf-public-api"`, `"waf-admin"`, `"waf-shared"`,
-`"admin-api-access"`, `"public-api-acl"` or `"admin-acl"`. You can also ask about the layer that
-holds the firewalls (`edge`).
+**In the assistant.** `architecture(feature="security-incidents")` walks through the steps below
+with this environment's resource names on screen, with grouping and recording (3 and 4) as one
+step. Ask about a part by name for more: `architecture(name="security-events")` (the table and the
+Lambda, which share the name), `"sign-in-events"`, `"sign-ins"`, `"waf-public-api"`, `"waf-admin"`,
+`"waf-shared"`, `"admin-api-access"`, `"public-api-acl"` or `"admin-acl"`. You can also ask about
+the layer that holds the firewalls (`edge`).
 - `security_events` lists the open incidents last seen in the last 7 days (1 to 30), by severity.
   It is part of a briefing. Each high incident is a finding, and so is a medium one that is a trend
   or was opened by hand. It reads open incidents only, so one you acknowledge drops off it.
@@ -30,8 +31,10 @@ holds the firewalls (`edge`).
 - `alarms` shows whether `<prefix>-<env>-security-high-severity` is firing.
 - `investigate(symptom="security")` is the runsheet: the firewalls' logs and console pages, with a
   query for what was blocked.
-- `firewall_review`, in production only, reads the firewalls' own logs, the shared CloudFront
-  ACL's included.
+- `firewall_review` reads the firewalls' own logs. Production's reads its regional ACLs' logs and
+  the shared CloudFront ACL's. Dev's has the tool only when `OPS_FIREWALL_REVIEW_DEV` is on
+  ([configuration.md](../configuration.md#github-secrets-and-variables)), and then reads dev's
+  regional logs only.
 - `cli_guides(topic="security")` walks you through the commands.
 
 Resource names below use `<prefix>` (your `unique_name_prefix`) and `<env>` (`dev` or
@@ -123,7 +126,7 @@ Lambda in its own Region. A request it blocks stops at the edge and never reache
 ACL, so it is not an incident either. It runs the same AWS managed common rule set. So a
 cross-site scripting attempt sent through the API's CDN is blocked at the edge and leaves no
 incident, while the same attempt sent straight to the execute-api address becomes one. In
-production, the assistant's `firewall_review` reads that log.
+production, the assistant's `firewall_review` reads that log; dev's never does.
 
 **Only the admin API's access log is a source.** The public API's 4xx answers are not counted.
 

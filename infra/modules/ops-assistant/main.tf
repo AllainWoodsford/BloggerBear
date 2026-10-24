@@ -412,7 +412,7 @@ resource "aws_lambda_function" "ops_mcp" {
         # The latest briefing per user, and the agent to start one with (briefings.tf).
         OPS_BRIEFINGS_TABLE = aws_dynamodb_table.briefings.name
         OPS_AGENT_FUNCTION  = aws_lambda_function.ops_agent.arn
-        # The firewall's log groups, as "<region>:<name>", only where firewall_review may exist
+        # The firewall's log groups, as "<region>:<name>", only where the root gives some
         # (firewall.tf); empty everywhere else, and then the tool is not registered.
         OPS_WAF_LOG_GROUPS = local.firewall_enabled ? join(",", [for group in var.waf_log_groups : "${group.region}:${group.name}"]) : ""
 

@@ -53,7 +53,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    model-rotation      The shared rotation pool: the models the daily cycle moves a topic's\n                        model_id to\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -3476,6 +3476,46 @@
       ],
       "destructive": false,
       "help_text": "usage: admin_cli.py model-config set [-h] [--model-id MODEL_ID]\n                                     [--fallback-model-id FALLBACK_MODEL_ID]\n\noptions:\n  -h, --help            show this help message and exit\n  --model-id MODEL_ID\n  --fallback-model-id FALLBACK_MODEL_ID\n"
+    },
+    "model-rotation": {
+      "help": "The shared rotation pool: the models the daily cycle moves a topic's model_id to",
+      "group": true,
+      "subcommands": [
+        "get",
+        "set"
+      ],
+      "help_text": "usage: admin_cli.py model-rotation [-h] {get,set} ...\n\npositional arguments:\n  {get,set}\n    get       Show the shared rotation pool ([] when none is set)\n    set       Replace the shared rotation pool (each a registered, enabled text model the account\n              can call)\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "model-rotation get": {
+      "help": "Show the shared rotation pool ([] when none is set)",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py model-rotation get [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "model-rotation set": {
+      "help": "Replace the shared rotation pool (each a registered, enabled text model the account can call)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--candidates",
+          "dest": "candidates",
+          "kind": "option",
+          "flags": [
+            "--candidates"
+          ],
+          "help": "Comma-separated model IDs. After an article the daily cycle publishes by itself, or a run whose model proposed no usable angle, the topic's model_id becomes one at random; '' clears the pool",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py model-rotation set [-h] [--candidates CANDIDATES]\n\noptions:\n  -h, --help            show this help message and exit\n  --candidates CANDIDATES\n                        Comma-separated model IDs. After an article the daily cycle publishes by\n                        itself, or a run whose model proposed no usable angle, the topic's\n                        model_id becomes one at random; '' clears the pool\n"
     },
     "refinements": {
       "help": "Manage prompt refinements",

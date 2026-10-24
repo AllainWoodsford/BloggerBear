@@ -212,9 +212,6 @@ NOT_ASKED = {
     "WEB_SEARCH_REGION_PROD",
     # GitHub creates this for every workflow run. Nobody sets it.
     "GITHUB_TOKEN",
-    # Only claude-issue-worker.yml reads it. That workflow is an optional extra with its own
-    # sign-in step; no deploy needs it.
-    "CLAUDE_CODE_OAUTH_TOKEN",
     # Only ruff-autofix.yml reads it, and it is optional: without it that workflow reports the
     # fixes in its job summary and pushes nothing. No deploy needs it.
     "RUFF_AUTOFIX_TOKEN",
@@ -225,6 +222,9 @@ NOT_ASKED = {
     # Professor Grizzlewick, the reviewer bear (docs/configuration.md). On unless set to "false": a
     # first deploy wants the default, so this script does not ask.
     "REVIEWER_ENABLED",
+    # Whether dev's assistant may read dev's own firewall logs (docs/configuration.md). Off unless
+    # someone sets it to "true" by hand; a first deploy never needs it, so this script does not ask.
+    "OPS_FIREWALL_REVIEW_DEV",
 }
 
 # Secrets the workflows still read as `secrets.X || vars.X`, left over from when they were
