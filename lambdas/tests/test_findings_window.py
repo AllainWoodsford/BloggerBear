@@ -168,6 +168,50 @@ def test_a_stamp_map_that_is_not_a_map_is_replaced_with_this_subjects_stamp_and_
     assert "not a map; replaced it with a map holding subject=north's stamp" in said
 
 
+@pytest.fixture
+def update_expressions(topics_table):
+    """Every UpdateExpression common/dynamo.py's own client sends, in order."""
+    sent = []
+    dynamo.get_table("Topics").meta.client.meta.events.register(
+        "provide-client-params.dynamodb.UpdateItem",
+        lambda params, **_: sent.append(params["UpdateExpression"]),
+    )
+    return sent
+
+
+_RUN = {
+    "run_id": "arn:aws:states:ap-southeast-2:123456789012:execution:daily-cycle:run-1",
+    "article_id": "a-1",
+}
+
+
+@pytest.mark.parametrize("subject_key", [None, "north"])
+def test_a_stamp_with_a_run_records_the_run_in_the_same_write_as_the_stamp(
+    topics_table, update_expressions, subject_key
+):
+    """The daily cycle's run and the article it stored go in the UpdateItem that sets
+    last_article_at, so a retry can never find the stamp without the run, or the run without it."""
+    dynamo.set_topic_last_article_at("t", "2026-09-21T09:00:00+00:00", subject_key=subject_key, run=_RUN)
+
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item["last_article_at"] == "2026-09-21T09:00:00+00:00"
+    assert item["last_article_run"] == _RUN
+    (stamping,) = (expression for expression in update_expressions if "last_article_at" in expression)
+    assert "last_article_run" in stamping
+    assert [expression for expression in update_expressions if "last_article_run" in expression] == [stamping]
+
+
+def test_a_stamp_without_a_run_writes_no_run_and_leaves_the_last_one_alone(topics_table, update_expressions):
+    dynamo.set_topic_last_article_at("t", "2026-09-21T09:00:00+00:00", run=_RUN)
+    dynamo.set_topic_last_article_at("t", "2026-09-22T09:00:00+00:00")
+    dynamo.set_topic_last_article_at("t", "2026-09-23T09:00:00+00:00", subject_key="north")
+
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item["last_article_at"] == "2026-09-23T09:00:00+00:00"
+    assert item["last_article_run"] == _RUN
+    assert not any("last_article_run" in expression for expression in update_expressions[1:])
+
+
 def test_a_stamp_map_that_is_a_map_or_missing_is_never_said_to_be_replaced(topics_table, capsys):
     dynamo.set_topic_last_article_at("t", "2026-09-21T09:00:00+00:00", subject_key="north")  # missing
     dynamo.set_topic_last_article_at("t", "2026-09-22T09:00:00+00:00", subject_key="south")  # a map

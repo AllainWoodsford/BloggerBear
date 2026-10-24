@@ -1248,7 +1248,7 @@ message shaped like what the state machine's `Catch` state produces:
 QUEUE_URL=$(terraform -chdir=infra/environments/dev output -raw pipeline_dlq_url)
 aws sqs send-message \
   --queue-url "$QUEUE_URL" \
-  --message-body '{"topic_id": "test-topic", "error": {"Error": "States.TaskFailed", "Cause": "synthetic test message"}}'
+  --message-body '{"topic_id": "test-topic", "execution": {"id": "synthetic"}, "error": {"Error": "States.TaskFailed", "Cause": "synthetic test message"}}'
 ```
 
 Then confirm it landed:

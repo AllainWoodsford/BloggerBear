@@ -1458,14 +1458,27 @@ resource "aws_iam_role_policy" "states_exec" {
   policy = data.aws_iam_policy_document.states_exec.json
 }
 
+# NameTheRun adds the execution's id to the input (`execution.id`) and keeps the rest, so the
+# daily-cycle Lambda gets {"topic_id": ..., "execution": {"id": ...}}, and every retry of
+# RunDailyCycle carries the same id. The Lambda stores the id with the article it writes
+# (the topic's last_article_run), so a retry after that article was stored writes nothing and
+# returns already_written. The DLQ message carries `execution` too (lambdas/dlq_handler.py).
 resource "aws_sfn_state_machine" "daily_cycle" {
   # checkov:skip=CKV_AWS_285:a failed run goes to the pipeline DLQ and FailedExecutions, and Step Functions keeps execution history itself for 90 days; CloudWatch delivery would bill per event
   name     = "${var.unique_name_prefix}-production-daily-cycle"
   role_arn = aws_iam_role.states_exec.arn
 
   definition = jsonencode({
-    StartAt = "RunDailyCycle"
+    StartAt = "NameTheRun"
     States = {
+      NameTheRun = {
+        Type = "Pass"
+        Parameters = {
+          "id.$" = "$$.Execution.Id"
+        }
+        ResultPath = "$.execution"
+        Next       = "RunDailyCycle"
+      }
       RunDailyCycle = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
