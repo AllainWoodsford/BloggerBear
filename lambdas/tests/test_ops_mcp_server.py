@@ -521,9 +521,42 @@ def test_the_architecture_feature_enum_is_the_catalogues_features(client):
     tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
     schema = json.dumps(tools["architecture"]["inputSchema"]["properties"]["feature"])
     offered = {word for word in schema.split('"') if word in architecture.FEATURE_KEYS or "-" in word}
-    assert offered == set(architecture.FEATURE_KEYS) == {"article-research", "vision-pipeline"}
+    assert offered == set(architecture.FEATURE_KEYS) == {
+        "article-research",
+        "vision-pipeline",
+        "site-and-feedback",
+        "stats-and-costs",
+        "security-incidents",
+        "reviewer-bear",
+        "model-catalog",
+    }
     described = " ".join(tools["architecture"]["description"].split())
     assert '"how does the vision pipeline work?"' in described
+    # Each feature is described, with a question it answers.
+    for key, asked in (
+        ("site-and-feedback", '"how does feedback become gear?"'),
+        ("stats-and-costs", '"how are costs tracked?"'),
+        ("security-incidents", '"how are security incidents made?"'),
+        ("reviewer-bear", '"what does the reviewer bear do?"'),
+        ("model-catalog", '"how are model prices kept current?"'),
+    ):
+        assert f"{key} (how" in described and asked in described, key
+    assert "what a blog feature such as gear is or does is cli_guides' to explain" in described
+
+
+def test_the_instructions_send_how_each_flow_is_built_to_its_feature():
+    """Alexa+ reads the instructions, not the agent's prompt. The questions that read like a tool's
+    or a guide's ("how are costs tracked?", "how does feedback become gear?") go to the walk-through,
+    and the reviewer bear, whom no guide describes, goes there too."""
+    words = " ".join(server._INSTRUCTIONS.split())
+    for phrase in (
+        '`feature` "article-research"',
+        'pass `feature` "site-and-feedback", "stats-and-costs", "security-incidents", '
+        '"reviewer-bear" or "model-catalog"',
+        "what the reviewer bear does (no guide describes him)",
+        "for what is happening now, use the tool for it",
+    ):
+        assert phrase in words, phrase
 
 
 def test_the_instructions_carry_the_vision_round_for_clients_that_read_only_them():

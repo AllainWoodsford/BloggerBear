@@ -21,9 +21,11 @@ behind the design, including the throttling after its first run in dev, are in t
 design, [model-catalog-refresh.md](../enhancements/archive/model-catalog-refresh.md). This page
 does not repeat them.
 
-**In the assistant.** There is no step-by-step walkthrough of this feature (no
-`architecture(feature=...)` entry). Ask about its parts by name instead:
-`architecture(name="model-catalog")` for the Lambda, or the same call with `name` set to
+**In the assistant.** `architecture(feature="model-catalog")` walks through the steps below with
+this environment's resource names on screen. It tells them in nine: catching up (2) is part of what
+invokes it, and discover's listing and probe (3 and 4), looking a price up and applying it (7 and
+8), and the reviews and the run's close (9 and 10) are one step each. Ask about a part by name for
+more: `architecture(name="model-catalog")` for the Lambda, or the same call with `name` set to
 `"models"`, `"model-config"`, `"failed-executions"` or `"content"`. These help too:
 
 - `model_catalog` says whether each of the three jobs is paused, what each last did, and the

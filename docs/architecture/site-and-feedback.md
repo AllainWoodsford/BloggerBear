@@ -20,9 +20,10 @@ Every setting you can change with no deploy is listed in
 options are in [scripts/README.md](../../scripts/README.md). The reviewer bear has
 [his own page](reviewer-bear.md). This page does not repeat them.
 
-**In the assistant.** There is no step-by-step walkthrough of this feature yet (no
-`architecture(feature=...)` entry). Ask about its parts by name instead:
-`architecture(name="public-api")`, or the same call with `name` set to `"feedback"`,
+**In the assistant.** `architecture(feature="site-and-feedback")` walks through the steps below
+with this environment's resource names on screen. It tells them in nine: the token's three steps
+(3 to 5) are one, and drafting with gear and wear (10 and 11) are one. Ask about a part by name for
+more: `architecture(name="public-api")`, or the same call with `name` set to `"feedback"`,
 `"prompt-refinements"`, `"musings"`, `"weekly-reflection"`, `"musing-feedback"`, `"reviewer"`,
 `"public-api-acl"` or `"site"`. For the layer that holds the pages, ask
 `architecture(layer="presentation")`. The assistant cannot read the feedback table, because reader
