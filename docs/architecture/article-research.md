@@ -261,11 +261,12 @@ reason. What happens next depends on how the run started:
 - **A research tick.** Its schedule invokes it directly, so a failed tick is tried again at a later
   heartbeat.
 - **A daily cycle from its schedule.** The state machine counts only a timeout (the Lambda has 300
-  seconds) or a crash as a failed invocation. It retries a failed invocation twice (after 30
-  seconds, then 60) and then sends it to the pipeline dead-letter queue, which
-  `admin_cli failed-executions list` shows. To Step Functions a caught error is a successful
-  invocation: it is not retried and never reaches the queue. It shows in the execution's output,
-  and the guard also prints it to the daily-cycle log (`run failed for topic_id=...`).
+  seconds) or a crash as a failed invocation. It retries a failed invocation up to twice (after 30
+  seconds, then 60), and if every attempt fails it sends the run to the pipeline dead-letter
+  queue, which `admin_cli failed-executions list` shows. To Step Functions a caught error is a
+  successful invocation: it is not retried and never reaches the queue. It shows in the
+  execution's output, and the guard also prints it to the daily-cycle log
+  (`run failed for topic_id=...`).
 - **A daily cycle from `topics trigger --pipeline daily_cycle`.** This invokes the Lambda directly,
   without the state machine, so a failure there never reaches the queue and leaves no
   FailedExecutions record.
@@ -290,14 +291,29 @@ the run's id and the article's id), and a run first checks whether it is that ru
   machine's first state, `NameTheRun`, adds it to the input as `execution.id`, so every retry of
   the Task carries the same one, and so does the dead-letter queue's message. A direct invoke
   (`topics trigger`) has no execution, and its Lambda request id stands in: Lambda keeps it across
-  a duplicate delivery of the same invoke. A manual trigger is not retried at all, since the
-  function's asynchronous retries are off (`aws_lambda_function_event_invoke_config.daily_cycle`).
+  a duplicate delivery of the same invoke (one that starts after the first stored its article;
+  one that overlaps it is below). A manual trigger is not retried at all, since the function's
+  asynchronous retries are off (`aws_lambda_function_event_invoke_config.daily_cycle`).
 - **The check.** Right after the topic is read, before the paused check, any Findings read or any
   model call: if the topic's `last_article_run` names this run, the run returns
   `already_written` with the `article_id` and writes nothing. The daily-cycle log says
   `run=... already stored article_id=...; nothing written`, and the Stats page's Articles figures
   are rebuilt, since the attempt that timed out may not have done it. A `--force` run is checked
   the same way: it ignores the stamp, never the run.
+- **What you see.** To Step Functions that retry is a successful invocation, so the execution
+  ends as succeeded and nothing reaches the dead-letter queue or `failed-executions list`. The
+  timeout shows in the daily cycle's `-errors` alarm, in its log (Lambda's `Task timed out` line,
+  then the retry's `already stored` line) and in the execution's history in the Step Functions
+  console. The retry does not make the page, the musing or the moderation item the timeout cut
+  off. A held article may be missing from the review inbox: find it with
+  `admin_cli articles get <article_id>` (the id is in the log line and the execution's output). A
+  published one may have no page: `articles publish <article_id>` renders it, but also resets its
+  date ([scripts/README.md](../../scripts/README.md#usage)).
+- **What it does not stop.** The check stops only an attempt that reads the topic after an
+  earlier attempt of the same run stored its article. Two attempts of one run that overlap can
+  each store an article. That takes an asynchronous duplicate delivered while the first delivery
+  still runs, or a Task retry after the invoke itself failed (a Lambda service or client error)
+  while the function ran on. A timeout, the case the check is for, leaves no attempt running.
 
 A run with no id to check (a test, or a context without a request id) is not checked, and stamps
 as it always did.

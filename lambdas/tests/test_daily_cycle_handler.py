@@ -763,10 +763,11 @@ def test_a_different_execution_writes_its_article_and_records_its_own_run(s3_buc
 
 
 @pytest.mark.parametrize("force", [False, True])
-def test_a_direct_invoke_delivered_twice_is_named_by_its_request_id_and_writes_once(s3_bucket, force):
+def test_a_direct_invoke_delivered_again_after_it_stored_writes_nothing_the_second_time(s3_bucket, force):
     """A manual trigger has no execution. Lambda keeps an invoke's request id across a duplicate
-    delivery, so the second delivery finds its own run on the topic and writes nothing. A forced
-    run too: `force` ignores the topic's stamp, never its run."""
+    delivery, so a second delivery that starts after the first stored its article finds its own
+    run on the topic and writes nothing (one that overlaps the first is not stopped: `_run_id`).
+    A forced run too: `force` ignores the topic's stamp, never its run."""
     context, event = SimpleNamespace(aws_request_id="req-1"), ({"force": True} if force else {})
 
     first, mock_set = _run_a_full_cycle(event=event, context=context)

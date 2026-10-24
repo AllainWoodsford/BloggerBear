@@ -223,7 +223,13 @@ def _run_id(event: dict, context) -> str | None:
     id to the input (`execution.id`): every retry of its Task carries the same one, though each
     retry is a new Lambda request. A direct invoke (a manual trigger) has no execution, so its
     Lambda request id stands in: Lambda keeps that across a duplicate delivery of the same invoke.
-    With neither (a test, or a context without one) the run is not checked at all, as before."""
+    With neither (a test, or a context without one) the run is not checked at all, as before.
+
+    The id stops only an attempt that reads the topic after an earlier attempt of the same run
+    stored its article (`_written_by_this_run`). Two attempts that overlap both pass the check and
+    can each store an article: a duplicate delivery that starts while the first still runs, or a
+    Task retry after the invoke itself failed while the function ran on. A timeout, the case this
+    is for, leaves no attempt running."""
     execution = (event or {}).get("execution")
     if isinstance(execution, dict):
         execution_id = execution.get("id")
@@ -298,19 +304,20 @@ def _record_article_written(
     The run's *start* (not its end) is stored: a finding captured while the article
     was being written belongs to the next one. Called the moment the article's row is
     stored (`_publish_or_moderate`'s `on_stored`), before its page, musing or moderation
-    item: if one of those then fails, or the Lambda times out and Step Functions runs it
-    again, the next window still starts here, and the same Findings are not written up
-    twice. Never raises -- the article already exists by now, and an error here would
-    make Step Functions retry the whole run and write a duplicate. For a topic that
-    rotates, the day's subject's own stamp is set too (`last_article_by_subject`), so
-    that subject's next day reads from here and the other subjects' windows stay where
-    they were.
+    item: if one of those then fails, or the Lambda times out, the next window still
+    starts here, so no later run takes these Findings as new (a retry of this run is
+    stopped by `last_article_run` instead, below). Never raises -- the article already
+    exists by now, and an error here would make Step Functions retry the whole run and
+    write a duplicate. For a topic that rotates, the day's subject's own stamp is set
+    too (`last_article_by_subject`), so that subject's next day reads from here and the
+    other subjects' windows stay where they were.
 
     With a `run_id` (`_run_id`), the run and the article it stored are kept in the same write as
     the stamp (`last_article_run`). The stamp alone does not stop a retry: a topic with a goal
     rotation would revisit the same Findings at once under its next goal, and a Finding captured
-    while this run wrote would be new to the retry. So a retry of this run reads `last_article_run`
-    and writes nothing (`_run_daily_cycle`'s already_written). Without one, the stamp is written
+    while this run wrote would be new to the retry. So a retry of this run that starts after this
+    write reads `last_article_run` and writes nothing (`_run_daily_cycle`'s already_written); one
+    that overlaps this attempt is not stopped (`_run_id`). Without one, the stamp is written
     exactly as it always was.
 
     With a goal rotation (common/goal_rotation.py), its state for the subject (or the topic) is

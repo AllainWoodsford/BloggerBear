@@ -1012,5 +1012,7 @@ phase above, or a new phase, whenever you're ready to schedule them.)*
   fallback triggers only when GDELT fails, not when it answers with nothing
 - **`topics update` writes the whole topic row back:** `_update_topic` reads the row and
   puts it back whole, so an update that lands between a daily run's stamp and that read writes
-  back the old `last_article_at`, `last_article_by_subject` and `goal_rotation_state`, and the
-  subject's next run can draft its Findings again. Fix: an `update_item` on the changed keys only
+  back the old `last_article_at`, `last_article_by_subject`, `last_article_run` and
+  `goal_rotation_state`, and the subject's next run can draft its Findings again. A retry of the
+  run that wrote the stamp then no longer finds its own run in `last_article_run` either, so it
+  can write a second article. Fix: an `update_item` on the changed keys only

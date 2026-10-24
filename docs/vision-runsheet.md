@@ -392,14 +392,21 @@ error on every day. Every research tick fails on it too: the research-tick log s
 the topic's config error.
 
 A timeout (the function's `timeout` is 300 s) or a crash is not caught. The state machine retries
-it twice and then sends it to the DLQ (`admin_cli failed-executions list`), so it is not silent.
-A run that times out after it has stored its article has already stamped the city, and its
-retries write nothing: each finds its own run on the topic (`last_article_run`) and returns
-`already_written`. Without that, a retry with nothing new would revisit the same Findings at once
-under the next goal.
+it up to twice, and if every attempt fails it sends the run to the DLQ
+(`admin_cli failed-executions list`), so it is not silent.
 
-Because nothing is stamped, the city's next day still starts at its last article, but never more
-than 192 hours back. After a run with no usable angle or an error:
+A run that times out after it has stored its article is the exception. It has already stamped the
+city, and its next attempt finds its own run on the topic (`last_article_run`), writes nothing and
+returns `already_written` with the `article_id`. That is a successful invoke, so the execution
+succeeds and nothing reaches the DLQ or `failed-executions list`. The timeout shows on the daily
+cycle's `-errors` alarm and in its log (`Task timed out`, then
+`run=... already stored article_id=...; nothing written`). The retry rebuilds the Stats figures
+but makes nothing else the timeout cut off: if that was the moderation item, the article is not in
+the review inbox, so find it with `admin_cli articles get <article_id>`. Without the check, a retry
+with nothing new would revisit the same Findings at once under the next goal.
+
+After a run that writes nothing, nothing is stamped, so the city's next day still starts at its
+last article, but never more than 192 hours back. After a run with no usable angle or an error:
 
 - A two-day city still gets everything on its next day (its days are 3 and 4 days apart, so its
   last article is at most 7 days old).
