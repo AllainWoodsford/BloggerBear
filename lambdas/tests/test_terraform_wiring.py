@@ -1609,6 +1609,28 @@ def test_an_async_daily_cycle_invoke_that_fails_is_not_retried(env):
     assert "MaxAttempts     = 2" in machine
 
 
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_daily_cycle_state_machine_names_the_run_before_its_task(env):
+    """Every retry of RunDailyCycle must carry the same execution id, so the Lambda can tell a retry
+    of a run that already stored its article from a new run. A Pass state before the Task adds it at
+    $.execution and keeps the schedule's input ({"topic_id": ...}) as it is."""
+    machine = _resource_block(_read("environments", env, "main.tf"), "aws_sfn_state_machine", "daily_cycle")
+
+    assert re.search(r'^\s*StartAt = "NameTheRun"$', machine, re.M)
+    name = re.search(r"^      NameTheRun = \{\n(.*?)^      \}", machine, re.S | re.M).group(1)
+    assert re.search(r'^\s*Type = "Pass"$', name, re.M)
+    assert re.search(r'^\s*"id\.\$" = "\$\$\.Execution\.Id"$', name, re.M)
+    # A ResultPath below the root adds the id beside the input; "$" or none would replace it.
+    assert re.search(r'^\s*ResultPath = "\$\.execution"$', name, re.M)
+    assert re.search(r'^\s*Next\s*= "RunDailyCycle"$', name, re.M)
+    assert "InputPath" not in name and "OutputPath" not in name
+
+    task = re.search(r"^      RunDailyCycle = \{\n(.*?)^      \}", machine, re.S | re.M).group(1)
+    assert re.search(r'^\s*Type\s*= "Task"$', task, re.M)
+    assert re.search(r'^\s*"Payload\.\$"\s*= "\$"$', task, re.M)
+    assert "MaxAttempts     = 2" in task and 'Next        = "SendToDeadLetterQueue"' in task
+
+
 def test_no_workflow_passes_a_coingecko_key_any_more():
     workflows = ROOT / ".github" / "workflows"
     for path in workflows.glob("*.yml"):

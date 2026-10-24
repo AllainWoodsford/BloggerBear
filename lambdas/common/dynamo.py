@@ -592,10 +592,18 @@ def put_topic(item: dict) -> None:
     table.put_item(Item=item)
 
 
-def set_topic_last_article_at(topic_id: str, timestamp: str, subject_key: str | None = None) -> None:
+def set_topic_last_article_at(
+    topic_id: str, timestamp: str, subject_key: str | None = None, *, run: dict | None = None
+) -> None:
     """Set only a Topic's `last_article_at` (ISO-8601 UTC), leaving every other
     attribute alone. Fails (ConditionalCheckFailedException) rather than
     creating a Topic that no longer exists.
+
+    With `run` (`{"run_id", "article_id"}`: the daily-cycle run that wrote the article, and the
+    article), the same UpdateItem that sets `last_article_at` sets `last_article_run` to it, so
+    the run and the stamp can never disagree: a retry of that run reads it and writes nothing
+    (daily_cycle_handler's `already_written`). Without `run`, `last_article_run` is left as it is
+    and the writes are exactly what they always were.
 
     With `subject_key` (a topic that rotates through subjects, common/day_subject.py), also that
     subject's entry in `last_article_by_subject` (a map of subject key to ISO time; the other
@@ -611,12 +619,13 @@ def set_topic_last_article_at(topic_id: str, timestamp: str, subject_key: str | 
     (common/findings_window.last_article_at), so only this subject's stamp is in the new map.
     """
     table = get_table(os.environ["TOPICS_TABLE"])
+    run_set, run_values = (", last_article_run = :run", {":run": run}) if run is not None else ("", {})
     if subject_key is None:
         table.update_item(
             Key={"topic_id": topic_id},
-            UpdateExpression="SET last_article_at = :t",
+            UpdateExpression=f"SET last_article_at = :t{run_set}",
             ConditionExpression="attribute_exists(topic_id)",
-            ExpressionAttributeValues={":t": timestamp},
+            ExpressionAttributeValues={":t": timestamp, **run_values},
         )
         return
     try:
@@ -642,10 +651,10 @@ def set_topic_last_article_at(topic_id: str, timestamp: str, subject_key: str | 
         )
     table.update_item(
         Key={"topic_id": topic_id},
-        UpdateExpression="SET last_article_at = :t, last_article_by_subject.#subject = :t",
+        UpdateExpression=f"SET last_article_at = :t, last_article_by_subject.#subject = :t{run_set}",
         ConditionExpression="attribute_exists(topic_id)",
         ExpressionAttributeNames={"#subject": subject_key},
-        ExpressionAttributeValues={":t": timestamp},
+        ExpressionAttributeValues={":t": timestamp, **run_values},
     )
 
 

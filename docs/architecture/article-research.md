@@ -74,7 +74,7 @@ flowchart LR
 | 6 | **Candidate ideas** | Once a day, the daily cycle reads the topic's Findings since its last article, within its findings window. Bedrock is asked for three angles, which are stored as candidate ideas, and the first is selected ([in detail](#6-candidate-ideas)). | `lambdas/daily_cycle_handler.py` (`_run_daily_cycle`, `_select_goal_and_findings`, `_pick_rotation_goal`, `_ideate`); `common/findings_window.py`, `common/editorial_goals.py`, `common/goal_rotation.py`; `<prefix>-<env>-daily-cycle` state machine; `<prefix>-<env>-candidate-ideas` (expires after 7 days) |
 | 7 | **Drafting** | Bedrock drafts the article from the selected angle and the Findings' summaries, with the topic's model. The title is a separate call, made from the angle alone ([in detail](#7-drafting)). | `lambdas/daily_cycle_handler.py` (`_draft_article`, `_draft_title`); `lambdas/common/model_routing.py`, `equipment.py`, `compliance.py`; `models`, `model-config`, `prompt-refinements` tables |
 | 8 | **Reviews** | A fresh-data review checks the draft against the source's data as it is now, then a compliance review checks it for PII, fabricated claims and investment advice. Either can hold the article, and a financial topic's article is always held ([in detail](#8-reviews)). | `lambdas/common/fresh_review.py` (`run_review`, `enforcement_action`, `run_revision`), `lambdas/common/compliance.py` (`review_draft`, `invented_figures`); `daily_cycle_handler.py` (`_run_fresh_review`, `_enforce_review`) |
-| 9 | **The article in S3** | The body is written to the content bucket, and the article's row records its lineage, cost and review. A published article gets a static page in the site bucket; a held one waits in the moderation queue ([in detail](#9-the-article-in-s3)). | `daily_cycle_handler.py` (`_publish_or_moderate`, `_record_article_written`); `articles/<id>.md` (and `articles/<id>.original.md`) in the content bucket; `articles` table; `articles/<id>.html` in the site bucket (`common/static_pages.py`); `common/musings.py`; `moderation-queue`; `common/reviewer.py`; `stats-current` |
+| 9 | **The article in S3** | The body is written to the content bucket, and the article's row records its lineage, cost and review. A published article gets a static page in the site bucket; a held one waits in the moderation queue. The topic is stamped with the run's start, and with the run that wrote the article, so a retry of that run writes nothing ([in detail](#9-the-article-in-s3)). | `daily_cycle_handler.py` (`_publish_or_moderate`, `_record_article_written`, `_run_id`); `common/dynamo.py` (`set_topic_last_article_at`); the `NameTheRun` state of the `<prefix>-<env>-daily-cycle` state machine; `articles/<id>.md` (and `articles/<id>.original.md`) in the content bucket; `articles` table; `articles/<id>.html` in the site bucket (`common/static_pages.py`); `common/musings.py`; `moderation-queue`; `common/reviewer.py`; `stats-current` |
 
 ## The steps in detail
 
@@ -244,14 +244,16 @@ always waits for a person, as does one he may not approve for (`reviewer_may_app
 
 Published or held, the topic's `last_article_at` (and, for a rotating topic, the day's subject's
 stamp) is set to the run's start, so the next window begins there, and the Stats page's Articles
-figures are rebuilt.
+figures are rebuilt. The same write records the run that wrote the article: `last_article_run`, the
+run's id and the article's id ([why](#runs-that-write-nothing-and-runs-that-fail)).
 
 ## Runs that write nothing, and runs that fail
 
 A research tick returns `paused`, `not_due`, `no_change` or `material_change`; only the last writes
 a Finding. A daily cycle that writes no article returns `paused`, `no_findings` or
 `no_usable_angles`: it stores no article and stamps no `last_article_at`, so the next run still
-reads from the last article, within its findings window.
+reads from the last article, within its findings window. It returns `already_written` when it is a
+retry of a run that already stored its article (below): that writes nothing either.
 
 Neither handler raises: each catches its own errors and returns `"status": "error"` with the
 reason. What happens next depends on how the run started:
@@ -271,19 +273,34 @@ reason. What happens next depends on how the run started:
 A daily cycle that fails after it has stored the article (its static page, its musing or its
 moderation item) has still stamped `last_article_at`, and its goal rotation's state: both are set
 the moment the article's row is written (`on_stored` in `_publish_or_moderate`). So the next day's
-run does not write up the same Findings again, and nor does a retry after a timeout, with two
-exceptions:
-
-- A topic with a goal rotation may revisit those Findings at once under its next goal, as it
-  would on a later day.
-- A `--force` run ignores the stamp. A manual trigger is an asynchronous Lambda invoke, which
-  Lambda retries on a timeout (twice, by default), so a forced run that times out after storing
-  its article can write up its whole window again.
+run does not write up the same Findings again.
 
 The run's result names the stored article (`article_id`, with `article_stored: true`), the
 daily-cycle log says `article_id=... was stored, then a later step failed`, and the Stats page's
 Articles figures are rebuilt as for any article. A held article whose moderation item could not
 be written is not in the review inbox: find it with `admin_cli articles get <article_id>`.
+
+The stamp alone would not stop a retry after a timeout from writing a second article. A topic with
+a goal rotation would revisit the same Findings at once under its next goal, a revisit meant for a
+later day, and a Finding captured while the first attempt ran would be new to the retry. So the
+write that sets `last_article_at` also records the run that wrote the article (`last_article_run`:
+the run's id and the article's id), and a run first checks whether it is that run:
+
+- **The run's id.** A scheduled run's id is its Step Functions execution's ARN. The state
+  machine's first state, `NameTheRun`, adds it to the input as `execution.id`, so every retry of
+  the Task carries the same one, and so does the dead-letter queue's message. A direct invoke
+  (`topics trigger`) has no execution, and its Lambda request id stands in: Lambda keeps it across
+  a duplicate delivery of the same invoke. A manual trigger is not retried at all, since the
+  function's asynchronous retries are off (`aws_lambda_function_event_invoke_config.daily_cycle`).
+- **The check.** Right after the topic is read, before the paused check, any Findings read or any
+  model call: if the topic's `last_article_run` names this run, the run returns
+  `already_written` with the `article_id` and writes nothing. The daily-cycle log says
+  `run=... already stored article_id=...; nothing written`, and the Stats page's Articles figures
+  are rebuilt, since the attempt that timed out may not have done it. A `--force` run is checked
+  the same way: it ignores the stamp, never the run.
+
+A run with no id to check (a test, or a context without a request id) is not checked, and stamps
+as it always did.
 
 ## Where the AI agents are
 

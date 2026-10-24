@@ -168,8 +168,9 @@ CATALOGUE: tuple[Component, ...] = (
             (
                 "Written by",
                 "the Admin API (admin_cli topics ...); research-tick and daily-cycle "
-                "stamp last_research_at and last_article_at, and, for a topic that rotates through "
-                "subjects, last_article_by_subject (each subject's last article)",
+                "stamp last_research_at and last_article_at, with last_article_run (the run that wrote "
+                "the article, so a retry of that run writes nothing), and, for a topic that rotates "
+                "through subjects, last_article_by_subject (each subject's last article)",
             ),
             ("Read by", "every pipeline function, the public API, the assistant"),
         ),
@@ -483,7 +484,9 @@ CATALOGUE: tuple[Component, ...] = (
             (
                 "Writes",
                 "candidate-ideas, articles, moderation-queue, the content bucket; topics.last_article_at "
-                "and, for a topic that rotates through subjects, topics.last_article_by_subject",
+                "with topics.last_article_run (the run that wrote the article: a retry of that run "
+                "writes nothing) and, for a topic that rotates through subjects, "
+                "topics.last_article_by_subject",
             ),
             ("Schedules", f"{PREFIX}{ENV}-<topic_id>-daily-cycle"),
         ),

@@ -393,6 +393,10 @@ the topic's config error.
 
 A timeout (the function's `timeout` is 300 s) or a crash is not caught. The state machine retries
 it twice and then sends it to the DLQ (`admin_cli failed-executions list`), so it is not silent.
+A run that times out after it has stored its article has already stamped the city, and its
+retries write nothing: each finds its own run on the topic (`last_article_run`) and returns
+`already_written`. Without that, a retry with nothing new would revisit the same Findings at once
+under the next goal.
 
 Because nothing is stamped, the city's next day still starts at its last article, but never more
 than 192 hours back. After a run with no usable angle or an error:
