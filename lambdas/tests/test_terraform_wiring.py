@@ -1595,6 +1595,20 @@ def test_the_github_token_is_read_from_ssm_not_passed_in(env):
     assert sorted(told) == ["daily_cycle", "research_tick"]
 
 
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_an_async_daily_cycle_invoke_that_fails_is_not_retried(env):
+    """A manual run or a rewrite is invoked asynchronously; a retry after a timeout would be a whole
+    second run (a forced run writing its window up again, a rewrite calling its model again)."""
+    text = _read("environments", env, "main.tf")
+    config = _resource_block(text, "aws_lambda_function_event_invoke_config", "daily_cycle")
+    function = r"^\s*function_name\s*=\s*aws_lambda_function\.daily_cycle\.function_name$"
+    assert re.search(function, config, re.M)
+    assert re.search(r"^\s*maximum_retry_attempts\s*=\s*0$", config, re.M)
+    # The scheduled runs keep the state machine's own retries.
+    machine = _resource_block(text, "aws_sfn_state_machine", "daily_cycle")
+    assert "MaxAttempts     = 2" in machine
+
+
 def test_no_workflow_passes_a_coingecko_key_any_more():
     workflows = ROOT / ".github" / "workflows"
     for path in workflows.glob("*.yml"):

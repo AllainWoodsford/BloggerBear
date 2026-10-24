@@ -1002,6 +1002,18 @@ resource "aws_lambda_function" "daily_cycle" {
   }
 }
 
+# Only the Admin API invokes this function asynchronously: a manual `topics trigger <id>
+# daily_cycle` and a Re-Write (`{"action": "rewrite"}`, common/rewrite.py). The scheduled runs go
+# through aws_sfn_state_machine.daily_cycle, whose own Retry this does not touch. Lambda retries a
+# failed async invoke twice by default, and the handler never raises, so only a timeout or a crash
+# was retried, as a whole second run: a `--force` run that timed out after storing its article
+# wrote the same window up again (force ignores last_article_at), and a rewrite called its model
+# again. A rewrite that times out is released by release_stale_rewrites after 15 minutes, as before.
+resource "aws_lambda_function_event_invoke_config" "daily_cycle" {
+  function_name          = aws_lambda_function.daily_cycle.function_name
+  maximum_retry_attempts = 0
+}
+
 # =========================================================================
 # Phase 2 -- Admin console API: a third Lambda (from the same shared
 # deployment package above) fronted by an IAM-authenticated API Gateway
