@@ -422,9 +422,9 @@ def build_server() -> MCPServer:
         the AWS bill reach the Stats page; for "how are costs tracked?"); security-incidents (how
         what the firewalls block, attack-shaped comments and failed sign-ins become incidents and
         an alert; for "how are security incidents made?"); reviewer-bear (how Professor
-        Grizzlewick plans his run and decides held and published articles; for "what does the
-        reviewer bear do?"); model-catalog (how models are discovered, priced, checked, pruned and
-        rotated; for "how are model prices kept current?").
+        Grizzlewick plans his run and decides held and published articles; no guide describes him,
+        so also for "what does the reviewer bear do?"); model-catalog (how models are discovered,
+        priced, checked, pruned and rotated; for "how are model prices kept current?").
         What one of BloggerBear's AWS resources is for, in this environment: a DynamoDB table
         (its keys, indexes, TTL, who writes and reads it), a Lambda, an API, a dashboard, a log
         group, an alarm's resource, a queue, a schedule or a bucket, with the log groups,

@@ -45,8 +45,12 @@ and how a refinement is approved and worn.
    not one of our named resources, such as Bedrock or an adapter, goes in plain words.
    `lambdas/tests/test_ops_mcp_architecture.py` fails if a `kind:key` is not in the catalogue.
 3. Add its key to the `feature` `Literal` on the `architecture` tool in `lambdas/ops_mcp/server.py`
-   (a test holds the `Literal` equal to `FEATURE_KEYS`), and to the agent's prompt
-   (`lambdas/ops_agent/agent.py`) if the question that should reach it is not obvious.
+   (a test holds the `Literal` equal to `FEATURE_KEYS`), and give it an entry in that tool's
+   docstring: what it walks through, and a question it answers. The docstring is the tool's
+   description, which both the agent and Alexa+ read. Name the key, with the question that should
+   reach it, in the agent's prompt (`SYSTEM_PROMPT` in `lambdas/ops_agent/agent.py`) and in
+   `_INSTRUCTIONS` in `server.py`, which Alexa+ reads instead of the agent's prompt. Tests look for
+   every key in the docstring, the prompt and the instructions.
    Choose its `said` and `aliases` with `resolve_feature` in mind: an exact name wins, and
    otherwise every alias found as whole words in the question is scored and the **longest** wins
    (a tie goes to the earlier feature). So "the vision research pipeline" goes to the vision

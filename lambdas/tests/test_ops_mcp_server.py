@@ -541,7 +541,12 @@ def test_the_architecture_feature_enum_is_the_catalogues_features(client):
         ("model-catalog", '"how are model prices kept current?"'),
     ):
         assert f"{key} (how" in described and asked in described, key
+    # And so is every feature added later, as docs/architecture/README.md's "Adding a feature" says.
+    for key in architecture.FEATURE_KEYS:
+        assert f"{key} (how" in described, key
     assert "what a blog feature such as gear is or does is cli_guides' to explain" in described
+    # The reviewer bear is the exception to that rule, and says why where it applies.
+    assert 'no guide describes him, so also for "what does the reviewer bear do?"' in described
 
 
 def test_the_instructions_send_how_each_flow_is_built_to_its_feature():
@@ -557,6 +562,8 @@ def test_the_instructions_send_how_each_flow_is_built_to_its_feature():
         "for what is happening now, use the tool for it",
     ):
         assert phrase in words, phrase
+    for key in architecture.FEATURE_KEYS:
+        assert f'"{key}"' in words, key
 
 
 def test_the_instructions_carry_the_vision_round_for_clients_that_read_only_them():
