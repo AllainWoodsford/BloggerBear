@@ -39,8 +39,11 @@ def test_an_empty_candidates_clears_the_pool():
 
 
 def test_set_with_no_candidates_is_refused_before_any_request():
-    with pytest.raises(admin_cli.CliError, match="--candidates"):
-        cli("model-rotation", "set")
+    args = admin_cli.build_parser().parse_args(["model-rotation", "set"])
+    with patch.object(admin_cli, "_do_request") as m:
+        with pytest.raises(admin_cli.CliError, match="--candidates"):
+            args.func(args)
+    m.assert_not_called()
 
 
 def test_the_pool_and_a_topic_s_rotation_list_are_parsed_the_same_way():

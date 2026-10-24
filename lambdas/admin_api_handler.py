@@ -1519,7 +1519,12 @@ def _rewrite_moderation_item(event: dict) -> dict:
 
 
 def _rewrite_model_error(model_id: str) -> str | None:
-    model = get_model(model_id)
+    return _registered_model_error(model_id, get_model(model_id))
+
+
+def _registered_model_error(model_id: str, model: dict | None) -> str | None:
+    """The error for `model_id` when its registry row (`model`, already read) is missing or
+    disabled; None when it is a registered, enabled model."""
     if model is None or model.get("enabled") is False:
         return f"model '{model_id}' is not a registered, enabled model (see GET /models)"
     return None
@@ -2836,7 +2841,9 @@ def _put_model_config_route(event: dict) -> dict:
 # After an article the daily cycle publishes by itself, and after a run whose model proposed no
 # usable angle, daily_cycle_handler._assign_rotated_model sets the topic's model_id to a random pick
 # from this list. Each entry ends up as some topic's model, so each must be a registered, enabled
-# model, checked as a Re-Write's model is.
+# model (refused in a Re-Write's words), and also one the weekly cycle and model_routing would route
+# to: a model the account can call (not `access: denied`) that writes text. The check runs only when
+# the pool is set, so a pooled model a later access probe finds denied stays until it is replaced.
 
 # Nothing bounds a topic's own list, so this bound is chosen: the registry's default size (the model
 # catalog's `max_models`, which pruning keeps it to) and the top of `rotation_max`'s range. It also
@@ -2871,11 +2878,19 @@ def _put_model_rotation_route(event: dict) -> dict:
             return _error(400, f"'candidates' names '{candidate}' more than once")
         seen.add(candidate)
     for candidate in candidates:
-        model_error = _rewrite_model_error(candidate)
+        model = get_model(candidate)
+        model_error = _registered_model_error(candidate, model)
         if model_error:
             return _error(400, model_error)
-    put_model_rotation_candidates(candidates)
-    return _get_model_rotation_route(event)
+        if not model_fleet.is_usable(model):
+            return _error(400, f"model '{candidate}' cannot be called by this account (access: denied)")
+        if (model.get("pricing_unit") or "tokens") != "tokens":
+            return _error(
+                400, f"model '{candidate}' does not write text (pricing_unit: {model['pricing_unit']})"
+            )
+    # The row as written, not read back: that read is eventually consistent, and could still show
+    # the pool from before this write.
+    return _response(200, put_model_rotation_candidates(candidates))
 
 
 def _get_pipeline_config_route(event: dict) -> dict:

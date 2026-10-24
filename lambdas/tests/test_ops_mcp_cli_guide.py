@@ -687,6 +687,23 @@ def test_the_cost_guide_points_at_the_interval_not_the_heartbeat(tables):
     assert "--research-interval-hours" in helped["topics update"]
 
 
+@pytest.mark.parametrize(
+    ("words", "guide"),
+    [
+        ("how do I set the rotation pool", "costs"),
+        ("what is the shared pool of models", "costs"),
+        ("how do I set the model rotation", "costs"),
+        ("model-rotation set", "costs"),
+        ("unlock a user in the user pool", "security"),
+        ("how do I watch pools from satellite", "vision"),
+        ("rotate goals", "editorial-goals"),
+    ],
+)
+def test_the_rotation_pool_is_found_by_its_own_words_and_another_pool_is_not(words, guide):
+    """The pool's step is in the cost guide; a bare "pool" or "rotat" would pull in other questions."""
+    assert cli_guide._guide_for(words) == guide
+
+
 def test_the_editorial_goals_example_is_the_owner_s_and_passes_the_api_s_validator(parser, tables):
     result = cli_guide.cli_guides("editorial-goals")
 

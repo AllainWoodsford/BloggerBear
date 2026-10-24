@@ -848,7 +848,25 @@ STAR_COUNT_GOAL = {
 GUIDES: dict[str, dict] = {
     "costs": {
         "title": "Cutting costs: how often topics run, and which model writes",
-        "keywords": ("cost", "cheap", "spend", "often", "frequen", "interval", "cadence", "schedule", "fire"),
+        # The rotation pool's words are phrases: a bare "pool" would also find the assistant's user
+        # pool, tie with security's sign-in words, and win the tie because this guide comes first.
+        "keywords": (
+            "cost",
+            "cheap",
+            "spend",
+            "often",
+            "frequen",
+            "interval",
+            "cadence",
+            "schedule",
+            "fire",
+            "rotation pool",
+            "shared pool",
+            "model pool",
+            "pool of models",
+            "model rotation",
+            "model-rotation",
+        ),
         "explanation": [
             # common/research_schedule.py: the heartbeat, is_due and the precedence.
             "Each topic has a research heartbeat (hourly by default) and a research interval. A "
@@ -867,8 +885,9 @@ GUIDES: dict[str, dict] = {
             # daily_cycle_handler._assign_rotated_model; admin_api_handler._put_model_rotation_route.
             "model-rotation set is a pool every topic shares: after an article the daily cycle "
             "publishes by itself, or a run with no usable angle, the topic's model id moves to one "
-            "of the pool's models at random. Each must be a registered, enabled model, and an empty "
-            "value clears the pool. A topic with its own model candidates ignores it.",
+            "of the pool's models at random. Each must be a registered, enabled, callable (not "
+            "access: denied) text model, and an empty value clears the pool. A topic with its own "
+            "model candidates ignores it.",
         ],
         "commands": [
             "pipeline-config set",

@@ -2561,7 +2561,8 @@ def build_parser() -> argparse.ArgumentParser:
         "get", help="Show the shared rotation pool ([] when none is set)"
     ).set_defaults(func=_cmd_model_rotation_get)
     model_rotation_set = model_rotation_sub.add_parser(
-        "set", help="Replace the shared rotation pool (each model registered and enabled)"
+        "set",
+        help="Replace the shared rotation pool (each a registered, enabled text model the account can call)",
     )
     model_rotation_set.add_argument(
         "--candidates", default=None,

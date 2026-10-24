@@ -1875,9 +1875,11 @@ def test_put_model_config_invalid_type_returns_400(aws_resources):
 # --- The shared rotation pool (the `model-rotation` row) --------------------------------------
 
 
-def _register_model(model_id, *, enabled=True):
+def _register_model(model_id, *, enabled=True, **fields):
     table = boto3.resource("dynamodb", region_name=REGION).Table("Models")
-    table.put_item(Item={"model_id": model_id, "display_name": model_id, "provider": "p", "enabled": enabled})
+    table.put_item(
+        Item={"model_id": model_id, "display_name": model_id, "provider": "p", "enabled": enabled, **fields}
+    )
 
 
 def _set_pool(body):
@@ -1952,6 +1954,10 @@ def test_a_pool_that_is_not_a_list_of_non_empty_strings_is_refused_and_nothing_c
 
 @pytest.mark.parametrize("enabled", [None, False])
 def test_a_model_that_is_unknown_or_disabled_is_refused_in_the_api_s_usual_words(aws_resources, enabled):
+    # A pool with a model that is not in the request, so a write of the request's valid part fails
+    # this test as surely as a wipe would.
+    _register_model("model-kept")
+    _set_pool({"candidates": ["model-kept"]})
     _register_model("model-a")
     if enabled is not None:
         _register_model("model-off", enabled=enabled)
@@ -1960,20 +1966,72 @@ def test_a_model_that_is_unknown_or_disabled_is_refused_in_the_api_s_usual_words
 
     assert status == 400
     assert refused["error"] == "model 'model-off' is not a registered, enabled model (see GET /models)"
-    assert _stored_pool()["candidates"] == []
+    assert _stored_pool()["candidates"] == ["model-kept"]
+
+
+def test_a_model_the_account_cannot_call_is_refused_and_the_pool_is_left_alone(aws_resources):
+    _register_model("model-kept")
+    _set_pool({"candidates": ["model-kept"]})
+    _register_model("model-a")
+    _register_model("model-denied", access="denied")
+
+    status, refused = _set_pool({"candidates": ["model-a", "model-denied"]})
+
+    assert status == 400
+    assert refused["error"] == "model 'model-denied' cannot be called by this account (access: denied)"
+    assert _stored_pool()["candidates"] == ["model-kept"]
+
+
+def test_a_model_that_does_not_write_text_is_refused_and_the_pool_is_left_alone(aws_resources):
+    _register_model("model-kept")
+    _set_pool({"candidates": ["model-kept"]})
+    _register_model("model-a")
+    _register_model("model-image", pricing_unit="other")
+
+    status, refused = _set_pool({"candidates": ["model-a", "model-image"]})
+
+    assert status == 400
+    assert refused["error"] == "model 'model-image' does not write text (pricing_unit: other)"
+    assert _stored_pool()["candidates"] == ["model-kept"]
+
+
+def test_a_text_model_whose_access_is_unknown_or_never_checked_is_taken(aws_resources):
+    # As model_fleet.is_usable has it: only a probe that found `denied` keeps a model out.
+    _register_model("model-unchecked")
+    _register_model("model-unknown", access="unknown")
+    _register_model("model-granted", access="granted", pricing_unit="tokens")
+    models = ["model-unchecked", "model-unknown", "model-granted"]
+
+    status, body = _set_pool({"candidates": models})
+
+    assert status == 200 and body["candidates"] == models
+
+
+def test_the_answer_is_the_row_as_written_not_a_read_that_may_lag_it(aws_resources):
+    _register_model("model-a")
+    # The pool's read is eventually consistent; moto's never lags, so a stale read is faked.
+    with patch.object(admin_api_handler, "get_model_rotation_candidates", return_value=["model-old"]):
+        status, body = _set_pool({"candidates": ["model-a"]})
+
+    assert status == 200 and body == {"config_id": "model-rotation", "candidates": ["model-a"]}
 
 
 def test_a_model_named_twice_is_refused_and_the_error_names_it(aws_resources):
+    _register_model("model-kept")
+    _set_pool({"candidates": ["model-kept"]})
     _register_model("model-a")
     _register_model("model-b")
 
     status, refused = _set_pool({"candidates": ["model-a", "model-b", "model-a"]})
 
     assert status == 400 and "'model-a'" in refused["error"] and "more than once" in refused["error"]
-    assert _stored_pool()["candidates"] == []
+    assert _stored_pool()["candidates"] == ["model-kept"]
 
 
 def test_a_pool_longer_than_the_bound_is_refused_before_any_model_is_looked_up(aws_resources):
+    # Seeded before get_model is patched, so the seed's own lookup is not counted below.
+    _register_model("model-kept")
+    _set_pool({"candidates": ["model-kept"]})
     too_many = [f"model-{n}" for n in range(admin_api_handler.MODEL_ROTATION_MAX + 1)]
 
     with patch.object(admin_api_handler, "get_model") as lookup:
@@ -1981,7 +2039,7 @@ def test_a_pool_longer_than_the_bound_is_refused_before_any_model_is_looked_up(a
 
     assert status == 400 and f"at most {admin_api_handler.MODEL_ROTATION_MAX}" in refused["error"]
     lookup.assert_not_called()
-    assert _stored_pool()["candidates"] == []
+    assert _stored_pool()["candidates"] == ["model-kept"]
 
 
 def test_a_pool_of_exactly_the_bound_is_taken(aws_resources):

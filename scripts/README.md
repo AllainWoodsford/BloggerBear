@@ -291,7 +291,8 @@ python scripts/admin_cli.py model-config get
 python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 # The shared rotation pool: after an article the daily cycle publishes by itself, or a run whose
 # model proposed no usable angle, the topic's model_id becomes one of these at random. Each must be
-# a registered, enabled model. `set` replaces the whole pool; '' clears it.
+# a registered, enabled, callable (not `access: denied`) text model. `set` replaces the whole pool;
+# '' clears it.
 python scripts/admin_cli.py model-rotation get
 python scripts/admin_cli.py model-rotation set --candidates "model-id-a,model-id-b"
 python scripts/admin_cli.py model-rotation set --candidates ""

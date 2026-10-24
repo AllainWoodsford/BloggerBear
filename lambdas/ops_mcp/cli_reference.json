@@ -3484,7 +3484,7 @@
         "get",
         "set"
       ],
-      "help_text": "usage: admin_cli.py model-rotation [-h] {get,set} ...\n\npositional arguments:\n  {get,set}\n    get       Show the shared rotation pool ([] when none is set)\n    set       Replace the shared rotation pool (each model registered and enabled)\n\noptions:\n  -h, --help  show this help message and exit\n"
+      "help_text": "usage: admin_cli.py model-rotation [-h] {get,set} ...\n\npositional arguments:\n  {get,set}\n    get       Show the shared rotation pool ([] when none is set)\n    set       Replace the shared rotation pool (each a registered, enabled text model the account\n              can call)\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "model-rotation get": {
       "help": "Show the shared rotation pool ([] when none is set)",
@@ -3494,7 +3494,7 @@
       "help_text": "usage: admin_cli.py model-rotation get [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "model-rotation set": {
-      "help": "Replace the shared rotation pool (each model registered and enabled)",
+      "help": "Replace the shared rotation pool (each a registered, enabled text model the account can call)",
       "group": false,
       "arguments": [
         {

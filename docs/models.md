@@ -238,9 +238,14 @@ python scripts/admin_cli.py model-rotation set --candidates "<model id>,<model i
 python scripts/admin_cli.py model-rotation get    # the pool as stored; [] when there is none
 ```
 
-`set` replaces the whole pool. Each model must be registered and enabled (`models list`), named
-once, and the pool holds at most 50. Anything else is refused with the reason, and the pool stays
-as it was. Like the registry, the pool is per environment: set it in each.
+`set` replaces the whole pool. Each model must be a registered, enabled, callable (not
+`access: denied`) text model (`models list`), named once, and the pool holds at most 50. These are
+the models the weekly cycle and routing move a topic to. Anything else is refused with the reason,
+and the pool stays as it was. Like the registry, the pool is per environment: set it in each.
+
+The check runs only when you set the pool. If a later probe finds that the account cannot call a
+pooled model (`access: denied`), it stays in the pool, and topics can still be moved to it, until
+you set the pool again without it.
 
 To stop it, clear the pool with `model-rotation set --candidates ""` (deleting the row in the
 DynamoDB console does the same). Topics keep whatever `model_id` the pool last gave them: clear it
