@@ -1299,7 +1299,8 @@ FEATURES: tuple[Feature, ...] = (
             "research pipeline", "writing pipeline", "authoring", "how articles are written",
             "how an article is written", "how is an article written", "how are articles written",
             "how is an article researched", "how are articles researched", "findings",
-            "candidate ideas", "review", "reviews", "compliance review", "fresh data review",
+            "candidate ideas", "reviews", "draft review", "draft reviews", "compliance review",
+            "fresh data review",
         ),
     ),
     # docs/architecture/blogger-vision.md's steps, as the assistant tells them.
@@ -1387,9 +1388,10 @@ FEATURES: tuple[Feature, ...] = (
         ),
         aliases=(
             "vision", "vision pipeline", "vision research", "vision research pipeline",
-            "vision findings", "satellite", "satellite vision", "satellite imagery",
-            "satellite research", "rail", "rail access", "rail access monitor", "rail findings",
-            "opencv", "sentinel", "ships",
+            "vision findings", "vision finding", "vision review", "vision reviews", "satellite",
+            "satellite vision", "satellite imagery", "satellite research", "rail", "rail access",
+            "rail access monitor", "rail findings", "rail review", "rail reviews", "opencv",
+            "sentinel", "ships",
         ),
     ),
     # docs/architecture/site-and-feedback.md's steps, as the assistant tells them: its twelve, with
@@ -1434,9 +1436,10 @@ FEATURES: tuple[Feature, ...] = (
             # security_events.record_incident and record_trend, from _submit_feedback.
             Step(
                 "The comment screen",
-                "A comment is checked by code, then by one model call that must answer KEEP, only while "
-                "today's model-check budget lasts. A dropped comment refuses the whole submission, vote "
-                "and all, and an attack-shaped one also opens a security incident.",
+                "A comment is checked by code, then by one model call that must answer KEEP; once "
+                "today's model-check budget is used up, every comment is dropped. A dropped comment "
+                "refuses the whole submission, vote and all, and an attack-shaped one also opens a "
+                "security incident.",
                 (
                     "Comment screening (common/comment_screening.py)",
                     "Amazon Bedrock (Converse API)",
@@ -1755,9 +1758,10 @@ FEATURES: tuple[Feature, ...] = (
             ),
         ),
         aliases=(
-            "reviewer", "ai reviewer", "professor", "professor grizzlewick", "grizzlewick",
-            "second bear", "bear review", "bear reviews", "held articles", "review inbox",
-            "de fanged publish", "defang", "reviewer musings", "reviewer report", "reviewer flags",
+            "reviewer", "reviewer bear", "reviewer bears", "ai reviewer", "professor",
+            "professor grizzlewick", "grizzlewick", "second bear", "bear review", "bear reviews",
+            "held articles", "review inbox", "de fanged publish", "defang", "reviewer musings",
+            "reviewer report", "reviewer flags",
         ),
     ),
     # docs/architecture/model-catalog.md's steps, as the assistant tells them: its thirteen, with
@@ -1849,9 +1853,10 @@ FEATURES: tuple[Feature, ...] = (
         aliases=(
             "model catalog", "model catalogue", "models", "model registry", "registry",
             "model prices", "model pricing", "prices", "price", "pricing", "reprice", "repricing",
-            "price checks", "price reviews", "discover", "discovery", "model discovery",
-            "new models", "model rotation", "rotation", "rotations", "rotation cycle",
-            "weekly cycle", "pruning", "prune", "model fleet", "fleet",
+            "price check", "price checks", "price review", "price reviews", "reprice review",
+            "reprice reviews", "changed price", "changed prices", "discover", "discovery",
+            "model discovery", "new models", "model rotation", "rotation", "rotations",
+            "rotation cycle", "weekly cycle", "pruning", "prune", "model fleet", "fleet",
         ),
     ),
 )
