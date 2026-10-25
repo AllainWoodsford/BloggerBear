@@ -64,9 +64,10 @@ MIN_DENYLIST_ENTRY = 4  # shorter than this and an entry matches ordinary text a
 
 @dataclass(frozen=True)
 class Role:
-    """A deploy role as infra/bootstrap creates it (main.tf's aws_iam_role names, outputs.tf's
-    outputs). The test suite checks both against those files, so they cannot drift. `name` has
-    {prefix} where bootstrap puts var.unique_name_prefix: call named()."""
+    """A role infra/bootstrap makes for GitHub Actions (main.tf's aws_iam_role names, outputs.tf's
+    outputs): the two deploy roles and the two prompts publisher roles, keyed in ROLES by the
+    setting that holds the ARN. The test suite checks both against those files, so they cannot
+    drift. `name` has {prefix} where bootstrap puts var.unique_name_prefix: call named()."""
 
     name: str
     output: str
@@ -78,8 +79,14 @@ class Role:
 
 
 ROLES = {
-    "dev": Role("gha-{prefix}-dev-deploy", "dev_deploy_role_arn", "the dev account"),
-    "prod": Role("gha-{prefix}-prod-deploy", "prod_deploy_role_arn", "the production account"),
+    "AWS_DEV_DEPLOY_ROLE_ARN": Role("gha-{prefix}-dev-deploy", "dev_deploy_role_arn", "the dev account"),
+    "AWS_PROD_DEPLOY_ROLE_ARN": Role(
+        "gha-{prefix}-prod-deploy", "prod_deploy_role_arn", "the production account"
+    ),
+    "AWS_DEV_PROMPTS_ROLE_ARN": Role("gha-{prefix}-dev-prompts", "dev_prompts_role_arn", "the dev account"),
+    "AWS_PROD_PROMPTS_ROLE_ARN": Role(
+        "gha-{prefix}-prod-prompts", "prod_prompts_role_arn", "the production account"
+    ),
 }
 
 
@@ -176,6 +183,16 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("AWS_PROD_DEPLOY_ROLE_ARN", "secret", PRODUCTION, "required", "role_arn",
             "The IAM role a production release signs in as, through GitHub OIDC.",
             env="prod"),
+    Setting("AWS_DEV_PROMPTS_ROLE_ARN", "secret", "repo", "optional", "role_arn",
+            "The IAM role the prompts publisher signs in as to write dev's prompts bucket, through\n"
+            "GitHub OIDC like the deploy role. The same bootstrap apply makes it; a bootstrap applied\n"
+            "before the prompts work needs applying again, with the same arguments, to have it.\n"
+            "Optional: unset, Terraform is handed an empty string and gives the bucket no publisher.",
+            env="dev", tf_var="prompts_publisher_role_arn"),
+    Setting("AWS_PROD_PROMPTS_ROLE_ARN", "secret", PRODUCTION, "optional", "role_arn",
+            "The same, for production: the role the prompts publisher signs in as to write\n"
+            "production's prompts bucket.",
+            env="prod", tf_var="prompts_publisher_role_arn"),
     Setting("TF_STATE_BUCKET_DEV", "secret", "repo", "fork", "bucket", _BUCKET_HELP, env="dev"),
     Setting("TF_STATE_BUCKET_PROD", "secret", PRODUCTION, "fork", "bucket",
             _BUCKET_HELP + "\nWith one AWS account for both, it is the same bucket as dev's.",
@@ -229,12 +246,6 @@ NOT_ASKED = {
     # unless someone sets it to "true" by hand, once the prompts stack is deployed; a first deploy
     # never wants it, so this script does not ask.
     "PROMPT_AS_ASSET_ENABLED",
-    # The prompts publisher roles' ARNs (docs/configuration.md). The bootstrap does not make those
-    # roles yet; the change that adds them moves these two into SETTINGS, paired with the roles'
-    # outputs like the deploy roles are. Until then an unset secret reaches Terraform as an empty
-    # string, which it reads as "no publisher yet".
-    "AWS_DEV_PROMPTS_ROLE_ARN",
-    "AWS_PROD_PROMPTS_ROLE_ARN",
 }
 
 # Secrets the workflows still read as `secrets.X || vars.X`, left over from when they were
@@ -718,7 +729,7 @@ def role_steps(
     prefix: str = DEFAULT_PREFIX,
 ) -> str:
     """How to create the role and find its ARN: what infra/bootstrap does, with placeholders."""
-    role = ROLES[setting.env]
+    role = ROLES[setting.name]
     name = role.named(prefix)
     # A placeholder, never the ID itself: the steps are printed, and the ID is treated as a secret.
     account = "<the account id you gave>" if have_account else "<account id>"
@@ -830,7 +841,7 @@ def ask_setting(
                     prompter.say(f"  {problem}")
         prompter.say(role_steps(setting, repo, bool(account), region, prefix))
         if account:
-            default = f"arn:aws:iam::{account}:role/{ROLES[setting.env].named(prefix)}"
+            default = f"arn:aws:iam::{account}:role/{ROLES[setting.name].named(prefix)}"
 
     reuse = answers.get(setting.same_as, "") if setting.same_as else ""
     if reuse and prompter.yes(f"Use the same value as {setting.same_as}?", True):

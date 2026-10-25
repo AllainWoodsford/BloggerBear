@@ -459,6 +459,23 @@ data "aws_iam_policy_document" "gha_deploy" {
     ]
   }
 
+  # The evals log group, <prefix>-<env>-evals (infra/modules/evals, from
+  # docs/enhancements/model-ranch-prompt-assets-evals.md): the first log group of ours whose name
+  # is not under /aws/lambda/, /aws/apigateway/ or aws-waf-logs-, so none of the statements above
+  # reaches it and its first apply would stop on logs:CreateLogGroup the way WafLogGroups' did.
+  # The same shape as those: logs:* on both ARN forms, on the one name the module gives it under
+  # this project's prefix. It is here before the module exists because this bootstrap is applied
+  # by hand, so it has to be in place before the environment change that creates the group.
+  statement {
+    sid     = "EvalsLogGroups"
+    effect  = "Allow"
+    actions = ["logs:*"]
+    resources = [
+      "arn:aws:logs:${var.aws_region}:*:log-group:${var.unique_name_prefix}-*-evals",
+      "arn:aws:logs:${var.aws_region}:*:log-group:${var.unique_name_prefix}-*-evals:*",
+    ]
+  }
+
   # Phase 3: the Step Functions state machine that wraps the daily_cycle
   # Lambda invocation for retries + a DLQ on failure. Scoped to the
   # <prefix>-* state machine name prefix. states:* rather than an
@@ -958,6 +975,178 @@ resource "aws_iam_role_policy_attachment" "gha_prod_deploy_not_dev" {
 
   role       = aws_iam_role.gha_prod_deploy.name
   policy_arn = aws_iam_policy.gha_deploy_other_environment["production"].arn
+}
+
+# -----------------------------------------------------------------------
+# Prompts publisher roles (prompts as assets: docs/enhancements/model-ranch-prompt-assets-evals.md)
+#
+# The prompts workflow (.github/workflows/prompts.yml) copies the repository's prompts/ tree to an
+# environment's prompts bucket and records each file's hash in that environment's prompt-hashes
+# table, on every merge to dev and on every production release. It signs in as one of these two
+# roles, never as a deploy role: a deploy role may create and change everything in its
+# environment, and a publish needs none of that, so the job that runs on every merge gets a role
+# that can reach one bucket and one table and nothing else. The bucket's own policy
+# (infra/modules/prompts) lets only this role write to it, which is why each environment is told
+# the role's ARN: the AWS_DEV_PROMPTS_ROLE_ARN and AWS_PROD_PROMPTS_ROLE_ARN secrets, from
+# outputs.tf, which scripts/setup_repo.py asks for beside the deploy roles'.
+#
+# Neither the bucket nor the table exists when this bootstrap is applied: an environment makes
+# them later, like everything the deploy roles are scoped to. So their ARNs are written out from
+# the names the environments give them, <prefix>-<env>-prompts and <prefix>-<env>-prompt-hashes,
+# in the region every environment deploys to (var.aws_region; an S3 ARN carries no region), with
+# the account left as "*" like every other ARN in this file. If either side renames, a publish
+# fails, not a deploy.
+#
+# What each role may do, and no more:
+#   - list the bucket, and read, write and tag any object in it: a publish writes versions/,
+#     latest/ and releases/, and reads them back to work out what changed;
+#   - delete under */latest/* only: a superseded version is taken out of latest/, while versions/
+#     is write-once and releases/ is the history, and nothing may delete either;
+#   - read, write, update, scan and query the hash table: the write-once guard is a conditional
+#     PutItem on it, retiring a release updates its rows, and the reconcile reads it back.
+# No IAM, no Lambda, no logs, no other bucket or table. A publisher that went wrong could change
+# prompts and the hashes that approve them, and nothing else: no code, no role, no other data.
+# -----------------------------------------------------------------------
+locals {
+  # The environment each publisher role writes, keyed the way the roles are named
+  # (gha-<prefix>-dev-prompts, gha-<prefix>-prod-prompts), like the deploy roles.
+  prompts_publisher_environment = {
+    dev  = "dev"
+    prod = "production"
+  }
+}
+
+data "aws_iam_policy_document" "gha_prompts" {
+  for_each = local.prompts_publisher_environment
+
+  statement {
+    sid       = "PromptsBucketList"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${var.unique_name_prefix}-${each.value}-prompts"]
+  }
+
+  statement {
+    sid    = "PromptsObjects"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:GetObjectTagging",
+      "s3:PutObjectTagging",
+    ]
+    resources = ["arn:aws:s3:::${var.unique_name_prefix}-${each.value}-prompts/*"]
+  }
+
+  # Only latest/ is ever emptied of anything; see above.
+  statement {
+    sid       = "PromptsLatestDelete"
+    effect    = "Allow"
+    actions   = ["s3:DeleteObject"]
+    resources = ["arn:aws:s3:::${var.unique_name_prefix}-${each.value}-prompts/*/latest/*"]
+  }
+
+  statement {
+    sid    = "PromptHashes"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:Scan",
+      "dynamodb:Query",
+    ]
+    resources = ["arn:aws:dynamodb:${var.aws_region}:*:table/${var.unique_name_prefix}-${each.value}-prompt-hashes"]
+  }
+}
+
+resource "aws_iam_policy" "gha_prompts" {
+  for_each = data.aws_iam_policy_document.gha_prompts
+
+  # dev's is "<prefix>-gha-dev-prompts". Like the deploy policies, no role made here may change it.
+  name        = "${var.unique_name_prefix}-gha-${each.key}-prompts"
+  description = "What the ${each.value} prompts publisher may do: its environment's prompts bucket and prompt-hashes table, and nothing else."
+  policy      = each.value.json
+}
+
+# Dev's publisher trusts what the dev deploy role trusts, a run off the dev branch, with the
+# wildcarded owner/repo that immutable subject claims call for (see gha_dev_trust above). A trust
+# document of its own rather than that one, so a change to who may deploy dev never widens who may
+# publish prompts by accident.
+data "aws_iam_policy_document" "gha_dev_prompts_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github_actions.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:${split("/", var.github_repo)[0]}@*/${split("/", var.github_repo)[1]}@*:ref:refs/heads/dev"]
+    }
+  }
+}
+
+resource "aws_iam_role" "gha_dev_prompts" {
+  name               = "gha-${var.unique_name_prefix}-dev-prompts"
+  assume_role_policy = data.aws_iam_policy_document.gha_dev_prompts_trust.json
+}
+
+resource "aws_iam_role_policy_attachment" "gha_dev_prompts" {
+  role       = aws_iam_role.gha_dev_prompts.name
+  policy_arn = aws_iam_policy.gha_prompts["dev"].arn
+}
+
+# Production's publisher trusts two GitHub Environments, both required-reviewer gated and both
+# made by hand, never by a code PR: `production-prompts`, which the prompts workflow runs in to
+# publish prompts on their own, and `production`, which a release's publish runs in so that
+# prompts and code never drift. As with the deploy role, AWS itself refuses credentials to a run
+# outside those environments, whatever a workflow edit says.
+data "aws_iam_policy_document" "gha_prod_prompts_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github_actions.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values = [
+        "repo:${split("/", var.github_repo)[0]}@*/${split("/", var.github_repo)[1]}@*:environment:production-prompts",
+        "repo:${split("/", var.github_repo)[0]}@*/${split("/", var.github_repo)[1]}@*:environment:production",
+      ]
+    }
+  }
+}
+
+resource "aws_iam_role" "gha_prod_prompts" {
+  name               = "gha-${var.unique_name_prefix}-prod-prompts"
+  assume_role_policy = data.aws_iam_policy_document.gha_prod_prompts_trust.json
+}
+
+resource "aws_iam_role_policy_attachment" "gha_prod_prompts" {
+  role       = aws_iam_role.gha_prod_prompts.name
+  policy_arn = aws_iam_policy.gha_prompts["prod"].arn
 }
 
 # -----------------------------------------------------------------------

@@ -16,14 +16,17 @@ variable "unique_name_prefix" {
     What every resource name in the deployment starts with (<prefix>-<env>-<resource>), without a
     trailing hyphen. Here it names the two deploy roles (gha-<prefix>-dev-deploy,
     gha-<prefix>-prod-deploy) and is every name scope in their policy: they may create, change
-    and delete only resources named <prefix>-*.
+    and delete only resources named <prefix>-*. It names the two prompts publisher roles the same
+    way (gha-<prefix>-dev-prompts, gha-<prefix>-prod-prompts) and the one bucket and table each
+    may reach.
 
     It must be the same value the environments are deployed with (their unique_name_prefix, which
     CI takes from the `UNIQUE_NAME_PREFIX` GitHub Actions variable). If the two differ, every
     apply is refused: the roles would be scoped to names the environments never use. A fork sets
     its own (the default is taken, see infra/environments/dev/variables.tf) and passes the same
-    word in both places. Changing it later renames the deploy roles, so the GitHub secrets
-    AWS_DEV_DEPLOY_ROLE_ARN and AWS_PROD_DEPLOY_ROLE_ARN have to be set again.
+    word in both places. Changing it later renames all four roles, so the GitHub secrets
+    AWS_DEV_DEPLOY_ROLE_ARN, AWS_PROD_DEPLOY_ROLE_ARN, AWS_DEV_PROMPTS_ROLE_ARN and
+    AWS_PROD_PROMPTS_ROLE_ARN have to be set again.
 
     At most 14 characters. The name that sets the limit is a topic's EventBridge Scheduler
     schedule in production, <prefix>-production-<topic_id>-research-tick: Scheduler allows 64
@@ -78,7 +81,7 @@ variable "state_bucket_name" {
 variable "github_repo" {
   type        = string
   default     = "AllainWoodsford/BloggerBear"
-  description = "GitHub <owner>/<repo> slug allowed to assume the deploy roles via OIDC."
+  description = "GitHub <owner>/<repo> slug allowed to assume the deploy roles and the prompts publisher roles via OIDC."
 }
 
 variable "domain_name" {
