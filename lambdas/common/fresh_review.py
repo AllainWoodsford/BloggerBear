@@ -112,7 +112,9 @@ def resolve_on_unavailable(pipeline_config: dict | None) -> str:
 # --- the prompt and its reply ---------------------------------------------------------------------
 
 
-_DELIMITER_TAG = re.compile(r"<(/?)(draft|findings|fresh_data)", re.IGNORECASE)
+# Every block delimiter either prompt wraps material in. claims_to_fix carries the claims
+# a review found, whose evidence quotes the web, so it is untrusted like the other three.
+_DELIMITER_TAG = re.compile(r"<(/?)(draft|findings|fresh_data|claims_to_fix)", re.IGNORECASE)
 
 
 def _defang(text: str) -> str:
