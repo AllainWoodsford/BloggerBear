@@ -447,3 +447,42 @@ resource "aws_cloudwatch_metric_alarm" "security_high_severity" {
 
   depends_on = [aws_cloudwatch_log_metric_filter.security_high_severity]
 }
+
+# Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): a Lambda that finds a
+# prompt asset unreadable, or failing its checks, uses the copy in its code and prints one
+# prompt_fallback evidence line (common/evidence.py: the line is one JSON object whose `event` key
+# names the event, which is what the filter selects on). The pipeline carries on, so nothing else
+# notices: one metric filter per pipeline log group feeds one metric, and the alarm fires on the
+# first fallback in an hour and emails on ALARM and on OK, like the feedback alarms.
+resource "aws_cloudwatch_log_metric_filter" "prompt_fallback" {
+  for_each       = toset(var.prompt_fallback_log_groups)
+  name           = "${var.unique_name_prefix}-${var.environment_name}-prompt-fallback"
+  log_group_name = each.value
+  pattern        = "{ $.event = \"prompt_fallback\" }"
+
+  metric_transformation {
+    name          = "PromptFallback"
+    namespace     = "BloggerBear/${var.environment_name}"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "prompt_fallback" {
+  count               = length(var.prompt_fallback_log_groups) > 0 ? 1 : 0
+  alarm_name          = "${var.unique_name_prefix}-${var.environment_name}-prompt-fallback"
+  alarm_description   = "${var.unique_name_prefix}-${var.environment_name}: a Lambda fell back from a prompt asset to the copy in its code in the last hour. Its log's prompt_fallback lines name the prompt, the version and why."
+  namespace           = "BloggerBear/${var.environment_name}"
+  metric_name         = "PromptFallback"
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  depends_on = [aws_cloudwatch_log_metric_filter.prompt_fallback]
+}

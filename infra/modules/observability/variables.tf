@@ -48,6 +48,12 @@ variable "security_alert_log_groups" {
   description = "Log groups of the Lambdas that record security events (common/security_events.py): each logs one \"SECURITY_ALERT\" line per high-severity incident, which drives the security alarm. Empty: no alarm."
 }
 
+variable "prompt_fallback_log_groups" {
+  type        = list(string)
+  default     = []
+  description = "Log groups of the pipeline Lambdas, for the prompt-fallback alarm: a Lambda that cannot use a prompt asset prints one prompt_fallback evidence line (common/evidence.py) and uses the copy in its code. One metric filter per log group feeds the alarm. Empty: no alarm."
+}
+
 variable "edge_dashboard_enabled" {
   type        = bool
   default     = false

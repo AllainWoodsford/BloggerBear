@@ -246,6 +246,11 @@ EVENTS: dict[str, dict[str, str]] = {
         "config_off": "codes",
         "force_manual_review": "bool",
     },
+    # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): a prompt asset could
+    # not be read, or failed its checks, and the code's own copy of the prompt was used instead.
+    # `code` says why (s3_error, no_files, missing_placeholder, hash_unapproved, paused, ...);
+    # `version` is the asset's version tag when one was read. The prompt's text is never here.
+    "prompt_fallback": {"lambda_id": "code", "prompt_name": "code", "version": "id", "code": "code"},
 }
 
 # The invocation this process is in: {"fields": {...}, "counts": {event: n}}, or None outside one.
