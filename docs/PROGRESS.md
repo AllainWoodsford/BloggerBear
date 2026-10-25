@@ -1007,6 +1007,143 @@ owner decisions say (an agreed override of "check off in the same PR" for this f
 - [ ] **PR21** — bug sweep
 - [ ] **PR22** — documentation sweep: configuration, models, observability, runsheets, two architecture pages, README, this checklist ticked; the spec archived
 
+#### Where it is up to (paused 2026-10-25, about 11:00 UTC)
+
+A hand-off note for the next agent session: read this, then the spec. The spec is the brief: its
+section 6 holds the working rules (tools, tests, Terraform offline, attribution) and section 7 the PR
+sequence and each PR's contents. The open PRs on GitHub are the live truth; this note was right when
+written. PR22 deletes this block.
+
+Work stopped because the earlier session hit a usage limit partway through the review step of four
+branches. All the code below is committed and pushed; nothing exists only on the old container.
+
+**State of every branch started so far.** "Base" is the commit the branch was cut from, which is its
+parent PR's head, so `git diff <base>..<branch>` is the PR's own change.
+
+| PR | branch | base | head | GitHub PR | review | next step |
+|---|---|---|---|---|---|---|
+| PR0 | `claude/jolly-lovelace-1ty0ba` | dev | this commit | #380, green | done | wait for the owner to merge |
+| Q0 | `claude/ranch-10-queue-wiring` | 2316d97 | 1b31235 | none | 11 findings, unverified | verify, fix, open the PR |
+| P0 | `claude/ranch-20-prompts-wiring` | 2316d97 | d95d0de | none | done: 3 findings, all refuted | open the PR as is |
+| PR1 | `claude/ranch-21-delimiter-tag` | d95d0de | 986966c | #381, green | done | wait for the owner to merge |
+| PR1b | `claude/ranch-40-model-purpose` | 2316d97 | 9cd3e84 | none | not reviewed | review, fix, open the PR |
+| PR2 | `claude/ranch-22-bootstrap-roles` | d95d0de | d8dfd11 | none | not reviewed | review, fix, open the PR |
+| PR3 | `claude/ranch-23-prompts-core` | 986966c | 5a65066 | none | 7 findings, unverified | verify, fix, open the PR |
+
+Each implementer ran ruff 0.6.9, the touched suites, the full suite (green, about 7,830 to 7,980
+tests) and, where infra changed, `terraform fmt` and `validate`, before committing.
+
+**Next, in order.**
+
+1. Open P0's PR now: base `claude/jolly-lovelace-1ty0ba`, milestone "Prompt as Asset". #381 is
+   already stacked on its branch.
+2. Finish the review step (spec section 6, "Per-PR workflow") on Q0, PR1b, PR2 and PR3. For Q0 and
+   PR3, give each finding below to three skeptics told to refute it, keep it if at most one does, and
+   fix the kept ones. For PR1b and PR2, run the three review lenses first.
+3. After each branch's fixes: ruff, the full suite, `terraform fmt -check -recursive infra/`,
+   gitleaks and the PII scan, then push and open its PR with the Done / Next / Blocked block.
+   Bases and milestones:
+   - Q0: base `claude/jolly-lovelace-1ty0ba`, "Model Evals".
+   - PR1b: base `claude/jolly-lovelace-1ty0ba`, "Model Evals".
+   - PR2: base `claude/ranch-20-prompts-wiring`, "Prompt as Asset". The body says [B]: the owner
+     applies `infra/bootstrap` by hand after it merges.
+   - PR3: base `claude/ranch-21-delimiter-tag`, "Prompt as Asset".
+4. Then the next round, each from its stack's tip: Q1 from Q0, PR4 from PR3, and PR6 from PR3 (the
+   first migration needs only PR3). E0 waits until PR1b and PR3 are both final, because it stacks
+   on both.
+5. When a parent PR merges, retarget its child to `dev`, rebase the child onto `origin/dev`, and
+   run ruff again (spec section 6, "Branches and stacks").
+
+**Q0's unverified findings.** Each is a reviewer's claim, not yet checked by skeptics.
+
+- **0, missing test:** the shadow daily check's two exit paths, the early stop at an older execution
+  and running out of pages, have no test.
+- **1, missing test:** no test sits on the research mismatch's 5-minute boundary (exactly 5 minutes
+  agrees, 5 minutes and 1 second disagrees).
+- **2, weak test:** the `--dispatch-shadow` refusal test also passes on the old CLI, because argparse
+  exits 2 for an unknown flag too. It should assert the "invalid choice" message.
+- **3 and 10, unassigned work:** spec 4.8's "the admin API validates new cadences with the matcher"
+  belongs to no PR. Proposed: Q2 does it for topics in, or moving to, queue mode. Record that in the
+  spec on PR0's branch, not in Q0.
+- **4 and 9, likely bug:** the shadow research check races the Scheduler path's own research tick in
+  the same minute. When the tick stamps `last_research_at` first, the turn is not recorded and the
+  next turn counts a false mismatch. That would make Q2's "zero mismatches" pre-flight unreachable.
+  Proposed: also record the turn when `last_research_at` is within 5 minutes of now.
+- **5, likely bug:** for a cadence left as `rate(...)`, every minute is a turn. A healthy topic
+  counts about four false mismatches per interval and writes its row every minute. Proposed: record
+  only when `last_research_at` has moved, or skip mismatch counting for rate cadences.
+- **6, bug at cutover:** the dispatcher gates a research turn on `is_due` against
+  `last_research_at`, which the research tick stamps with its start time. Behind the queue that can
+  be minutes after the turn, so the next turn is "not due" and the topic is researched every second
+  heartbeat. Proposed: Q1's research tick stamps `due_checked_at` from the message. Say so in
+  `dispatch.py` now.
+- **7, bug at cutover:** a topic flipped to queue mode after its daily turn gets a second article
+  that day, because only the dispatcher writes `last_daily_dispatched_on`. Proposed: Q2's flip
+  writes today's date when today's turn has already passed.
+- **8, missing rights:** the shadow daily check calls `states:ListExecutions` and
+  `states:DescribeExecution`, which no role holds and spec 5.1 does not grant. Proposed: Q1's module
+  policy grants both on the state machine and its executions, and spec 5.1 says so.
+
+**PR3's unverified findings.**
+
+- **0, likely bug:** a publish that removes a `latest/` file can make runs fall back with
+  `s3_error` for up to the 300-second cache, because the cached listing outlives the object.
+  Proposed: on NoSuchKey, drop the listing from the cache, list again once and redraw.
+- **1, likely bug:** the body cache is looked up by the publisher's `sha256` tag, so a warm container
+  can serve one file's text under another file's version. Proposed: drop the tag hint and look the
+  body up only by the sha cached for that key.
+- **2, missing test:** no test covers a split where one arm's hash row is live and the other's is
+  not.
+- **3, weak test:** the naive `retired_at` test only has power off UTC. Proposed: set `TZ` to
+  Australia/Sydney inside the test.
+- **4, missing test:** `max_chars` is not tested at exactly the limit.
+- **5, missing test:** nothing pins the 300-second cache TTL and retire grace to the spec's values.
+- **6, spec deviation:** `validate()` leaves out the size rule, so PR5's lint, which calls
+  `validate()`, could not refuse an oversize file. Proposed: add a template-size check to
+  `validate()`.
+
+**Departures the implementers chose, with reasons in their commits.** Reviewers should not count
+these as bugs unless the reason is wrong.
+
+- **Q0:** a topic in queue mode is dispatched for real whatever `dispatch_shadow` says, and a topic
+  on its schedules is only ever shadowed. The research claim's expiry allows the 5-minute due
+  tolerance. Both claims are wrapped in `attribute_exists(topic_id)`. The CLI reference was
+  regenerated on Python 3.13, the release the committed file names.
+- **PR1b:** `vision_triage.choose_model` is new, because each vision adapter used `resolve_model`
+  directly. `protected_models` now returns role codes. `classify` is an on-demand job, not one of
+  the scheduled `JOBS`. `models list` prints a table, with `--json` for the raw answer. A row with no
+  recorded inputs is not held to the image rule until classified.
+- **PR2:** the two secret rows were already in `configuration.md` from P0, so PR2 updates them
+  rather than appending. The trust pin holds five subject strings for three distinct subjects, not
+  "four". No checkov skips were added, because no check fires on the new policies.
+- **PR3:** with the deployment switch off, `get_prompt` returns vanilla with `assets_off` and writes
+  no evidence line, so the fallback alarm stays quiet while assets are off; the settings row's kill
+  switch does write one. An id missing from the registry raises `KeyError`, since there is no
+  vanilla to serve. A paused arm falls back to vanilla instead of redrawing.
+
+**Carry into later PRs.**
+
+- **PR5:** `AWS_PROD_PROMPTS_ROLE_ARN` lives on the `production` environment, which a job running
+  under `production-prompts` cannot read. PR5 needs it on `production-prompts` too, and its
+  configuration row must say so.
+- **Q1:** under moto, a `<>` comparison on a missing attribute passes, unlike DynamoDB. The daily
+  claim's mutation check should rely on the exact-string test.
+- **Q1:** a `rate(...)` research cadence in queue mode researches every interval less 5 minutes,
+  because of `is_due`'s tolerance. Decide whether that is acceptable or round to the interval.
+
+**Owner actions waiting.** Review and merge #380 and #381. After PR2 merges: apply `infra/bootstrap`
+by hand, create the `production-prompts` environment (required reviewer: you; deployment branch
+`dev`) and set the two `AWS_*_PROMPTS_ROLE_ARN` secrets. Then tell the agent "bootstrap applied", so
+PR12 may merge.
+
+**Practical notes for a cloud session.**
+
+- The container has 4 CPUs, so a workflow runs two agents at a time. The full suite takes 11 to 13
+  minutes: run it in the background and read its log. `pytest-xdist` is not installed.
+- The Terraform registry is blocked. Module tests and `validate` need the offline provider mirror
+  described in spec section 6.
+- Pushing a `claude/ranch-*` branch starts no workflow. Only opening a PR runs the checks.
+
 ## Backlog / not yet scheduled
 
 *(Freeform — drop ideas here as they occur to you; promote them into a
