@@ -480,3 +480,125 @@ def test_enabling_a_model_probes_it_and_warns_when_the_account_cannot_call_it(aw
     assert call(model_body("known", enabled=True))[0] == 200
     assert probed == []  # already known to be callable
     assert dynamo.get_model("known")["access"] == "granted"  # kept across the rewrite
+
+
+# --- suitability: what a model is for ---------------------------------------------------------------
+
+
+def test_suitability_is_the_recorded_purpose_or_for_an_older_row_its_pricing_unit():
+    sees = {"model_id": "sees", "model_purpose": "text", "model_inputs": ["TEXT", "IMAGE"]}
+    blind = {"model_id": "blind", "model_purpose": "text", "model_inputs": ["TEXT"]}
+    embed = {"model_id": "embed", "model_purpose": "embedding", "model_inputs": ["TEXT"]}
+    legacy = {"model_id": "legacy"}
+    legacy_other = {"model_id": "legacy-other", "pricing_unit": "other"}
+    unknown = {"model_id": "unknown", "model_purpose": "unknown"}
+    rows = (sees, blind, embed, legacy, legacy_other, unknown)
+
+    assert [model_fleet.suitable(m) for m in rows] == [True, True, False, True, False, False]
+    # The triage needs an image input; a legacy row's inputs are unrecorded, so it is not held to it.
+    with_image = [model_fleet.suitable(m, model_fleet.TEXT_WITH_IMAGE_INPUT) for m in rows]
+    assert with_image == [True, False, False, True, False, False]
+    assert [model_fleet.purpose(m) for m in rows] == ["text", "text", "embedding", "text", "other", "unknown"]
+    assert not model_fleet.suitable(None) and not model_fleet.suitable(sees, "DRAWING")
+    assert model_fleet.NEEDS == ("TEXT", "TEXT_WITH_IMAGE_INPUT")
+
+
+def test_an_embeddings_model_is_never_picked_for_a_rotation_and_is_dropped_from_one(aws):
+    put_model(aws, "embed", 0.0001, model_purpose="embedding", model_inputs=["TEXT"])
+    put_model(aws, "words", 0.002, model_purpose="text", model_inputs=["TEXT"])
+    put_topic(aws, "t", model_id_candidates=["embed", "words"])
+
+    picks = model_fleet.rotation_picks(dynamo.list_models(), None, [], "value_for_money")
+    assert [m["model_id"] for m in picks] == ["words"]  # the cheapest, but no text model
+
+    result = model_fleet.cycle(SETTINGS, NOW)
+    assert topic(aws, "t")["model_id_candidates"] == ["words"]
+    assert (result["topics_changed"], result["dropped_inactive"]) == (["t"], 1)
+    # Nor does the daily cycle roll a topic to it from the shared pool; a model with no row is kept.
+    assert model_fleet.rotation_pool(["embed", "words", "unregistered"]) == ["words", "unregistered"]
+
+
+def test_the_pool_stands_as_configured_when_the_registry_cannot_be_read(monkeypatch):
+    def down():
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(model_fleet.dynamo, "list_models", down)
+    assert model_fleet.rotation_pool(["a", "b"]) == ["a", "b"]
+
+
+def test_an_embeddings_model_is_routed_around_like_an_inactive_one_and_replaced(aws):
+    put_config(aws, model_id="cfg-default", fallback_model_id="cfg-fallback")
+    for model_id in ("cfg-default", "cfg-fallback", "env-default"):
+        put_model(aws, model_id, 0.001, enabled=False)
+    put_model(aws, "embed", 0.0001, model_purpose="embedding", model_inputs=["TEXT"])
+    put_model(aws, "embed-too", 0.0001, model_purpose="embedding", model_inputs=["TEXT"])
+    put_model(aws, "words", 0.002, model_purpose="text", model_inputs=["TEXT"])
+    put_topic(aws, "t", model_id_candidates=["embed"])
+    put_topic(aws, "pinned", model_id="embed")
+
+    assert model_routing.resolve_model(topic(aws, "t"))[0] == "words"
+    assert topic(aws, "t")["model_id_candidates"] == ["words"]
+    # Over many draws the random pick is never the other embeddings model.
+    assert {model_routing.resolve_model(topic(aws, "pinned"))[0] for _ in range(25)} == {"words"}
+    assert topic(aws, "pinned")["model_id"] == "words"
+
+
+def test_the_triage_gets_a_model_that_takes_an_image_and_the_topic_keeps_its_text_model(aws):
+    put_config(aws, model_id="cfg-default", fallback_model_id="sees")
+    put_model(aws, "cfg-default", 0.001, model_purpose="text", model_inputs=["TEXT"])
+    put_model(aws, "sees", 0.002, model_purpose="text", model_inputs=["TEXT", "IMAGE"])
+    put_model(aws, "blind", 0.001, model_purpose="text", model_inputs=["TEXT"])
+    put_topic(aws, "t", model_id="blind")
+    need = model_fleet.TEXT_WITH_IMAGE_INPUT
+
+    assert model_routing.resolve_model(topic(aws, "t"), need=need) == ("sees", "cfg-default")
+    assert model_routing.resolve_model(topic(aws, "t")) == ("blind", "sees")  # the text work keeps it
+    assert topic(aws, "t")["model_id"] == "blind"  # only this call went elsewhere
+
+    # Nothing configured takes an image: a random registry model that does serves the call, and
+    # the topic still keeps its model, which is fine for everything else it does.
+    put_config(aws, model_id="cfg-default")
+    put_model(aws, "env-default", 0.001, model_purpose="text", model_inputs=["TEXT"])
+    assert model_routing.resolve_model(topic(aws, "t"), need=need)[0] == "sees"
+    assert topic(aws, "t")["model_id"] == "blind"
+
+    # A row from before purposes were recorded is not held to the image rule.
+    put_model(aws, "legacy", 0.001)
+    put_topic(aws, "l", model_id="legacy")
+    assert model_routing.resolve_model(topic(aws, "l"), need=need)[0] == "legacy"
+
+
+# --- protection: roles, and the evals judge ---------------------------------------------------------
+
+
+def test_protection_names_each_models_role_and_the_evals_judge_when_that_row_exists(aws):
+    put_config(aws, model_id="main", fallback_model_id="spare")
+    topics = [{"topic_id": "t", "model_id": "tm", "fallback_model_id": "tf", "model_id_candidates": ["rot"]}]
+
+    protected = model_fleet.protected_models(topics, dynamo.get_model_config(), ["pooled"])
+
+    assert protected == {
+        "main": "default",
+        "env-default": "default",
+        "spare": "fallback",
+        "tm": "topic_model",
+        "tf": "topic_fallback",
+        "rot": "rotation",
+        "pooled": "pool",
+    }
+    assert model_fleet.judge_model() is None  # no evals row yet: nothing to protect
+    aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "judge_model_id": "judge-m"})
+    assert model_fleet.protected_models(topics, dynamo.get_model_config(), ["pooled"])["judge-m"] == "judge"
+    assert model_fleet.judge_model({"judge_model_id": ""}) is None
+
+
+def test_pruning_never_removes_the_evals_judge(aws):
+    aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "judge_model_id": "judge-m"})
+    put_model(aws, "judge-m", 0.09, enabled=False)
+    put_model(aws, "dear", 0.002, enabled=False)
+    put_model(aws, "cheap", 0.001, enabled=False)
+
+    result = model_fleet.prune({**SETTINGS, "max_models": 3, "discover_max_added": 2}, NOW)
+
+    assert result["pruned_ids"] == ["dear", "cheap"] and result["protected"] == 2
+    assert "judge-m" in ids(aws)

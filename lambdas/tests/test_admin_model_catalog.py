@@ -80,7 +80,12 @@ def test_put_refuses_what_is_not_a_valid_setting(aws, body):
 
 
 @pytest.mark.parametrize(
-    "route, job", [("POST /models/reprice", "reprice"), ("POST /models/discover", "discover")]
+    "route, job",
+    [
+        ("POST /models/reprice", "reprice"),
+        ("POST /models/discover", "discover"),
+        ("POST /models/classify", "classify"),
+    ],
 )
 def test_a_job_is_started_in_the_background(aws, route, job):
     client = MagicMock()
@@ -148,3 +153,51 @@ def test_models_add_keeps_what_the_catalog_recorded_and_can_lock_the_price(aws):
         "price_locked": "yes",
     }
     assert call("POST /models", bad)[0] == 400
+
+
+RANCH = {
+    "model_purpose": "text",
+    "model_inputs": ["TEXT", "IMAGE"],
+    "daily_perf": 4,
+    "weekly_perf": -12,
+    "monthly_perf": 30,
+    "total_perf": 0,
+    "perf_events": {"daily": 2, "weekly": 6, "monthly": 15, "total": 60},
+    "perf_updated_at": "2026-10-20T17:00:00+00:00",
+    "model_roles": ["default", "rotation"],
+    "ungated_until": "2026-10-21T17:00:00+00:00",
+}
+
+
+def test_models_add_on_an_existing_row_keeps_what_the_ranch_recorded(aws):
+    assert admin_api_handler._CATALOG_MODEL_FIELDS == model_catalog.CATALOG_MODEL_FIELDS
+    assert set(RANCH) == set(model_catalog.RANCH_FIELDS) <= set(model_catalog.CATALOG_MODEL_FIELDS)
+    aws.Table("Models").put_item(
+        Item={
+            "model_id": "m1",
+            "display_name": "M1",
+            "provider": "test",
+            "enabled": False,
+            "pricing_unit": "tokens",
+            "input_price_usd_per_1k_tokens": Decimal("0.001"),
+            "output_price_usd_per_1k_tokens": Decimal("0.005"),
+            **RANCH,
+        }
+    )
+
+    status, body = call(
+        "POST /models",
+        {
+            "model_id": "m1",
+            "display_name": "M1 renamed",
+            "provider": "test",
+            "input_price_usd_per_1k_tokens": 0.0011,
+            "output_price_usd_per_1k_tokens": 0.0055,
+        },
+    )
+
+    assert status == 200
+    row = aws.Table("Models").get_item(Key={"model_id": "m1"})["Item"]
+    assert (row["enabled"], row["display_name"]) == (True, "M1 renamed")
+    assert {field: row[field] for field in RANCH} == RANCH  # a zero total and a negative week included
+    assert {field: body[field] for field in RANCH} == RANCH

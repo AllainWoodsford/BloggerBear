@@ -73,6 +73,10 @@ SAMPLES = {
         "config_keys": ["max_cloud_cover", "triage"], "config_numbers": {"max_cloud_cover": 40},
         "config_off": ["triage"], "force_manual_review": True,
     },
+    "model_catalog_job": {
+        "job": "discover", "trigger": "schedule", "status": "done", "models": 31,
+        "discovered": 2, "not_added": 4, "denied": 1, "access_checked": 7,
+    },
 }  # fmt: skip
 
 

@@ -13,6 +13,7 @@ import pytest
 from moto import mock_aws
 
 import model_catalog_handler
+from common import evidence, model_fleet
 from common import model_catalog as catalog
 
 REGION = "ap-southeast-2"
@@ -695,6 +696,7 @@ class FakeBedrock:
                     "modelId": "amazon.nova-lite-v1:0",
                     "modelName": "Nova Lite",
                     "providerName": "Amazon",
+                    "inputModalities": ["TEXT", "IMAGE"],
                     "outputModalities": ["TEXT"],
                     "inferenceTypesSupported": ["ON_DEMAND"],
                     "modelLifecycle": {"status": "ACTIVE"},
@@ -703,6 +705,7 @@ class FakeBedrock:
                     "modelId": "anthropic.claude-haiku-4-5-20251001-v1:0",
                     "modelName": "Claude Haiku 4.5",
                     "providerName": "Anthropic",
+                    "inputModalities": ["TEXT", "IMAGE"],
                     "outputModalities": ["TEXT"],
                     "inferenceTypesSupported": ["INFERENCE_PROFILE"],
                     "modelLifecycle": {"status": "ACTIVE"},
@@ -711,6 +714,7 @@ class FakeBedrock:
                     "modelId": "amazon.titan-embed-text-v2:0",
                     "modelName": "Titan Embeddings",
                     "providerName": "Amazon",
+                    "inputModalities": ["TEXT"],
                     "outputModalities": ["EMBEDDING"],
                     "inferenceTypesSupported": ["ON_DEMAND"],
                 },
@@ -718,6 +722,7 @@ class FakeBedrock:
                     "modelId": "stability.sd3-large-v1:0",
                     "modelName": "SD3 Large",
                     "providerName": "Stability AI",
+                    "inputModalities": ["TEXT", "IMAGE"],
                     "outputModalities": ["IMAGE"],
                     "inferenceTypesSupported": ["ON_DEMAND"],
                     "modelLifecycle": {"status": "ACTIVE"},
@@ -726,6 +731,7 @@ class FakeBedrock:
                     "modelId": "meta.llama3-3-70b-instruct-v1:0",
                     "modelName": "Llama 3.3 70B Instruct",
                     "providerName": "Meta",
+                    "inputModalities": ["TEXT"],
                     "outputModalities": ["TEXT"],
                     "inferenceTypesSupported": ["INFERENCE_PROFILE"],
                     "modelLifecycle": {"status": "ACTIVE"},
@@ -793,6 +799,28 @@ def test_account_models_are_every_providers_models_callable_on_demand_or_by_prof
     assert "apac.old.model-v1" not in found
 
 
+def test_a_models_purpose_is_text_before_anything_else_it_writes_and_other_for_none_of_them():
+    assert catalog.model_purpose(["IMAGE", "TEXT"]) == "text"
+    assert catalog.model_purpose(["EMBEDDING"]) == "embedding"
+    assert catalog.model_purpose(["VIDEO"]) == "video" and catalog.model_purpose(["SPEECH"]) == "speech"
+    assert catalog.model_purpose(["AUDIO"]) == "other" and catalog.model_purpose(None) == "other"
+    assert catalog.model_inputs(["text", "IMAGE", "TEXT"]) == ["TEXT", "IMAGE"]
+    assert catalog.PURPOSES == ("text", "image", "embedding", "video", "speech", "other", "unknown")
+
+
+def test_account_models_record_each_models_purpose_and_inputs():
+    found = catalog.account_models(REGION, FakeBedrock())
+    by_purpose: dict = {}
+    for model in found:
+        by_purpose.setdefault(model["model_purpose"], []).append(model["model_inputs"])
+    assert set(by_purpose) == {"text", "embedding", "image"}
+    assert by_purpose["embedding"] == [["TEXT"], ["TEXT"]]  # the model and its profile
+    assert by_purpose["image"] == [["TEXT", "IMAGE"]]
+    assert sorted(by_purpose["text"]) == [["TEXT"], ["TEXT", "IMAGE"], ["TEXT", "IMAGE"]]
+    # The pricing unit still says how a model is billed; the purpose says what it is for.
+    assert all(m["pricing_unit"] == ("tokens" if m["model_purpose"] == "text" else "other") for m in found)
+
+
 def test_discover_adds_at_most_its_cap_disabled_and_unpriced_text_models_first(aws):
     put_model(
         aws, "amazon.nova-lite-v1:0", 0.00006, 0.00024, enabled=True, price_checked_at=NOW.isoformat()
@@ -809,6 +837,9 @@ def test_discover_adds_at_most_its_cap_disabled_and_unpriced_text_models_first(a
     row = model(aws, "au.anthropic.claude-haiku-4-5-20251001-v1:0")
     assert (row["enabled"], row["region"], row["pricing_unit"]) == (False, REGION, "tokens")
     assert "input_price_usd_per_1k_tokens" not in row  # the reprice that follows prices it
+    assert (row["model_purpose"], list(row["model_inputs"])) == ("text", ["TEXT", "IMAGE"])
+    added = [model(aws, model_id) for model_id in result["added_ids"]]
+    assert sorted(row["model_purpose"] for row in added) == ["embedding", "text", "text"]
     assert model(aws, "amazon.titan-embed-text-v2:0")["pricing_unit"] == "other"
     assert model(aws, "amazon.nova-lite-v1:0")["enabled"] is True  # untouched
     assert active(aws) is None  # no pricing run
@@ -836,6 +867,145 @@ def test_discover_finding_nothing_new_is_a_normal_result(aws):
         put_model(aws, found["model_id"])
     result = catalog.discover("schedule", SETTINGS, NOW, bedrock=FakeBedrock())
     assert (result["status"], result["added_ids"], result["not_added"]) == ("done", [], 0)
+
+
+# --- classification -------------------------------------------------------------------------------
+
+
+def listed(model_id, purpose, inputs):
+    return {
+        "model_id": model_id,
+        "display_name": model_id,
+        "provider": "p",
+        "pricing_unit": "tokens" if purpose == "text" else "other",
+        "model_purpose": purpose,
+        "model_inputs": inputs,
+    }
+
+
+def job_lines(capsys):
+    """Every `model_catalog_job` evidence line printed so far, parsed as a reader would."""
+    lines = [evidence.parse(line) for line in capsys.readouterr().out.splitlines()]
+    return [line for line in lines if line and line["event"] == "model_catalog_job"]
+
+
+def test_classify_records_purposes_for_rows_from_before_and_unknown_for_a_delisted_model(
+    aws, monkeypatch, capsys
+):
+    put_model(aws, "words", 0.001, 0.004)
+    put_model(aws, "embed", pricing_unit="other")
+    put_model(aws, "gone", 0.001, 0.004, model_inputs=["TEXT"])
+    put_model(aws, "done", 0.001, 0.004, model_purpose="text", model_inputs=["TEXT"])
+    bedrock_lists = [
+        listed("words", "text", ["TEXT", "IMAGE"]),
+        listed("embed", "embedding", ["TEXT"]),
+        listed("done", "text", ["TEXT"]),
+        listed("new", "text", ["TEXT"]),  # not in the registry: nothing to classify
+    ]
+    monkeypatch.setattr(catalog, "account_models", lambda region, client=None: bedrock_lists)
+    assert model_fleet.suitable(model(aws, "embed")) is False and model_fleet.suitable(model(aws, "gone"))
+
+    result = catalog.handle({"job": "classify"}, NOW)["classify"]
+
+    assert (result["classified"], result["unknown"], result["unchanged"], result["models"]) == (2, 1, 1, 4)
+    assert (sorted(result["classified_ids"]), result["unknown_ids"]) == (["embed", "words"], ["gone"])
+    words = model(aws, "words")
+    assert (words["model_purpose"], list(words["model_inputs"])) == ("text", ["TEXT", "IMAGE"])
+    assert model(aws, "embed")["model_purpose"] == "embedding"
+    gone = model(aws, "gone")
+    assert (gone["model_purpose"], list(gone["model_inputs"])) == ("unknown", ["TEXT"])  # inputs kept
+    assert model_fleet.suitable(gone) is False  # no longer listed: nothing routes to it
+    assert "new" not in [m["model_id"] for m in catalog.dynamo.list_models()]
+    state = config_row(aws, catalog.STATE_ID)
+    assert state["last_classify_at"] == NOW.isoformat() and state["last_classify_result"]["classified"] == 2
+    [line] = job_lines(capsys)
+    assert line.items() >= {
+        "job": "classify", "trigger": "admin", "status": "done", "models": 4, "classified": 2,
+        "unknown": 1, "unchanged": 1,
+    }.items()  # fmt: skip
+
+    # Run again, nothing changes; and it has no pause flag, so a schedule could not pause it.
+    again = catalog.classify("admin", NOW)
+    assert (again["classified"], again["unknown"], again["unchanged"]) == (0, 0, 4)
+    pause_both(aws)
+    assert catalog.handle({"job": "classify", "trigger": "schedule"}, NOW)["status"] == "ran"
+    assert catalog.handle({"job": "classified"}, NOW)["status"] == "ignored"
+
+
+RANCH = {
+    "model_purpose": "text",
+    "model_inputs": ["TEXT"],
+    "daily_perf": 4,
+    "weekly_perf": 12,
+    "monthly_perf": 30,
+    "total_perf": 120,
+    "perf_events": {"daily": 2, "weekly": 6, "monthly": 15, "total": 60},
+    "perf_updated_at": "2026-10-20T17:00:00+00:00",
+    "model_roles": ["rotation"],
+    "ungated_until": "2026-10-21T17:00:00+00:00",
+}
+
+
+def test_a_reprice_and_a_review_that_puts_a_price_back_keep_what_the_ranch_recorded(aws, monkeypatch):
+    assert set(RANCH) == set(catalog.RANCH_FIELDS) <= set(catalog.CATALOG_MODEL_FIELDS)
+    put_model(aws, "m1", 0.001, 0.005, **RANCH)
+
+    run_id = start_run(aws, {"m1": (0.0012, 0.006)})["run_id"]
+    repriced = model(aws, "m1")
+    assert repriced["input_price_usd_per_1k_tokens"] == Decimal("0.0012")
+    assert {field: repriced[field] for field in RANCH} == RANCH
+
+    disagreeing = FakeLookup({"m1": (0.005, 0.02)})
+    monkeypatch.setattr(catalog, "PriceLookup", lambda *a, **k: disagreeing)
+    reviewed = catalog.handle({"job": "review", "run_id": run_id}, NOW + timedelta(hours=1))
+    assert reviewed["review"]["reverted"] == ["m1"]
+    put_back = model(aws, "m1")
+    assert put_back["input_price_usd_per_1k_tokens"] == Decimal("0.001")
+    assert {field: put_back[field] for field in RANCH} == RANCH
+
+
+def test_every_job_ends_with_one_evidence_line_of_its_counts(aws, monkeypatch, capsys):
+    monkeypatch.setattr(
+        catalog,
+        "account_models",
+        lambda region, client=None: [listed("a", "text", ["TEXT"]), listed("b", "text", ["TEXT"])],
+    )
+
+    def probe(model_id):
+        return ("denied", "AccessDeniedException: x") if model_id == "b" else ("granted", None)
+
+    catalog.discover("schedule", SETTINGS, NOW, probe=probe)
+    [line] = job_lines(capsys)
+    assert line.items() >= {
+        "job": "discover", "trigger": "schedule", "status": "done", "models": 0, "discovered": 1,
+        "denied": 1, "not_added": 0, "access_checked": 0,
+    }.items()  # fmt: skip
+    assert not {"a", "b"} & set(line.values())  # counts only, never a model's id
+
+    put_model(aws, "m1", 0.001, 0.005)
+    run_id = start_run(aws, {"m1": (0.0012, 0.006)})["run_id"]
+    [line] = job_lines(capsys)
+    assert line.items() >= {
+        "job": "reprice", "trigger": "admin", "status": "reviewing", "run_id": run_id, "repriced": 1,
+        "confirmed": 0, "unpriced": 1, "lookup_errors": 0, "web_lookups": 0,
+    }.items()  # fmt: skip
+
+    monkeypatch.setattr(catalog, "PriceLookup", lambda *a, **k: FakeLookup({"m1": (0.005, 0.02)}))
+    catalog.handle({"job": "review", "run_id": run_id}, NOW + timedelta(hours=1))
+    [line] = job_lines(capsys)
+    assert line.items() >= {
+        "job": "review", "run_id": run_id, "review": 1, "passed": 0, "deferred": 0, "reverted": 1,
+        "dropped": 0,
+    }.items()  # fmt: skip
+
+    monkeypatch.setattr(catalog.dynamo, "list_topics", lambda: [])
+    model_fleet.cycle(SETTINGS, NOW)
+    model_fleet.prune(SETTINGS, NOW)
+    cycle_line, prune_line = job_lines(capsys)
+    expected_cycle = {"job": "cycle", "status": "done", "mode": "value_for_money", "topics": 0, "added": 0}
+    assert cycle_line.items() >= expected_cycle.items()
+    expected_prune = {"job": "prune", "status": "under_cap", "models": 2, "max_models": 50}
+    assert prune_line.items() >= expected_prune.items()
 
 
 # --- invocations --------------------------------------------------------------------------------

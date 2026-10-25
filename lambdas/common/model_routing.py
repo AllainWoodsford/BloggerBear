@@ -21,13 +21,16 @@ falls through to the next step rather than failing. `os.environ[
 final safety net and always works. It is also the fallback whenever none is
 configured and the picked model is a different one.
 
-**An inactive model is routed around** (docs/enhancements/archive/model-catalog-refresh.md, "Pruning and
-cycling"). When the model a topic's rotation (or its own `model_id`) gives is one the Models
-registry marks `enabled: false`, the call goes to the fallback if one is configured, else to the
-default. If those are inactive too, it goes to a random active model from the registry, which
-replaces the inactive one in the topic's rotation (or as its `model_id`), so the next run starts
-there. A model with no registry row counts as active. Every lookup here fails open: a registry
-that cannot be read routes exactly as before.
+**An inactive or unsuitable model is routed around** (docs/enhancements/archive/model-catalog-refresh.md,
+"Pruning and cycling"). When the model a topic's rotation (or its own `model_id`) gives is one the
+Models registry marks `enabled: false`, or one not suitable for what the call needs
+(common/model_fleet.suitable: a text model, or for the vision triage one that also takes an image),
+the call goes to the fallback if one is configured and fit, else to the default. If those are unfit
+too, it goes to a random usable, suitable model from the registry. A model that is inactive or no
+text model at all is replaced by that pick in the topic's rotation (or as its `model_id`), so the
+next run starts there; one that only lacks what a stricter need asks for (an image input) stays on
+the topic, and only this call goes elsewhere. A model with no registry row counts as fit. Every
+lookup here fails open: a registry that cannot be read routes exactly as before.
 """
 
 from __future__ import annotations
@@ -35,11 +38,11 @@ from __future__ import annotations
 import os
 import random
 
-from common import dynamo
+from common import dynamo, model_fleet
 from common.dynamo import get_model_config
 
 
-def resolve_model(topic: dict | None = None) -> tuple[str, str | None]:
+def resolve_model(topic: dict | None = None, need: str = model_fleet.TEXT) -> tuple[str, str | None]:
     """Return (model_id, fallback_model_id) for a call, honoring precedence.
 
     `topic` is an optional Topics item (as returned by common.dynamo.
@@ -47,6 +50,10 @@ def resolve_model(topic: dict | None = None) -> tuple[str, str | None]:
     so that topic's own model_id/fallback_model_id override (if set) wins.
     Pass None for topic-agnostic calls (e.g. the model catalog's reading of
     a web search result).
+
+    `need` (model_fleet.NEEDS) is what the call needs of the model: TEXT, or
+    TEXT_WITH_IMAGE_INPUT for the vision triage. A topic's model that cannot
+    meet it is routed around (see the module docstring).
     """
     model_id = None
     fallback_model_id = None
@@ -73,8 +80,18 @@ def resolve_model(topic: dict | None = None) -> tuple[str, str | None]:
     if model_id is None:
         model_id = os.environ["BEDROCK_MODEL_ID"]
 
-    if from_topic and _inactive(model_id):
-        model_id, fallback_model_id = _route_around(topic, model_id, fallback_model_id, from_topic, config)
+    if from_topic:
+        row = _registry_row(model_id)
+        if _unfit(row, need):
+            model_id, fallback_model_id = _route_around(
+                topic,
+                model_id,
+                fallback_model_id,
+                from_topic,
+                config,
+                need,
+                replace=_unfit(row, model_fleet.TEXT),
+            )
 
     # Nobody configured a fallback: retry with the Terraform default rather than have no
     # fallback at all, so a model Bedrock retires (or never enabled for the account) that a
@@ -88,21 +105,34 @@ def resolve_model(topic: dict | None = None) -> tuple[str, str | None]:
     return model_id, fallback_model_id
 
 
-def _inactive(model_id: str) -> bool:
-    """True only for a model the registry has a row for that says `enabled: false`."""
+def _registry_row(model_id: str) -> dict | None:
+    """The model's registry row, or None when it has none or the registry cannot be read."""
     try:
-        row = dynamo.get_model(model_id)
+        return dynamo.get_model(model_id)
     except Exception as exc:  # noqa: BLE001 - routing never fails over a registry read
         print(f"model_routing: could not read model {model_id}: {exc!r}")
-        return False
-    return row is not None and row.get("enabled") is False
+        return None
+
+
+def _unfit(row: dict | None, need: str) -> bool:
+    """True only for a model the registry has a row for that says `enabled: false`, or that is not
+    suitable for `need` (model_fleet.suitable); a model with no row is fit."""
+    return row is not None and (row.get("enabled") is False or not model_fleet.suitable(row, need))
 
 
 def _route_around(
-    topic: dict, model_id: str, fallback_model_id: str | None, from_topic: str, config: dict | None
+    topic: dict,
+    model_id: str,
+    fallback_model_id: str | None,
+    from_topic: str,
+    config: dict | None,
+    need: str,
+    *,
+    replace: bool,
 ) -> tuple[str, str | None]:
-    """The topic's model is inactive: the fallback, else the default, else a random active
-    registry model, which then takes the inactive model's place on the topic."""
+    """The topic's model is inactive or unsuitable: the fallback, else the default, else a random
+    usable registry model suitable for `need`, which then takes the model's place on the topic
+    when `replace` (the model is inactive or no text model: nothing on the topic should use it)."""
     if config is None:
         try:
             config = get_model_config() or {}
@@ -111,17 +141,15 @@ def _route_around(
             config = {}
     default = config.get("model_id") or os.environ.get("BEDROCK_MODEL_ID") or None
     for choice in (fallback_model_id, default):
-        if choice and choice != model_id and not _inactive(choice):
-            print(f"model_routing: {model_id} is inactive; topic {topic.get('topic_id')} uses {choice}")
+        if choice and choice != model_id and not _unfit(_registry_row(choice), need):
+            topic_id = topic.get("topic_id")
+            print(f"model_routing: {model_id} is unfit for {need}; topic {topic_id} uses {choice}")
             return choice, (default if choice != default else None)
     try:
         active = [
             m["model_id"]
             for m in dynamo.list_models()
-            if m.get("enabled") is not False
-            and m.get("access") != "denied"
-            and (m.get("pricing_unit") or "tokens") == "tokens"
-            and m["model_id"] != model_id
+            if model_fleet.is_usable(m) and model_fleet.suitable(m, need) and m["model_id"] != model_id
         ]
     except Exception as exc:  # noqa: BLE001 - routing never fails over a registry read
         print(f"model_routing: could not list the models: {exc!r}")
@@ -130,7 +158,10 @@ def _route_around(
         return model_id, fallback_model_id  # nothing better to go to: as before
     choice = random.choice(active)
     topic_id = topic.get("topic_id")
-    print(f"model_routing: {model_id} and its fallbacks are inactive; topic {topic_id} moves to {choice}")
+    print(f"model_routing: {model_id} and its fallbacks are unfit for {need}; "
+          f"topic {topic_id} moves to {choice}")
+    if not replace:
+        return choice, fallback_model_id if fallback_model_id != choice else None
     try:
         if from_topic == "rotation":
             rotation = [choice if c == model_id else c for c in topic.get("model_id_candidates") or []]
