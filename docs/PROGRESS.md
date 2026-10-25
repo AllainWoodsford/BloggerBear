@@ -968,6 +968,45 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `reviewer_may_approve`; `articles get` and `articles checked`; the assistant's
   `reviewer_financial_check`; the Terms, Privacy Policy and About page say what he does
 
+### Model Ranch, prompts as assets, continuous evals, the queue platform (2026-10-25)
+
+Spec: [model-ranch-prompt-assets-evals.md](enhancements/model-ranch-prompt-assets-evals.md). One PR per
+line, in three parallel stacks (queue, prompts, evals); ticked only by the final docs PR, as the spec's
+owner decisions say (an agreed override of "check off in the same PR" for this feature).
+
+- [ ] **PR0** — the spec (this section) and the superseded note on the dispatcher proposal
+- [ ] **Q0** — queue wiring: `cron_match`, `dispatch`, `WORKER_CONCURRENCY`, pipeline-config `dispatch_shadow` and `daily_starts_per_tick` (inert)
+- [ ] **Q1** — the work-queue module: `work.fifo`, `work-dlq.fifo`, the dispatcher in shadow mode, the research-tick event-source mapping
+- [ ] **Q2** — per-topic `dispatch_mode` with pre-flight, manual triggers routed through the queue, `topics reschedule --dispatch-mode schedule`
+- [ ] **P0** — prompts wiring: the switch, the publisher-role variable, the `prompt_fallback` evidence event and its alarm (inert)
+- [ ] **PR1** — `fresh_review._DELIMITER_TAG` covers `claims_to_fix`
+- [ ] **PR2** — bootstrap: the two publisher roles and the evals log-group statement (manual apply)
+- [ ] **PR3** — `common/prompts.py`: `get_prompt`, `vanilla_prompt`, `bind_run`, the registry (inert)
+- [ ] **PR4** — the prompts module (bucket, hash table), `GET /prompts`, pause/resume, releases, `prompts set`; `admin_cli prompts`
+- [ ] **PR5** — `prompts.yml`, `prompt_lint.py`, `publish_prompts.py` (release reconcile, hash table rebuilt per release)
+- [ ] **PR6** — migrate the drafting prompts (ideation, draft, title)
+- [ ] **PR7** — migrate the review prompts; compliance stays code-only; `bedrock_redact_review` deleted
+- [ ] **PR8** — migrate the research and vision summary prompts; triage stays code-only
+- [ ] **PR9** — migrate the rewrite and reviewer-bear prompts
+- [ ] **PR10** — migrate the small prompts (gear, reflection, web price, musings); the code-only specs record `vanilla:vN`
+- [ ] **PR1b** — model purpose and suitability, ranch fields preserved on overwrite, `model_catalog_job` counters, `models classify`
+- [ ] **E0** — evals wiring: the switch, `logs_insights` move, the `evals` stats category (inert)
+- [ ] **PR12** — `common/evals.py` and the evals module (table, log group, grants; the rest gated) (bootstrap applied first)
+- [ ] **PR13** — the hourly rollup, the `evals` settings row, `evals status|digest|rollup`
+- [ ] **PR13b** — `evals forgive|punish|ungate|revoke`
+- [ ] **PR11b** — dashboards: `pipeline_health` (with the model-catalog counter row) and `ranch_and_prompts` replace the three
+- [ ] **PR14** — eval events: completion, admin review, rewrite, votes
+- [ ] **PR15** — the rotation guard as a filter; the rewrite picker ranked by performance
+- [ ] **PR16** — culling in proposal mode; `evals cull --apply`; `models restore`
+- [ ] **PR17** — `topic_review_steering` in the fresh-data review
+- [ ] **PR18** — the LLM judge through the eval queue, calibrated against human reviews, with a tripwire
+- [ ] **PR18b** — offline scoring runs: `evals score`, `evals runs`
+- [ ] **PR18c** — call traces (opt-in)
+- [ ] **PR19** — human review of Findings in `approve --source findings`
+- [ ] **PR20** — the assistant's `model_ranch` and `prompt_metrics` tools; the agent prompt; the Friday digest
+- [ ] **PR21** — bug sweep
+- [ ] **PR22** — documentation sweep: configuration, models, observability, runsheets, two architecture pages, README, this checklist ticked; the spec archived
+
 ## Backlog / not yet scheduled
 
 *(Freeform — drop ideas here as they occur to you; promote them into a
