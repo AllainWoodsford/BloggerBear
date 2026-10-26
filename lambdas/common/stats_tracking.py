@@ -4,7 +4,7 @@ plus a few reader-activity counters, all rolled into one weekly running total.
 Per-article cost (ideation, drafting, title, review, revision) has always been tracked --
 common/costing.py builds it into each Articles item's own `lineage`, and the public Stats page
 aggregates those. Other Bedrock-calling code paths were never tracked at all, because they don't
-belong to any one article. There were four at first; there are eight now (BEDROCK_CATEGORIES below):
+belong to any one article. There were four at first; there are nine now (BEDROCK_CATEGORIES below):
 
     musings            common/musings.py    (every kind of musing)
     weekly_reflection  weekly_reflection_handler.py  (a topic's rationale + suggested change)
@@ -14,6 +14,7 @@ belong to any one article. There were four at first; there are eight now (BEDROC
     reviewer           reviewer_handler.py  (the reviewer bear judging articles, common/reviewer.py)
     assistant          ops_agent/agent.py   (one assistant run of several calls: record_assistant_run)
     vision_triage      common/vision_triage.py  (one triage decision's calls: record_model_usage)
+    evals              the evals judge and offline scoring runs (none yet: they arrive with the evals jobs)
 
 `tracked_claude` below is what most of those now call instead of `common.bedrock.invoke_claude`
 directly -- same signature, same return (just the text), but the call's tokens and cost are also
@@ -93,6 +94,10 @@ BEDROCK_CATEGORIES = (
     "model_pricing",
     # Professor Grizzlewick, the reviewer bear, judging held and published articles (common/reviewer.py).
     "reviewer",
+    # Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md): the judge scoring
+    # Findings and articles, and the offline scoring runs' drafts and verdicts. Here before any of
+    # them is, so the Stats page and the spend tool already have the row when the first call lands.
+    "evals",
 )
 
 # The operator's assistant (lambdas/ops_agent): every question it answers, on the page or started

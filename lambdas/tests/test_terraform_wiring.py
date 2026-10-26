@@ -1792,6 +1792,65 @@ def test_the_lambda_role_may_list_the_content_bucket_so_a_missing_key_reads_as_n
     assert "condition" not in statement
 
 
+# --- continuous evals: the wiring that lands before the evals module does -------------------------
+#
+# docs/enhancements/model-ranch-prompt-assets-evals.md, E0. Every Lambda is told where the evals
+# table, log group and queue will be and whether evals run, CI passes the switch, and the Lambdas
+# may publish to the alerts topic, all before any of it exists. Nothing reads any of it yet.
+
+
+def test_evals_are_wired_in_both_roots_and_off_until_the_repository_variable_says_so():
+    """evals_enabled defaults to false in both roots and CI reads it like VISION_ENABLED (only
+    `true` turns it on), so merging the evals work changes nothing. Every Lambda is told the three
+    names, empty until the evals module makes them, and the switch as "true" or "false"."""
+    switch = "${{ vars.EVALS_ENABLED == 'true' && 'true' || 'false' }}"
+    for name in ("terraform.yml", "terraform-production-release.yml"):
+        text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert f"      TF_VAR_evals_enabled: {switch}\n" in text, name
+        assert text.count("vars.EVALS_ENABLED") == 1, name  # read once, by the switch, nowhere else
+    for env in ("dev", "production"):
+        block = re.search(
+            r'^variable "evals_enabled" \{\n(.*?)^\}', _read("environments", env, "variables.tf"), re.S | re.M
+        )
+        assert block, env
+        assert re.search(r"^  type\s*=\s*bool$", block.group(1), re.M), env
+        assert re.search(r"^  default\s*=\s*false$", block.group(1), re.M), env
+        main = _uncommented(_read("environments", env, "main.tf"))
+        shared = main.split("  lambda_env_variables = {")[1].split("\n}\n")[0]
+        for key in ("EVALS_TABLE", "EVALS_LOG_GROUP", "EVAL_WORK_QUEUE_URL"):
+            assert re.search(rf'^\s*{key}\s*=\s*""$', shared, re.M), (env, key)
+        switched = r'^\s*EVALS_ENABLED\s*=\s*var\.evals_enabled \? "true" : "false"$'
+        assert re.search(switched, shared, re.M), env
+        # Only handed on: nothing in the root is counted or gated on it, and the module is PR12's.
+        assert main.count("var.evals_enabled") == 1, env
+        assert 'module "evals"' not in main, env
+    table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    assert re.search(r"^\| `EVALS_ENABLED` \| variable \| repo or `production` \|", table, re.M)
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_lambdas_may_publish_to_the_alerts_topic_and_to_no_other_topic(env):
+    """The evals digest will go to the alerts topic, the one the alarms email through. One Allow on
+    the shared exec role, in a policy of its own: sns:Publish on module.observability's topic, by
+    its output rather than a name built by hand. It is the only SNS action the root grants."""
+    main = _uncommented(_read("environments", env, "main.tf"))
+    document = re.search(
+        r'^data "aws_iam_policy_document" "lambda_publish_alerts" \{\n(.*?)^\}', main, re.S | re.M
+    ).group(1)
+    assert document.count("statement {") == 1 and len(re.findall(r'effect\s*=\s*"Allow"', document)) == 1
+    assert re.findall(r"actions\s*=\s*(.*)", document) == ['["sns:Publish"]']
+    assert re.findall(r"resources\s*=\s*(.*)", document) == ["[module.observability.sns_topic_arn]"]
+    assert "condition" not in document and "not_actions" not in document
+    attached = _resource_block(main, "aws_iam_role_policy", "lambda_publish_alerts")
+    assert re.search(rf'name\s*=\s*"{DEFAULT_PREFIX}-{env}-lambda-publish-alerts"$', attached, re.M)
+    assert re.search(r"role\s*=\s*aws_iam_role\.lambda_exec\.id$", attached, re.M)
+    policy = r"policy\s*=\s*data\.aws_iam_policy_document\.lambda_publish_alerts\.json$"
+    assert re.search(policy, attached, re.M)
+    assert re.findall(r'"sns:[A-Za-z*]+"', main) == ['"sns:Publish"']
+    outputs = _read("modules", "observability", "outputs.tf")
+    assert re.search(r'output "sns_topic_arn" \{\n\s*value\s*=\s*aws_sns_topic\.alerts\.arn\n', outputs)
+
+
 # --- The operator's assistant (infra/modules/ops-assistant) -------------------------------------
 # "Read-only, behind a sign-in" is a claim about the deployment, not the code: these hold the parts
 # of it that a plan would happily change. The module's own terraform test

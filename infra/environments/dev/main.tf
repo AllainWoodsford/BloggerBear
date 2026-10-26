@@ -704,6 +704,17 @@ locals {
     # need no variable: the Lambda passes them its own ARN. The on/off switches are DynamoDB's
     # (`model-catalog` row, discover_enabled / reprice_enabled, on unless set to false).
     MODEL_CATALOG_FUNCTION_NAME = "${var.unique_name_prefix}-dev-model-catalog"
+
+    # Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md): the table the hourly
+    # rollup keeps its day totals in, the log group every scored event is written to, whether evals
+    # run at all, and the queue the judge and offline scoring jobs go through. The names are empty
+    # until the evals module makes the table, the log group and the queue; the switch is
+    # var.evals_enabled, from the EVALS_ENABLED GitHub variable, off by default. Nothing reads any of
+    # the four yet.
+    EVALS_TABLE         = ""
+    EVALS_LOG_GROUP     = ""
+    EVALS_ENABLED       = var.evals_enabled ? "true" : "false"
+    EVAL_WORK_QUEUE_URL = ""
   }
 }
 
@@ -2729,6 +2740,25 @@ locals {
     aws_lambda_function.security_events.function_name,
     aws_lambda_function.sign_in_events.function_name,
   ], aws_lambda_function.reviewer[*].function_name)
+}
+
+# Lets the Lambdas publish to the alerts topic, the one the alarms email through
+# (module.observability). Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md)
+# will send their weekly digest there; nothing publishes yet. A separate policy, like
+# lambda_web_search, so the grant stays visibly scoped to one topic.
+data "aws_iam_policy_document" "lambda_publish_alerts" {
+  statement {
+    sid       = "PublishAlerts"
+    effect    = "Allow"
+    actions   = ["sns:Publish"]
+    resources = [module.observability.sns_topic_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_publish_alerts" {
+  name   = "${var.unique_name_prefix}-dev-lambda-publish-alerts"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.lambda_publish_alerts.json
 }
 
 module "observability" {

@@ -225,6 +225,10 @@ NOT_ASKED = {
     # Whether dev's assistant may read dev's own firewall logs (docs/configuration.md). Off unless
     # someone sets it to "true" by hand; a first deploy never needs it, so this script does not ask.
     "OPS_FIREWALL_REVIEW_DEV",
+    # Whether continuous evals run (docs/configuration.md). Off unless someone sets it to "true" by
+    # hand, once the evals module is deployed; a first deploy never wants it, so this script does
+    # not ask.
+    "EVALS_ENABLED",
 }
 
 # Secrets the workflows still read as `secrets.X || vars.X`, left over from when they were

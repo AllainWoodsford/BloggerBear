@@ -137,6 +137,11 @@ jobs:
     # firewall's shared one). Read like VISION_ENABLED: only `true`, in any letter case, turns it
     # on; unset or anything else is `false`, the variable's own default (docs/configuration.md).
     # Production's assistant always has the tool, so the release workflow does not read it.
+    # TF_VAR_evals_enabled: whether continuous evals run (scored events, the hourly rollup, the
+    # judge; docs/enhancements/model-ranch-prompt-assets-evals.md). Read like VISION_ENABLED: only
+    # `true`, in any letter case, turns it on; unset or anything else is `false`, the variable's own
+    # default, so merging the evals work changes nothing until someone sets it. Nothing reads it
+    # until the evals module lands (docs/configuration.md).
     env:
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_DEV || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
@@ -152,6 +157,7 @@ jobs:
       TF_VAR_reviewer_enabled: ${{ vars.REVIEWER_ENABLED == 'false' && 'false' || 'true' }}
       TF_VAR_web_search_region: ${{ vars.WEB_SEARCH_REGION_DEV || vars.WEB_SEARCH_REGION || 'ap-northeast-1' }}
       TF_VAR_ops_firewall_review: ${{ vars.OPS_FIREWALL_REVIEW_DEV == 'true' && 'true' || 'false' }}
+      TF_VAR_evals_enabled: ${{ vars.EVALS_ENABLED == 'true' && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

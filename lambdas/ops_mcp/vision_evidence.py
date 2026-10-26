@@ -1186,7 +1186,7 @@ class OutOfTime(BotoCoreError):
 def _config(read_timeout: float) -> Config:
     """One request's client, as vision_status._s3 builds its own: a short connect, `read_timeout`
     (the time left; at least MIN_READ_SECONDS) and one attempt in all. The shared clients keep
-    longer bounds (logs._LOGS_CONFIG: 3 s, 8 s and two attempts; common/dynamo's resource:
+    longer bounds (logs_insights._LOGS_CONFIG: 3 s, 8 s and two attempts; common/dynamo's resource:
     botocore's 60 s each way and ten attempts), which no limit here could hold."""
     return Config(
         connect_timeout=CONNECT_SECONDS,
