@@ -1723,7 +1723,7 @@ def _moderation_queue_stats(event: dict) -> dict:
 
     Phase 6 ("Prompt iteration on the compliance-review step based on
     what's actually been flagged so far"): iterating the compliance
-    prompt (common/compliance.py's _REVIEW_PROMPT_TEMPLATE) responsibly
+    prompt (the reviews/compliance prompts in common/prompts_registry.py) responsibly
     needs to look at what has actually tripped it, not guesswork -- this
     is the read-only visibility that makes that possible. The prompt
     edit itself stays a manual, human-reviewed step (same as any other

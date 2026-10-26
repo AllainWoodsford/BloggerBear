@@ -451,6 +451,8 @@ def test_a_good_revision_is_returned_with_its_lineage_call():
         "output_tokens": 900,
         "used_fallback": False,
         "stop_reason": "end_turn",
+        "prompt_id": "reviews/revision",
+        "prompt_version": "vanilla:v1",
     }
     assert mock_invoke.call_args.kwargs["max_tokens"] == fr.REVISION_MAX_TOKENS == 8192
     assert mock_invoke.call_args.kwargs["fallback_model_id"] == "model-b"

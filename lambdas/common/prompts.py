@@ -178,6 +178,13 @@ class Prompt:
     fallback_code: str | None = None
 
 
+def lineage_fields(prompt: Prompt) -> dict:
+    """What a lineage call records of the prompt it sent: its id, and its version (an asset's
+    `v2`, or `vanilla:v1`), so an article's lineage says which version wrote each part of it.
+    Every call site that renders through `get_prompt` adds these, spelled the same everywhere."""
+    return {"prompt_id": prompt.prompt_id, "prompt_version": prompt.version}
+
+
 # --- the grammar ------------------------------------------------------------------------------------
 
 
