@@ -4,3 +4,6 @@
 # The COOL fingerprint is the SHA-256 of this text byte for byte, trailing spaces and final blank
 # line included: never convert its line endings, and do not flag its whitespace.
 docs/hackathon/evidence/cool/*buildinfo.txt -text -whitespace
+# Prompt assets are byte copies of their vanillas and hashed with \n newlines (a test compares each
+# v1.txt with its vanilla byte for byte): keep them LF on Windows checkouts too, and in the index.
+prompts/** text eol=lf

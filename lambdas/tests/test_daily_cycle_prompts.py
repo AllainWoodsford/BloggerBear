@@ -1,13 +1,16 @@
 """The daily cycle's drafting prompts as registry specs (common/prompts_registry.py; section 4.10
-and "PR6–PR10. Migrate prompts" in docs/enhancements/model-ranch-prompt-assets-evals.md): each asset
-file in prompts/ is its spec's vanilla byte for byte; with assets off, every prompt `_ideate`,
+and "PR6–PR10. Migrate prompts" in docs/enhancements/model-ranch-prompt-assets-evals.md): each
+v1.txt in prompts/ is the vanilla it was migrated from; with assets off, every prompt `_ideate`,
 `_draft_article` and `_draft_title` send is byte for byte the text the inline f-strings built
 before the migration, across the inputs that change it; the largest realistic render fits each
 spec's max_chars; an approved asset is rendered with the call site's values and locked blocks and
-its version reaches the lineage; and the handler binds the run's id for the A/B draw.
+its version reaches the lineage, and one that leaves out any value is refused for the vanilla; and
+the handler binds the run's id for the A/B draw.
 
-The `_legacy_*` builders below are the call sites' code as it was before the move, frozen here as
-the migration's proof. A later code PR that edits a vanilla on purpose edits its builder with it."""
+The `_legacy_*` builders below are the call sites' code as it was before the move, frozen here with
+the v1 files' hashes as the migration's proof. They are not a standing byte gate (section 2): a
+later code PR that edits a vanilla on purpose bumps its version and edits its builder with it, and
+retiring a v1.txt to archive/ (section 4.2) breaks nothing here."""
 
 from __future__ import annotations
 
@@ -42,6 +45,19 @@ DAILY_CYCLE_IDS = (
     "daily_cycle/draft",
     "daily_cycle/title",
 )
+# The v1 vanillas as this migration copied them into prompts/, frozen here rather than read from
+# the registry: a published v1 never changes, while a later code PR may edit a vanilla past v1.
+V1_SHA256 = {
+    "daily_cycle/ideation": "28ca57593ed076a474d2e1666e4761c53448dbbd221389e88872cd443c628d16",
+    "daily_cycle/ideation_goal": "3a259a87474585a814cdc830708ad49b043224e18c35466325f86e9a21eb308c",
+    "daily_cycle/draft": "bb1289e0db7f66e874f147289ca4fec18417a412d4c39827fc413846bd97b918",
+    "daily_cycle/title": "62c0a80cc539e27eeb778104593d142aa62ae70db30f9d099e7f4273a321f1f3",
+}
+
+
+def _values_in(template: str) -> set[str]:
+    """The `{{name}}` values a template places (its locked blocks left out)."""
+    return {match.group(2) for match in prompts.PLACEHOLDER.finditer(template) if match.group(1) is None}
 
 
 @pytest.fixture(autouse=True)
@@ -203,13 +219,27 @@ GUIDANCE = (None, f"- Keep it short.\n- Name the repository. {TRICKY}")
 SUMMARIES = f"- Repo X jumped to #1.\n- A finding that says {TRICKY}"
 
 
-def test_each_daily_cycle_asset_file_is_its_vanilla_byte_for_byte_and_hashes_to_the_pinned_sha():
+def test_each_daily_cycle_v1_asset_file_is_the_vanilla_it_was_migrated_from():
+    """v1.txt sits in latest/ or, once retired, in archive/ (section 4.2), and its bytes never change.
+    While a vanilla is still v1 the file is that vanilla byte for byte, so editing a vanilla without
+    bumping its version fails here; a vanilla edited past v1 is no longer held to it."""
     specs = {spec.prompt_id: spec for spec in prompts_registry.all_specs()}
     for prompt_id in DAILY_CYCLE_IDS:
-        spec = specs[prompt_id]
-        raw = (ROOT / "prompts" / prompt_id / "latest" / f"{spec.vanilla_version}.txt").read_bytes()
-        assert raw == spec.vanilla.encode("utf-8"), prompt_id
-        assert hashlib.sha256(raw).hexdigest() == spec.vanilla_sha256 == prompts.sha256_text(spec.vanilla)
+        folder = ROOT / "prompts" / prompt_id
+        candidates = (folder / "latest" / "v1.txt", folder / "archive" / "v1.txt")
+        found = [path for path in candidates if path.is_file()]
+        assert found, f"{prompt_id}: v1.txt is in neither latest/ nor archive/"
+        raw = found[0].read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == V1_SHA256[prompt_id], prompt_id
+        if specs[prompt_id].vanilla_version == "v1":
+            assert raw == specs[prompt_id].vanilla.encode("utf-8"), prompt_id
+
+
+def test_the_prompt_assets_are_kept_lf_on_every_checkout():
+    """The check above reads the files' raw bytes, so git must not give them CRLF on a Windows
+    checkout, nor keep a CRLF an editor saved into one."""
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+    assert "prompts/** text eol=lf" in attributes
 
 
 def test_the_daily_cycle_prompts_are_registered_as_assets_at_v1_with_their_locked_tails():
@@ -225,6 +255,11 @@ def test_the_daily_cycle_prompts_are_registered_as_assets_at_v1_with_their_locke
     for prompt_id in ("daily_cycle/ideation", "daily_cycle/ideation_goal"):
         assert {"reply_rule", "relevance_rule", "alignment_rule", "summaries"} <= specs[prompt_id].required
     assert {"relevance_boundary", "alignment_directive", "summaries"} <= specs["daily_cycle/draft"].required
+    # Every value a vanilla places is required and none is optional, so no asset can leave out the
+    # gear's guidance, the recent titles, the revisit note, the day's mandate, the style or the angle.
+    for prompt_id in DAILY_CYCLE_IDS:
+        spec = specs[prompt_id]
+        assert spec.optional == frozenset() and spec.required == _values_in(spec.vanilla), prompt_id
 
 
 def test_with_assets_off_ideation_sends_exactly_the_pre_migration_text_for_every_input():
@@ -313,9 +348,10 @@ def test_with_assets_off_no_prompt_fallback_line_is_written(capsys):
 
 def test_the_largest_realistic_render_of_each_prompt_fits_its_max_chars():
     """Every value at the limit the code or the Admin API holds it to: the findings block at
-    SUMMARIES_MAX_CHARS, the gear at MAX_GUIDANCE_CHARS, the editorial goal fields and a day
-    subject's mandate and style at MAX_GOAL_TEXT_CHARS, RECENT_TITLES_LIMIT long titles, a full
-    few-shot excerpt, a financial topic with its adapter's writing rules and a long name."""
+    SUMMARIES_MAX_CHARS, the gear at MAX_GUIDANCE_CHARS, the editorial goal fields, a revisit
+    rotation's primary focus (which stands in for the topic's own) and a day subject's mandate and
+    style at MAX_GOAL_TEXT_CHARS, RECENT_TITLES_LIMIT long titles, a full few-shot excerpt, a
+    financial topic with its adapter's writing rules and a long name."""
     long = "x" * MAX_GOAL_TEXT_CHARS
     topic = {
         "topic_id": "crypto",
@@ -328,7 +364,7 @@ def test_the_largest_realistic_render_of_each_prompt_fits_its_max_chars():
     summaries = "- " + "s" * (handler.SUMMARIES_MAX_CHARS - 2)
     guidance = "g" * equipment.MAX_GUIDANCE_CHARS
     titles = ["t" * 200] * handler.RECENT_TITLES_LIMIT
-    revisit = ROTATIONS[2]
+    revisit = Pick(goal=RotatingGoal("ramps", long), findings=[], state={}, revisit=True)
     angle = " ".join(["a" * 20] * 40)
     specs = {spec.prompt_id: spec for spec in prompts_registry.all_specs()}
 
@@ -471,6 +507,28 @@ def test_a_split_title_asset_gives_the_retry_the_same_arm_as_the_first_call_in_a
         assert sent[0].startswith(arm) and sent[1].startswith(arm), run_key
 
 
+def test_the_title_lineage_records_the_retrys_version_when_only_the_retry_falls_back(assets, capsys):
+    """An asset whose first render fits max_chars but whose retry, one line longer, does not: the
+    retry is the vanilla's, and the lineage records the version of that call, the one that counted."""
+    spec = prompts.spec_for("daily_cycle/title")
+    angle = "Lifts at Central"
+    pad = "p" * (spec.max_chars - 50 - len(f"{angle}\n{handler._TITLE_REPLY_RULE}"))
+    assets("daily_cycle/title", "v2", pad + "{{angle}}\n{{locked:reply_rule}}{{locked:title_retry}}")
+    invoke, sent = _sent(["I cannot title this.", "A Good Title"])
+    with invoke:
+        _, call, _ = handler._draft_title(angle, "m", None)
+
+    first = f"{pad}{angle}\n{handler._TITLE_REPLY_RULE}"
+    # The premise, so the test cannot quietly become a same-version case if a limit or a rule changes.
+    assert len(first) <= spec.max_chars < len(first + handler._TITLE_RETRY)
+    assert sent == [first, _legacy_title(angle, retry=True)]
+    assert call["prompt_id"] == "daily_cycle/title" and call["prompt_version"] == "vanilla:v1"
+    out = capsys.readouterr().out.splitlines()
+    lines = [evidence.parse(line) for line in out if line.startswith(evidence.PREFIX)]
+    fallbacks = [(line["code"], line["version"]) for line in lines if line["event"] == "prompt_fallback"]
+    assert fallbacks == [("too_large", "v2")]
+
+
 def test_an_approved_draft_asset_keeps_the_financial_and_adapter_rules_at_its_end(assets):
     assets(
         "daily_cycle/draft",
@@ -507,6 +565,62 @@ def test_a_draft_asset_that_leaves_out_the_findings_is_refused_for_the_exact_van
 
     assert sent == [_legacy_draft(TOPICS[0], "An angle", SUMMARIES, None, None, None, None)]
     assert call["prompt_version"] == "vanilla:v1"
+    out = capsys.readouterr().out.splitlines()
+    lines = [evidence.parse(line) for line in out if line.startswith(evidence.PREFIX)]
+    assert [line["code"] for line in lines if line["event"] == "prompt_fallback"] == ["missing_placeholder"]
+
+
+# Every value each vanilla places, read from the vanilla itself rather than from the spec's
+# `required`, which would shrink along with a value moved to `optional`.
+DROPS = [
+    (spec.prompt_id, name)
+    for spec in prompts_registry.all_specs()
+    if spec.prompt_id in DAILY_CYCLE_IDS
+    for name in sorted(_values_in(spec.vanilla))
+]
+
+
+@pytest.mark.parametrize("prompt_id,name", DROPS)
+def test_an_asset_that_leaves_out_any_value_is_refused_for_the_exact_vanilla(assets, capsys, prompt_id, name):
+    """The inputs make every value non-empty (a financial topic, a day subject, a revisit, the gear's
+    guidance, recent titles), so an asset served without one would send different text."""
+    assets(prompt_id, "v2", prompts.vanilla_prompt(prompt_id).replace("{{" + name + "}}", ""))
+    topic, rotation, guidance, angle = TOPICS[1], ROTATIONS[2], GUIDANCE[1], "An angle"
+    goal = GOALS[2] if prompt_id in ("daily_cycle/ideation_goal", "daily_cycle/draft") else None
+    invoke, sent = _sent(["A Good Title"])
+    with invoke:
+        if prompt_id == "daily_cycle/title":
+            _, call, _ = handler._draft_title(angle, "m", None)
+            expected = _legacy_title(angle, retry=False)
+        elif prompt_id == "daily_cycle/draft":
+            _, call = handler._draft_article(
+                topic,
+                angle,
+                SUMMARIES,
+                "m",
+                None,
+                guidance=guidance,
+                few_shot_excerpt="Past.",
+                goal=goal,
+                rotation=rotation,
+            )
+            expected = _legacy_draft(topic, angle, SUMMARIES, guidance, "Past.", goal, rotation)
+        else:
+            titles = ["Old title"]
+            _, call = handler._ideate(
+                topic,
+                SUMMARIES,
+                "m",
+                None,
+                guidance=guidance,
+                goal=goal,
+                recent_titles=titles,
+                rotation=rotation,
+            )
+            expected = _legacy_ideation(topic, SUMMARIES, guidance, goal, titles, rotation)
+
+    assert sent == [expected]
+    assert call["prompt_id"] == prompt_id and call["prompt_version"] == "vanilla:v1"
     out = capsys.readouterr().out.splitlines()
     lines = [evidence.parse(line) for line in out if line.startswith(evidence.PREFIX)]
     assert [line["code"] for line in lines if line["event"] == "prompt_fallback"] == ["missing_placeholder"]
