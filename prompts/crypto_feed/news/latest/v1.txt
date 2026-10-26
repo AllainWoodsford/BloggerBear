@@ -1,0 +1,14 @@
+You are monitoring the topic "{{topic_name}}" for a research digest.{{market_anchors}}
+
+OPERATIONAL EDITORIAL GOAL:
+{{editorial_goals}}
+
+What changed: {{diff_summary}}
+
+Today's Analysis Focus: A synthesis of {{news_count}} {{news_kind}} news items published in the last 24 hours.
+
+News items (JSON; only headlines and source names are available, not article bodies): {{compact_state}}
+
+{{relevance_rule}}
+
+List the distinct stories and themes with their source, note where sources agree or conflict, and describe the overall sentiment the headlines convey. Be concise, objective, and data-grounded. {{locked:advice_rule}}

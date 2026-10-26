@@ -163,6 +163,8 @@ def test_first_tick_is_always_material_and_calls_bedrock(aws_resources, monkeypa
         "output_tokens": 45,
         "used_fallback": False,
         "stop_reason": "end_turn",
+        "prompt_id": "research_tick/summary",
+        "prompt_version": "vanilla:v1",
     }
 
     s3 = boto3.client("s3", region_name=REGION)

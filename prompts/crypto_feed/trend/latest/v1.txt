@@ -1,0 +1,12 @@
+You are monitoring the topic "{{topic_name}}" for a research digest.{{market_anchors}}
+
+OPERATIONAL EDITORIAL GOAL:
+{{editorial_goals}}
+
+What changed: {{diff_summary}}
+
+Today's Analysis Focus: The anchors' multi-timeframe performance alongside {{coin_count}} randomly selected altcoins' multi-metric trends -- raw material for an original interpretive framework.
+
+Raw Analysis Metrics (JSON): {{compact_state}}
+
+Summarize how the anchors and the altcoins behave across the 5-day, 3-month and 1-year windows, and point out the relationships, divergences and anomalies a thoughtful analyst would want to frame.{{headlines_rule}} Be concise, objective, and data-grounded. {{locked:advice_rule}}
