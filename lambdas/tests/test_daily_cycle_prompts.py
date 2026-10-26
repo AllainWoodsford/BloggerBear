@@ -507,26 +507,33 @@ def test_a_split_title_asset_gives_the_retry_the_same_arm_as_the_first_call_in_a
         assert sent[0].startswith(arm) and sent[1].startswith(arm), run_key
 
 
-def test_the_title_lineage_records_the_retrys_version_when_only_the_retry_falls_back(assets, capsys):
-    """An asset whose first render fits max_chars but whose retry, one line longer, does not: the
-    retry is the vanilla's, and the lineage records the version of that call, the one that counted."""
-    spec = prompts.spec_for("daily_cycle/title")
+def test_the_title_lineage_records_the_retrys_version_when_only_the_retry_falls_back(assets):
+    """The first title call is served the asset and the retry is not (here the switch goes off between
+    the two calls; a pause or a retired hash row would do the same): the retry is the vanilla's, and
+    the lineage records the version of that call, the one that counted."""
     angle = "Lifts at Central"
-    pad = "p" * (spec.max_chars - 50 - len(f"{angle}\n{handler._TITLE_REPLY_RULE}"))
-    assets("daily_cycle/title", "v2", pad + "{{angle}}\n{{locked:reply_rule}}{{locked:title_retry}}")
+    assets("daily_cycle/title", "v2", "Title this: {{angle}}\n{{locked:reply_rule}}{{locked:title_retry}}")
+    real = prompts.get_prompt
+    versions = []
+
+    def first_served_then_off(prompt_id, values=None, locked=None):
+        if not versions:
+            got = real(prompt_id, values, locked)
+        else:
+            with patch.object(prompts, "assets_enabled", return_value=False):
+                got = real(prompt_id, values, locked)
+        versions.append(got.version)
+        return got
+
     invoke, sent = _sent(["I cannot title this.", "A Good Title"])
-    with invoke:
+    with invoke, patch.object(handler.prompts, "get_prompt", side_effect=first_served_then_off):
         _, call, _ = handler._draft_title(angle, "m", None)
 
-    first = f"{pad}{angle}\n{handler._TITLE_REPLY_RULE}"
-    # The premise, so the test cannot quietly become a same-version case if a limit or a rule changes.
-    assert len(first) <= spec.max_chars < len(first + handler._TITLE_RETRY)
-    assert sent == [first, _legacy_title(angle, retry=True)]
+    # The premise, so the test cannot quietly become a same-version case.
+    assert versions == ["v2", "vanilla:v1"]
+    assert sent == [f"Title this: {angle}\n{handler._TITLE_REPLY_RULE}", _legacy_title(angle, retry=True)]
     assert call["prompt_id"] == "daily_cycle/title" and call["prompt_version"] == "vanilla:v1"
-    out = capsys.readouterr().out.splitlines()
-    lines = [evidence.parse(line) for line in out if line.startswith(evidence.PREFIX)]
-    fallbacks = [(line["code"], line["version"]) for line in lines if line["event"] == "prompt_fallback"]
-    assert fallbacks == [("too_large", "v2")]
+    assert call["attempts"] == 2
 
 
 def test_an_approved_draft_asset_keeps_the_financial_and_adapter_rules_at_its_end(assets):
