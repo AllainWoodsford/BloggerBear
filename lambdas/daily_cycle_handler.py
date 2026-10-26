@@ -262,7 +262,10 @@ def _handle(event: dict, context=None) -> dict:
         if not queue_id or not rewrite_id:
             return {"status": "error", "error": "rewrite event needs 'queue_id' and 'rewrite_id'"}
         print(f"daily_cycle_handler: starting rewrite for queue_id={queue_id}")
-        return run_rewrite(queue_id, rewrite_id)
+        # A Re-Write is a run of its own: its review prompts draw their A/B arms by its id
+        # (common/prompts.py), so a redelivery of the same rewrite is given the same versions.
+        with prompts.bind_run(rewrite_id):
+            return run_rewrite(queue_id, rewrite_id)
 
     topic_id = (event or {}).get("topic_id")
     if not topic_id:
@@ -1054,12 +1057,6 @@ def _financial_guidance_block(topic: dict) -> str:
     return f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
 
 
-def _prompt_fields(prompt: prompts.Prompt) -> dict:
-    """What a lineage call records of the prompt it sent: its id, and its version (an asset's
-    `v2`, or `vanilla:v1`), so an article's lineage says which version wrote each part of it."""
-    return {"prompt_id": prompt.prompt_id, "prompt_version": prompt.version}
-
-
 def _ideate(
     topic: dict,
     summaries_block: str,
@@ -1169,7 +1166,7 @@ def _ideate(
         "used_fallback": result["used_fallback"],
         "stop_reason": result.get("stop_reason"),
         "reply_chars": len(response),
-        **_prompt_fields(prompt),
+        **prompts.lineage_fields(prompt),
     }
     if result.get("attempts", 1) > 1:
         lineage_call["attempts"] = result["attempts"]
@@ -1254,7 +1251,7 @@ def _draft_article(
         "used_fallback": result["used_fallback"],
         # "max_tokens" here means the draft is cut off even after the retry.
         "stop_reason": result.get("stop_reason"),
-        **_prompt_fields(prompt),
+        **prompts.lineage_fields(prompt),
     }
     if result.get("attempts", 1) > 1:
         lineage_call["attempts"] = result["attempts"]
@@ -1305,7 +1302,7 @@ def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tu
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "used_fallback": used_fallback,
-        **_prompt_fields(prompt),
+        **prompts.lineage_fields(prompt),
     }
     if attempts > 1:
         lineage_call["attempts"] = attempts

@@ -320,6 +320,8 @@ def test_the_reviewers_call_is_reported_for_lineage_under_its_own_stage():
         "input_tokens": 900,
         "output_tokens": 60,
         "used_fallback": False,
+        "prompt_id": "reviews/adversarial_review",
+        "prompt_version": "vanilla:v1",
     }
 
 
