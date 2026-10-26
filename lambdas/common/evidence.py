@@ -248,8 +248,11 @@ EVENTS: dict[str, dict[str, str]] = {
     },
     # The model catalog (common/model_catalog.py, common/model_fleet.py): one line when a job ends,
     # with its counts. `job` is discover, prune, cycle, reprice (its pricing pass), review (one of a
-    # run's reviews, numbered) or classify; `status` the job's result code. Pipeline health reads
-    # the counters off these lines. Never a model's name or id.
+    # run's reviews, numbered) or classify; `status` the job's result code (a review that closes its
+    # run carries the run's final status). Pipeline health reads the counters off these lines; its
+    # "reverted" counter (PR11b) is a review's `reverted` (prices a review failed) plus its
+    # `unconfirmed` (prices the last review put back because no review could look them up). Never a
+    # model's name or id, and no field takes a COMMON name (`dropped` there is schema drift).
     "model_catalog_job": {
         "job": "code",
         "trigger": "code",
@@ -277,7 +280,8 @@ EVENTS: dict[str, dict[str, str]] = {
         "passed": "int",
         "deferred": "int",
         "reverted": "int",
-        "dropped": "int",
+        "unconfirmed": "int",
+        "review_dropped": "int",
         "classified": "int",
         "unknown": "int",
         "unchanged": "int",

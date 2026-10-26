@@ -202,6 +202,25 @@ def test_every_events_sample_round_trips_through_parse(event):
             assert record[key] == ",".join(value)
 
 
+def test_no_event_field_takes_a_common_name():
+    """A field named like a COMMON one (`dropped` is the drift marker) would be overwritten by it
+    on the line, and read back as the wrong kind."""
+    for event, schema in evidence.EVENTS.items():
+        assert not set(schema) & set(evidence.COMMON), event
+
+
+def test_a_review_line_keeps_its_counts_beside_the_drift_marker():
+    review = {
+        "job": "review", "trigger": "schedule", "status": "reverted", "run_id": "a1b2c3d4", "review": 2,
+        "passed": 0, "deferred": 1, "reverted": 0, "unconfirmed": 1, "review_dropped": 0,
+    }  # fmt: skip
+    event = "model_catalog_job"
+    assert parsed(event, **review) == {"evidence": evidence.VERSION, "event": event, **review}
+    drifted = parsed(event, **{**review, "trigger": "Not A Code"})
+    assert drifted["dropped"] == ["trigger"]
+    assert (drifted["review_dropped"], drifted["unconfirmed"]) == (0, 1)
+
+
 def test_outside_an_invocation_the_ids_are_null_and_nothing_is_counted():
     record = json.loads(evidence.line("vision_site", site_id="sydney", outcome="none"))
     assert (record["tick"], record["run"], record["topic_id"]) == (None, None, None)

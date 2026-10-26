@@ -13,7 +13,7 @@ import pytest
 from moto import mock_aws
 
 import admin_api_handler
-from common import costing, dynamo, model_catalog, model_fleet, model_routing
+from common import costing, dynamo, evidence, model_catalog, model_fleet, model_routing, vision_triage
 
 REGION = "ap-southeast-2"
 NOW = datetime(2026, 10, 20, 15, 0, tzinfo=UTC)
@@ -449,6 +449,22 @@ def test_the_recheck_takes_never_checked_then_unknown_then_denied_oldest_first(a
     assert dynamo.get_model("never")["access_checked_at"] == NOW.isoformat()
 
 
+def test_the_recheck_probes_only_text_models_by_their_purpose_not_their_pricing_unit(aws):
+    """A classified row is judged by its purpose: one Bedrock no longer lists (`unknown`, still
+    token-priced) or an embeddings model with no pricing unit (a `models add` row) is no text model,
+    and is never probed, though the old pricing-unit rule would have probed both."""
+    put_model(aws, "words", 0.001, model_purpose="text", model_inputs=["TEXT"])
+    put_model(aws, "gone", 0.001, model_purpose="unknown", pricing_unit="tokens")
+    put_model(aws, "embed", 0.001, model_purpose="embedding")
+    probe, asked = probes({})
+
+    result = model_catalog.recheck_access(10, NOW, probe)
+
+    assert asked == ["words"] and result["checked"] == 1
+    assert "access_checked_at" not in dynamo.get_model("gone")
+    assert "access_checked_at" not in dynamo.get_model("embed")
+
+
 def test_a_denied_model_is_pruned_first_and_never_joins_or_stays_in_a_rotation(aws):
     models = [
         {"model_id": "inactive", "enabled": False},
@@ -526,7 +542,21 @@ def test_the_pool_stands_as_configured_when_the_registry_cannot_be_read(monkeypa
     assert model_fleet.rotation_pool(["a", "b"]) == ["a", "b"]
 
 
-def test_an_embeddings_model_is_routed_around_like_an_inactive_one_and_replaced(aws):
+def recorded_draws(monkeypatch):
+    """Every list routing's random pick draws from (sorted: the registry's order is not fixed), and
+    the real pick from it."""
+    drawn = []
+    real_choice = model_routing.random.choice
+
+    def recording_choice(options):
+        drawn.append(sorted(options))
+        return real_choice(options)
+
+    monkeypatch.setattr(model_routing.random, "choice", recording_choice)
+    return drawn
+
+
+def test_an_embeddings_model_is_routed_around_like_an_inactive_one_and_replaced(aws, monkeypatch):
     put_config(aws, model_id="cfg-default", fallback_model_id="cfg-fallback")
     for model_id in ("cfg-default", "cfg-fallback", "env-default"):
         put_model(aws, model_id, 0.001, enabled=False)
@@ -535,15 +565,18 @@ def test_an_embeddings_model_is_routed_around_like_an_inactive_one_and_replaced(
     put_model(aws, "words", 0.002, model_purpose="text", model_inputs=["TEXT"])
     put_topic(aws, "t", model_id_candidates=["embed"])
     put_topic(aws, "pinned", model_id="embed")
+    drawn = recorded_draws(monkeypatch)
 
     assert model_routing.resolve_model(topic(aws, "t"))[0] == "words"
     assert topic(aws, "t")["model_id_candidates"] == ["words"]
-    # Over many draws the random pick is never the other embeddings model.
-    assert {model_routing.resolve_model(topic(aws, "pinned"))[0] for _ in range(25)} == {"words"}
+    assert drawn == [["embed"], ["words"]]  # the rotation's draw, then the registry's: text models only
+    drawn.clear()
+    assert model_routing.resolve_model(topic(aws, "pinned"))[0] == "words"
+    assert drawn == [["words"]]  # never the other embeddings model
     assert topic(aws, "pinned")["model_id"] == "words"
 
 
-def test_the_triage_gets_a_model_that_takes_an_image_and_the_topic_keeps_its_text_model(aws):
+def test_the_triage_gets_a_model_that_takes_an_image_and_the_topic_keeps_its_text_model(aws, monkeypatch):
     put_config(aws, model_id="cfg-default", fallback_model_id="sees")
     put_model(aws, "cfg-default", 0.001, model_purpose="text", model_inputs=["TEXT"])
     put_model(aws, "sees", 0.002, model_purpose="text", model_inputs=["TEXT", "IMAGE"])
@@ -551,7 +584,9 @@ def test_the_triage_gets_a_model_that_takes_an_image_and_the_topic_keeps_its_tex
     put_topic(aws, "t", model_id="blind")
     need = model_fleet.TEXT_WITH_IMAGE_INPUT
 
-    assert model_routing.resolve_model(topic(aws, "t"), need=need) == ("sees", "cfg-default")
+    # The default the router hands back as the fallback takes no image either: BEDROCK_MODEL_ID
+    # (no row here, so taken as fit) stands in. The vision adapters discard the fallback anyway.
+    assert model_routing.resolve_model(topic(aws, "t"), need=need) == ("sees", "env-default")
     assert model_routing.resolve_model(topic(aws, "t")) == ("blind", "sees")  # the text work keeps it
     assert topic(aws, "t")["model_id"] == "blind"  # only this call went elsewhere
 
@@ -559,13 +594,75 @@ def test_the_triage_gets_a_model_that_takes_an_image_and_the_topic_keeps_its_tex
     # the topic still keeps its model, which is fine for everything else it does.
     put_config(aws, model_id="cfg-default")
     put_model(aws, "env-default", 0.001, model_purpose="text", model_inputs=["TEXT"])
+    drawn = recorded_draws(monkeypatch)
     assert model_routing.resolve_model(topic(aws, "t"), need=need)[0] == "sees"
+    assert drawn == [["sees"]]  # only the models that take an image
     assert topic(aws, "t")["model_id"] == "blind"
 
     # A row from before purposes were recorded is not held to the image rule.
     put_model(aws, "legacy", 0.001)
     put_topic(aws, "l", model_id="legacy")
     assert model_routing.resolve_model(topic(aws, "l"), need=need)[0] == "legacy"
+
+
+def test_the_triage_holds_the_default_to_its_image_need_and_writes_nothing(aws, monkeypatch):
+    """A vision topic that names no model gets the default; one that takes no image is routed
+    around for the triage's call, as the same model on the topic would be, and neither the topic
+    nor the config changes. The text work keeps the default as it is."""
+    put_config(aws, model_id="blind")
+    put_model(aws, "blind", 0.001, model_purpose="text", model_inputs=["TEXT"])
+    put_model(aws, "sees", 0.002, model_purpose="text", model_inputs=["TEXT", "IMAGE"])
+    put_model(aws, "env-default", 0.001, model_purpose="text", model_inputs=["TEXT"])
+    put_topic(aws, "ships")
+    writes = []
+    monkeypatch.setattr(model_routing.dynamo, "set_topic_model_fields", lambda *a: writes.append(a))
+    before = (topic(aws, "ships"), dynamo.get_model_config())
+    need = model_fleet.TEXT_WITH_IMAGE_INPUT
+
+    # No fallback: neither the config nor BEDROCK_MODEL_ID takes an image.
+    assert vision_triage.choose_model(topic(aws, "ships")) == ("sees", None)
+    assert model_routing.resolve_model(None, need=need) == ("sees", None)
+    assert model_routing.resolve_model(topic(aws, "ships")) == ("blind", "env-default")
+    assert writes == [] and (topic(aws, "ships"), dynamo.get_model_config()) == before
+
+    # With no ModelConfig row, BEDROCK_MODEL_ID is the default, and is held to the same need.
+    aws.Table("ModelConfig").delete_item(Key={"config_id": "default"})
+    assert vision_triage.choose_model(topic(aws, "ships")) == ("sees", None)
+    assert model_routing.resolve_model(topic(aws, "ships")) == ("env-default", None)
+    assert writes == [] and topic(aws, "ships") == before[0]
+
+    # A default the registry has no row for, or one that takes an image, serves as before.
+    put_model(aws, "env-default", 0.001, model_purpose="text", model_inputs=["TEXT", "IMAGE"])
+    assert vision_triage.choose_model(topic(aws, "ships")) == ("env-default", None)
+
+
+def test_a_fallback_that_is_not_a_text_model_gives_way_to_the_terraform_default(aws):
+    put_model(aws, "words", 0.002, model_purpose="text", model_inputs=["TEXT"])
+    put_model(aws, "embed", 0.0001, model_purpose="embedding", model_inputs=["TEXT"])
+    put_model(aws, "gone", 0.001, model_purpose="unknown", model_inputs=["TEXT"])
+    put_model(aws, "off", 0.001, enabled=False, model_purpose="text", model_inputs=["TEXT"])
+
+    for fallback in ("embed", "gone"):
+        pinned = {"topic_id": "t", "model_id": "words", "fallback_model_id": fallback}
+        assert model_routing.resolve_model(pinned) == ("words", "env-default")
+    # Suitability only: a disabled text fallback is handed back as it always was.
+    off_fallback = {"topic_id": "t", "model_id": "words", "fallback_model_id": "off"}
+    assert model_routing.resolve_model(off_fallback) == ("words", "off")
+    # The config's fallback, with or without a topic.
+    put_config(aws, model_id="words", fallback_model_id="embed")
+    assert model_routing.resolve_model(None) == ("words", "env-default")
+    assert model_routing.resolve_model({"topic_id": "t"}) == ("words", "env-default")
+
+    # Routed around: neither the fallback the router turned down nor the default it hands back is
+    # returned as the fallback when it is no text model.
+    put_config(aws, model_id="off")
+    put_topic(aws, "random", model_id="embed", fallback_model_id="gone")
+    assert model_routing.resolve_model(topic(aws, "random")) == ("words", "env-default")
+    assert topic(aws, "random")["model_id"] == "words"
+    put_config(aws, model_id="embed")
+    put_model(aws, "off-too", 0.001, enabled=False)
+    by_fallback = {"topic_id": "t", "model_id": "off-too", "fallback_model_id": "words"}
+    assert model_routing.resolve_model(by_fallback) == ("words", "env-default")
 
 
 # --- protection: roles, and the evals judge ---------------------------------------------------------
@@ -592,13 +689,26 @@ def test_protection_names_each_models_role_and_the_evals_judge_when_that_row_exi
     assert model_fleet.judge_model({"judge_model_id": ""}) is None
 
 
-def test_pruning_never_removes_the_evals_judge(aws):
+def test_pruning_never_removes_the_evals_judge(aws, capsys):
     aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "judge_model_id": "judge-m"})
     put_model(aws, "judge-m", 0.09, enabled=False)
     put_model(aws, "dear", 0.002, enabled=False)
     put_model(aws, "cheap", 0.001, enabled=False)
+    capsys.readouterr()
 
     result = model_fleet.prune({**SETTINGS, "max_models": 3, "discover_max_added": 2}, NOW)
 
     assert result["pruned_ids"] == ["dear", "cheap"] and result["protected"] == 2
     assert "judge-m" in ids(aws)
+    # One evidence line of its counts, read raw: never the pruned ids, and no field the schema lacks.
+    [text] = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if (parsed := evidence.parse(line)) and parsed["event"] == "model_catalog_job"
+    ]
+    assert evidence.parse(text).items() >= {
+        "job": "prune", "status": "pruned", "mode": SETTINGS["prune_mode"], "models": 3, "max_models": 3,
+        "pruned": 2, "protected": 2, "short_by": 0,
+    }.items()  # fmt: skip
+    raw = json.loads(text)
+    assert "dropped" not in raw and not {"judge-m", "dear", "cheap"} & set(map(str, raw.values()))

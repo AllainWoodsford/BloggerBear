@@ -1460,10 +1460,15 @@ def test_rotation_passes_over_a_pooled_model_that_is_disabled_or_not_a_text_mode
         {"model_id": "words", "model_purpose": "text", "model_inputs": ["TEXT"]},
     ]
 
-    with patch("common.model_fleet.dynamo.list_models", return_value=registry):
+    # The pick takes the first it is offered: unfiltered, that would be "embed".
+    with (
+        patch("common.model_fleet.dynamo.list_models", return_value=registry),
+        patch("daily_cycle_handler.random.choice", side_effect=lambda c: c[0]) as mock_choice,
+    ):
         result, _ = _run_a_full_cycle(compliant=True)
 
     assert result["status"] == "published"
+    mock_choice.assert_called_once_with(["words"])
     mock_set.assert_called_once_with("github-trending", "words")
 
 

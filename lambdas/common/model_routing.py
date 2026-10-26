@@ -29,8 +29,13 @@ the call goes to the fallback if one is configured and fit, else to the default.
 too, it goes to a random usable, suitable model from the registry. A model that is inactive or no
 text model at all is replaced by that pick in the topic's rotation (or as its `model_id`), so the
 next run starts there; one that only lacks what a stricter need asks for (an image input) stays on
-the topic, and only this call goes elsewhere. A model with no registry row counts as fit. Every
-lookup here fails open: a registry that cannot be read routes exactly as before.
+the topic, and only this call goes elsewhere. A stricter need holds the default to it as well: when
+the topic names no model and the default (ModelConfig's, or BEDROCK_MODEL_ID) takes no image, the
+triage's call goes elsewhere the same way, and nothing is written. For the text work the defaults
+are taken as they are. The fallback handed back is held to the need too: one that is not suitable
+(an embeddings model, one Bedrock no longer lists) gives way to BEDROCK_MODEL_ID, as when none is
+configured. A model with no registry row counts as fit. Every lookup here fails open: a registry
+that cannot be read routes exactly as before.
 """
 
 from __future__ import annotations
@@ -92,15 +97,30 @@ def resolve_model(topic: dict | None = None, need: str = model_fleet.TEXT) -> tu
                 need,
                 replace=_unfit(row, model_fleet.TEXT),
             )
+    elif need != model_fleet.TEXT and _unsuitable(_registry_row(model_id), need):
+        # The default (ModelConfig's, or BEDROCK_MODEL_ID) cannot do what a stricter need asks (the
+        # triage's image): this call goes elsewhere, and nothing is written, the default being no
+        # topic's to change. For the text work the defaults are taken as they are.
+        model_id, fallback_model_id = _route_around(
+            topic, model_id, fallback_model_id, None, config, need, replace=False
+        )
+
+    # A fallback that cannot do the call's work (an embeddings model, one Bedrock no longer lists,
+    # set before writes were checked) is no retry at all: the Terraform default takes its place.
+    if fallback_model_id is not None and _unsuitable(_registry_row(fallback_model_id), need):
+        print(f"model_routing: fallback {fallback_model_id} is not suitable for {need}; using the default")
+        fallback_model_id = None
 
     # Nobody configured a fallback: retry with the Terraform default rather than have no
     # fallback at all, so a model Bedrock retires (or never enabled for the account) that a
     # topic or ModelConfig still names costs that run its first model, not the day's article.
-    # No fallback when the default *is* the model: retrying the same call buys nothing.
+    # No fallback when the default *is* the model: retrying the same call buys nothing. For the
+    # text work it is taken as it is (the final safety net); a stricter need still holds it to that.
     if fallback_model_id is None:
         env_default = os.environ.get("BEDROCK_MODEL_ID") or None
-        if env_default != model_id:
-            fallback_model_id = env_default
+        if env_default and env_default != model_id:
+            if need == model_fleet.TEXT or not _unsuitable(_registry_row(env_default), need):
+                fallback_model_id = env_default
 
     return model_id, fallback_model_id
 
@@ -120,30 +140,39 @@ def _unfit(row: dict | None, need: str) -> bool:
     return row is not None and (row.get("enabled") is False or not model_fleet.suitable(row, need))
 
 
+def _unsuitable(row: dict | None, need: str) -> bool:
+    """True only for a model the registry has a row for that is not suitable for `need`
+    (model_fleet.suitable), whether or not it is enabled; a model with no row is suitable."""
+    return row is not None and not model_fleet.suitable(row, need)
+
+
 def _route_around(
-    topic: dict,
+    topic: dict | None,
     model_id: str,
     fallback_model_id: str | None,
-    from_topic: str,
+    from_topic: str | None,
     config: dict | None,
     need: str,
     *,
     replace: bool,
 ) -> tuple[str, str | None]:
-    """The topic's model is inactive or unsuitable: the fallback, else the default, else a random
-    usable registry model suitable for `need`, which then takes the model's place on the topic
-    when `replace` (the model is inactive or no text model: nothing on the topic should use it)."""
+    """The model is inactive or unsuitable: the fallback, else the default, else a random usable
+    registry model suitable for `need`. A topic's own model (`from_topic`: "rotation" or "model")
+    is then replaced on the topic by that pick when `replace` (the model is inactive or no text
+    model: nothing on the topic should use it). The default (`from_topic` None, `replace` False)
+    never is: only this call goes elsewhere."""
     if config is None:
         try:
             config = get_model_config() or {}
         except Exception as exc:  # noqa: BLE001 - routing never fails over a config read
             print(f"model_routing: could not read the model config: {exc!r}")
             config = {}
+    topic_id = (topic or {}).get("topic_id")
+    whose = f"topic {topic_id}'s model {model_id}" if from_topic else f"the default {model_id}"
     default = config.get("model_id") or os.environ.get("BEDROCK_MODEL_ID") or None
     for choice in (fallback_model_id, default):
         if choice and choice != model_id and not _unfit(_registry_row(choice), need):
-            topic_id = topic.get("topic_id")
-            print(f"model_routing: {model_id} is unfit for {need}; topic {topic_id} uses {choice}")
+            print(f"model_routing: {whose} is unfit for {need}; this call uses {choice}")
             return choice, (default if choice != default else None)
     try:
         active = [
@@ -157,11 +186,10 @@ def _route_around(
     if not active:
         return model_id, fallback_model_id  # nothing better to go to: as before
     choice = random.choice(active)
-    topic_id = topic.get("topic_id")
-    print(f"model_routing: {model_id} and its fallbacks are unfit for {need}; "
-          f"topic {topic_id} moves to {choice}")
-    if not replace:
+    if not (replace and from_topic and topic):
+        print(f"model_routing: {whose} and its fallbacks are unfit for {need}; this call uses {choice}")
         return choice, fallback_model_id if fallback_model_id != choice else None
+    print(f"model_routing: {whose} and its fallbacks are unfit for {need}; topic moves to {choice}")
     try:
         if from_topic == "rotation":
             rotation = [choice if c == model_id else c for c in topic.get("model_id_candidates") or []]

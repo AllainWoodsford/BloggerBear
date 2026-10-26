@@ -62,6 +62,7 @@ from datetime import UTC, datetime, timedelta
 import boto3
 
 from common import dynamo, evidence, model_fleet
+from common.model_pricing import canonical_model_id
 from common.model_routing import resolve_model
 from common.naming import environment_prefix
 
@@ -509,10 +510,40 @@ def model_inputs(input_modalities: list[str] | None) -> list[str]:
     return list(dict.fromkeys(str(m).upper() for m in (input_modalities or [])))
 
 
+def _system_profiles(client) -> list[dict]:
+    """Every system-defined inference profile Bedrock lists, page by page."""
+    profiles = []
+    kwargs = {"typeEquals": "SYSTEM_DEFINED"}
+    while True:
+        page = client.list_inference_profiles(**kwargs)
+        profiles.extend(page.get("inferenceProfileSummaries") or [])
+        if not page.get("nextToken"):
+            return profiles
+        kwargs["nextToken"] = page["nextToken"]
+
+
+def _profile_base(profile: dict, summaries: dict) -> dict | None:
+    """The foundation model summary (of `summaries`) an inference profile is a route to, or None."""
+    bases = {_base_id_from_arn(m.get("modelArn")) for m in profile.get("models") or []}
+    return next((summaries[b] for b in bases if b in summaries), None)
+
+
+def _registry_shaped(model_id: str, summary: dict) -> dict:
+    return {
+        "model_id": model_id,
+        "display_name": summary.get("modelName") or model_id,
+        "provider": (summary.get("providerName") or "unknown").lower(),
+        "pricing_unit": pricing_unit(summary.get("outputModalities") or []),
+        "model_purpose": model_purpose(summary.get("outputModalities")),
+        "model_inputs": model_inputs(summary.get("inputModalities")),
+    }
+
+
 def account_models(region: str, client=None) -> list[dict]:
     """Every model this account can call in `region`, from every provider, registry-shaped: the
     on-demand foundation models, and the system-defined inference profiles (au., apac., global.,
-    ...), which is how most models are called from outside us-east-1."""
+    ...), which is how most models are called from outside us-east-1. Only ACTIVE ones: what
+    discover may add (listed_models is everything Bedrock lists)."""
     client = client or boto3.client("bedrock", region_name=region)
     active_models = {}
     candidates = {}
@@ -524,33 +555,32 @@ def account_models(region: str, client=None) -> list[dict]:
             candidates[summary["modelId"]] = summary
 
     profiles = {}
-    kwargs = {"typeEquals": "SYSTEM_DEFINED"}
-    while True:
-        page = client.list_inference_profiles(**kwargs)
-        for profile in page.get("inferenceProfileSummaries") or []:
-            if profile.get("status", "ACTIVE") != "ACTIVE":
-                continue
-            bases = {_base_id_from_arn(m.get("modelArn")) for m in profile.get("models") or []}
-            base = next((active_models[b] for b in bases if b in active_models), None)
-            if base is not None:
-                profiles[profile["inferenceProfileId"]] = base
-        if not page.get("nextToken"):
-            break
-        kwargs["nextToken"] = page["nextToken"]
+    for profile in _system_profiles(client):
+        if profile.get("status", "ACTIVE") != "ACTIVE":
+            continue
+        base = _profile_base(profile, active_models)
+        if base is not None:
+            profiles[profile["inferenceProfileId"]] = base
 
-    found = []
-    for model_id, summary in sorted({**candidates, **profiles}.items()):
-        found.append(
-            {
-                "model_id": model_id,
-                "display_name": summary.get("modelName") or model_id,
-                "provider": (summary.get("providerName") or "unknown").lower(),
-                "pricing_unit": pricing_unit(summary.get("outputModalities") or []),
-                "model_purpose": model_purpose(summary.get("outputModalities")),
-                "model_inputs": model_inputs(summary.get("inputModalities")),
-            }
-        )
-    return found
+    callable_here = {**candidates, **profiles}
+    return [_registry_shaped(model_id, summary) for model_id, summary in sorted(callable_here.items())]
+
+
+def listed_models(region: str, client=None) -> dict[str, dict]:
+    """{model id: registry-shaped} for every model Bedrock lists in `region`, however it is called
+    and whatever its lifecycle: every foundation model (on demand or only through a profile; ACTIVE
+    or LEGACY, which still writes what it wrote), and every system-defined inference profile whose
+    base model is among them. What classify takes a model's purpose from, and the meaning of
+    "listed" there; discover adds only from account_models. A purpose says what a model writes,
+    not whether it can be called: the access probe and `enabled` say that."""
+    client = client or boto3.client("bedrock", region_name=region)
+    summaries = {s["modelId"]: s for s in client.list_foundation_models().get("modelSummaries") or []}
+    listed = dict(summaries)
+    for profile in _system_profiles(client):
+        base = _profile_base(profile, summaries)
+        if base is not None:
+            listed[profile["inferenceProfileId"]] = base
+    return {model_id: _registry_shaped(model_id, summary) for model_id, summary in sorted(listed.items())}
 
 
 # --- runs -----------------------------------------------------------------------------------------
@@ -948,6 +978,7 @@ def _end_pass(run: dict, settings: dict, now: datetime) -> dict:
     if work["reverted"]:
         _record_failure(run, work["reverted"], now)
     last = len(run["reviews_done"]) >= len(run["reviews_due"])
+    put_back = late_dropped = 0  # this review's quiet put-backs, and the drops among them
     if last:
         # Deferred at the last review: kept if an earlier review confirmed it, else put back
         # quietly (an outage is not a wrong price), for the next reprice to try again.
@@ -959,11 +990,16 @@ def _end_pass(run: dict, settings: dict, now: datetime) -> dict:
                 why = "no review could look the price up"
                 run["unconfirmed"] = [*run.get("unconfirmed", []), {**deferred, "why": why}]
                 print(f"model_catalog: run {run['run_id']} put back {deferred['model_id']}: {why}")
+                put_back += 1
             else:
                 run["dropped"] = [*run["dropped"], {**deferred, "why": CHANGED_SINCE}]
-    _pass_line(run, REVIEW_JOB, work)
+                late_dropped += 1
     if last or work["passed"] + len(work["deferred"]) == 0:
-        return _finalise(run, now)
+        # The line follows the close, so it carries how the run ended (_finalise's status).
+        run = _finalise(run, now)
+        _pass_line(run, REVIEW_JOB, work, unconfirmed=put_back, late_dropped=late_dropped)
+        return run
+    _pass_line(run, REVIEW_JOB, work)
     while review_is_due(run, now) and _skip_if_saturated(run, settings, now):
         pass  # a saturated review that fell due meanwhile is skipped (never the last)
     if review_is_due(run, now):
@@ -979,9 +1015,14 @@ def _end_pass(run: dict, settings: dict, now: datetime) -> dict:
     return run
 
 
-def _pass_line(run: dict, job: str, work: dict | None = None) -> None:
+def _pass_line(
+    run: dict, job: str, work: dict | None = None, *, unconfirmed: int = 0, late_dropped: int = 0
+) -> None:
     """The run's `model_catalog_job` evidence line for the pass that just ended: what the pricing
-    pass changed (`reprice`), or what a review passed, deferred, put back and dropped."""
+    pass changed (`reprice`), or what a review passed, deferred, put back and dropped. `reverted`
+    is what the review failed (the run's `reverted`, and its failure record); `unconfirmed` what the
+    last review put back quietly because no review could look its price up; `review_dropped` what
+    someone else changed meanwhile, at any review (`late_dropped` of them while being put back)."""
     counts = (
         {
             "repriced": len(run.get("changes") or []),
@@ -996,7 +1037,8 @@ def _pass_line(run: dict, job: str, work: dict | None = None) -> None:
             "passed": work["passed"],
             "deferred": len(work["deferred"]),
             "reverted": len(work["reverted"]),
-            "dropped": len(work["dropped"]),
+            "unconfirmed": unconfirmed,
+            "review_dropped": len(work["dropped"]) + late_dropped,
         }
     )
     evidence.emit(
@@ -1285,6 +1327,7 @@ def discover(trigger: str, settings: dict, now: datetime, *, bedrock=None, probe
             "status": "done",
             "added": len(added),
             "added_ids": [m["model_id"] for m in added],
+            "denied": len(denied),
             "denied_ids": list(denied)[:RESULT_IDS_MAX],
             "not_added": len(new) - len(added) - len(denied),
         }
@@ -1296,7 +1339,7 @@ def discover(trigger: str, settings: dict, now: datetime, *, bedrock=None, probe
         status=result["status"],
         models=len(have),
         discovered=result.get("added", 0),
-        denied=len(result.get("denied_ids") or []),
+        denied=result.get("denied", 0),
         not_added=result.get("not_added", 0),
         access_checked=result["access_checks"]["checked"],
     )
@@ -1305,16 +1348,19 @@ def discover(trigger: str, settings: dict, now: datetime, *, bedrock=None, probe
 
 def classify(trigger: str, now: datetime, *, bedrock=None) -> dict:
     """The classify job: record every registry model's purpose and inputs from what Bedrock lists
-    now (account_models), as discover records them for the models it adds, so a row from before
-    purposes were recorded is judged by them (model_fleet.suitable) and not by its pricing unit. A
-    model Bedrock no longer lists gets the purpose `unknown` and keeps its inputs. A row already
-    saying the same is left alone, so the job may be run any number of times; a listing that fails
-    writes nothing (the exception is the handler's)."""
-    listed = {found["model_id"]: found for found in account_models(_region(), bedrock)}
+    now (listed_models), as discover records them for the models it adds, so a row from before
+    purposes were recorded is judged by them (model_fleet.suitable) and not by its pricing unit.
+    Listed means anywhere in Bedrock's answer, whatever the model's lifecycle and however it is
+    called: a LEGACY model, or one called only through a profile, keeps its purpose. A model in
+    neither the foundation models nor the system profiles (an inference-profile ARN is looked up by
+    the profile it names) gets the purpose `unknown` and keeps its inputs. A row already saying the
+    same is left alone, so the job may be run any number of times; a listing that fails writes
+    nothing (the exception is the handler's)."""
+    listed = listed_models(_region(), bedrock)
     models = dynamo.list_models()
     classified, unknown, unchanged = [], [], 0
     for model in models:
-        found = listed.get(model["model_id"])
+        found = listed.get(canonical_model_id(model["model_id"]))
         updates = (
             {"model_purpose": found["model_purpose"], "model_inputs": found["model_inputs"]}
             if found
