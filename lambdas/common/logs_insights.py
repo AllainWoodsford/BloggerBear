@@ -23,6 +23,9 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+# The rows StartQuery is asked for, for every query; no caller can ask for more yet. One that needs
+# more (the evals rollup splits a window at 10k rows) adds a keyword-only `limit` defaulting to this,
+# so the assistant's tools are unchanged, and splits at the limit it asked for, not at a fixed count.
 QUERY_LIMIT = 1000
 # Logs Insights runs a query in the background; an assistant tool waits this long for all of them,
 # then answers with what has finished. Well inside its function's 30 seconds and API Gateway's 29.

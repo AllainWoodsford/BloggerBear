@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import shlex
+import sys
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -33,6 +34,11 @@ USER = "11111111-2222-3333-4444-555555555555"
 def _load(name: str):
     spec = importlib.util.spec_from_file_location(f"{name}_for_cli_guide", SCRIPTS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
+    # admin_cli's build_parser imports its eval commands from a sibling module in scripts/ by name,
+    # so scripts/ has to be on the path whichever directory pytest was started from. It stays there:
+    # the import runs when the parser is built, after this returns.
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
     spec.loader.exec_module(module)
     return module
 

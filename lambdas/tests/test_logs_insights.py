@@ -1,9 +1,11 @@
 """The shared Logs Insights runner (common/logs_insights.py), moved out of ops_mcp/logs.py.
 
 Its behaviour is held by test_ops_mcp_logs.py, which still calls it through ops_mcp.logs. What is
-held here is why it moved (docs/enhancements/model-ranch-prompt-assets-evals.md, E0): the pipeline's
-own Lambdas, which do not ship the assistant's code, are to run queries with it, so it must need
-nothing from the assistant, and the assistant must be using this one rather than a copy.
+held here is why it moved (docs/enhancements/model-ranch-prompt-assets-evals.md, E0): pipeline code
+(the evals rollup first) is to run its queries with it, so it must need nothing from the assistant,
+and a package that copies common/ without ops_mcp/logs.py (as a module's own package can: the ops
+agent's takes all of common/ and four other ops_mcp files) can still import it; and the assistant
+must be using this one rather than a copy.
 """
 
 from __future__ import annotations
@@ -28,7 +30,8 @@ def test_the_runner_imports_nothing_from_the_assistant():
             imported |= {alias.name.split(".")[0] for alias in node.names}
         elif isinstance(node, ast.ImportFrom):
             imported.add((node.module or "").split(".")[0])
-    assert imported == {"__future__", "time", "collections", "datetime", "boto3", "botocore"}
+    allowed = set(sys.stdlib_module_names) | {"boto3", "botocore"}
+    assert imported <= allowed, imported - allowed
 
 
 def test_importing_the_runner_loads_no_assistant_module():
