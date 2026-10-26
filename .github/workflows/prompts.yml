@@ -205,7 +205,7 @@ jobs:
     if: >-
       vars.PROMPT_AS_ASSET_ENABLED == 'true' && github.ref == 'refs/heads/dev' &&
       (github.event_name == 'push' ||
-       (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev'))
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev'))
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -283,8 +283,8 @@ jobs:
     if: >-
       vars.PROMPT_AS_ASSET_ENABLED == 'true' &&
       (github.event_name == 'release' ||
-       (github.event_name == 'workflow_dispatch' && inputs.environment == 'production' &&
-        github.ref == 'refs/heads/dev'))
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'production' &&
+      github.ref == 'refs/heads/dev'))
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'release' && 'production' || 'production-prompts' }}
     permissions:

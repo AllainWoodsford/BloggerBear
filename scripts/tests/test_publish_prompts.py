@@ -928,10 +928,6 @@ def uses(text: str, action: str) -> set[str]:
     return set(re.findall(rf"uses: ({re.escape(action)}@[0-9a-f]{{40}})\n", text))
 
 
-def one_line(value: str) -> str:
-    return " ".join(str(value).split())
-
-
 def test_the_workflow_gates_pull_requests_and_publishes_merges_on_the_same_paths():
     on = triggers()
     assert on["pull_request"] == {"paths": PATHS}
@@ -962,12 +958,13 @@ def test_the_gates_run_only_for_a_pull_request_and_never_with_a_secret():
 
 
 def test_no_publish_job_runs_for_a_pull_request_and_each_waits_for_the_switch():
-    assert one_line(jobs()["publish-dev"]["if"]) == (
+    # Each folds to one line (no line more indented than the first, which YAML would keep).
+    assert jobs()["publish-dev"]["if"] == (
         "vars.PROMPT_AS_ASSET_ENABLED == 'true' && github.ref == 'refs/heads/dev' && "
         "(github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && "
         "inputs.environment == 'dev'))"
     )
-    assert one_line(jobs()["publish-production"]["if"]) == (
+    assert jobs()["publish-production"]["if"] == (
         "vars.PROMPT_AS_ASSET_ENABLED == 'true' && (github.event_name == 'release' || "
         "(github.event_name == 'workflow_dispatch' && inputs.environment == 'production' && "
         "github.ref == 'refs/heads/dev'))"

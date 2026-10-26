@@ -35,11 +35,11 @@ was, and so is every prompt while a deployment's `PROMPT_AS_ASSET_ENABLED` switc
 ## What the lint checks
 
 [`scripts/prompt_lint.py`](../scripts/prompt_lint.py) runs on every pull request that touches this
-folder (the `gates` job of [the prompts workflow](../.github/workflows/prompts.yml)) and again inside
-every publish, and refuses the tree on any error:
+folder (the `gates` job of [the prompts workflow](../.github/workflows/prompts.yml)) and again before
+every publish of the tree, and refuses the tree on any error:
 
 - every path is `<lambda_id>/<prompt_name>/latest/vN.txt` or `.../archive/vN.txt` (this README and
-  `.gitkeep` are the only other files), and no file is a symlink;
+  `.gitkeep` are the only other files), and nothing in it is a symlink;
 - every prompt id is in the registry, as an asset;
 - every file is UTF-8 with LF line endings and no byte-order mark;
 - every file in `latest/` passes the registry's template rules for its prompt (the same check the
@@ -72,7 +72,9 @@ Each publish is a release named `<env>-<yyyymmddThhmm>-<short commit>`. The publ
 pending, uploads it once, approves the release's hashes, syncs `latest/` (adding before removing),
 retires the previous release's hashes and only then records the release. A publish that stops
 part-way leaves the previous release serving, and a Lambda that cannot read a file serves the code's
-copy. Nothing runs until the deployment's `PROMPT_AS_ASSET_ENABLED` switch is on.
+copy. Nothing is published until the `PROMPT_AS_ASSET_ENABLED` variable is `true` at repository
+level: a publish job decides whether to run before it enters an environment, so it never sees a
+value set only on one.
 
 ## How to roll back
 

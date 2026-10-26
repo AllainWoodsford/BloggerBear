@@ -147,6 +147,20 @@ def test_a_symlink_is_refused_whatever_it_points_at(tmp_path):
     assert report.files == []
 
 
+def test_a_symlinked_folder_is_refused_rather_than_passed_over(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "v1.txt").write_text(DRAFT_V1, encoding="utf-8")
+    root = tree(tmp_path, {})
+    link = root / "prompts" / "daily_cycle" / "draft" / "latest"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(elsewhere, target_is_directory=True)
+    report = lint(root)
+    rule = "is a symlink; the tree holds plain files only"
+    assert messages(report) == [f"prompts/daily_cycle/draft/latest: {rule}"]
+    assert report.files == []
+
+
 def test_a_prompt_the_registry_does_not_have_is_an_error(tmp_path):
     root = tree(tmp_path, {"gear/theme/latest/v1.txt": "Name a theme.\n", "gear/theme/archive/v1.txt": "x\n"})
     assert messages(lint(root)) == [

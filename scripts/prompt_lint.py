@@ -192,6 +192,11 @@ def scan(root: Path) -> tuple[list[AssetFile], list[Finding]]:
         return files, errors
     for directory, folders, names in os.walk(tree):
         folders.sort()
+        # os.walk lists a symlinked folder but never enters it: refused like a symlinked file,
+        # rather than passed over in silence.
+        for name in [folder for folder in folders if (Path(directory) / folder).is_symlink()]:
+            relative = (Path(directory) / name).relative_to(root).as_posix()
+            errors.append(Finding(relative, "is a symlink; the tree holds plain files only"))
         for name in sorted(names):
             path = Path(directory) / name
             relative = path.relative_to(root).as_posix()
