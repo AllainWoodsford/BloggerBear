@@ -12,10 +12,12 @@ import json
 import re
 import shutil
 import subprocess
+import textwrap
 import tomllib
 from pathlib import Path
 
 import pytest
+import terraform_policies
 from terraform_text import (
     DEFAULT_PREFIX,
     PREFIX_REFERENCE,
@@ -1693,13 +1695,34 @@ def test_no_index_sorts_on_published_at_which_is_stored_as_null_until_publish():
             assert "published_at" not in (hash_key, range_key)
 
 
-@pytest.mark.parametrize("env", ["dev", "production"])
-def test_the_lambdas_may_query_the_table_indexes_and_nothing_more(env):
-    policy = _read("environments", env, "main.tf")
-    statement = re.search(r'sid\s*=\s*"DynamoDBAppIndexes"(.*?)\n  \}', policy, re.S).group(1)
+def _tables_with_an_index() -> list[str]:
+    """The app-data tables, by resource name, that have a secondary index of any kind."""
+    module = _read("modules", "app-data", "main.tf")
+    tables = re.findall(r'^resource "aws_dynamodb_table" "(\w+)" \{', module, re.M)
+    index = re.compile(r"^\s*(global|local)_secondary_index \{", re.M)
+    return [table for table in tables if index.search(_resource_block(module, "aws_dynamodb_table", table))]
 
-    assert re.search(r'actions\s*=\s*\["dynamodb:Query"\]', statement)
-    assert 'resources = [for arn in module.app_data.table_arns : "${arn}/index/*"]' in statement
+
+def _listed(value) -> list:
+    """A rendered Action or Resource as a list: the AWS provider writes a list of one as a string."""
+    return value if isinstance(value, list) else [value]
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_lambdas_may_query_the_indexes_of_exactly_the_tables_that_have_one(env):
+    """An index has its own ARN (<table>/index/<name>), which a grant on its table does not cover,
+    so a table given an index without a line in DynamoDBAppIndexes answers every Query on it with
+    AccessDenied, which moto (it has no IAM) never shows. A table without one has no index to
+    grant, and its line would only spend the role's inline-policy budget (the size test below)."""
+    statement = terraform_policies.statements(env)["DynamoDBAppIndexes"]
+    indexes = [
+        terraform_policies.evaluate(env, f"aws_dynamodb_table.{table}.arn", module="app_data") + "/index/*"
+        for table in _tables_with_an_index()
+    ]
+
+    assert statement.keys() == {"Sid", "Effect", "Action", "Resource"}  # no Condition, no NotAction
+    assert statement["Effect"] == "Allow" and statement["Action"] == "dynamodb:Query"
+    assert sorted(_listed(statement["Resource"])) == sorted(indexes)
 
 
 def test_dashboard_widget_lists_never_branch_on_a_conditional():
@@ -1713,6 +1736,194 @@ def test_dashboard_widget_lists_never_branch_on_a_conditional():
     assert "terraform -chdir=\"$dir\" test" in (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(
         encoding="utf-8"
     )
+
+
+# --- lambda_exec's inline policies, under IAM's 10,240 characters for one role -------------------
+
+_INLINE_POLICY_LIMIT = 10_240
+# What the estimate may come to: about 500 short of the limit, for real names longer than the
+# stand-ins (a fork's longer name prefix, the state bucket's real name).
+_INLINE_POLICY_BUDGET = 9_700
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_lambda_execs_inline_policies_stay_under_iams_limit_with_room_to_spare(env):
+    """IAM caps the inline policies of one role at 10,240 characters in all, whitespace not counted,
+    and every pipeline Lambda runs as lambda_exec, so every grant any of them needs lands on that
+    one role. Past the cap PutRolePolicy fails with LimitExceeded, at apply: validate and plan do
+    not add the documents up. Production's names are longer than dev's, so the first apply to fail
+    is likely the production release, after dev has applied the same change cleanly.
+
+    The estimate (terraform_policies.py) renders every inline policy on the role, the root's own and
+    any a module attaches through a role input, with the default name prefix, a 12-digit account
+    and the home region, and the total has to stay under a budget short of the limit.
+
+    When this fails, make room before adding a grant: fold a statement into one over the same
+    resources, narrow a resource list to what the code uses, or move a document out into a
+    customer-managed policy (aws_iam_policy and an attachment, which do not count toward this cap).
+    That last needs the deploy role granted iam:*Policy* on the new policy's name in
+    infra/bootstrap first, which is applied by hand."""
+    sizes = {
+        address: terraform_policies.size(document)
+        for address, document in terraform_policies.lambda_exec_policies(env).items()
+    }
+    total = sum(sizes.values())
+
+    largest = ", ".join(f"{address} {n}" for address, n in sorted(sizes.items(), key=lambda item: -item[1]))
+    assert total <= _INLINE_POLICY_BUDGET, (
+        f"{env}: lambda_exec's inline policies come to about {total} characters, over the budget of "
+        f"{_INLINE_POLICY_BUDGET} (IAM refuses more than {_INLINE_POLICY_LIMIT}): {largest}"
+    )
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_estimate_counts_every_policy_the_root_puts_on_lambda_exec(env):
+    """The size test is only as good as what it finds: every aws_iam_role_policy in the root whose
+    role is lambda_exec, found here by plain text, has to be one the estimate counted."""
+    text = _uncommented(_read("environments", env, "main.tf"))
+    policies = re.findall(r'^resource "aws_iam_role_policy" "(\w+)" \{\n(.*?)^\}', text, re.S | re.M)
+    attached = {
+        f"aws_iam_role_policy.{name}"
+        for name, body in policies
+        if re.search(r"^\s*role\s*=\s*aws_iam_role\.lambda_exec\.(id|name)\s*$", body, re.M)
+    }
+    counted = terraform_policies.lambda_exec_policies(env)
+
+    assert len(attached) > 5
+    assert {address for address in counted if not address.startswith("module.")} == attached
+
+
+def _write_terraform(directory: Path, text: str) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "main.tf").write_text(textwrap.dedent(text), encoding="utf-8")
+
+
+def test_the_estimate_counts_a_policy_a_module_attaches_through_a_role_input(tmp_path):
+    """No module puts a policy on lambda_exec yet; the work queue's and the prompts' will, given
+    the role's name or id as an input. Those count toward the same 10,240 characters, so the
+    estimate follows an input set to lambda_exec into the module, and no other role's."""
+    _write_terraform(
+        tmp_path / "environments" / "dev",
+        """
+        resource "aws_iam_role" "lambda_exec" {
+          name = "${var.unique_name_prefix}-dev-lambda-exec"
+        }
+
+        resource "aws_iam_role" "other" {
+          name = "${var.unique_name_prefix}-dev-other"
+        }
+
+        module "queue" {
+          source             = "../../modules/queue"
+          unique_name_prefix = var.unique_name_prefix
+          environment_name   = "dev"
+          lambda_role_name   = aws_iam_role.lambda_exec.name
+          other_role_id      = aws_iam_role.other.id
+        }
+        """,
+    )
+    _write_terraform(
+        tmp_path / "modules" / "queue",
+        """
+        resource "aws_sqs_queue" "work" {
+          name = "${var.unique_name_prefix}-${var.environment_name}-work.fifo"
+        }
+
+        data "aws_iam_policy_document" "send" {
+          statement {
+            sid       = "SendJobs"
+            actions   = ["sqs:SendMessage"]
+            resources = [aws_sqs_queue.work.arn]
+          }
+        }
+
+        resource "aws_iam_role_policy" "send" {
+          role   = var.lambda_role_name
+          policy = data.aws_iam_policy_document.send.json
+        }
+
+        resource "aws_iam_role_policy" "other" {
+          role   = var.other_role_id
+          policy = data.aws_iam_policy_document.send.json
+        }
+        """,
+    )
+
+    policies = terraform_policies.lambda_exec_policies("dev", tmp_path)
+
+    queue = f"arn:aws:sqs:ap-southeast-2:123456789012:{DEFAULT_PREFIX}-dev-work.fifo"
+    send = {"Sid": "SendJobs", "Effect": "Allow", "Action": "sqs:SendMessage", "Resource": queue}
+    document = {"Version": "2012-10-17", "Statement": [send]}
+    assert policies == {"module.queue.aws_iam_role_policy.send": document}
+
+
+def test_the_estimate_renders_a_document_the_way_the_aws_provider_does(tmp_path):
+    """aws_iam_policy_document writes a list of one as a bare string, treats actions and resources
+    as sets, defaults Effect to Allow, and writes a dynamic statement once for each of its for_each.
+    IAM counts the JSON without its whitespace."""
+    _write_terraform(
+        tmp_path / "environments" / "dev",
+        """
+        resource "aws_iam_role" "lambda_exec" {
+          name = "lambda-exec"
+        }
+
+        variable "buckets" {
+          default = ["exports"]
+        }
+
+        data "aws_iam_policy_document" "example" {
+          statement {
+            sid       = "Read"
+            effect    = "Allow"
+            actions   = ["s3:ListBucket", "s3:GetObject", "s3:GetObject"]
+            resources = [for name in ["b", "a"] : "arn:aws:s3:::${name}"]
+
+            condition {
+              test     = "StringLike"
+              variable = "s3:prefix"
+              values   = ["backup/*"]
+            }
+          }
+
+          dynamic "statement" {
+            for_each = var.buckets
+            content {
+              actions   = ["s3:PutObject"]
+              resources = ["arn:aws:s3:::${statement.value}/*"]
+            }
+          }
+        }
+
+        resource "aws_iam_role_policy" "example" {
+          role   = aws_iam_role.lambda_exec.id
+          policy = data.aws_iam_policy_document.example.json
+        }
+        """,
+    )
+    minified = (
+        '{"Version":"2012-10-17","Statement":['
+        '{"Sid":"Read","Effect":"Allow","Action":["s3:GetObject","s3:ListBucket"],'
+        '"Resource":["arn:aws:s3:::a","arn:aws:s3:::b"],"Condition":{"StringLike":{"s3:prefix":"backup/*"}}},'
+        '{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::exports/*"}]}'
+    )
+
+    document = terraform_policies.lambda_exec_policies("dev", tmp_path)["aws_iam_role_policy.example"]
+
+    assert document == json.loads(minified)
+    assert terraform_policies.size(document) == len(minified)
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_backups_may_still_describe_and_batch_write_every_app_table(env):
+    """A snapshot reads each table's size (DescribeTable) and a restore writes rows back
+    (BatchWriteItem, common/backup.py). They were lambda_backup's own statement over the same
+    tables until it was folded into DynamoDBAppTables to make room under IAM's cap."""
+    tables = terraform_policies.statements(env)["DynamoDBAppTables"]
+    every_table = terraform_policies.evaluate(env, "module.app_data.table_arns")
+
+    assert {"dynamodb:DescribeTable", "dynamodb:BatchWriteItem"} <= set(_listed(tables["Action"]))
+    assert len(every_table) == 16 and sorted(_listed(tables["Resource"])) == sorted(every_table)
 
 
 # --- Security events (common/security_events.py) ------------------------------------------------
