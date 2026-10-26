@@ -33,7 +33,7 @@ output "dev_prompts_role_arn" {
 
 output "prod_prompts_role_arn" {
   value       = aws_iam_role.gha_prod_prompts.arn
-  description = "Set this as the GitHub Actions secret AWS_PROD_PROMPTS_ROLE_ARN on the `production` environment (scripts/setup_repo.py asks for it): the role the prompts publisher signs in as to write production's prompts bucket."
+  description = "Set this as the repository-level GitHub Actions secret AWS_PROD_PROMPTS_ROLE_ARN (scripts/setup_repo.py asks for it): the role the prompts publisher signs in as to write production's prompts bucket. Repository level, not the `production` environment: production's prompts are published under both `production-prompts` and `production`, and an environment's secret reaches only its own jobs. The role's trust policy is what limits it to those two."
 }
 
 output "hosted_zone_id" {

@@ -262,16 +262,24 @@ def test_the_role_names_and_outputs_are_the_ones_bootstrap_really_creates():
         # Bootstrap builds the name from its unique_name_prefix; the script from the same word.
         in_terraform = role.name.replace("{prefix}", "${var.unique_name_prefix}")
         assert re.search(rf'^\s*name\s*=\s*"{re.escape(in_terraform)}"$', block, re.M), name
-        # With the default, it is the name the original deployment's role has always had.
-        assert role.named() == f"gha-bloggerbear-{suffix}"
+        # With the default prefix (pinned once, by test_the_prefix_rule_is_the_terraform_variables_rule)
+        # it is gha-<default>-<suffix>: for a deploy role, the name the original deployment's has
+        # always had.
+        named = f"gha-{sr.DEFAULT_PREFIX}-{suffix}"
+        assert role.named() == named
         assert role.named("acme-blog") == f"gha-acme-blog-{suffix}"
         output = outputs.split(f'output "{role.output}" {{')[1].split("\n}\n")[0]
         assert f"aws_iam_role.{resource}.arn" in output and name in output
         # The steps printed for the setting read that output, name that role, and say whose
         # credentials the bootstrap is applied with.
         steps = sr.role_steps(_role(name), REPO, True)
-        assert f"terraform output {role.output}" in steps and f"role/gha-bloggerbear-{suffix}" in steps
+        assert f"terraform output {role.output}" in steps and f"role/{named}" in steps
         assert role.credentials == ("the dev account" if "_DEV_" in name else "the production account")
+        # Dev's at repository level (the dev job runs in no environment), the production deploy
+        # role's on the production environment, and the production publisher's at repository level
+        # (test_the_production_publisher_secret_is_at_repository_level).
+        where = sr.PRODUCTION if name == "AWS_PROD_DEPLOY_ROLE_ARN" else "repo"
+        assert _role(name).where == where, name
     # Every variable the printed bootstrap command passes is one bootstrap declares.
     variables = (REPO_ROOT / "infra" / "bootstrap" / "variables.tf").read_text(encoding="utf-8")
     steps = sr.role_steps(next(s for s in sr.SETTINGS if s.name == "AWS_DEV_DEPLOY_ROLE_ARN"), REPO, True)
@@ -608,7 +616,7 @@ def test_settings_already_present_are_skipped_by_default(tmp_path):
     present = {s.name for s in sr.SETTINGS if s.kind == "secret" and s.where == "repo"} - {"PII_DENYLIST"}
     commands = FakeCommands(
         secrets=present | {"ALERT_EMAIL_PROD"},  # a production secret kept at repository level
-        env_secrets={"AWS_PROD_DEPLOY_ROLE_ARN", "AWS_PROD_PROMPTS_ROLE_ARN"},
+        env_secrets={"AWS_PROD_DEPLOY_ROLE_ARN"},
         variables={"UNIQUE_NAME_PREFIX", "ALERT_EMAIL_DEV"},
         hooks_path=".githooks",
     )
@@ -630,6 +638,7 @@ def test_settings_already_present_are_skipped_by_default(tmp_path):
     assert re.search(r"^ALERT_EMAIL_PROD .* set \(repository level\)$", table, re.M)
     assert re.search(r"^AWS_PROD_DEPLOY_ROLE_ARN .*production environment +required +set$", table, re.M)
     assert re.search(r"^AWS_DEV_PROMPTS_ROLE_ARN +secret +repository +optional +set$", table, re.M)
+    assert re.search(r"^AWS_PROD_PROMPTS_ROLE_ARN +secret +repository +optional +set$", table, re.M)
     assert re.search(r"^TF_STATE_BUCKET_PROD .*required for a fork +not set$", table, re.M)
     assert re.search(r"^PII_DENYLIST .*optional +not set$", table, re.M)
     assert "9 already set." in out
@@ -692,18 +701,19 @@ def test_a_prompts_publisher_role_takes_the_same_stub_and_may_be_left_unset(tmp_
     the same steps with the role's own output and name. Optional, unlike a deploy role: with no
     account to build a stub from, Enter leaves it unset, and Terraform is handed an empty string."""
     commands = FakeCommands(hooks_path=".githooks")
-    answers = ["y", DEV_ACCOUNT, "", "y"]  # repository; account id; accept the stub; confirm
+    answers = ["y", DEV_ACCOUNT, "", "y"]  # repository; account id; Enter: use the stub; confirm
     code, out, _ = run(
         ["--only", "AWS_DEV_ACCOUNT_ID", "AWS_DEV_PROMPTS_ROLE_ARN"], answers, commands, clone(tmp_path)
     )
     assert code == 0
     assert [(argv[3], stdin) for argv, stdin in commands.writes if argv[0] == "gh"] == [
         ("AWS_DEV_ACCOUNT_ID", DEV_ACCOUNT),
-        ("AWS_DEV_PROMPTS_ROLE_ARN", f"arn:aws:iam::{DEV_ACCOUNT}:role/gha-bloggerbear-dev-prompts"),
+        ("AWS_DEV_PROMPTS_ROLE_ARN", f"arn:aws:iam::{DEV_ACCOUNT}:role/gha-{sr.DEFAULT_PREFIX}-dev-prompts"),
     ]
     assert "terraform output dev_prompts_role_arn" in out
-    assert "arn:aws:iam::<the account id you gave>:role/gha-bloggerbear-dev-prompts" in out
+    assert f"arn:aws:iam::<the account id you gave>:role/gha-{sr.DEFAULT_PREFIX}-dev-prompts" in out
     assert "needs applying again" in out  # a bootstrap applied before the roles existed
+    assert "Use the ARN from step 3? [Y/n]" in out
     assert DEV_ACCOUNT not in out
 
     commands = FakeCommands(hooks_path=".githooks")
@@ -711,6 +721,55 @@ def test_a_prompts_publisher_role_takes_the_same_stub_and_may_be_left_unset(tmp_
     code, out, _ = run(["--only", "AWS_PROD_PROMPTS_ROLE_ARN"], answers, commands, clone(tmp_path))
     assert code == 0 and commands.writes == []
     assert "Left unset." in out and "Nothing to set." in out
+
+
+def test_a_prompts_publisher_role_can_be_left_unset_with_its_stub_on_offer(tmp_path):
+    """Every deploy hands a publisher role's ARN to Terraform, so with a bootstrap applied before the
+    publisher roles existed, the person must be able to leave it unset even when the account ID
+    gives a stub. The stub is a question of its own, then; answered no, Enter leaves it unset, and
+    an ARN typed instead is still checked against the account."""
+    only = ["--only", "AWS_DEV_ACCOUNT_ID", "AWS_DEV_PROMPTS_ROLE_ARN"]
+    commands = FakeCommands(hooks_path=".githooks")
+    answers = ["y", DEV_ACCOUNT, "n", "", "y"]  # repository; account id; not the stub; unset; confirm
+    code, out, _ = run(only, answers, commands, clone(tmp_path))
+    assert code == 0
+    assert [(argv[3], stdin) for argv, stdin in commands.writes if argv[0] == "gh"] == [
+        ("AWS_DEV_ACCOUNT_ID", DEV_ACCOUNT),
+    ]
+    assert "Left unset." in out and "AWS_DEV_PROMPTS_ROLE_ARN (Enter: leave it unset)" in out
+    assert DEV_ACCOUNT not in out
+
+    commands = FakeCommands(hooks_path=".githooks")
+    wrong = f"arn:aws:iam::{PROD_ACCOUNT}:role/a-publisher-of-my-own"
+    right = f"arn:aws:iam::{DEV_ACCOUNT}:role/a-publisher-of-my-own"
+    answers = ["y", DEV_ACCOUNT, "n", wrong, right, "y"]
+    code, out, _ = run(only, answers, commands, clone(tmp_path))
+    assert code == 0 and "different AWS account" in out
+    assert [stdin for _, stdin in commands.writes] == [DEV_ACCOUNT, right]
+
+    # The steps say why, where a deploy role's say a stub can be taken before the bootstrap runs.
+    for name in ("AWS_DEV_PROMPTS_ROLE_ARN", "AWS_PROD_PROMPTS_ROLE_ARN"):
+        for have_account in (True, False):
+            steps = sr.role_steps(_role(name), REPO, have_account)
+            assert "a deploy simply fails to sign in" not in steps, name
+            assert "applied again" in steps and "TF_VAR_prompts_publisher_role_arn" in steps, name
+    assert "a deploy simply fails to sign in" in sr.role_steps(_role(), REPO, True)
+
+
+def test_the_production_publisher_secret_is_at_repository_level():
+    """Production's prompts are published under two GitHub environments
+    (docs/enhancements/model-ranch-prompt-assets-evals.md): `production-prompts`, where the prompts
+    workflow publishes them on their own, and `production`, where a release publishes them and the
+    release deploy hands the ARN to Terraform. An environment's secret reaches only that
+    environment's jobs, so the one secret both read is at repository level, and the bootstrap's
+    output and the setting's help say so."""
+    setting = _role("AWS_PROD_PROMPTS_ROLE_ARN")
+    assert setting.where == "repo" and setting.env == "prod"  # its stub still uses production's account
+    assert "production-prompts" in setting.help and "At repository level" in setting.help
+    outputs = (REPO_ROOT / "infra" / "bootstrap" / "outputs.tf").read_text(encoding="utf-8")
+    block = outputs.split('output "prod_prompts_role_arn" {')[1].split("\n}\n")[0]
+    assert "repository-level GitHub Actions secret AWS_PROD_PROMPTS_ROLE_ARN" in block
+    assert "`production-prompts`" in block
 
 
 def test_production_settings_wait_for_the_production_environment(tmp_path):

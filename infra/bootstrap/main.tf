@@ -1065,7 +1065,7 @@ resource "aws_iam_policy" "gha_prompts" {
 
   # dev's is "<prefix>-gha-dev-prompts". Like the deploy policies, no role made here may change it.
   name        = "${var.unique_name_prefix}-gha-${each.key}-prompts"
-  description = "What the ${each.value} prompts publisher may do: its environment's prompts bucket and prompt-hashes table, and nothing else."
+  description = "What the ${local.prompts_publisher_environment[each.key]} prompts publisher may do: its environment's prompts bucket and prompt-hashes table, and nothing else."
   policy      = each.value.json
 }
 

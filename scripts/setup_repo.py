@@ -97,9 +97,11 @@ class Setting:
     kind:    "secret" or "variable". A variable prints unmasked in public logs, so only a value
              that is public anyway is one.
     where:   "repo" (repository level) or "production" (that GitHub environment). Dev's must be
-             at repository level: the dev job runs in no environment.
+             at repository level: the dev job runs in no environment. So must one that jobs in more
+             than one environment read: an environment's secret reaches only its own jobs.
     need:    "required"; "fork" (the original deployment leaves it unset, a fork must set it); or
-             "optional". Enter leaves a "fork" or "optional" setting unset.
+             "optional". Enter leaves a "fork" or "optional" setting unset. An optional role ARN
+             with a stub to offer asks first whether to use it; answered no, Enter leaves it unset.
     check:   which entry of CHECKS validates the answer.
     env:     "dev" or "prod", for settings that belong to one deployment (pairs a role ARN with
              its account ID).
@@ -189,9 +191,17 @@ SETTINGS: tuple[Setting, ...] = (
             "before the prompts work needs applying again, with the same arguments, to have it.\n"
             "Optional: unset, Terraform is handed an empty string and gives the bucket no publisher.",
             env="dev", tf_var="prompts_publisher_role_arn"),
-    Setting("AWS_PROD_PROMPTS_ROLE_ARN", "secret", PRODUCTION, "optional", "role_arn",
+    # At repository level, not on the production environment, although it is production's: the
+    # prompts workflow publishes production's prompts under two environments
+    # (docs/enhancements/model-ranch-prompt-assets-evals.md: `production-prompts` on its own,
+    # `production` with a release), and the release deploy reads it under `production` too. An
+    # environment's secret reaches only that environment's jobs.
+    Setting("AWS_PROD_PROMPTS_ROLE_ARN", "secret", "repo", "optional", "role_arn",
             "The same, for production: the role the prompts publisher signs in as to write\n"
-            "production's prompts bucket.",
+            f"production's prompts bucket. At repository level, not on the '{PRODUCTION}' environment:\n"
+            "production's prompts are published from two environments, 'production-prompts' on their\n"
+            f"own and '{PRODUCTION}' with a release, and an environment's secret reaches only its own\n"
+            "jobs. The role itself trusts runs in those two environments and no others.",
             env="prod", tf_var="prompts_publisher_role_arn"),
     Setting("TF_STATE_BUCKET_DEV", "secret", "repo", "fork", "bucket", _BUCKET_HELP, env="dev"),
     Setting("TF_STATE_BUCKET_PROD", "secret", PRODUCTION, "fork", "bucket",
@@ -771,7 +781,17 @@ def role_steps(
             "  With two AWS accounts, run the bootstrap a second time with the production account's\n"
             "  credentials and its own state bucket. See docs/deployment-runsheet.md, \"One account or two\"."
         )
-    if have_account:
+    if setting.need != "required":
+        # A prompts publisher role. A deploy role's ARN is only signed in with; this one's is also
+        # handed to Terraform by every deploy, for the prompts bucket's policy. So it is set once
+        # the role exists, and a bootstrap applied before the publisher roles existed never made it.
+        lines.append(
+            "  On a new deployment, take the ARN from step 3: the bootstrap apply that makes the\n"
+            "  deploy roles makes this one too. With a bootstrap applied before the prompts publisher\n"
+            "  roles existed, leave it unset until that bootstrap has been applied again: every deploy\n"
+            f"  passes this ARN to Terraform (TF_VAR_{setting.tf_var}) for the prompts bucket's policy."
+        )
+    elif have_account:
         lines.append(
             "  Press Enter to use the ARN from step 3. You can accept it before running the bootstrap:\n"
             "  the name is fixed, and a deploy simply fails to sign in until the role exists."
@@ -846,6 +866,15 @@ def ask_setting(
     reuse = answers.get(setting.same_as, "") if setting.same_as else ""
     if reuse and prompter.yes(f"Use the same value as {setting.same_as}?", True):
         return reuse  # already checked when it was given
+
+    if default and setting.need != "required":
+        # An optional role (a prompts publisher) can be declined even with a stub to offer: Enter on
+        # the line below would take the stub, so the stub is a question of its own first, which
+        # never shows the ARN (it holds the account ID). Answered no, Enter below leaves it unset,
+        # and an ARN typed there instead is still checked against the account.
+        if prompter.yes("Use the ARN from step 3?", True):
+            return default
+        default = ""
 
     if default:
         blank = "use the ARN above"
