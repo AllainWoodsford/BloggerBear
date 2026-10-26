@@ -47,6 +47,8 @@ from common import (
     gear,
     model_catalog,
     model_fleet,
+    prompts,
+    prompts_registry,
     reviewer,
     security_events,
     sign_ins,
@@ -65,6 +67,7 @@ from common.dynamo import (
     delete_topic,
     finish_moderation_rewrite,
     get_article,
+    get_config_row,
     get_feedback_config,
     get_latest_finding,
     get_model,
@@ -100,6 +103,7 @@ from common.dynamo import (
     put_prompt_refinement,
     put_stats_history_row,
     put_topic,
+    replace_config_field,
     set_article_feedback_lock,
     set_article_fields,
     set_musing_text,
@@ -2786,6 +2790,230 @@ def _put_reviewer_config_route(event: dict) -> dict:
     return _get_reviewer_config_route(event)
 
 
+# --- Prompts as assets (common/prompts.py, docs/enhancements/model-ranch-prompt-assets-evals.md) ----
+#
+# What is published and what is served: each registered prompt's files under latest/ with their
+# tags, hash rows and pause state, the publisher's releases, and the `prompts` row of the
+# ModelConfig table, which holds the kill switch (prompt_assets) and the pause list
+# (paused_versions). The row is DynamoDB's, so pausing, resuming and the kill switch work whether
+# or not this deployment reads assets; the two listings read the bucket, and when no bucket is
+# named (PROMPTS_BUCKET empty) they say so rather than fail. A Lambda container keeps the row for
+# prompts.CACHE_TTL_S, so a change reaches every run within that.
+
+PROMPT_RELEASES_DEFAULT = 20
+PROMPT_RELEASES_MAX = 200
+# A pause or resume rewrites the whole list, on condition that nobody changed it since it was read;
+# this many tries before answering 409.
+_PAUSE_ATTEMPTS = 3
+_PROMPTS_ROW_DELAY = (
+    f"A Lambda container keeps the prompts row for up to {prompts.CACHE_TTL_S} seconds, so every "
+    "run sees this within that."
+)
+
+
+def _prompts_summary() -> dict:
+    """The `prompts` row as every prompts route answers it: what is set, what is in effect, and
+    whether this deployment serves assets at all, with the reason in words when it does not."""
+    row = get_config_row(prompts.CONFIG_ID) or {}
+    effective = prompts.effective_settings(row)
+    switch = os.environ.get("PROMPT_AS_ASSET_ENABLED", "").strip().lower() == "true"
+    bucket = os.environ.get("PROMPTS_BUCKET") or None
+    if not bucket:
+        serving = (
+            "No prompts bucket in this deployment (PROMPTS_BUCKET is empty): every prompt is the copy "
+            "in the code."
+        )
+    elif not switch:
+        serving = (
+            "PROMPT_AS_ASSET_ENABLED is off in this deployment: every prompt is the copy in the code, "
+            "whatever is published."
+        )
+    elif not os.environ.get("PROMPT_HASHES_TABLE"):
+        serving = (
+            "No prompt-hash table in this deployment (PROMPT_HASHES_TABLE is empty): every prompt is "
+            "the copy in the code."
+        )
+    elif effective["prompt_assets"] == "off":
+        serving = (
+            "The kill switch is off (prompt_assets): every prompt is the copy in the code until "
+            "`prompts set --assets on`."
+        )
+    else:
+        serving = (
+            "Assets are served: a prompt's file under latest/ when it passes every check (its hash "
+            "approved, its version not paused), the copy in the code otherwise."
+        )
+    return {
+        "config_id": prompts.CONFIG_ID,
+        "settings": {name: row.get(name) for name in prompts.SETTINGS},
+        "effective": effective,
+        "deployment_switch": "on" if switch else "off",
+        "bucket": bucket,
+        "serving": prompts.assets_enabled() and effective["prompt_assets"] == "on",
+        "serving_note": serving,
+    }
+
+
+def _list_prompts_route(event: dict) -> dict:
+    """Every registered prompt (common/prompts_registry.py) with the files the publisher put under
+    its latest/ (prompts.published_files: version, release, sha256, hash status, paused), its
+    vanilla's version, and the `prompts` row. A code-only prompt is never read from the bucket, so
+    it lists no files; one whose listing fails says so and the others are still listed."""
+    summary = _prompts_summary()
+    paused = summary["effective"]["paused_versions"]
+    listed = []
+    for spec in prompts_registry.all_specs():
+        entry = {
+            "prompt_id": spec.prompt_id,
+            "asset": spec.asset,
+            "vanilla_version": spec.vanilla_label,
+            "files": [],
+        }
+        if not spec.asset:
+            entry["note"] = "code-only: always the copy in the code, never read from the bucket"
+        elif summary["bucket"]:
+            try:
+                entry["files"] = prompts.published_files(spec.prompt_id, paused)
+            except Exception as exc:  # noqa: BLE001 - one listing failing is said; the rest are listed
+                print(f"admin_api_handler: could not list {spec.prompt_id}/latest/: {exc!r}")
+                entry["error"] = "could not list latest/"
+        listed.append(entry)
+    return _response(200, {**summary, "prompts": listed})
+
+
+def _pause_prompt_route(event: dict) -> dict:
+    """Pull one version of a prompt: `{prompt_id, version}` is added to the `prompts` row's
+    paused_versions, and every run serves the prompt's other files (or its vanilla) instead. Only a
+    registered asset prompt can be paused: a code-only one is never read from the bucket."""
+    return _edit_paused_versions(event, pause=True)
+
+
+def _resume_prompt_route(event: dict) -> dict:
+    """Undo a pause: `{prompt_id, version}` is taken out of paused_versions. Any well-formed entry
+    can be taken out, a prompt the registry no longer has included."""
+    return _edit_paused_versions(event, pause=False)
+
+
+def _edit_paused_versions(event: dict, *, pause: bool) -> dict:
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if not isinstance(body, dict):
+        return _error(400, "send prompt_id and version")
+    prompt_id, version = body.get("prompt_id"), body.get("version")
+    entry = f"{prompt_id}@{version}"
+    if (
+        not isinstance(prompt_id, str)
+        or not isinstance(version, str)
+        or prompts.validate_setting("paused_versions", [entry]) is not None
+    ):
+        return _error(
+            400,
+            "send prompt_id (<lambda_id>/<prompt_name>) and version (v1, v2, ...), "
+            "as `prompts list` shows them",
+        )
+    if pause:
+        spec = next((s for s in prompts_registry.all_specs() if s.prompt_id == prompt_id), None)
+        if spec is None:
+            return _error(400, f"'{prompt_id}' is not a registered prompt (`prompts list` shows them)")
+        if not spec.asset:
+            return _error(
+                400,
+                f"'{prompt_id}' is code-only: it is never read from the bucket, so there is nothing to pause",
+            )
+    for _ in range(_PAUSE_ATTEMPTS):
+        stored = (get_config_row(prompts.CONFIG_ID) or {}).get("paused_versions")
+        # A stored value that is not a valid list is ignored by every reader (effective_settings),
+        # so it is treated as empty here and replaced on the first pause.
+        valid = stored is not None and prompts.validate_setting("paused_versions", stored) is None
+        current = list(stored) if valid else []
+        if (entry in current) == pause:
+            changed = False
+            break
+        wanted = [*current, entry] if pause else [kept for kept in current if kept != entry]
+        if replace_config_field(prompts.CONFIG_ID, "paused_versions", stored, wanted):
+            changed = True
+            print(f"admin_api_handler: prompts {'paused' if pause else 'resumed'} {entry}")
+            break
+    else:
+        return _error(409, "the prompts row kept changing while this was written; send it again")
+    answer = {**_prompts_summary(), "entry": entry, "changed": changed, "note": _PROMPTS_ROW_DELAY}
+    return _response(200, answer)
+
+
+def _put_prompts_config_route(event: dict) -> dict:
+    """The kill switch: `prompt_assets` `on` or `off` (null clears it, back to on). Off, every run
+    serves every prompt's vanilla, without a deploy. paused_versions is changed one version at a
+    time, by POST /prompts/pause and /prompts/resume, never as a whole list here."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if not isinstance(body, dict) or not body:
+        return _error(400, "send prompt_assets: on or off (null clears it: on)")
+    for name, value in body.items():
+        if name == "paused_versions":
+            return _error(
+                400,
+                "paused_versions is changed one version at a time: POST /prompts/pause and "
+                "/prompts/resume",
+            )
+        problem = prompts.validate_setting(name, value)
+        if problem:
+            return _error(400, problem)
+    update_config_row(prompts.CONFIG_ID, body)
+    return _response(200, {**_prompts_summary(), "note": _PROMPTS_ROW_DELAY})
+
+
+def _list_prompt_releases_route(event: dict) -> dict:
+    """The publisher's releases, newest first (`?limit=`, PROMPT_RELEASES_DEFAULT by default, at
+    most PROMPT_RELEASES_MAX), each marked `current` when releases/current.json names it and
+    `pinned` when a rollback holds to it, with current.json itself."""
+    raw_limit = _query_param(event, "limit")
+    limit = PROMPT_RELEASES_DEFAULT
+    if raw_limit is not None:
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            limit = 0
+        if not 1 <= limit <= PROMPT_RELEASES_MAX:
+            return _error(400, f"'limit' must be a whole number from 1 to {PROMPT_RELEASES_MAX}")
+    bucket = os.environ.get("PROMPTS_BUCKET") or None
+    if not bucket:
+        return _response(
+            200,
+            {
+                "bucket": None,
+                "releases": [],
+                "total": 0,
+                "current": None,
+                "note": (
+                    "No prompts bucket in this deployment (PROMPTS_BUCKET is empty), so nothing is "
+                    "published."
+                ),
+            },
+        )
+    try:
+        listed, total = prompts.releases(limit)
+    except Exception as exc:  # noqa: BLE001 - said in words; the bucket may not be reachable
+        print(f"admin_api_handler: could not list the prompts bucket's releases: {exc!r}")
+        return _error(502, "could not list releases/ in the prompts bucket")
+    answer = {"bucket": bucket, "releases": listed, "total": total, "current": None}
+    try:
+        answer["current"] = prompts.current_release()
+    except Exception as exc:  # noqa: BLE001
+        print(f"admin_api_handler: could not read {prompts.CURRENT_RELEASE_KEY}: {exc!r}")
+        answer["error"] = f"could not read {prompts.CURRENT_RELEASE_KEY}"
+    current = answer["current"] or {}
+    for release in listed:
+        release["current"] = release["release_id"] == current.get("release_id")
+        release["pinned"] = release["release_id"] == current.get("pinned_release")
+    if not total:
+        answer["note"] = "Nothing has been published to this bucket yet."
+    return _response(200, answer)
+
+
 def _start_model_catalog_job(job: str) -> dict:
     run = model_catalog.active_run()
     # A run whose next tick or review is overdue lost its schedule: the job runs that step first,
@@ -3268,6 +3496,11 @@ _ROUTES = {
     "PUT /model-catalog-config": _put_model_catalog_config_route,
     "GET /reviewer-config": _get_reviewer_config_route,
     "PUT /reviewer-config": _put_reviewer_config_route,
+    "GET /prompts": _list_prompts_route,
+    "POST /prompts/pause": _pause_prompt_route,
+    "POST /prompts/resume": _resume_prompt_route,
+    "GET /prompts/releases": _list_prompt_releases_route,
+    "PUT /prompts/config": _put_prompts_config_route,
     "GET /pipeline-config": _get_pipeline_config_route,
     "PUT /pipeline-config": _put_pipeline_config_route,
     "GET /feedback-config": _get_feedback_config_route,

@@ -128,6 +128,7 @@ AT_LEAST_ONE_OPTION = frozenset(
         "model-rotation set",
         "model-catalog set",
         "reviewer set",
+        "prompts set",
     }
 )
 

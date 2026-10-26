@@ -472,8 +472,8 @@ DESTRUCTIVE = [
 
 def test_the_destructive_commands_are_the_ones_the_reference_marks():
     assert DESTRUCTIVE == [
-        "topics delete", "articles unpublish", "moderation reject", "backup restore", "refinements reject",
-        "equipment delete",
+        "topics delete", "topics pause", "articles unpublish", "moderation reject", "backup restore",
+        "refinements reject", "equipment delete", "prompts pause",
     ]  # fmt: skip
 
 
@@ -485,6 +485,7 @@ def test_a_destructive_command_is_a_template_whatever_values_are_given(path, par
         "queue_id": "q-123",
         "version": "2026-10-01T00:00:00",
         "key": "backup/bloggerbear-dev/snapshots/20261019T000000Z-manual.jsonl.gz",
+        "prompt_id": "daily_cycle/draft",
     }
     names = [a["dest"] for a in cli_guide.reference()["commands"][path]["arguments"] if not a["flags"]]
 

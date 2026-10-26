@@ -192,6 +192,25 @@ resource "aws_s3_bucket_lifecycle_configuration" "content" {
 }
 
 # -----------------------------------------------------------------------
+# Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md, section 5.2): the
+# bucket the prompt templates are published to (<prefix>-dev-prompts) and the table of the
+# hashes the publisher approved (<prefix>-dev-prompt-hashes). Terraform owns them, never what
+# is in them: the publisher role infra/bootstrap makes writes every object and row, and the
+# bucket policy (made only once var.prompts_publisher_role_arn names that role) refuses every
+# other writer. lambda_exec gets reads only (the module's own inline policy). Nothing reads either
+# until var.prompt_as_asset_enabled is on. Dev's are disposable: the bucket is destroyed with
+# whatever it holds, and the publisher fills it again.
+# -----------------------------------------------------------------------
+module "prompts" {
+  source = "../../modules/prompts"
+
+  unique_name_prefix  = var.unique_name_prefix
+  environment_name    = "dev"
+  publisher_role_arn  = var.prompts_publisher_role_arn
+  lambda_exec_role_id = aws_iam_role.lambda_exec.id
+}
+
+# -----------------------------------------------------------------------
 # Lambda deployment package -- both functions ship from the same zip
 # (one `lambdas/` source tree with a shared `common/` package).
 #
@@ -706,13 +725,13 @@ locals {
     MODEL_CATALOG_FUNCTION_NAME = "${var.unique_name_prefix}-dev-model-catalog"
 
     # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): the bucket the
-    # prompt templates are published to, the table of their approved hashes, and whether the code
-    # reads them at all ("false" keeps every prompt as the copy in the code). Both names are empty
-    # until the prompts module makes the bucket and the table; the switch is
-    # var.prompt_as_asset_enabled, from the PROMPT_AS_ASSET_ENABLED GitHub variable, off by default,
-    # so merging the prompts work changes no prompt until someone sets it.
-    PROMPTS_BUCKET          = ""
-    PROMPT_HASHES_TABLE     = ""
+    # prompt templates are published to and the table of their approved hashes (module.prompts
+    # above), and whether the code reads them at all ("false" keeps every prompt as the copy in the
+    # code). The switch is var.prompt_as_asset_enabled, from the PROMPT_AS_ASSET_ENABLED GitHub
+    # variable, off by default: the bucket and the table exist, empty, and nothing reads them until
+    # someone sets it.
+    PROMPTS_BUCKET          = module.prompts.bucket_name
+    PROMPT_HASHES_TABLE     = module.prompts.hash_table_name
     PROMPT_AS_ASSET_ENABLED = var.prompt_as_asset_enabled ? "true" : "false"
   }
 }
@@ -1142,6 +1161,15 @@ module "admin_api" {
     "PUT /model-catalog-config",
     "GET /reviewer-config",
     "PUT /reviewer-config",
+    # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): each registered
+    # prompt's published files with their hash status and pause state, the releases, pausing and
+    # resuming one version, and the kill switch. See admin_api_handler.py's prompts routes and
+    # `admin_cli prompts`.
+    "GET /prompts",
+    "POST /prompts/pause",
+    "POST /prompts/resume",
+    "GET /prompts/releases",
+    "PUT /prompts/config",
     # Pipeline-wide settings (today: the default research interval). See
     # admin_api_handler.py's _*_pipeline_config_route and `admin_cli pipeline-config`.
     "GET /pipeline-config",

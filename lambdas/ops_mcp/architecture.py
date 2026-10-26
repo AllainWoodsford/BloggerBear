@@ -297,7 +297,7 @@ CATALOGUE: tuple[Component, ...] = (
             ("Read by", "daily-cycle (the equipped version), the public API, the Admin API"),
             ("Expires", "only rejected versions, by TTL"),
         ),
-        aliases=("refinements", "prompts", "gear"),
+        aliases=("refinements", "gear"),
     ),
     _table(
         "failed-executions",
@@ -357,8 +357,9 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             (
                 "Written by",
-                "the Admin API (model-config, pipeline-config, feedback-config, model-catalog set); "
-                "the public API (rate-limit counters); model-catalog (its state and pricing runs)",
+                "the Admin API (model-config, pipeline-config, feedback-config, model-catalog set, and "
+                "prompts pause/resume/set, the \"prompts\" row of prompt asset switches); the public "
+                "API (rate-limit counters); model-catalog (its state and pricing runs)",
             ),
             ("Read by", "every pipeline function, the assistant (its access switch, model_catalog)"),
             ("Expires", "the rate-limit counters, and a pricing run 14 days after it closes, by TTL"),
@@ -468,6 +469,23 @@ CATALOGUE: tuple[Component, ...] = (
             ("Never shown to the agent", "it holds what the agent wrote after reading hostile text"),
         ),
         aliases=("briefings", "briefing"),
+    ),
+    _table(
+        "prompt-hashes",
+        "One row per prompt asset file the publisher approved, by the sha256 of its bytes: its "
+        "prompt and version, the release that published it, and whether it is live or retired. "
+        "A Lambda serves an asset only when its row says live, or retired in the last five minutes.",
+        ("prompt_hash",),
+        details=(
+            ("Written by", "the prompts publisher alone (its own role); every Lambda may only read a row"),
+            (
+                "Read by",
+                "every Lambda that renders a prompt (common/prompts.py), the Admin API's prompts list",
+            ),
+            ("No TTL", "a retired row is the record of what was once approved"),
+            ("Backups", "not in the snapshots: publishing writes it again from the repository's prompts/"),
+        ),
+        aliases=("prompt-hash-table", "approved-prompts"),
     ),
     # --- Lambda --------------------------------------------------------------------------------
     _lambda(
@@ -850,6 +868,27 @@ CATALOGUE: tuple[Component, ...] = (
         purpose="The static site CloudFront serves: HTML, scripts and the pre-built pages.",
         details=(("Name", "unique across all of AWS, which is why each deployment has its own prefix"),),
         aliases=("site-bucket", "frontend"),
+    ),
+    Component(
+        kind="bucket",
+        key="prompts",
+        name=f"{PREFIX}{ENV}-prompts",
+        purpose=(
+            "Prompts as assets: each prompt's served files under <lambda>/<prompt>/latest/ (two or "
+            "more make an A/B split), every file ever published under versions/<sha256>.txt, and "
+            "a record of each publish under releases/."
+        ),
+        details=(
+            ("Name", "unique across all of AWS, which is why each deployment has its own prefix"),
+            ("Written by", "the prompts publisher alone: the bucket policy refuses every other writer"),
+            (
+                "Read by",
+                "the Lambdas, only while PROMPT_AS_ASSET_ENABLED is on (common/prompts.py); the "
+                "Admin API's prompts list and prompts releases",
+            ),
+            ("Old versions", "kept 90 days after a file is replaced"),
+        ),
+        aliases=("prompts-bucket", "prompt-assets"),
     ),
     Component(
         kind="firewall",
