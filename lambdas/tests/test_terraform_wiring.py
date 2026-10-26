@@ -2291,6 +2291,41 @@ def test_the_research_tick_takes_its_jobs_one_at_a_time_up_to_worker_concurrency
     assert re.search(r"^\s*function_name\s*=\s*var\.dlq_handler_arn$", dlq, re.M)
 
 
+def test_the_dispatchers_log_group_and_rights_and_the_consumers_rights_come_before_them():
+    """The schedule invokes the dispatcher the minute it exists. A function invoked before its log
+    group is made makes its own, with no retention, and the next apply fails with
+    ResourceAlreadyExistsException (dev hit it after a destroy). Lambda checks a mapping's rights
+    when it makes the mapping, so each waits for the consume policy."""
+    module = _work_queue_module()
+    assert 'name              = "/aws/lambda/${local.name}"' in module
+    function = _resource_block(module, "aws_lambda_function", "dispatcher")
+    # The working rules' form: depends_on on the line right after function_name.
+    depends_on = re.search(r"^  function_name = local\.name\n  depends_on\s*=\s*\[(.*?)\]", function, re.M)
+    assert depends_on
+    assert "aws_cloudwatch_log_group.dispatcher" in depends_on.group(1)
+    assert "aws_iam_role_policy.dispatcher" in depends_on.group(1)
+    for label in ("research_tick", "work_dlq"):
+        mapping = _resource_block(module, "aws_lambda_event_source_mapping", label)
+        assert re.search(r"^\s*depends_on\s*=\s*\[aws_iam_role_policy\.consume\]$", mapping, re.M), label
+
+
+def test_a_failed_dispatcher_tick_is_retried_neither_by_its_schedule_nor_by_lambda():
+    """Scheduler invokes the dispatcher asynchronously: its retry_policy covers only its own
+    delivery, and Lambda retries a failed async invoke twice by default. The dispatcher raises on
+    purpose, and a replay would run beside the next tick from the same last_tick, counting the same
+    shadow turns twice. The schedule waits for the invoke config, so even the first tick has it."""
+    module = _work_queue_module()
+    config = _resource_block(module, "aws_lambda_function_event_invoke_config", "dispatcher")
+    function = r"^\s*function_name\s*=\s*aws_lambda_function\.dispatcher\.function_name$"
+    assert re.search(function, config, re.M)
+    assert re.search(r"^\s*maximum_retry_attempts\s*=\s*0$", config, re.M)
+    assert re.search(r"^\s*maximum_event_age_in_seconds\s*=\s*60$", config, re.M)
+    schedule = _resource_block(module, "aws_scheduler_schedule", "dispatcher")
+    assert re.search(r"^\s*maximum_retry_attempts\s*=\s*0$", schedule, re.M)
+    depends_on = re.search(r"^\s*depends_on\s*=\s*\[(.*?)\]", schedule, re.M).group(1)
+    assert "aws_lambda_function_event_invoke_config.dispatcher" in depends_on
+
+
 def test_no_schedule_is_added_per_topic_and_the_dispatchers_is_the_modules_only_one():
     """The per-topic schedules stay runtime data (common/scheduler.py, made by the admin API), and
     stay the way every topic runs until its cutover: the queue platform adds one fixed schedule, the

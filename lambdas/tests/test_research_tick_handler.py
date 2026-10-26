@@ -1198,3 +1198,39 @@ def test_a_queue_job_that_fails_still_returns_rather_than_raising(aws_resources,
 
     assert result["status"] == "error" and "source down" in result["reason"]
     assert "last_research_at" not in _stored_topic()
+
+
+def test_a_batch_of_two_queue_records_says_so_and_runs_only_the_first(
+    aws_resources, monkeypatch, clock, capsys
+):
+    """The mapping's batch_size is 1 (pinned in Terraform). Were it ever larger, the handler would
+    read only the first job, and this line is the only sign of the rest."""
+    _queue_topic()
+    _fresh_state(monkeypatch)
+    event = _sqs_event(_job())
+    event["Records"].append(_sqs_event(_job(topic_id="someone-else"), message_id="m-2")["Records"][0])
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")) as mock_invoke:
+        result = research_tick_handler.handler(event, None)
+
+    assert result["status"] == "material_change"
+    mock_invoke.assert_called_once()
+    out = capsys.readouterr().out
+    assert "research_tick_handler: 2 queue records in one batch; reading the first" in out
+    assert "queue record message_id='m-1'" in out
+    assert "m-2" not in out and "someone-else" not in out
+    assert _stored_topic()["last_research_at"] == DUE_CHECKED_AT.isoformat()
+
+
+def test_a_due_checked_at_without_an_offset_is_read_as_utc(aws_resources, monkeypatch, clock):
+    """The dispatcher always writes an offset; a stamp without one is UTC, not a naive time that
+    cannot be compared with the topic's last_research_at (which would lose the job)."""
+    _queue_topic(last_research_at=(DUE_CHECKED_AT - timedelta(hours=2)).isoformat())
+    _fresh_state(monkeypatch)
+    naive = DUE_CHECKED_AT.replace(tzinfo=None).isoformat(timespec="seconds")
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")):
+        result = research_tick_handler.handler(_sqs_event({**_job(), "due_checked_at": naive}), None)
+
+    assert result["status"] == "material_change"
+    assert _stored_topic()["last_research_at"] == "2026-10-24T22:05:30+00:00"

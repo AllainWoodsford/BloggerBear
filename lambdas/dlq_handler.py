@@ -27,7 +27,9 @@ It also consumes the work queue's dead-letter queue (`work-dlq.fifo`, infra/modu
 a queue job (a body with `job`, docs/enhancements/model-ranch-prompt-assets-evals.md section 4.7)
 that was received three times without finishing. The research tick never raises, so such a job
 timed out or crashed the runtime; its body is the job itself, with no `error`. The log line names
-the job (`research job for topic_id=... failed`) rather than calling every failure a daily cycle.
+the job (`research job for topic_id=... failed`) rather than calling every failure a daily cycle,
+and the record carries `kind` = `<job>_job` (`research_job`), so the readers that take a record
+with no kind for a daily cycle that ran out of retries (pipeline_health) do not mistake it for one.
 """
 
 from __future__ import annotations
@@ -66,8 +68,12 @@ def handler(event: dict, context) -> dict:
             error = parsed.get("error")
             job = parsed.get("job")
 
+        # A daily cycle's record has no kind (put_failed_execution's contract); a queue job's says
+        # which job it was, from the checked name, never the body's own text.
+        kind = None
         if job is not None:
             name = job if isinstance(job, str) and _JOB.fullmatch(job) else "unknown"
+            kind = f"{name}_job"
             print(f"dlq_handler: {name} job for topic_id={topic_id} failed")
         else:
             print(f"dlq_handler: daily_cycle failed for topic_id={topic_id}: {error}")
@@ -78,6 +84,7 @@ def handler(event: dict, context) -> dict:
             error=error,
             raw_message=raw_message,
             created_at=datetime.now(UTC).isoformat(),
+            kind=kind,
         )
         processed += 1
 

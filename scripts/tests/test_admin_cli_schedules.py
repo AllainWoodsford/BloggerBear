@@ -79,6 +79,40 @@ def test_topics_schedule_shows_the_dispatchers_shadow_record_when_there_is_one(c
     assert out.count("shadow:") == 1  # the topic with no shadow turn yet shows none
 
 
+@pytest.mark.parametrize(
+    ("recorded", "line"),
+    [
+        # The first shadow day: research turns are recorded hours before the first daily turn, and
+        # a research mismatch already counts (_write_shadow leaves shadow_unchecked unset).
+        (
+            {"shadow_last_research_dispatch_at": "2026-10-15T04:05:30+00:00", "shadow_mismatches": 1},
+            "  shadow: 1 mismatch · 0 unchecked days · last research turn 2026-10-15T04:05:30+00:00\n",
+        ),
+        # A daily turn that came before the first research turn: research every 4 hours, and shadow
+        # mode switched on between two of them.
+        (
+            {
+                "shadow_last_daily_dispatch_at": "2026-10-14T23:10:30+00:00",
+                "shadow_mismatches": 0,
+                "shadow_unchecked": 0,
+            },
+            "  shadow: 0 mismatches · 0 unchecked days · last daily turn 2026-10-14T23:10:30+00:00\n",
+        ),
+    ],
+    ids=["research_turn_only", "daily_turn_only"],
+)
+def test_topics_schedule_shows_the_shadow_record_of_a_topic_with_only_one_kind_of_shadow_turn_so_far(
+    capsys, recorded, line
+):
+    answer = {**LISTING, "topics": [{**LISTING["topics"][0], **recorded}, LISTING["topics"][1]]}
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, answer)):
+        _run(["topics", "schedule"])
+
+    out = capsys.readouterr().out
+    assert line in out  # the whole line: nothing about the other kind of turn follows it
+    assert out.count("shadow:") == 1
+
+
 def test_topics_schedule_can_print_the_raw_json(capsys):
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, LISTING)):
         _run(["topics", "schedule", "--json"])

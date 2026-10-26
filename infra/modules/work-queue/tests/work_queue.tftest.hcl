@@ -3,7 +3,8 @@
 # redrives to the FIFO dead-letter queue; the dispatcher's policy on lambda_exec grants exactly its
 # four rights on exactly their resources, and the consumers' exactly theirs; the research tick
 # takes one job at a time, at most worker_concurrency at once, never fewer than 2; the dispatcher
-# runs every minute with its own log group; and the heartbeat alarm breaches when ticks stop.
+# runs every minute with its own log group, and neither Scheduler nor Lambda retries a failed tick;
+# the heartbeat alarm breaches when ticks stop; and both dead-letter alarms fire on a single job.
 
 mock_provider "aws" {
   mock_data "aws_iam_policy_document" {
@@ -259,7 +260,17 @@ run "the_dispatcher_runs_every_minute_as_lambda_exec_with_its_own_log_group" {
 
   assert {
     condition     = aws_scheduler_schedule.dispatcher.target[0].retry_policy[0].maximum_retry_attempts == 0
-    error_message = "a missed minute is never retried: the next tick covers it"
+    error_message = "Scheduler never retries delivering a tick: the next tick covers it"
+  }
+
+  assert {
+    condition     = aws_lambda_function_event_invoke_config.dispatcher.function_name == "acme-dev-dispatcher" && aws_lambda_function_event_invoke_config.dispatcher.maximum_retry_attempts == 0
+    error_message = "nor does Lambda retry a failed async tick: a replay can run beside the next tick with the same last_tick"
+  }
+
+  assert {
+    condition     = aws_lambda_function_event_invoke_config.dispatcher.maximum_event_age_in_seconds == 60
+    error_message = "a tick event held over a minute is dropped: a newer tick has covered its window"
   }
 
   assert {
@@ -296,6 +307,11 @@ run "the_heartbeat_breaches_when_no_tick_finishes_for_a_quarter_of_an_hour" {
   }
 
   assert {
+    condition     = aws_cloudwatch_metric_alarm.dispatcher_heartbeat.datapoints_to_alarm == aws_cloudwatch_metric_alarm.dispatcher_heartbeat.evaluation_periods
+    error_message = "every period of the quarter hour must be quiet: one quiet five minutes is not a stopped dispatcher"
+  }
+
+  assert {
     condition     = aws_cloudwatch_metric_alarm.dispatcher_heartbeat.comparison_operator == "LessThanThreshold" && aws_cloudwatch_metric_alarm.dispatcher_heartbeat.threshold == 1
     error_message = "fewer than one finished tick is an alarm"
   }
@@ -329,7 +345,29 @@ run "the_alarms_are_named_for_the_environment_and_notify_the_alerts_topic" {
 
   assert {
     condition     = aws_cloudwatch_metric_alarm.work_dlq_messages.dimensions["QueueName"] == "acme-dev-work-dlq.fifo" && aws_cloudwatch_metric_alarm.work_dlq_received.dimensions["QueueName"] == "acme-dev-work-dlq.fifo"
-    error_message = "both depths of the dead-letter queue"
+    error_message = "both alarms watch the work queue's dead-letter queue"
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.work_dlq_messages.namespace == "AWS/SQS" &&
+      aws_cloudwatch_metric_alarm.work_dlq_messages.metric_name == "ApproximateNumberOfMessagesVisible" &&
+      aws_cloudwatch_metric_alarm.work_dlq_messages.statistic == "Maximum" &&
+      aws_cloudwatch_metric_alarm.work_dlq_messages.comparison_operator == "GreaterThanThreshold" &&
+      aws_cloudwatch_metric_alarm.work_dlq_messages.threshold == 0
+    )
+    error_message = "one job still visible on the dead-letter queue: dlq_handler could not take it"
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.work_dlq_received.namespace == "AWS/SQS" &&
+      aws_cloudwatch_metric_alarm.work_dlq_received.metric_name == "NumberOfMessagesReceived" &&
+      aws_cloudwatch_metric_alarm.work_dlq_received.statistic == "Sum" &&
+      aws_cloudwatch_metric_alarm.work_dlq_received.comparison_operator == "GreaterThanThreshold" &&
+      aws_cloudwatch_metric_alarm.work_dlq_received.threshold == 0
+    )
+    error_message = "one job received from the dead-letter queue at all: a job that failed three times"
   }
 
   assert {

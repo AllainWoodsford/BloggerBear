@@ -1610,7 +1610,9 @@ def put_failed_execution(
     """Write a FailedExecutions item and return it.
 
     `kind` says what failed when it is not a daily_cycle run: "model_pricing" is a price the
-    model catalog's review put back (common/model_catalog.py). A DLQ record has none.
+    model catalog's review put back (common/model_catalog.py), and "<job>_job" (`research_job`) a
+    work-queue job that reached work-dlq.fifo (dlq_handler.py). Only a daily_cycle DLQ record has
+    none, and readers take a record with none for a daily run that ran out of retries.
 
     `topic_id` and `error` may be None/malformed if the DLQ message body
     didn't parse as expected -- `raw_message` (the untouched SQS message

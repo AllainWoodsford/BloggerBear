@@ -182,6 +182,19 @@ resource "aws_lambda_function" "dispatcher" {
   }
 }
 
+# EventBridge Scheduler hands the tick to Lambda's asynchronous queue, so the schedule's own
+# retry_policy below never sees the function fail, and Lambda retries a failed async invoke twice by
+# default, about one and three minutes later. The dispatcher raises on purpose (so its Errors alarm
+# fires), and such a replay can run beside the next scheduled tick, both starting from the same
+# last_tick, and count the same shadow turns twice (in Q2, spend daily_starts_per_tick twice). A
+# failed tick needs no retry: the next one looks back to last_tick. An event held longer than a
+# minute (60 s, the least Lambda accepts) is dropped: a newer tick has already covered its window.
+resource "aws_lambda_function_event_invoke_config" "dispatcher" {
+  function_name                = aws_lambda_function.dispatcher.function_name
+  maximum_retry_attempts       = 0
+  maximum_event_age_in_seconds = 60
+}
+
 # Named to end in -scheduler-invoke: the deploy role may manage only roles that fit its patterns
 # (infra/bootstrap/main.tf, LambdaExecRole), and this is the one for a schedule's role.
 resource "aws_iam_role" "dispatcher_schedule" {
@@ -209,11 +222,15 @@ resource "aws_iam_role_policy" "dispatcher_schedule" {
   })
 }
 
-# Every minute, never retried: a minute the dispatcher missed costs nothing, since the next tick
-# looks back to the last one that finished (last_tick on the pipeline config row).
+# Every minute, never retried: neither Scheduler's delivery (retry_policy, below) nor Lambda's async
+# invoke (aws_lambda_function_event_invoke_config.dispatcher, above) runs a failed tick again. A
+# minute the dispatcher missed costs nothing, since the next tick looks back to the last one that
+# finished (last_tick on the pipeline config row). Made after the invoke config, so the first tick
+# already runs with Lambda's retries off.
 resource "aws_scheduler_schedule" "dispatcher" {
   name                = local.name
   schedule_expression = "rate(1 minute)"
+  depends_on          = [aws_lambda_function_event_invoke_config.dispatcher]
 
   flexible_time_window {
     mode = "OFF"
