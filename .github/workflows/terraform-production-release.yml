@@ -74,8 +74,10 @@ jobs:
     # PROMPT_AS_ASSET_ENABLED wins over the repository's, so production can stay off while dev
     # tries it.
     # TF_VAR_prompts_publisher_role_arn: the role the prompts publisher workflow signs in as for
-    # production (gha-<prefix>-prod-prompts, from infra/bootstrap). A secret on the `production`
-    # environment, like the deploy role's ARN; unset is an empty string, "no publisher yet".
+    # production (gha-<prefix>-prod-prompts, from infra/bootstrap). A repository-level secret, not
+    # a `production` one like the deploy role's ARN: the prompts workflow will also publish under
+    # `production-prompts`, and an environment's secret reaches only its own jobs. Unset is an
+    # empty string, "no publisher yet".
     env:
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_PROD || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_PROD || vars.WAF_ADMIN_ALLOWLIST || 'true' }}

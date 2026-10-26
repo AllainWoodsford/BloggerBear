@@ -26,6 +26,16 @@ output "prod_deploy_role_arn" {
   description = "Set this as the GitHub Actions secret AWS_PROD_DEPLOY_ROLE_ARN on the `production` environment (scripts/setup_repo.py asks for it)."
 }
 
+output "dev_prompts_role_arn" {
+  value       = aws_iam_role.gha_dev_prompts.arn
+  description = "Set this as the repository-level GitHub Actions secret AWS_DEV_PROMPTS_ROLE_ARN (scripts/setup_repo.py asks for it): the role the prompts publisher signs in as to write dev's prompts bucket. Repository level, like the dev deploy role's: the dev publish runs in no environment."
+}
+
+output "prod_prompts_role_arn" {
+  value       = aws_iam_role.gha_prod_prompts.arn
+  description = "Set this as the repository-level GitHub Actions secret AWS_PROD_PROMPTS_ROLE_ARN (scripts/setup_repo.py asks for it): the role the prompts publisher signs in as to write production's prompts bucket. Repository level, not the `production` environment: production's prompts are published under both `production-prompts` and `production`, and an environment's secret reaches only its own jobs. The role's trust policy is what limits it to those two."
+}
+
 output "hosted_zone_id" {
   value       = one(aws_route53_zone.site[*].zone_id)
   description = "Route 53 hosted zone ID for var.domain_name (null when no domain is set). Set this as `hosted_zone_id` in infra/environments/production/terraform.tfvars."
