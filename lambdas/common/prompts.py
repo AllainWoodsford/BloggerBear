@@ -14,10 +14,13 @@ change. The form is strict (lower-case letters and underscores, no spaces), so a
 the text, `{"verdicts"` in the reviewer prompts included, is literal. Rendering is one pass over
 the template and never re-scans a value: a draft that contains `{{x}}` stays `{{x}}`. A template
 is accepted only when every required placeholder is present, every placeholder is one the spec
-names, every locked block appears exactly once, in the spec's order, and nothing but the locked
-blocks (and whitespace) follows the first of them, so the guardrails always end the prompt; the
-rendered text must fit `max_chars`. The vanilla is held to the same rules when its spec is
-built, and its pinned sha256 is checked then, so a registry entry cannot drift unnoticed.
+names, every locked block appears exactly once, in the spec's order, nothing but the locked
+blocks (and whitespace) follows the first of them, so the guardrails always end the prompt, and
+the template is no longer than `max_chars`. Size is a rule on the template, like the others, not
+on the rendered text: the caller's values are the same whichever template renders them, so a
+vanilla served in an asset's place would be as long. `validate` holds every rule: the publisher's
+lint calls it on each file, `get_prompt` on each asset it reads, and a spec on its own vanilla
+when it is built, with the pinned sha256 checked then, so a registry entry cannot drift unnoticed.
 
 **The checks on an asset,** in order, each with the fallback code it fails with: the deployment's
 switch (`assets_off`: PROMPT_AS_ASSET_ENABLED, with the bucket and hash table named), the
@@ -25,8 +28,8 @@ switch (`assets_off`: PROMPT_AS_ASSET_ENABLED, with the bucket and hash table na
 `no_files`), the arm's `version` object tag (`s3_error`, `no_version_tag`), the pause list
 (`paused`), the body (`s3_error`, `decode_error`), the hash table (`hash_lookup_failed`,
 `hash_unapproved`: the row for the file's sha256 must say `live`, or `retired` within
-RETIRE_GRACE_S), the grammar (`missing_placeholder`, `unknown_placeholder`, `locked_missing`,
-`locked_order`) and the size (`too_large`). Every fallback but the deployment switch's writes one
+RETIRE_GRACE_S), and the template rules (`missing_placeholder`, `unknown_placeholder`,
+`locked_missing`, `locked_order`, `too_large`). Every fallback but the deployment switch's writes one
 `prompt_fallback` evidence line (common/evidence.py; the observability module alarms on it): a
 deployment that has not turned assets on has nothing to fall back from, and its alarm stays quiet.
 
@@ -104,15 +107,15 @@ _CODE = r"[a-z][a-z0-9_]{0,39}"
 # A prompt id is two evidence codes (the Lambda, the prompt), so the fallback line can carry both.
 _PROMPT_ID = re.compile(rf"^{_CODE}/{_CODE}$")
 _PAUSED_ENTRY = re.compile(rf"^{_CODE}/{_CODE}@v[1-9][0-9]*$")
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
 class PromptSpec:
     """One prompt as the code knows it: its id, the vanilla template with its version and pinned
     sha256, the placeholders it takes (`required` and `optional` values, `locked` blocks in the
-    order they must appear), how long the rendered text may be, and whether it may ever be read
-    from S3 (`asset=False`: the code-only prompts, served as `vanilla:<version>` always)."""
+    order they must appear), how long a template may be (`max_chars`, the vanilla included), and
+    whether it may ever be read from S3 (`asset=False`: the code-only prompts, served as
+    `vanilla:<version>` always)."""
 
     prompt_id: str
     vanilla: str
@@ -185,8 +188,9 @@ def sha256_text(text: str) -> str:
 
 
 def validate(spec: PromptSpec, template: str) -> str | None:
-    """Why `template` cannot stand in for `spec`'s prompt (a fallback code), or None when it can.
-    The size rule is not here: it applies to the rendered text (`get_prompt`)."""
+    """Why `template` cannot stand in for `spec`'s prompt (a fallback code), or None when it can:
+    every rule of section 4.1, in its order, the size last. The rules are on the template alone,
+    never on the caller's values, so the lint, the load and the vanilla's own check agree."""
     values, locked_seen, tail_start = set(), [], None
     for match in PLACEHOLDER.finditer(template):
         is_locked, name = match.group(1) is not None, match.group(2)
@@ -210,6 +214,8 @@ def validate(spec: PromptSpec, template: str) -> str | None:
     # of the asset's (and no value's) can follow the guardrails.
     if tail_start is not None and _LOCKED_PLACEHOLDER.sub("", template[tail_start:]).strip():
         return "locked_order"
+    if len(template) > spec.max_chars:
+        return "too_large"
     return None
 
 
@@ -390,13 +396,14 @@ def _tags(key: str) -> dict[str, str]:
     return {tag["Key"]: tag["Value"] for tag in response.get("TagSet", [])}
 
 
-def _object(key: str, sha_hint: str | None) -> tuple[str, str]:
-    """(sha256, text) of the object at `key`: its sha cached by key and its body by sha, both for
-    the TTL, so the same bytes under two keys are read once. `sha_hint` is the publisher's `sha256`
-    tag, a way into the body cache only: a body is cached under the sha of the bytes actually read,
-    so what comes back has the sha it is served under whatever the tag says. UnicodeDecodeError for
-    a body that is not UTF-8."""
-    sha = _cache_get(("object", key)) or sha_hint
+def _object(key: str) -> tuple[str, str]:
+    """(sha256, text) of the object at `key`: the sha of the bytes read is cached under this key
+    and the body under that sha, both for the TTL, and the body is fetched whenever this key's own
+    cached sha has expired. The publisher's `sha256` tag is never read: what comes back is always
+    this key's own bytes with the sha they hash to, so a wrong tag can neither change the hash row
+    checked nor serve another file's text under this key's version. UnicodeDecodeError for a body
+    that is not UTF-8."""
+    sha = _cache_get(("object", key))
     if sha is not None:
         text = _cache_get(("body", sha))
         if text is not None:
@@ -461,11 +468,8 @@ def _read_asset(spec: PromptSpec) -> tuple[str | None, str | None, str | None]:
         return None, None, "no_version_tag"
     if f"{spec.prompt_id}@{version}" in settings["paused_versions"]:
         return None, version, "paused"
-    sha_hint = tags.get("sha256")
-    if not isinstance(sha_hint, str) or not _SHA256.match(sha_hint):
-        sha_hint = None
     try:
-        sha, template = _object(key, sha_hint)
+        sha, template = _object(key)
     except UnicodeDecodeError:
         return None, version, "decode_error"
     except Exception as exc:  # noqa: BLE001
@@ -510,8 +514,5 @@ def get_prompt(prompt_id: str, values: dict | None = None, locked: dict | None =
         return _vanilla(spec, values, locked, "assets_off")
     template, version, code = _read_asset(spec)
     if code is None:
-        text = render(spec, template, values, locked)
-        if len(text) <= spec.max_chars:
-            return Prompt(text, prompt_id, version, SOURCE_ASSET, None)
-        code = "too_large"
+        return Prompt(render(spec, template, values, locked), prompt_id, version, SOURCE_ASSET, None)
     return _fallback(spec, values, locked, code, version)

@@ -6,6 +6,7 @@ asset served, and every way it falls back to the vanilla with its code and its e
 from __future__ import annotations
 
 import hashlib
+import time
 from datetime import UTC, datetime, timedelta
 
 import boto3
@@ -261,7 +262,22 @@ def test_a_spec_without_locked_blocks_accepts_text_anywhere():
     assert prompts.validate(CODE_ONLY, "Tail text {{draft}} and more text.\n") is None
 
 
+def test_a_template_longer_than_max_chars_fails_with_too_large_and_one_of_exactly_max_chars_passes():
+    tail = "{{topic}}\n{{locked:rules}}\n{{locked:tone}}\n"
+    fits = "x" * (SPEC.max_chars - len(tail)) + tail
+    assert len(fits) == 2000 and prompts.validate(SPEC, fits) is None
+    assert prompts.validate(SPEC, "x" + fits) == "too_large"  # 2001 characters
+    # The size is the last rule: a template that breaks another one is refused by that one's code.
+    assert prompts.validate(SPEC, "x" * 2001 + "{{locked:rules}}\n{{locked:tone}}\n") == "missing_placeholder"
+
+
 # --- PromptSpec ------------------------------------------------------------------------------------
+
+
+def test_a_spec_whose_vanilla_is_longer_than_max_chars_is_refused_and_one_that_fits_is_built():
+    with pytest.raises(ValueError, match="too_large"):
+        spec(max_chars=len(VANILLA) - 1)
+    assert spec(max_chars=len(VANILLA)).max_chars == len(VANILLA)
 
 
 def test_a_spec_whose_sha_does_not_match_its_vanilla_is_refused_at_construction():
@@ -438,17 +454,29 @@ def test_a_retired_hash_past_the_grace_falls_back_with_hash_unapproved(aws, caps
     assert [(line["version"], line["code"]) for line in fallback_lines(capsys)] == [("v2", "hash_unapproved")]
 
 
-def test_a_retired_row_is_read_in_utc_whatever_its_offset_or_with_none(aws):
-    retired = NOW - timedelta(seconds=100)
-    forms = (
-        retired.astimezone().isoformat(),
-        retired.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        retired.replace(tzinfo=None).isoformat(),
-    )
-    for written in forms:
-        prompts._reset()
-        publish(aws, ASSET, "v2", status="retired", retired_at=written)
-        assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).source == "asset", written
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset is POSIX only")
+def test_a_retired_row_is_read_in_utc_whatever_its_offset_or_with_none(aws, monkeypatch):
+    try:
+        with monkeypatch.context() as m:  # puts TZ back on exit, before the finally's tzset
+            # A positive offset: on a UTC host a naive time read as local time is the same instant,
+            # and under a negative offset it would read as a future time, accepted either way.
+            m.setenv("TZ", "Australia/Sydney")
+            time.tzset()
+            for age, served in ((100, "asset"), (301, "vanilla")):
+                retired = NOW - timedelta(seconds=age)
+                forms = (
+                    retired.astimezone().isoformat(),
+                    retired.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    retired.replace(tzinfo=None).isoformat(),
+                )
+                assert forms[0].endswith("+11:00")  # the offset form really carries an offset
+                for written in forms:
+                    prompts._reset()
+                    publish(aws, ASSET, "v2", status="retired", retired_at=written)
+                    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+                    assert got.source == served, (age, written)
+    finally:
+        time.tzset()
 
 
 @pytest.mark.parametrize(
@@ -470,6 +498,44 @@ def test_the_hash_row_is_read_by_the_files_own_sha_not_its_tag(aws):
     aws["tables"].Table(HASHES).delete_item(Key={"prompt_hash": sha256_text(ASSET)})
     aws["tables"].Table(HASHES).put_item(Item={"prompt_hash": sha256_text("other"), "status": "live"})
     assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "hash_unapproved"
+
+
+def test_a_file_tagged_with_another_arms_sha_serves_its_own_text_in_a_warm_container(aws):
+    publish(aws, ASSET, "v2")
+    key = publish(aws, ASSET_B, "v3")
+    # v3's own bytes have a live row, but its tag names v2's sha, whose body the container holds.
+    tags = [{"Key": "version", "Value": "v3"}, {"Key": "sha256", "Value": sha256_text(ASSET)}]
+    aws["s3"].inner.put_object_tagging(Bucket=BUCKET, Key=key, Tagging={"TagSet": tags})
+    keys = [f"k{i}" for i in range(100)]
+    v2_key = next(k for k in keys if prompts.arm_index("daily_cycle/draft", 2, k) == 0)
+    v3_key = next(k for k in keys if prompts.arm_index("daily_cycle/draft", 2, k) == 1)
+    for _ in range(2):  # v2's body read first, then v3 under the misleading tag, then both again warm
+        for run_key, version, asset in ((v2_key, "v2", ASSET), (v3_key, "v3", ASSET_B)):
+            with prompts.bind_run(run_key):
+                got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+            text = prompts.render(SPEC, asset, VALUES, LOCKED)
+            assert got == Prompt(text, "daily_cycle/draft", version, "asset"), version
+    assert aws["s3"].calls["get_object"] == 2  # each file's own bytes, once each for the TTL
+
+
+def test_an_unapproved_arm_falls_back_while_the_live_arm_of_the_same_prompt_is_served(aws, capsys):
+    publish(aws, ASSET, "v2")
+    publish(aws, ASSET_B, "v3", status=None)  # no hash row: never approved
+    keys = [f"k{i}" for i in range(100)]
+    live_key = next(k for k in keys if prompts.arm_index("daily_cycle/draft", 2, k) == 0)
+    bad_key = next(k for k in keys if prompts.arm_index("daily_cycle/draft", 2, k) == 1)
+    # The live arm first, in the same container: its approval must not carry over to the other.
+    with prompts.bind_run(live_key):
+        assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).version == "v2"
+    with prompts.bind_run(bad_key):
+        assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "hash_unapproved"
+    assert [(line["version"], line["code"]) for line in fallback_lines(capsys)] == [("v3", "hash_unapproved")]
+    # And the other way round: the unapproved arm's missing row must not refuse the live one.
+    prompts._reset()
+    with prompts.bind_run(bad_key):
+        assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "hash_unapproved"
+    with prompts.bind_run(live_key):
+        assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).version == "v2"
 
 
 # --- get_prompt: the fallbacks ----------------------------------------------------------------------
@@ -606,15 +672,21 @@ def test_an_asset_failing_a_template_rule_falls_back_with_that_rule_code(aws, ca
     assert [(line["version"], line["code"]) for line in fallback_lines(capsys)] == [("v2", code)]
 
 
-def test_the_size_rule_applies_to_the_rendered_text(aws, capsys):
-    publish(aws, "{{topic}}\n{{locked:rules}}\n{{locked:tone}}\n", "v2")  # a short template
-    long_values = {"topic": "x" * 1990}  # rendered: 1990 + the locked blocks and newlines > 2000
-    got = prompts.get_prompt("daily_cycle/draft", long_values, LOCKED)
-    assert (got.source, got.fallback_code) == ("vanilla", "too_large")
+def test_an_asset_longer_than_max_chars_falls_back_with_too_large(aws, capsys):
+    tail = "{{topic}}\n{{locked:rules}}\n{{locked:tone}}\n"
+    publish(aws, "x" * (SPEC.max_chars + 1 - len(tail)) + tail, "v2")  # 2001 characters
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert (got.source, got.fallback_code, got.text) == ("vanilla", "too_large", vanilla_text())
     assert [(line["version"], line["code"]) for line in fallback_lines(capsys)] == [("v2", "too_large")]
-    prompts._reset()
-    # 1980 characters plus the two locked blocks and three newlines (11) fit within 2000.
-    assert prompts.get_prompt("daily_cycle/draft", {"topic": "x" * 1980}, LOCKED).source == "asset"
+
+
+def test_the_size_rule_is_on_the_template_so_long_values_are_served_from_the_asset(aws, capsys):
+    publish(aws, "{{topic}}\n{{locked:rules}}\n{{locked:tone}}\n", "v2")  # a short template
+    # Rendered: 5000 + the two locked blocks and three newlines (12), far past max_chars. The vanilla
+    # would be as long with the same values, so falling back would cure nothing.
+    got = prompts.get_prompt("daily_cycle/draft", {"topic": "x" * 5000}, LOCKED)
+    assert (got.source, got.version, len(got.text)) == ("asset", "v2", 5012)
+    assert fallback_lines(capsys) == []
 
 
 def test_the_asset_text_is_normalised_to_newline_line_ends(aws):
@@ -729,7 +801,7 @@ def test_the_listing_tags_body_hash_row_and_settings_are_cached_for_the_ttl(aws,
         assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).source == "asset"
     assert aws["s3"].calls == {"get_paginator": 1, "get_object_tagging": 1, "get_object": 1}
     assert reads == {"hash": 1, "settings": 1}
-    aws["clock"].advance(prompts.CACHE_TTL_S - 1)
+    aws["clock"].advance(299)  # section 4.1: TTL 300 s
     prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
     assert aws["s3"].calls == {"get_paginator": 1, "get_object_tagging": 1, "get_object": 1}
     aws["clock"].advance(2)
@@ -744,19 +816,11 @@ def test_a_newly_published_version_is_seen_within_the_ttl_and_a_pause_within_the
     aws["s3"].inner.delete_object(Bucket=BUCKET, Key="daily_cycle/draft/latest/v2.txt")
     publish(aws, ASSET_B, "v3")
     settings_row(aws, paused_versions=["daily_cycle/draft@v3"])
-    # Within the TTL the cache still serves v2; after it, v3 is listed and found paused.
+    # Within the TTL the cache still serves v2; after it (300 s, section 4.1), v3 is listed and found
+    # paused. Section 4.2's 600 s worst case is this TTL plus RETIRE_GRACE_S.
     assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).version == "v2"
-    aws["clock"].advance(prompts.CACHE_TTL_S + 1)
+    aws["clock"].advance(301)
     assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "paused"
-
-
-def test_the_same_bytes_under_two_keys_are_read_once(aws):
-    publish(aws, ASSET, "v2")
-    publish(aws, ASSET, "v3", key="daily_cycle/draft/latest/v3.txt")
-    for key in (f"k{i}" for i in range(20)):
-        with prompts.bind_run(key):
-            assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).source == "asset"
-    assert aws["s3"].calls["get_object"] == 1 and aws["s3"].calls["get_object_tagging"] == 2
 
 
 # --- the settings row helpers ------------------------------------------------------------------------
