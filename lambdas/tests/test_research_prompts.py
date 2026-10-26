@@ -485,6 +485,7 @@ def answered(monkeypatch):
         ("ships", "vision_triage/ships_system", _LEGACY_SHIPS_SYSTEM),
         ("rail_access", "vision_triage/rail_system", _LEGACY_RAIL_SYSTEM),
     ],
+    ids=["ships", "rail_access"],
 )
 def test_the_triage_sends_its_tasks_pre_migration_system_prompt_and_its_trail_names_it(
     answered, task, prompt_id, legacy
