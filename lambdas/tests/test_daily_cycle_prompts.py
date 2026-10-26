@@ -2,10 +2,10 @@
 and "PR6–PR10. Migrate prompts" in docs/enhancements/model-ranch-prompt-assets-evals.md): each
 v1.txt in prompts/ is the vanilla it was migrated from; with assets off, every prompt `_ideate`,
 `_draft_article` and `_draft_title` send is byte for byte the text the inline f-strings built
-before the migration, across the inputs that change it; the largest realistic render fits each
-spec's max_chars; an approved asset is rendered with the call site's values and locked blocks and
-its version reaches the lineage, and one that leaves out any value is refused for the vanilla; and
-the handler binds the run's id for the A/B draw.
+before the migration, across the inputs that change it; the largest realistic render stays well
+under each spec's template ceiling; an approved asset is rendered with the call site's values and
+locked blocks and its version reaches the lineage, and one that leaves out any value is refused for
+the vanilla; and the handler binds the run's id for the A/B draw.
 
 The `_legacy_*` builders below are the call sites' code as it was before the move, frozen here with
 the v1 files' hashes as the migration's proof. They are not a standing byte gate (section 2): a
@@ -346,8 +346,11 @@ def test_with_assets_off_no_prompt_fallback_line_is_written(capsys):
     assert evidence.PREFIX not in capsys.readouterr().out
 
 
-def test_the_largest_realistic_render_of_each_prompt_fits_its_max_chars():
-    """Every value at the limit the code or the Admin API holds it to: the findings block at
+def test_the_largest_realistic_render_of_each_prompt_stays_well_under_its_template_ceiling():
+    """max_chars limits a template, never a render (common/prompts.validate), and no code holds a
+    prompt to it. This test holds the call sites' caps instead, so the largest prompt each one sends
+    stays well under the ceiling chosen for its template, and a value that lost its cap fails here.
+    Every value is at the limit the code or the Admin API holds it to: the findings block at
     SUMMARIES_MAX_CHARS, the gear at MAX_GUIDANCE_CHARS, the editorial goal fields, a revisit
     rotation's primary focus (which stands in for the topic's own) and a day subject's mandate and
     style at MAX_GOAL_TEXT_CHARS, RECENT_TITLES_LIMIT long titles, a full few-shot excerpt, a

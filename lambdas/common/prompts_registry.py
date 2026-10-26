@@ -83,11 +83,14 @@ _TITLE = (
     "{{locked:reply_rule}}{{locked:title_retry}}"
 )
 
-# max_chars is measured on the rendered text. The findings block is up to 40,000 characters
-# (daily_cycle_handler.SUMMARIES_MAX_CHARS) and the gear's guidance up to 4,000
-# (equipment.MAX_GUIDANCE_CHARS); with every other value at its own limit a render stays under
-# 55,000, so 64,000 leaves room without letting an asset grow without bound. A title is its angle
-# (40 words at most) and two short rules.
+# max_chars bounds how long a template may be, an asset's or the vanilla (prompts.validate), not the
+# rendered prompt: the values are the caller's, the same whichever template renders them. The
+# drafting vanillas are under 600 characters, and 64,000 lets an asset grow without letting it grow
+# without bound. For scale, it is the values that make a prompt long: the findings block is up to
+# 40,000 characters (daily_cycle_handler.SUMMARIES_MAX_CHARS) and the gear's guidance up to 4,000
+# (equipment.MAX_GUIDANCE_CHARS), and with every other value at its own limit a render stays under
+# 55,000. The title's template is one sentence around its angle and two locked rules, so 4,000 is
+# ample.
 _DRAFTING_MAX_CHARS = 64_000
 _TITLE_MAX_CHARS = 4_000
 
@@ -253,12 +256,14 @@ Draft:
 {{draft}}
 """
 
-# max_chars, measured on the rendered text as above. A review is its draft (up to
-# fresh_review.DRAFT_MAX_CHARS, with a title), its findings (FINDINGS_MAX_CHARS), the adapter's
-# evidence (base.REVIEW_EVIDENCE_MAX_CHARS) and, for the revision, up to MAX_CLAIMS claims of two
-# MAX_FIELD_CHARS fields each: under 50,000 at the limits. The compliance review is a whole draft (a
-# retry's 8,192 tokens) and its research (compliance.MAX_SOURCE_CHARS): under 50,000 too. 64,000
-# leaves room, as for the daily cycle's drafting prompts.
+# max_chars bounds the template, as for the drafting prompts above, not the rendered prompt. The
+# review vanillas are under 1,400 characters, and 64,000 is the same ceiling. The code-only
+# compliance specs never read an asset, so only their vanillas are held to it. For scale, the values
+# a review renders are its draft (up to fresh_review.DRAFT_MAX_CHARS, with a title), its findings
+# (FINDINGS_MAX_CHARS), the adapter's evidence (base.REVIEW_EVIDENCE_MAX_CHARS) and, for the
+# revision, up to MAX_CLAIMS claims of two MAX_FIELD_CHARS fields each: under 50,000 at their
+# limits. The compliance review is a whole draft (a retry's 8,192 tokens) and its research
+# (compliance.MAX_SOURCE_CHARS): under 50,000 too.
 _REVIEWS_MAX_CHARS = 64_000
 
 REVIEW_SPECS = (
