@@ -24,11 +24,34 @@ again. The claim strings are constants here, and the tests hold them to the spec
 **Shadow mode** (`dispatch_shadow`, on by default): a topic still on its schedules is never sent
 or started; the tick records what it would have done on the row (`shadow_last_research_dispatch_at`,
 `shadow_last_daily_dispatch_at`) and counts `shadow_mismatches` against what the Scheduler path
-really did: a research turn whose previous computed turn is more than five minutes from the minute
-`last_research_at` moved, and a daily turn whose previous day saw no execution of this topic. A
-topic whose `dispatch_mode` is `queue` has no schedules left, so it is dispatched for real whatever
-the shadow setting says; a topic on its schedules is only ever shadowed. Zero mismatches over a
-day is what the per-topic cutover (Q2) asks for.
+really did. A topic whose `dispatch_mode` is `queue` has no schedules left, so it is dispatched for
+real whatever the shadow setting says; a topic on its schedules is only ever shadowed. Zero
+mismatches over a day is what the per-topic cutover (Q2) asks for, so a mismatch is only ever
+counted where the two paths really disagreed:
+
+- **research**: a turn is recorded when the live path would have claimed it (the topic due, and
+  no record younger than the claim's expiry, research_claim_expiry), or when the Scheduler path's
+  own research tick, which fires in the same minute and may read the row first, has already
+  stamped `last_research_at` within SHADOW_TOLERANCE of now. A recorded turn is judged once, by the
+  tick whose window `(last_tick, now]` holds the turn plus SHADOW_TOLERANCE: a mismatch when
+  `last_research_at` is missing or more than SHADOW_TOLERANCE from the turn (the research tick
+  stamps its start within its 120 s timeout). Judging after the fact rather than at the next turn
+  means neither order of the two ticks miscounts, and a missed turn is seen before the next turn's
+  stamp can overwrite the evidence. A `rate(...)` research cadence is recorded the same way (once
+  an interval) but never judged: every minute is its turn, the Scheduler's firing minute for a rate
+  cannot be derived from the expression, and the first due minute sits exactly DUE_TOLERANCE
+  before the next heartbeat, so any comparison would sit on the tolerance edge. Known limit: a
+  heartbeat that runs more than SHADOW_TOLERANCE off the computed minute, early or late, leaves
+  the topic not due at that minute (just researched, or its interval not yet out), so those turns
+  are neither recorded nor judged; at most the first turn after the drift began is counted.
+  Judging each move of `last_research_at` instead would count every operator run-now as one.
+- **daily**: a turn whose previous recorded day saw no execution of this topic (_daily_ran).
+
+**Cutover day.** The Scheduler may already have run today's daily cycle when a topic is flipped to
+the queue. The live path counts a same-day shadow daily record as today's dispatch (a live topic
+never writes one, so it can only mean the Scheduler owned today), and the Q2 flip must also write
+`last_daily_dispatched_on` (today, in the topic's zone) when today's turn has already passed,
+which covers a flip made while shadow mode was off.
 
 **Settings** are two more fields of the `pipeline` config row (SETTINGS below, the model catalog's
 pattern): `dispatch_shadow` and `daily_starts_per_tick` (1 to 10). `last_tick` on the same row is
@@ -99,8 +122,9 @@ RESEARCH_CLAIM_CONDITION = (
 DAILY_RELEASE_CONDITION = "last_daily_dispatched_on = :today"
 RESEARCH_RELEASE_CONDITION = "research_claimed_at = :now"
 
-# A research mismatch in shadow mode: the computed turn and the minute last_research_at moved differ
-# by more than this.
+# A research mismatch in shadow mode: the recorded turn and the minute last_research_at moved differ
+# by more than this. It is also how long after a turn the turn is judged, and how recent a stamp
+# must be to say the Scheduler path's tick took this very turn.
 SHADOW_TOLERANCE = timedelta(minutes=5)
 # How many pages of executions the daily shadow check reads back before giving up (newest first,
 # 100 a page).
@@ -185,9 +209,14 @@ def _iso(moment: datetime) -> str:
 
 
 def research_message(topic_id: str, *, now: datetime) -> dict:
-    """The body of a research job. The tick ignores `job` and re-evaluates is_due at
-    `due_checked_at`, so a message that waited in the queue is harmless; `force` is only ever
-    true from an operator."""
+    """The body of a research job; `force` is only ever true from an operator.
+
+    The contract the research tick (Q1) honours for a queue record: it ignores `job`, and it uses
+    `due_checked_at` as the run's time both for its own is_due check and for the last_research_at
+    stamp a successful fetch writes (never moving the stamp backwards), never the time it ran.
+    The dispatcher's next is_due reads that stamp, so a stamp made after a queue wait longer than
+    DUE_TOLERANCE would make the next fixed-minute turn not due and skip a heartbeat. Only under
+    that contract is a message that waited in the queue harmless."""
     return {
         "topic_id": topic_id,
         "job": RESEARCH_JOB,
@@ -353,6 +382,26 @@ def _local_date(value, zone: tzinfo) -> date | None:
     return moment.astimezone(zone).date() if moment else None
 
 
+def _in_window(moment: datetime, last_tick: datetime | None, now: datetime) -> bool:
+    """Whether `moment` falls in this tick's window: `(last_tick, now]` as research_turn reads it
+    (at most MAX_WINDOW long), or the last minute when there is no earlier last_tick. Consecutive
+    windows meet, so a moment falls in exactly one tick's window."""
+    if last_tick is None or last_tick >= now:
+        start = now - timedelta(minutes=1)
+    else:
+        start = max(last_tick, now - cron_match.MAX_WINDOW)
+    return start < moment <= now
+
+
+def _daily_done(topic: dict, today: date, zone: tzinfo) -> bool:
+    """Whether the topic's daily cycle has had today's turn: the dispatcher claimed it, or shadow
+    mode recorded today's turn while the topic was still on its schedules (the cutover day; a live
+    topic never writes a shadow field, so the Scheduler owned today)."""
+    return topic.get("last_daily_dispatched_on") == today.isoformat() or (
+        _local_date(topic.get("shadow_last_daily_dispatch_at"), zone) == today
+    )
+
+
 class Dispatcher:
     """One tick's worth of decisions and sends. The queue and Step Functions clients, the queue URL
     and the state machine ARN are given (the handler builds them from its environment); the
@@ -428,19 +477,21 @@ class Dispatcher:
         zone = _zone(topic)
         interval_hours = resolve_interval_hours(topic, config)
 
-        if cron_match.research_turn(research, last_tick, now) and is_due(
-            now, topic.get("last_research_at"), interval_hours
-        ):
-            if live:
+        research_turn = cron_match.research_turn(research, last_tick, now)
+        if live:
+            if research_turn and is_due(now, topic.get("last_research_at"), interval_hours):
                 if self._send_research(topic_id, now, interval_hours):
                     counts.dispatched += 1
-            else:
-                self._shadow_research(topic, now)
+        else:
+            if not research.is_rate:
+                self._judge_research(topic, last_tick, now)
+            if research_turn:
+                self._shadow_research(topic, now, interval_hours, is_rate=research.is_rate)
 
         if cron_match.daily_turn_passed(daily, now, zone):
             today = now.astimezone(zone).date()
             if live:
-                if topic.get("last_daily_dispatched_on") != today.isoformat() and starts_left > 0:
+                if not _daily_done(topic, today, zone) and starts_left > 0:
                     if self._start_daily(topic_id, today.isoformat()):
                         counts.started += 1
             elif _local_date(topic.get("shadow_last_daily_dispatch_at"), zone) != today:
@@ -492,20 +543,44 @@ class Dispatcher:
 
     # --- shadow mode -------------------------------------------------------------------------------
 
-    def _shadow_research(self, topic: dict, now: datetime) -> None:
-        """Record the turn, and count a mismatch when the previous computed turn and the minute
-        last_research_at moved (the Scheduler path's tick) are more than SHADOW_TOLERANCE apart."""
-        previous = _parse_time(topic.get("shadow_last_research_dispatch_at"))
-        mismatch = 0
-        if previous is not None:
-            moved = _parse_time(topic.get("last_research_at"))
-            if moved is None or abs(moved - previous) > SHADOW_TOLERANCE:
-                mismatch = 1
-                print(
-                    f"dispatcher: shadow research mismatch topic_id={topic['topic_id']} "
-                    f"turn={_iso(previous)} last_research_at={_iso(moved) if moved else None}"
-                )
-        self._write_shadow(topic["topic_id"], "shadow_last_research_dispatch_at", now, mismatch)
+    def _shadow_research(self, topic: dict, now: datetime, interval_hours: int, *, is_rate: bool) -> None:
+        """At a research turn, record it (with no mismatch: _judge_research decides that later)
+        when the live path would have claimed it: the topic is due, and no record is younger than
+        the claim's expiry (RESEARCH_CLAIM_CONDITION's rule), so a rate cadence is recorded once an
+        interval rather than on every due minute. A cron turn is also recorded when the Scheduler
+        path's research tick, firing in the same minute, has already stamped last_research_at
+        within SHADOW_TOLERANCE of now: it took this very turn, and the record must not depend on
+        which of the two ticks read the row first."""
+        recorded = _parse_time(topic.get("shadow_last_research_dispatch_at"))
+        if recorded is not None and _iso(recorded) >= research_claim_expiry(now, interval_hours):
+            return  # the live claim would still hold: no second job this interval
+        moved = _parse_time(topic.get("last_research_at"))
+        stamped_this_turn = not is_rate and moved is not None and abs(now - moved) <= SHADOW_TOLERANCE
+        if stamped_this_turn or is_due(now, topic.get("last_research_at"), interval_hours):
+            self._write_shadow(topic["topic_id"], "shadow_last_research_dispatch_at", now, 0)
+
+    def _judge_research(self, topic: dict, last_tick: datetime | None, now: datetime) -> None:
+        """Judge the recorded research turn once, on the tick whose window holds the turn plus
+        SHADOW_TOLERANCE: by then the Scheduler path's tick of that minute has stamped
+        last_research_at (its start, within its 120 s timeout), and the next turn's stamp has not
+        yet replaced it. A mismatch when last_research_at is missing or more than SHADOW_TOLERANCE
+        from the turn. Never called for a rate cadence (see the module docstring)."""
+        turn = _parse_time(topic.get("shadow_last_research_dispatch_at"))
+        if turn is None or not _in_window(turn + SHADOW_TOLERANCE, last_tick, now):
+            return
+        moved = _parse_time(topic.get("last_research_at"))
+        if moved is not None and abs(moved - turn) <= SHADOW_TOLERANCE:
+            return
+        print(
+            f"dispatcher: shadow research mismatch topic_id={topic['topic_id']} "
+            f"turn={_iso(turn)} last_research_at={_iso(moved) if moved else None}"
+        )
+        self.topics_table.update_item(
+            Key={"topic_id": topic["topic_id"]},
+            UpdateExpression="ADD shadow_mismatches :n",
+            ConditionExpression="attribute_exists(topic_id)",
+            ExpressionAttributeValues={":n": 1},
+        )
 
     def _shadow_daily(self, topic: dict, now: datetime, today: date, zone: tzinfo) -> None:
         """Record today's turn, and count a mismatch when the previous recorded day saw no execution
@@ -525,8 +600,14 @@ class Dispatcher:
 
     def _daily_ran(self, topic_id: str, day: date, zone: tzinfo) -> bool | None:
         """Whether an execution of the daily cycle for `topic_id` started on `day` (a local date):
-        the executions of that day, newest first, each described for its input. None when Step
-        Functions could not be asked."""
+        the executions of that day, newest first, each described for its input; the walk stops at
+        the first execution older than the day. None when Step Functions could not be asked or the
+        pages ran out first.
+
+        The dispatcher's role (`lambda_exec`) needs `states:ListExecutions` on the state machine
+        and `states:DescribeExecution` on its executions (`arn:aws:states:<region>:<account>:
+        execution:<state machine name>:*`), which Q1's module policy grants beside SendMessage and
+        StartExecution. Without them every check is AccessDenied and counts nothing."""
         start = datetime.combine(day, datetime.min.time(), tzinfo=zone)
         end = start + timedelta(days=1)
         try:

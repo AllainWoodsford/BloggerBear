@@ -668,6 +668,21 @@ def test_a_queue_topic_is_dispatched_for_real_whatever_shadow_mode_says(aws_reso
     assert "shadow_last_daily_dispatch_at" not in stored()
 
 
+def test_a_topic_flipped_to_the_queue_after_its_shadowed_turn_starts_nothing_that_day(aws_resources):
+    """Cutover day: shadow mode recorded today's 09:10 turn while the Scheduler still owned it, then
+    the topic was flipped. A tick at 15:10 starts no second cycle; the next day's turn starts one."""
+    put_topics(topic(shadow_last_daily_dispatch_at=DAILY_TURN.isoformat()))  # dispatch_mode queue
+    sfn = MagicMock()
+    run = dispatcher(sfn=sfn)
+
+    assert run.tick(DAILY_TURN + timedelta(hours=6))["started"] == 0  # 15:10 Sydney
+    sfn.start_execution.assert_not_called()
+    assert "last_daily_dispatched_on" not in stored()
+
+    assert run.tick(DAILY_TURN + timedelta(days=1))["started"] == 1
+    assert sfn.start_execution.call_args.kwargs["name"] == "github-trending-2026-10-26-1"
+
+
 def test_an_unparsable_cadence_is_logged_and_skipped_never_guessed(aws_resources, capsys):
     dynamo.put_pipeline_config(stagger_minutes=0)
     put_topics(
@@ -750,37 +765,150 @@ def test_shadow_mode_sends_nothing_and_records_what_it_would_have_done(aws_resou
     assert "research_claimed_at" not in row and "last_daily_dispatched_on" not in row
 
 
-def test_a_shadow_research_turn_compares_the_previous_turn_with_when_last_research_at_moved(aws_resources):
-    dynamo.put_pipeline_config(stagger_minutes=0)
-    now = at("2026-10-25T05:00:00")
-    previous = now - timedelta(hours=1)
-    put_topics(
-        topic("agreed", dispatch_mode="schedule", shadow_last_research_dispatch_at=previous.isoformat(),
-              last_research_at=(previous + timedelta(minutes=2)).isoformat()),
-        topic("late", dispatch_mode="schedule", shadow_last_research_dispatch_at=previous.isoformat(),
-              last_research_at=(previous - timedelta(hours=2)).isoformat()),
-        topic("never", dispatch_mode="schedule", shadow_last_research_dispatch_at=previous.isoformat()),
-        topic("first", dispatch_mode="schedule"),
+def _every_minute(first: datetime, last: datetime) -> list[datetime]:
+    ticks = [first]
+    while ticks[-1] + timedelta(minutes=1) <= last:
+        ticks.append(ticks[-1] + timedelta(minutes=1))
+    return ticks
+
+
+def _replay(run: Dispatcher, *, ticks, stamps=(), topic_id="github-trending") -> list[str]:
+    """Tick the dispatcher at each of `ticks` and, in time order among them, let the Scheduler
+    path's research tick stamp last_research_at (its run_started) at each of `stamps`. Returns
+    the research turns shadow mode recorded, in order."""
+    recorded: list[str] = []
+    for when, is_stamp in sorted([(t, False) for t in ticks] + [(s, True) for s in stamps]):
+        if is_stamp:
+            topics_table().update_item(
+                Key={"topic_id": topic_id},
+                UpdateExpression="SET last_research_at = :t",
+                ExpressionAttributeValues={":t": when.isoformat()},
+            )
+            continue
+        run.tick(when)
+        value = stored(topic_id).get("shadow_last_research_dispatch_at")
+        if value and (not recorded or recorded[-1] != value):
+            recorded.append(value)
+    return recorded
+
+
+def test_neither_order_of_the_two_ticks_in_a_turn_minute_counts_a_mismatch(aws_resources):
+    """The Scheduler path's research tick (cron(5 * * * ? *) for slot 1) and the dispatcher fire in
+    the same minute, in either order: at 10:05 the dispatcher reads first, at 11:05 the stamp lands
+    first, at 12:05 the dispatcher again. Every turn is recorded and none is a mismatch (comparing
+    at the next recorded turn counted 12:05 against 10:05's record)."""
+    put_topics(topic(dispatch_mode="schedule", last_research_at=at("2026-10-25T09:05:02").isoformat()))
+
+    recorded = _replay(
+        dispatcher(),
+        ticks=_every_minute(at("2026-10-25T10:04:03"), at("2026-10-25T12:12:03")),
+        stamps=[at("2026-10-25T10:05:05"), at("2026-10-25T11:05:01"), at("2026-10-25T12:05:05")],
     )
 
-    dispatcher().tick(now)
-
-    assert stored("agreed")["shadow_mismatches"] == 0
-    assert stored("late")["shadow_mismatches"] == 1
-    assert stored("never")["shadow_mismatches"] == 1
-    assert stored("first")["shadow_mismatches"] == 0
-    for name in ("agreed", "late", "never", "first"):
-        assert stored(name)["shadow_last_research_dispatch_at"] == "2026-10-25T05:00:00+00:00"
+    assert recorded == [
+        "2026-10-25T10:05:03+00:00",
+        "2026-10-25T11:05:03+00:00",
+        "2026-10-25T12:05:03+00:00",
+    ]
+    assert stored()["shadow_mismatches"] == 0
 
 
-def test_a_shadow_research_turn_is_only_recorded_when_the_topic_is_due(aws_resources):
-    dynamo.put_pipeline_config(stagger_minutes=0)
-    now = at("2026-10-25T05:00:00")
-    put_topics(topic(dispatch_mode="schedule", last_research_at=(now - timedelta(minutes=10)).isoformat()))
+def test_a_turn_the_scheduler_path_already_stamped_is_recorded_without_a_mismatch(aws_resources):
+    hour_before = RESEARCH_TURN - timedelta(hours=1)
+    put_topics(
+        topic(
+            dispatch_mode="schedule",
+            shadow_last_research_dispatch_at=dispatch._iso(hour_before),
+            last_research_at=(RESEARCH_TURN - timedelta(seconds=20)).isoformat(),
+        )
+    )
+    run = dispatcher()
 
-    dispatcher().tick(now)
+    run.tick(RESEARCH_TURN)  # 22:05:30; the stamp landed at 22:05:10
+
+    assert stored()["shadow_last_research_dispatch_at"] == "2026-10-24T22:05:30+00:00"
+    assert stored()["shadow_mismatches"] == 0
+
+    # The next turn, the dispatcher first and the stamp left as it was: still none.
+    run.tick(RESEARCH_TURN + timedelta(hours=1))
+    assert stored()["shadow_last_research_dispatch_at"] == "2026-10-24T23:05:30+00:00"
+    assert stored()["shadow_mismatches"] == 0
+
+
+def test_a_turn_the_scheduler_path_never_took_is_one_mismatch_even_when_the_next_stamp_lands_first(
+    aws_resources, capsys
+):
+    """10:05 is recorded and nothing stamps it; at 11:05 the stamp lands before the dispatcher
+    reads. The 10:05 turn is judged at 10:10, before 11:05's stamp could hide it."""
+    put_topics(topic(dispatch_mode="schedule", last_research_at=at("2026-10-25T09:05:01").isoformat()))
+
+    recorded = _replay(
+        dispatcher(),
+        ticks=_every_minute(at("2026-10-25T10:04:30"), at("2026-10-25T11:12:30")),
+        stamps=[at("2026-10-25T11:05:01")],
+    )
+
+    assert recorded == ["2026-10-25T10:05:30+00:00", "2026-10-25T11:05:30+00:00"]
+    assert stored()["shadow_mismatches"] == 1
+    assert (
+        "dispatcher: shadow research mismatch topic_id=github-trending turn=2026-10-25T10:05:30+00:00 "
+        "last_research_at=2026-10-25T09:05:01+00:00"
+    ) in capsys.readouterr().out
+
+
+def test_a_recorded_turn_is_judged_once_five_minutes_on_against_when_last_research_at_moved(aws_resources):
+    turn = at("2026-10-25T04:05:30")
+
+    def row(name, **fields):
+        recorded = {"shadow_last_research_dispatch_at": turn.isoformat()}
+        return topic(name, dispatch_mode="schedule", **recorded, **fields)
+
+    put_topics(
+        row("agreed", last_research_at=(turn + timedelta(seconds=40)).isoformat()),
+        row("stamped-first", last_research_at=(turn - timedelta(seconds=20)).isoformat()),
+        row("not-moved", last_research_at=(turn - timedelta(hours=1)).isoformat()),
+        row("early", last_research_at=(turn - timedelta(minutes=7)).isoformat()),
+        row("never"),
+    )
+    dynamo.update_config_row("pipeline", {"last_tick": (turn + timedelta(minutes=4)).isoformat()})
+    run = dispatcher()
+
+    run.tick(turn + timedelta(minutes=5))
+    run.tick(turn + timedelta(minutes=6))  # judged once: the next window no longer holds it
+
+    counted = {name: stored(name).get("shadow_mismatches", 0) for name in
+               ("agreed", "stamped-first", "not-moved", "early", "never")}
+    assert counted == {"agreed": 0, "stamped-first": 0, "not-moved": 1, "early": 1, "never": 1}
+
+
+def test_a_shadow_research_turn_is_not_recorded_while_the_interval_runs(aws_resources):
+    # Ten minutes since the last check: not due, and too long ago to be this turn's own stamp.
+    put_topics(
+        topic(dispatch_mode="schedule", last_research_at=(RESEARCH_TURN - timedelta(minutes=10)).isoformat())
+    )
+
+    dispatcher().tick(RESEARCH_TURN)
 
     assert "shadow_last_research_dispatch_at" not in stored()
+
+
+def test_a_rate_cadence_is_recorded_once_an_interval_and_never_judged(aws_resources):
+    """With the stagger off, rate(1 hour) makes every minute a turn and is_due true from 55 minutes
+    on, exactly DUE_TOLERANCE before the Scheduler's next heartbeat (a minute the expression does
+    not say). Shadow mode records the minute the live claim would take, once an interval, and
+    counts nothing: the comparison would sit on the tolerance edge (here 10:55:03 against
+    11:00:05)."""
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(topic(dispatch_mode="schedule", last_research_at=at("2026-10-25T10:00:02").isoformat()))
+
+    recorded = _replay(
+        dispatcher(),
+        ticks=_every_minute(at("2026-10-25T10:50:03"), at("2026-10-25T12:10:03")),
+        stamps=[at("2026-10-25T11:00:05"), at("2026-10-25T12:00:04")],
+    )
+
+    assert recorded == ["2026-10-25T10:55:03+00:00", "2026-10-25T11:56:03+00:00"]
+    assert stored()["shadow_mismatches"] == 0
 
 
 # 09:00 AEDT on 2026-10-24: the shadow daily turn the day before the one most shadow tests tick at.
@@ -847,6 +975,44 @@ def test_the_previous_day_s_executions_are_followed_across_pages(aws_resources):
 
     assert stored()["shadow_mismatches"] == 0
     assert sfn.list_executions.call_args_list[1].kwargs["nextToken"] == "more"
+
+
+def test_the_check_stops_at_the_first_execution_older_than_the_day(aws_resources, capsys):
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(topic(dispatch_mode="schedule", shadow_last_daily_dispatch_at=YESTERDAY_TURN.isoformat()))
+    sfn = MagicMock()
+    # The same page every call: a walk that did not stop would read on until the pages ran out.
+    sfn.list_executions.return_value = {
+        "executions": [
+            _execution("arn:x:today", at("2026-10-24T22:00:10")),
+            _execution("arn:x:older", at("2026-10-22T22:00:10")),
+        ],
+        "nextToken": "more",
+    }
+
+    dispatcher(sfn=sfn).tick(at("2026-10-24T22:00:00"))
+
+    assert stored()["shadow_mismatches"] == 1
+    sfn.list_executions.assert_called_once()
+    sfn.describe_execution.assert_not_called()  # neither execution started on the day asked about
+    assert "shadow daily mismatch topic_id=github-trending local_date=2026-10-24" in capsys.readouterr().out
+
+
+def test_a_check_that_runs_out_of_pages_counts_no_mismatch(aws_resources, capsys):
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(topic(dispatch_mode="schedule", shadow_last_daily_dispatch_at=YESTERDAY_TURN.isoformat()))
+    sfn = MagicMock()
+    sfn.list_executions.return_value = {
+        "executions": [_execution("arn:x:today", at("2026-10-24T22:00:10"))],
+        "nextToken": "more",
+    }
+
+    dispatcher(sfn=sfn).tick(at("2026-10-24T22:00:00"))
+
+    assert stored()["shadow_mismatches"] == 0
+    assert stored()["shadow_last_daily_dispatch_at"] == "2026-10-24T22:00:00+00:00"
+    assert sfn.list_executions.call_count == dispatch._MAX_EXECUTION_PAGES == 10
+    assert "execution check ran out of pages topic_id=github-trending" in capsys.readouterr().out
 
 
 def test_a_check_that_could_not_run_counts_no_mismatch(aws_resources, capsys):
