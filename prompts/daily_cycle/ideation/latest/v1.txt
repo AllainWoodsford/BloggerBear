@@ -1,0 +1,10 @@
+Based on the following recent research findings about '{{topic_name}}', propose exactly {{num_angles}} distinct, specific candidate article angles. {{reply_rule}}
+
+ACTIVE EDITORIAL MANDATE:
+{{editorial_goals}}
+
+{{relevance_rule}}
+{{alignment_rule}}{{revisit_note}}{{already_covered}}
+
+Findings:
+{{summaries}}{{guidance_block}}{{locked:financial_guidance}}

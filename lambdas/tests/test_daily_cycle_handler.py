@@ -552,6 +552,21 @@ def test_an_article_records_when_the_run_began_whether_published_or_moderated(
     assert before <= datetime.fromisoformat(stamp) <= after
 
 
+def test_each_drafting_call_in_the_lineage_names_its_prompt_and_version(s3_bucket):
+    """Prompts as assets (common/prompts.py): ideation, the draft and the title each record the
+    prompt they sent and its version, the vanilla's `vanilla:v1` while assets are off, so an
+    article's lineage says which version of each prompt wrote it."""
+    lineage_calls = []
+
+    _run_a_full_cycle(lineage_calls=lineage_calls)
+
+    (calls,), _ = lineage_calls[0]
+    recorded = {call["stage"]: (call.get("prompt_id"), call.get("prompt_version")) for call in calls}
+    assert recorded["ideation"] == ("daily_cycle/ideation", "vanilla:v1")
+    assert recorded["draft"] == ("daily_cycle/draft", "vanilla:v1")
+    assert recorded["title"] == ("daily_cycle/title", "vanilla:v1")
+
+
 def _research_finding(captured_at, input_tokens=400, output_tokens=100):
     return {
         "captured_at": captured_at,
