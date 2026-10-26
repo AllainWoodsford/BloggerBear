@@ -207,6 +207,25 @@ def test_releases_prints_the_newest_first_with_the_one_in_place(capsys):
     assert lines[3].split() == ["dev-20261020T0300-0000000", "2026-10-20T03:00:00+00:00", "pinned"]
 
 
+def test_releases_says_when_current_json_could_not_be_read_and_still_lists_them(capsys):
+    """What the API sends then: no `current`, so no release is marked and the STATE cell is empty."""
+    answer = {
+        "bucket": "acme-blog-dev-prompts",
+        "total": 1,
+        "releases": [{"release_id": "dev-20261026T0300-abc1234", "written_at": "2026-10-26T03:00:00+00:00",
+                      "current": False, "pinned": False}],
+        "current": None,
+        "error": "could not read releases/current.json",
+    }  # fmt: skip
+    _, printed = table(capsys, "prompts", "releases", answer=answer)
+
+    lines = printed.splitlines()
+    assert lines[0] == "Note: could not read releases/current.json."
+    assert lines[1] == "1 of 1 release, newest first:"
+    assert lines[2].split() == ["RELEASE", "WRITTEN", "STATE"]
+    assert lines[3].split() == ["dev-20261026T0300-abc1234", "2026-10-26T03:00:00+00:00"]
+
+
 def test_releases_with_nothing_published_prints_the_apis_note_and_no_table(capsys):
     answer = {"bucket": None, "releases": [], "total": 0, "current": None, "note": "No prompts bucket here."}
     _, printed = table(capsys, "prompts", "releases", answer=answer)

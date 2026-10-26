@@ -422,6 +422,35 @@ def test_a_positional_that_is_not_a_plain_id_is_refused(hostile):
     assert result["built"] is False and result["findings"] == []
 
 
+def test_a_prompt_id_is_two_codes_joined_by_one_slash_and_the_command_parses_back(parser):
+    options = {"prompt_id": "daily_cycle/draft", "version": "v2"}
+    command = built(cli_guide.cli_command("prompts resume", options))
+
+    assert command == f"{PROGRAM} prompts resume daily_cycle/draft v2"
+    args = parsed(parser, command)
+    assert (args["prompt_id"], args["version"]) == ("daily_cycle/draft", "v2")
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "daily_cycle", "/draft", "daily_cycle/", "a/b/c", "../x", "daily_cycle/../x", "-x/y", "--force",
+        "Daily/Draft", "a b/c", "daily_cycle/draft; topics delete x", "daily_cycle/draft\n",
+    ],
+)  # fmt: skip
+def test_a_prompt_id_that_is_not_two_codes_joined_by_one_slash_is_refused(hostile):
+    result = cli_guide.cli_command("prompts resume", {"prompt_id": hostile, "version": "v2"})
+
+    assert result["built"] is False and result["findings"] == []
+    assert [problem["option"] for problem in result["problems"]] == ["prompt_id"]
+
+
+def test_only_a_prompt_id_may_hold_a_slash():
+    result = cli_guide.cli_command("topics get", {"topic_id": "a/b"})
+
+    assert result["built"] is False and result["findings"] == []
+
+
 def test_a_json_flag_survives_the_shell_and_is_json_again(parser):
     """The value has double quotes, an apostrophe and a plus sign: after the shell's splitting it
     must still be the same JSON."""

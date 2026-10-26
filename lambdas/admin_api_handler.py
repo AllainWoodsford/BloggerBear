@@ -2968,8 +2968,9 @@ def _put_prompts_config_route(event: dict) -> dict:
 
 def _list_prompt_releases_route(event: dict) -> dict:
     """The publisher's releases, newest first (`?limit=`, PROMPT_RELEASES_DEFAULT by default, at
-    most PROMPT_RELEASES_MAX), each marked `current` when releases/current.json names it and
-    `pinned` when a rollback holds to it, with current.json itself."""
+    most PROMPT_RELEASES_MAX), each marked `current` when releases/current.json names it as the
+    release in place (prompts.CURRENT_RELEASE_FIELD) and `pinned` when a rollback holds to it
+    (prompts.PINNED_RELEASE_FIELD), with current.json itself."""
     raw_limit = _query_param(event, "limit")
     limit = PROMPT_RELEASES_DEFAULT
     if raw_limit is not None:
@@ -3007,8 +3008,8 @@ def _list_prompt_releases_route(event: dict) -> dict:
         answer["error"] = f"could not read {prompts.CURRENT_RELEASE_KEY}"
     current = answer["current"] or {}
     for release in listed:
-        release["current"] = release["release_id"] == current.get("release_id")
-        release["pinned"] = release["release_id"] == current.get("pinned_release")
+        release["current"] = release["release_id"] == current.get(prompts.CURRENT_RELEASE_FIELD)
+        release["pinned"] = release["release_id"] == current.get(prompts.PINNED_RELEASE_FIELD)
     if not total:
         answer["note"] = "Nothing has been published to this bucket yet."
     return _response(200, answer)

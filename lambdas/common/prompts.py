@@ -111,6 +111,15 @@ _CODE = r"[a-z][a-z0-9_]{0,39}"
 # A prompt id is two evidence codes (the Lambda, the prompt), so the fallback line can carry both.
 _PROMPT_ID = re.compile(rf"^{_CODE}/{_CODE}$")
 _PAUSED_ENTRY = re.compile(rf"^{_CODE}/{_CODE}@v[1-9][0-9]*$")
+# Every check against these is `fullmatch`: `$` also matches before a trailing newline, and an entry
+# such as "daily_cycle/draft@v2\n" would be stored and never equal what the Lambda looks up.
+
+
+def is_prompt_id(value) -> bool:
+    """Whether `value` is a prompt id, `<lambda_id>/<prompt_name>`: two codes joined by one `/`
+    (the grammar PromptSpec holds every registered id to; ops_mcp/cli_guide.py checks a `prompt_id`
+    positional with it)."""
+    return isinstance(value, str) and _PROMPT_ID.fullmatch(value) is not None
 
 
 @dataclass(frozen=True)
@@ -135,9 +144,9 @@ class PromptSpec:
         object.__setattr__(self, "required", frozenset(self.required))
         object.__setattr__(self, "optional", frozenset(self.optional))
         object.__setattr__(self, "locked", tuple(self.locked))
-        if not isinstance(self.prompt_id, str) or not _PROMPT_ID.match(self.prompt_id):
+        if not isinstance(self.prompt_id, str) or not _PROMPT_ID.fullmatch(self.prompt_id):
             raise ValueError(f"prompt_id {self.prompt_id!r} is not <lambda_id>/<prompt_name>")
-        if not isinstance(self.vanilla_version, str) or not _VERSION.match(self.vanilla_version):
+        if not isinstance(self.vanilla_version, str) or not _VERSION.fullmatch(self.vanilla_version):
             raise ValueError(f"{self.prompt_id}: vanilla_version {self.vanilla_version!r} is not v1, v2, ...")
         if not isinstance(self.max_chars, int) or isinstance(self.max_chars, bool) or self.max_chars <= 0:
             raise ValueError(f"{self.prompt_id}: max_chars must be a positive whole number")
@@ -147,7 +156,7 @@ class PromptSpec:
                 f"{self.prompt_id}: a placeholder is named in more than one of required, optional, locked"
             )
         for name in names:
-            if not isinstance(name, str) or not _NAME.match(name):
+            if not isinstance(name, str) or not _NAME.fullmatch(name):
                 raise ValueError(
                     f"{self.prompt_id}: placeholder name {name!r} is not lower-case letters and underscores"
                 )
@@ -301,7 +310,7 @@ def validate_setting(name: str, value) -> str | None:
         return f"unknown setting '{name}'"
     if name == "prompt_assets":
         return None if value in ("on", "off") else "'prompt_assets' must be on or off"
-    if isinstance(value, list) and all(isinstance(e, str) and _PAUSED_ENTRY.match(e) for e in value):
+    if isinstance(value, list) and all(isinstance(e, str) and _PAUSED_ENTRY.fullmatch(e) for e in value):
         return None
     return "'paused_versions' must be a list of <lambda_id>/<prompt_name>@<version> entries"
 
@@ -468,7 +477,7 @@ def _read_asset(spec: PromptSpec) -> tuple[str | None, str | None, str | None]:
         print(f"prompts: {spec.prompt_id}: could not read the tags of {key}: {exc!r}")
         return None, None, "s3_error"
     version = tags.get("version")
-    if not isinstance(version, str) or not _VERSION.match(version):
+    if not isinstance(version, str) or not _VERSION.fullmatch(version):
         return None, None, "no_version_tag"
     if f"{spec.prompt_id}@{version}" in settings["paused_versions"]:
         return None, version, "paused"
@@ -526,6 +535,11 @@ def get_prompt(prompt_id: str, values: dict | None = None, locked: dict | None =
 
 RELEASES_PREFIX = "releases/"
 CURRENT_RELEASE_KEY = "releases/current.json"
+# The two fields of current.json (section 4.2): the release in place, and the one a rollback holds
+# to (null when none). PR5's publisher writes them by these names, and GET /prompts/releases marks
+# `current` and `pinned` by them.
+CURRENT_RELEASE_FIELD = "release_id"
+PINNED_RELEASE_FIELD = "pinned_release"
 
 
 def published_files(prompt_id: str, paused_versions) -> list[dict]:
@@ -602,9 +616,10 @@ def releases(limit: int) -> tuple[list[dict], int]:
 
 
 def current_release() -> dict | None:
-    """`releases/current.json` as the publisher wrote it (section 4.2): `release_id`, the release
-    in place, and `pinned_release` while a rollback holds to one. None before the first publish.
-    Raises when it cannot be read or is not a JSON object."""
+    """`releases/current.json` as the publisher wrote it (section 4.2): CURRENT_RELEASE_FIELD
+    (`release_id`), the release in place, and PINNED_RELEASE_FIELD (`pinned_release`) while a
+    rollback holds to one. None before the first publish (no such key is not an error). Raises when
+    it cannot be read or is not a JSON object."""
     client = _s3()
     try:
         raw = client.get_object(Bucket=os.environ["PROMPTS_BUCKET"], Key=CURRENT_RELEASE_KEY)["Body"].read()

@@ -1464,7 +1464,6 @@ def test_the_prompt_fallback_alarm_reads_the_evidence_line_from_every_pipeline_l
         assert groups in block, env
 
 
-
 # --- prompts as assets: the bucket and the hash table (PR4) -------------------------------------------
 #
 # infra/modules/prompts makes them; its tests/prompts.tftest.hcl plans the policies with a mocked

@@ -209,6 +209,43 @@ def test_a_file_that_is_not_utf8_is_listed_with_what_was_read(aws):
     assert found["error"] == "its bytes are not UTF-8"
 
 
+def test_a_file_whose_tags_cannot_be_read_says_so_and_still_shows_its_sha_and_hash_status(aws, capsys):
+    sha = publish(aws, "daily_cycle/draft", "v2", ASSET_V2)
+
+    with patch.object(prompts, "_tags", side_effect=RuntimeError("throttled")):
+        (found,) = by_id(api("GET /prompts")[1])["daily_cycle/draft"]["files"]
+
+    assert found["error"] == "could not read its tags"
+    assert found["version"] is None and found["release"] is None and found["tagged_sha256"] is None
+    assert found["paused"] is False
+    assert found["sha256"] == sha and found["hash_status"] == "live"
+    assert "RuntimeError('throttled')" in capsys.readouterr().out
+
+
+def test_a_file_whose_body_cannot_be_read_says_so_and_still_shows_its_tags(aws, capsys):
+    publish(aws, "daily_cycle/draft", "v2", ASSET_V2)
+
+    with patch.object(prompts._s3(), "get_object", side_effect=RuntimeError("throttled")):
+        (found,) = by_id(api("GET /prompts")[1])["daily_cycle/draft"]["files"]
+
+    assert found["error"] == "could not read it"
+    assert found["version"] == "v2" and found["sha256"] is None and found["hash_status"] is None
+    assert "RuntimeError('throttled')" in capsys.readouterr().out
+
+
+def test_a_file_whose_hash_row_cannot_be_read_says_so_and_shows_no_hash_status(aws, capsys):
+    """An unreadable row is not shown as `missing`: that would say the publisher never approved it."""
+    sha = publish(aws, "daily_cycle/draft", "v2", ASSET_V2)
+
+    with patch.object(prompts, "_hash_row", side_effect=RuntimeError("throttled")):
+        (found,) = by_id(api("GET /prompts")[1])["daily_cycle/draft"]["files"]
+
+    assert found["error"] == "could not read its hash row"
+    assert found["version"] == "v2" and found["tagged_sha256"] == sha and found["sha256"] == sha
+    assert found["hash_status"] is None and found["retired_at"] is None
+    assert "RuntimeError('throttled')" in capsys.readouterr().out
+
+
 def test_one_prompts_listing_failing_is_said_and_the_others_are_still_listed(aws, capsys):
     publish(aws, "daily_cycle/title", "v2", "Title two {{topic}}.\n")
     real = prompts._list_latest
@@ -250,17 +287,22 @@ def test_list_says_when_this_deployment_serves_no_asset_and_why(aws, monkeypatch
     status, answer = api("GET /prompts")
 
     assert status == 200 and answer["serving"] is False and words in answer["serving_note"]
-    files = by_id(answer)["daily_cycle/draft"]["files"]
+    draft = by_id(answer)["daily_cycle/draft"]
+    assert "error" not in draft
     # With a bucket the files are still listed, so what would be served can be checked first.
-    assert len(files) == (0 if env.get("PROMPTS_BUCKET") == "" else 1)
+    assert len(draft["files"]) == (0 if env.get("PROMPTS_BUCKET") == "" else 1)
 
 
 def test_list_with_no_bucket_reads_nothing_from_s3(aws, monkeypatch):
     monkeypatch.setenv("PROMPTS_BUCKET", "")
-    with patch.object(prompts, "_s3", side_effect=AssertionError("no S3 call")):
+    with patch.object(prompts, "_s3") as s3:
         status, answer = api("GET /prompts")
+    # The route catches a failing read per prompt, so a raising fake would pass unnoticed: the
+    # fake records instead, and no call at all is what this pins.
+    s3.assert_not_called()
     assert status == 200 and answer["bucket"] is None
-    assert all(prompt["files"] == [] for prompt in answer["prompts"])
+    assert all(prompt["files"] == [] and "error" not in prompt for prompt in answer["prompts"])
+    assert any(prompt["asset"] for prompt in answer["prompts"])  # one reached the bucket check
 
 
 def test_list_says_when_the_kill_switch_is_off(aws):
@@ -326,6 +368,8 @@ def test_resume_takes_out_an_entry_for_a_prompt_the_registry_no_longer_has(aws):
         {"prompt_id": "daily_cycle/draft@v1", "version": "v2"},
         {"prompt_id": ["daily_cycle/draft"], "version": "v2"},
         {"prompt_id": "daily_cycle/draft", "version": 2},
+        {"prompt_id": "daily_cycle/draft", "version": "v2\n"},
+        {"prompt_id": "daily_cycle/draft\n", "version": "v2"},
     ],
 )
 @pytest.mark.parametrize("route", ["POST /prompts/pause", "POST /prompts/resume"])
@@ -457,6 +501,11 @@ def test_releases_are_listed_newest_first_with_the_current_and_pinned_ones_marke
     assert all(datetime.fromisoformat(r["written_at"]).tzinfo == UTC for r in answer["releases"])
 
 
+def test_current_json_is_read_by_the_field_names_the_publisher_writes():
+    """The fixture above writes the literal names, so renaming a constant fails it as well as this."""
+    assert (prompts.CURRENT_RELEASE_FIELD, prompts.PINNED_RELEASE_FIELD) == ("release_id", "pinned_release")
+
+
 def test_releases_are_sorted_by_when_they_were_written(aws):
     listed = [
         {"Key": "releases/b.json", "LastModified": datetime(2026, 10, 20, tzinfo=UTC)},
@@ -504,6 +553,8 @@ def test_before_the_first_publish_there_is_nothing_and_it_says_so(aws):
     status, answer = api("GET /prompts/releases")
     assert status == 200 and answer["releases"] == [] and answer["total"] == 0 and answer["current"] is None
     assert answer["note"] == "Nothing has been published to this bucket yet."
+    assert "error" not in answer  # no current.json yet is what a fresh bucket looks like
+    assert prompts.current_release() is None
 
 
 def test_a_current_json_that_cannot_be_read_is_said_and_the_releases_are_still_listed(aws, capsys):

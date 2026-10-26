@@ -969,7 +969,6 @@ def test_the_content_bucket_holds_the_running_states_and_figures():
     assert "expiring after 21 days" in purpose
 
 
-
 def test_the_prompts_bucket_and_hash_table_are_catalogued_as_the_prompts_module_names_them(dev):
     """Prompts as assets (infra/modules/prompts, PR4): the bucket is catalogued under the name the
     module gives it, as a bucket, and the hash table with its key (the table test above holds every
