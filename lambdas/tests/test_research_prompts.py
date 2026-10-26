@@ -284,7 +284,7 @@ STATES = (
 )
 
 
-def _crypto_state(goal, *, anchors=True, urls=(), coins=1):
+def _crypto_state(goal, *, anchors=True, urls=(), coins=1, blob=False):
     state = {
         "fetched_at": "2026-10-26T12:00:00+00:00",
         "editorial_goal": goal,
@@ -305,6 +305,8 @@ def _crypto_state(goal, *, anchors=True, urls=(), coins=1):
     }
     if urls:
         state["web_results"] = [{"title": f"Story {u} {TRICKY}", "url": f"https://x/{u}"} for u in urls]
+    if blob:  # an oversized state, so the SUMMARY_STATE_MAX_CHARS cut is part of the comparison
+        state["blob"] = "x" * (SUMMARY_STATE_MAX_CHARS * 2)
     return state
 
 
@@ -391,12 +393,14 @@ def test_with_assets_off_the_generic_summary_is_exactly_the_pre_migration_text_f
 
 def test_with_assets_off_the_crypto_prompts_are_exactly_the_pre_migration_text_for_every_input():
     adapter = CryptoFeedAdapter()
-    cases = itertools.product(EditorialGoal, (True, False), ((), (1, 2)), (1, 5), TOPICS, DIFFS[:2])
-    for goal, anchors, urls, coins, topic, diff in cases:
-        state = _crypto_state(goal.value, anchors=anchors, urls=urls, coins=coins)
+    cases = itertools.product(
+        EditorialGoal, (True, False), ((), (1, 2)), (1, 5), (False, True), TOPICS, DIFFS[:2]
+    )
+    for goal, anchors, urls, coins, blob, topic, diff in cases:
+        state = _crypto_state(goal.value, anchors=anchors, urls=urls, coins=coins, blob=blob)
         expected = _legacy_crypto(topic, diff, state)
         sent = adapter.build_summary_prompt(topic, diff, state)
-        assert sent == expected, (goal, anchors, urls, coins, topic["topic_id"], diff)
+        assert sent == expected, (goal, anchors, urls, coins, blob, topic["topic_id"], diff)
         prompt = adapter.summary_prompt(topic, diff, state)
         assert (prompt.prompt_id, prompt.version) == (CRYPTO_PROMPT_IDS[goal], "vanilla:v1"), goal
         assert "alt-secret-marker" not in prompt.text
@@ -501,6 +505,18 @@ def test_the_triage_sends_its_tasks_pre_migration_system_prompt_and_its_trail_na
     assert vision_triage.PROMPT_IDS[task] == prompt_id
 
 
+def test_every_triage_profile_has_a_registered_code_only_system_prompt_and_it_is_the_profiles_own():
+    """triage() looks its task's prompt id up outside any guard and sends that id's render, not
+    TaskProfile.system_prompt: a profile with no PROMPT_IDS entry would raise out of a "never raises"
+    call, and one whose stored prompt drifted from its id's vanilla would be ignored for another text."""
+    assert set(vision_triage.PROMPT_IDS) == set(vision_triage.PROFILES)
+    for task, profile in vision_triage.PROFILES.items():
+        assert profile.task == task
+        spec = prompts.spec_for(vision_triage.PROMPT_IDS[task])
+        assert spec.asset is False, task
+        assert profile.system_prompt == prompts.vanilla_prompt(spec.prompt_id), task
+
+
 def test_a_triage_with_no_profile_asks_nothing_and_names_no_prompt(answered):
     converse, sent = answered
     out = _triage("rail_yards", converse)
@@ -528,8 +544,10 @@ def test_the_largest_realistic_render_of_each_prompt_stays_well_under_its_templa
     prompt to it. This test holds the call sites' caps instead, so the largest prompt each one sends
     stays well under the ceiling chosen for its template, and an input that lost its cap (the state
     untruncated, say) fails here. Every input is at the limit the code holds it to: a long name, the
-    editorial goal fields at MAX_GOAL_TEXT_CHARS, the state at COMPACT_STATE_MAX_CHARS (the crypto
-    feed's at SUMMARY_STATE_MAX_CHARS) from one twice as long. What was measured has no cap of its
+    editorial goal fields at MAX_GOAL_TEXT_CHARS, the state cut to COMPACT_STATE_MAX_CHARS (the
+    crypto feed's to SUMMARY_STATE_MAX_CHARS) from one as long as the template ceiling, so that a
+    lost cap pushes the render past 0.9 * max_chars. (A cap loosened rather than lost is a byte
+    change, which the with-assets-off matrices above catch.) What was measured has no cap of its
     own; it is bounded by what one fetch holds, so it is given here at the most a fetch makes: for
     the generic prompt, a trending page's worth of entered, left and jumped repositories; for the
     crypto feed, POOL_SIZE coins and five headlines; for the two vision monitors, every one of
@@ -552,9 +570,12 @@ def test_the_largest_realistic_render_of_each_prompt_stays_well_under_its_templa
     generic_diff = f"entered: {repos}; left: {repos}; star jumps: {repos}"
     coins, headlines = ", ".join(["c" * 100] * 5), "; ".join(["h" * 300] * 5)
     crypto_diff = f"5 newly sampled coins: {coins}; 5 new news items: {headlines}"
-    big_state = {"blob": "s" * (SUMMARY_STATE_MAX_CHARS * 2)}
-    crypto_state = {**_crypto_state("ALTCOIN_DEEP_DIVE", urls=range(15), coins=5), **big_state}
     specs = {spec.prompt_id: spec for spec in prompts_registry.all_specs()}
+    ceiling = max(specs[prompt_id].max_chars for prompt_id in ASSET_IDS)
+    big_state = {"blob": "s" * ceiling}
+    # Only an uncut state this long fails the checks below; a smaller one would hide a lost cap.
+    assert len(json.dumps(big_state)) > ceiling * 0.9
+    crypto_state = {**_crypto_state("ALTCOIN_DEEP_DIVE", urls=range(15), coins=5), **big_state}
 
     renders = {
         "research_tick/summary": tick._build_prompt(

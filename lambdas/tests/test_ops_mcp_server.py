@@ -801,6 +801,7 @@ NEVER_FROM_AN_ADAPTER = {
     "fetch_network",
     "source_refs",
     "build_summary_prompt",
+    "summary_prompt",
     "assess",
     "store_image",
     "load_image",
