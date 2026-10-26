@@ -40,12 +40,25 @@ counted where the two paths really disagreed:
   stamp can overwrite the evidence. A `rate(...)` research cadence is recorded the same way (once
   an interval) but never judged: every minute is its turn, the Scheduler's firing minute for a rate
   cannot be derived from the expression, and the first due minute sits exactly DUE_TOLERANCE
-  before the next heartbeat, so any comparison would sit on the tolerance edge. Known limit: a
-  heartbeat that runs more than SHADOW_TOLERANCE off the computed minute, early or late, leaves
-  the topic not due at that minute (just researched, or its interval not yet out), so those turns
-  are neither recorded nor judged; at most the first turn after the drift began is counted.
-  Judging each move of `last_research_at` instead would count every operator run-now as one.
-- **daily**: a turn whose previous recorded day saw no execution of this topic (_daily_ran).
+  before the next heartbeat, so any comparison would sit on the tolerance edge.
+- **a drifted heartbeat** (decided in Q1): a Scheduler heartbeat that runs more than
+  SHADOW_TOLERANCE off the computed minute, early or late, is not detected beyond the first turn
+  after the drift began, which is counted once. From then on the topic is not due at the computed
+  minute (just researched, or its interval not yet out), so those turns are neither recorded nor
+  judged. One mismatch is enough to stop the cutover; a drift that was there before shadow mode
+  began leaves no research turn recorded at all, which the Q2 pre-flight must refuse too. Missing
+  it costs little: at cutover the research minute moves to the computed one, the stagger's own.
+  Counting more would mean judging every move of `last_research_at`, and every operator run-now
+  moves it.
+- **a run-now** is never a mismatch. A stamp that lands within SHADOW_TOLERANCE of a turn is that
+  turn's; one later than that when the turn is judged (the judging tick runs within a minute of
+  the tolerance running out) is a run-now made since, which replaced the turn's own evidence, so
+  the turn is left unjudged rather than counted. A run-now at any other time stamps a minute no
+  recorded turn is compared with, or one the next turn then finds not due.
+- **daily**: a turn whose previous recorded day saw no execution of this topic (_daily_ran). A
+  day the check could not answer (Step Functions refused, or its pages ran out) is counted in
+  `shadow_unchecked`, never as a match: a missing grant must not pass as zero mismatches. The Q2
+  pre-flight asks for zero of both.
 
 **Cutover day.** The Scheduler may already have run today's daily cycle when a topic is flipped to
 the queue. The live path counts a same-day shadow daily record as today's dispatch (a live topic
@@ -63,9 +76,9 @@ throttling) raises DispatchError, so the dispatcher's Errors alarm fires; a fail
 matcher refuses is printed as `dispatcher: cadence unparsable topic_id=... expression=...` and
 counted in `skipped_unparsable`, never guessed at.
 
-Nothing here runs yet: the dispatcher Lambda (Q1) is what calls Dispatcher.tick and emits the
-`dispatcher_tick` evidence line from the counts it returns. Topic-agnostic: nothing here knows
-about any adapter or domain.
+The dispatcher Lambda (dispatcher_handler.py, every minute from infra/modules/work-queue) runs one
+tick and emits the `dispatcher_tick` evidence line from the counts it returns. Topic-agnostic:
+nothing here knows about any adapter or domain.
 """
 
 from __future__ import annotations
@@ -211,9 +224,10 @@ def _iso(moment: datetime) -> str:
 def research_message(topic_id: str, *, now: datetime) -> dict:
     """The body of a research job; `force` is only ever true from an operator.
 
-    The contract the research tick (Q1) honours for a queue record: it ignores `job`, and it uses
-    `due_checked_at` as the run's time both for its own is_due check and for the last_research_at
-    stamp a successful fetch writes (never moving the stamp backwards), never the time it ran.
+    The contract the research tick honours for a queue record (research_tick_handler): it ignores
+    `job`, and it uses `due_checked_at` as the run's time both for its own is_due check and for the
+    last_research_at stamp a successful fetch writes (never moving the stamp backwards), never the
+    time it ran.
     The dispatcher's next is_due reads that stamp, so a stamp made after a queue wait longer than
     DUE_TOLERANCE would make the next fixed-minute turn not due and skip a heartbeat. Only under
     that contract is a message that waited in the queue harmless."""
@@ -571,6 +585,14 @@ class Dispatcher:
         moved = _parse_time(topic.get("last_research_at"))
         if moved is not None and abs(moved - turn) <= SHADOW_TOLERANCE:
             return
+        if moved is not None and moved > turn + SHADOW_TOLERANCE:
+            # Stamped after the turn's own tolerance ran out and before this tick: only an
+            # operator's run-now stamps there, and it replaced the turn's evidence. Not a mismatch.
+            print(
+                f"dispatcher: shadow research turn not judged topic_id={topic['topic_id']} "
+                f"turn={_iso(turn)} last_research_at={_iso(moved)}: stamped since by a run-now"
+            )
+            return
         print(
             f"dispatcher: shadow research mismatch topic_id={topic['topic_id']} "
             f"turn={_iso(turn)} last_research_at={_iso(moved) if moved else None}"
@@ -584,9 +606,10 @@ class Dispatcher:
 
     def _shadow_daily(self, topic: dict, now: datetime, today: date, zone: tzinfo) -> None:
         """Record today's turn, and count a mismatch when the previous recorded day saw no execution
-        of this topic on the Scheduler path. A check that could not run counts nothing."""
+        of this topic on the Scheduler path. A check that could not run is no mismatch, and no match
+        either: it counts one day in `shadow_unchecked`."""
         previous = _parse_time(topic.get("shadow_last_daily_dispatch_at"))
-        mismatch = 0
+        mismatch = unchecked = 0
         if previous is not None:
             previous_day = previous.astimezone(zone).date()
             ran = self._daily_ran(topic["topic_id"], previous_day, zone)
@@ -596,7 +619,15 @@ class Dispatcher:
                     f"dispatcher: shadow daily mismatch topic_id={topic['topic_id']} "
                     f"local_date={previous_day.isoformat()}"
                 )
-        self._write_shadow(topic["topic_id"], "shadow_last_daily_dispatch_at", now, mismatch)
+            elif ran is None:
+                unchecked = 1
+                print(
+                    f"dispatcher: shadow daily unchecked topic_id={topic['topic_id']} "
+                    f"local_date={previous_day.isoformat()}"
+                )
+        self._write_shadow(
+            topic["topic_id"], "shadow_last_daily_dispatch_at", now, mismatch, unchecked=unchecked
+        )
 
     def _daily_ran(self, topic_id: str, day: date, zone: tzinfo) -> bool | None:
         """Whether an execution of the daily cycle for `topic_id` started on `day` (a local date):
@@ -606,8 +637,9 @@ class Dispatcher:
 
         The dispatcher's role (`lambda_exec`) needs `states:ListExecutions` on the state machine
         and `states:DescribeExecution` on its executions (`arn:aws:states:<region>:<account>:
-        execution:<state machine name>:*`), which Q1's module policy grants beside SendMessage and
-        StartExecution. Without them every check is AccessDenied and counts nothing."""
+        execution:<state machine name>:*`), which the work-queue module's policy grants beside
+        SendMessage and StartExecution (infra/modules/work-queue). Without them every check is
+        AccessDenied, and every day is counted as unchecked."""
         start = datetime.combine(day, datetime.min.time(), tzinfo=zone)
         end = start + timedelta(days=1)
         try:
@@ -639,11 +671,18 @@ class Dispatcher:
         print(f"dispatcher: execution check ran out of pages topic_id={topic_id}")
         return None
 
-    def _write_shadow(self, topic_id: str, field: str, now: datetime, mismatch: int) -> None:
+    def _write_shadow(
+        self, topic_id: str, field: str, now: datetime, mismatch: int, *, unchecked: int | None = None
+    ) -> None:
+        """Record a shadow turn and add to the counts. A daily record also adds to
+        `shadow_unchecked` (zero included, so the field is there from the first shadow day)."""
+        update, values = "SET #f = :t ADD shadow_mismatches :n", {":t": _iso(now), ":n": mismatch}
+        if unchecked is not None:
+            update, values = f"{update}, shadow_unchecked :u", {**values, ":u": unchecked}
         self.topics_table.update_item(
             Key={"topic_id": topic_id},
-            UpdateExpression="SET #f = :t ADD shadow_mismatches :n",
+            UpdateExpression=update,
             ConditionExpression="attribute_exists(topic_id)",
             ExpressionAttributeNames={"#f": field},
-            ExpressionAttributeValues={":t": _iso(now), ":n": mismatch},
+            ExpressionAttributeValues=values,
         )

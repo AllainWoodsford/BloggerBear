@@ -881,6 +881,43 @@ def test_a_recorded_turn_is_judged_once_five_minutes_on_against_when_last_resear
     assert counted == {"agreed": 0, "stamped-first": 0, "not-moved": 1, "early": 1, "never": 1}
 
 
+def test_a_run_now_that_lands_after_the_turns_tolerance_is_never_a_mismatch(aws_resources, capsys):
+    """An operator's run-now stamped 5 min 5 s after the 04:05:30 turn, just before the tick that
+    judges it: the turn's own evidence is gone, and a run-now is never counted."""
+    turn = at("2026-10-25T04:05:30")
+    put_topics(
+        topic(
+            dispatch_mode="schedule",
+            shadow_last_research_dispatch_at=turn.isoformat(),
+            last_research_at=(turn + timedelta(minutes=5, seconds=5)).isoformat(),
+        )
+    )
+    dynamo.update_config_row("pipeline", {"last_tick": (turn + timedelta(minutes=4, seconds=40)).isoformat()})
+
+    dispatcher().tick(turn + timedelta(minutes=5, seconds=10))
+
+    assert stored().get("shadow_mismatches", 0) == 0
+    assert (
+        "dispatcher: shadow research turn not judged topic_id=github-trending turn=2026-10-25T04:05:30+00:00 "
+        "last_research_at=2026-10-25T04:10:35+00:00: stamped since by a run-now"
+    ) in capsys.readouterr().out
+
+
+def test_a_run_now_the_hour_before_or_inside_the_tolerance_is_never_a_mismatch(aws_resources):
+    """A run-now at 09:50 leaves the 10:05 turn not due (and unrecorded, so unjudged); one at 10:07,
+    after the Scheduler path stamped 10:05, is within the turn's tolerance."""
+    put_topics(topic(dispatch_mode="schedule", last_research_at=at("2026-10-25T09:05:02").isoformat()))
+
+    _replay(
+        dispatcher(),
+        ticks=_every_minute(at("2026-10-25T09:49:30"), at("2026-10-25T11:12:30")),
+        stamps=[at("2026-10-25T09:50:10"), at("2026-10-25T11:05:04"), at("2026-10-25T11:07:40")],
+    )
+
+    assert stored()["shadow_mismatches"] == 0
+    assert stored()["shadow_last_research_dispatch_at"] == "2026-10-25T11:05:30+00:00"
+
+
 def test_a_shadow_research_turn_is_not_recorded_while_the_interval_runs(aws_resources):
     # Ten minutes since the last check: not due, and too long ago to be this turn's own stamp.
     put_topics(
@@ -940,7 +977,7 @@ def test_a_shadow_daily_turn_checks_the_previous_day_for_an_execution_of_this_to
     dispatcher(sfn=sfn).tick(at("2026-10-24T22:00:00"))
 
     row = stored()
-    assert row["shadow_mismatches"] == 0
+    assert row["shadow_mismatches"] == 0 and row["shadow_unchecked"] == 0
     assert row["shadow_last_daily_dispatch_at"] == "2026-10-24T22:00:00+00:00"
     sfn.list_executions.assert_called_once_with(stateMachineArn=STATE_MACHINE_ARN, maxResults=100)
     described = [call.kwargs["executionArn"] for call in sfn.describe_execution.call_args_list]
@@ -998,7 +1035,7 @@ def test_the_check_stops_at_the_first_execution_older_than_the_day(aws_resources
     assert "shadow daily mismatch topic_id=github-trending local_date=2026-10-24" in capsys.readouterr().out
 
 
-def test_a_check_that_runs_out_of_pages_counts_no_mismatch(aws_resources, capsys):
+def test_a_check_that_runs_out_of_pages_counts_an_unchecked_day_not_a_mismatch(aws_resources, capsys):
     dynamo.put_pipeline_config(stagger_minutes=0)
     put_topics(topic(dispatch_mode="schedule", shadow_last_daily_dispatch_at=YESTERDAY_TURN.isoformat()))
     sfn = MagicMock()
@@ -1009,13 +1046,15 @@ def test_a_check_that_runs_out_of_pages_counts_no_mismatch(aws_resources, capsys
 
     dispatcher(sfn=sfn).tick(at("2026-10-24T22:00:00"))
 
-    assert stored()["shadow_mismatches"] == 0
+    assert stored()["shadow_mismatches"] == 0 and stored()["shadow_unchecked"] == 1
     assert stored()["shadow_last_daily_dispatch_at"] == "2026-10-24T22:00:00+00:00"
     assert sfn.list_executions.call_count == dispatch._MAX_EXECUTION_PAGES == 10
-    assert "execution check ran out of pages topic_id=github-trending" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "execution check ran out of pages topic_id=github-trending" in out
+    assert "dispatcher: shadow daily unchecked topic_id=github-trending local_date=2026-10-24" in out
 
 
-def test_a_check_that_could_not_run_counts_no_mismatch(aws_resources, capsys):
+def test_a_check_that_could_not_run_counts_an_unchecked_day_not_a_mismatch(aws_resources, capsys):
     dynamo.put_pipeline_config(stagger_minutes=0)
     put_topics(topic(dispatch_mode="schedule", shadow_last_daily_dispatch_at=YESTERDAY_TURN.isoformat()))
     sfn = MagicMock()
@@ -1025,9 +1064,49 @@ def test_a_check_that_could_not_run_counts_no_mismatch(aws_resources, capsys):
 
     dispatcher(sfn=sfn).tick(at("2026-10-24T22:00:00"))
 
-    assert stored()["shadow_mismatches"] == 0
+    assert stored()["shadow_mismatches"] == 0 and stored()["shadow_unchecked"] == 1
     assert stored()["shadow_last_daily_dispatch_at"] == "2026-10-24T22:00:00+00:00"
     assert "could not check the executions of topic_id=github-trending" in capsys.readouterr().out
+
+
+def test_a_missing_grant_never_passes_as_zero_mismatches_each_day_counts_as_unchecked(aws_resources):
+    """Without states:ListExecutions every check is refused. Three shadow days later the topic shows
+    zero mismatches but two unchecked days (the first day has nothing to compare), which the
+    cutover's pre-flight refuses; a check that answers adds nothing. (Researched for the week, so
+    only the daily turn is in play.)"""
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(
+        topic(
+            dispatch_mode="schedule",
+            research_interval_hours=168,
+            last_research_at=at("2026-10-23T21:00:00").isoformat(),
+        )
+    )
+    sfn = MagicMock()
+    sfn.list_executions.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException"}}, "ListExecutions"
+    )
+    run = dispatcher(sfn=sfn)
+
+    for day in range(3):
+        run.tick(at("2026-10-23T22:00:00") + timedelta(days=day))
+
+    assert stored()["shadow_mismatches"] == 0 and stored()["shadow_unchecked"] == 2
+
+    sfn.list_executions.side_effect = None
+    sfn.list_executions.return_value = {"executions": [_execution("arn:x:ours", at("2026-10-25T22:00:10"))]}
+    sfn.describe_execution.return_value = {"input": json.dumps({"topic_id": "github-trending"})}
+    run.tick(at("2026-10-26T22:00:00"))
+    assert stored()["shadow_mismatches"] == 0 and stored()["shadow_unchecked"] == 2
+
+
+def test_the_first_shadow_day_already_shows_no_unchecked_days(aws_resources):
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(topic(dispatch_mode="schedule", research_cadence="cron(30 * * * ? *)"))
+
+    dispatcher().tick(at("2026-10-24T22:00:00"))
+
+    assert stored()["shadow_unchecked"] == 0 and stored()["shadow_mismatches"] == 0
 
 
 def test_the_first_shadow_day_has_nothing_to_compare_and_a_day_is_recorded_once(aws_resources):

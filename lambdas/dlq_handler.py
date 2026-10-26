@@ -22,16 +22,27 @@ effort and writes one FailedExecutions record per message for admin
 visibility (see scripts/admin_cli.py's `failed-executions list`) -- it does
 not attempt any automatic replay; per the DLQ alarm's own comment, a DLQ
 message means "needs a human to look at it".
+
+It also consumes the work queue's dead-letter queue (`work-dlq.fifo`, infra/modules/work-queue):
+a queue job (a body with `job`, docs/enhancements/model-ranch-prompt-assets-evals.md section 4.7)
+that was received three times without finishing. The research tick never raises, so such a job
+timed out or crashed the runtime; its body is the job itself, with no `error`. The log line names
+the job (`research job for topic_id=... failed`) rather than calling every failure a daily cycle.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 
 from common.dynamo import put_failed_execution
 from common.lambda_timing import track_lambda_duration
+
+# A queue job's name as the dispatcher writes it (`research`, later `judge`, `score`): a code, so a
+# body that says anything else cannot put its own text in the log line.
+_JOB = re.compile(r"[a-z][a-z0-9_]{0,39}")
 
 
 @track_lambda_duration("dlq_handler")
@@ -43,6 +54,7 @@ def handler(event: dict, context) -> dict:
         raw_message = record.get("body", "")
         topic_id = None
         error = None
+        job = None
 
         try:
             parsed = json.loads(raw_message)
@@ -52,8 +64,13 @@ def handler(event: dict, context) -> dict:
         if isinstance(parsed, dict):
             topic_id = parsed.get("topic_id")
             error = parsed.get("error")
+            job = parsed.get("job")
 
-        print(f"dlq_handler: daily_cycle failed for topic_id={topic_id}: {error}")
+        if job is not None:
+            name = job if isinstance(job, str) and _JOB.fullmatch(job) else "unknown"
+            print(f"dlq_handler: {name} job for topic_id={topic_id} failed")
+        else:
+            print(f"dlq_handler: daily_cycle failed for topic_id={topic_id}: {error}")
 
         put_failed_execution(
             failure_id=str(uuid.uuid4()),

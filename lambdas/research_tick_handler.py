@@ -4,6 +4,18 @@ Phase 1 scope: manually invoked per-topic. `event` is `{"topic_id": str}`.
 Iterating over every Topic on a schedule is Phase 3 (EventBridge Scheduler)
 -- do not add a topic-iteration loop here.
 
+Two ways in. Directly (a topic's EventBridge schedule, the Admin API's run-now), the event is
+`{"topic_id": ..., "force": ...}` and the run's time is now. From the work queue (the dispatcher's
+research job, docs/enhancements/model-ranch-prompt-assets-evals.md section 4.7, through the
+work-queue module's event source mapping, one record at a time), the event is an SQS batch whose
+one record's body is that same JSON plus `job` (ignored) and `due_checked_at`, the minute the
+dispatcher found the topic due. That minute is the run's time for the not-due check and for the
+`last_research_at` stamp, never the time the job left the queue: the dispatcher's next is_due reads
+the stamp, and a stamp made after a long wait would leave the next heartbeat not due. The stamp
+never moves backwards (the later of the stored value and `due_checked_at`). Every way in keeps the
+never-raise rule below, so the work queue's dead-letter queue only ever receives a job that timed
+out or crashed the runtime.
+
 Flow (per docs/project-plan.md §4 "Hourly Research Tick" and §2 rule 2 --
 diff-first, no Bedrock call unless there is something new):
   1. Load the Topic.
@@ -201,8 +213,52 @@ def _build_prompt(topic: dict, diff_summary: str, new_state: dict, adapter) -> s
     )
 
 
+def _queue_record(event) -> tuple[dict | None, datetime | None, str | None]:
+    """An SQS batch from the work queue as (the job's body, its due_checked_at, why it cannot be
+    read). Anything else is not a queue record: (None, None, None). A body without a readable
+    due_checked_at runs at now, as a direct invoke would."""
+    records = event.get("Records") if isinstance(event, dict) else None
+    if not isinstance(records, list) or not records:
+        return None, None, None
+    if len(records) > 1:  # the mapping's batch_size is 1; a larger batch would lose jobs silently
+        print(f"research_tick_handler: {len(records)} queue records in one batch; reading the first")
+    record = records[0] if isinstance(records[0], dict) else {}
+    try:
+        body = json.loads(record.get("body") or "")
+    except (TypeError, ValueError):
+        body = None
+    if not isinstance(body, dict):
+        return None, None, "queue record body is not a JSON object"
+    due_checked_at = _parse_time(body.get("due_checked_at"))
+    if due_checked_at is None:
+        print("research_tick_handler: queue record without a readable due_checked_at; using now")
+    print(
+        f"research_tick_handler: queue record message_id={record.get('messageId')!r} "
+        f"due_checked_at={due_checked_at.isoformat() if due_checked_at else None}"
+    )
+    return body, due_checked_at, None
+
+
+def _parse_time(value) -> datetime | None:
+    """An ISO-8601 time as an aware datetime (a naive one is UTC), or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
 @track_lambda_duration("research_tick")
 def handler(event, context) -> dict:
+    body, due_checked_at, unreadable = _queue_record(event)
+    if unreadable:
+        print(f"research_tick_handler: {unreadable}; nothing to run")
+        return {"status": "error", "reason": unreadable}
+    if body is not None:
+        event = body
+
     topic_id = (event or {}).get("topic_id")
     if not topic_id:
         return {"status": "error", "reason": "event missing required 'topic_id'"}
@@ -228,7 +284,7 @@ def handler(event, context) -> dict:
         started = time.monotonic()
         outcome, error_type = "error", None
         try:
-            result = _run_research_tick(topic_id, force=force)
+            result = _run_research_tick(topic_id, force=force, due_checked_at=due_checked_at)
             outcome = _outcome(result)
             return result
         except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
@@ -293,6 +349,16 @@ def _not_due(topic: dict, now: datetime) -> dict | None:
     }
 
 
+def _stamp(topic: dict, run_at: datetime, due_checked_at: datetime | None) -> datetime:
+    """The time a successful check records as last_research_at: the run's time, and for a queue
+    job the later of `due_checked_at` and what the row already holds, so a job that waited behind
+    a later check (an operator's run-now) never moves the stamp back."""
+    if due_checked_at is None:
+        return run_at
+    stored = _parse_time(topic.get("last_research_at"))
+    return max(due_checked_at, stored) if stored is not None else due_checked_at
+
+
 def _record_research_check(topic_id: str, now: datetime) -> None:
     """Remember when the source was last successfully checked (a tick that finds
     nothing writes no Finding, so this is the only record of it). Never raises: a
@@ -324,7 +390,7 @@ def _run_network_prefetch(topic_id: str) -> dict:
     return {"status": "network_prefetched", "topic_id": topic_id, "sites": sites}
 
 
-def _run_research_tick(topic_id: str, force: bool = False) -> dict:
+def _run_research_tick(topic_id: str, force: bool = False, due_checked_at: datetime | None = None) -> dict:
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "reason": f"unknown topic_id: {topic_id}"}
@@ -335,7 +401,8 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
         print(f"research_tick_handler: {topic_id} is paused; nothing fetched")
         return {"status": "paused", "topic_id": topic_id}
 
-    run_started = datetime.now(UTC)
+    # A queue job runs at the minute the dispatcher found it due (see the module docstring).
+    run_started = due_checked_at or datetime.now(UTC)
     if not force:
         not_due = _not_due(topic, run_started)
         if not_due is not None:
@@ -369,7 +436,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     # The source answered: this counts as a check even if nothing is new. (A fetch
     # that raises records nothing, so the next heartbeat retries rather than waiting
     # out a whole interval on a failed one.)
-    _record_research_check(topic_id, run_started)
+    _record_research_check(topic_id, _stamp(topic, run_started, due_checked_at))
 
     changed, diff_summary = adapter.material_diff(old_state, new_state)
     if not changed:

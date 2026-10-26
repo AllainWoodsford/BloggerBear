@@ -522,8 +522,32 @@ def _print_schedule_table(data: dict) -> None:
             extras.append(f"last article {topic['last_article_at']}")
         if extras:
             print("  " + " · ".join(extras))
+        shadow = _shadow_line(topic)
+        if shadow:
+            print(f"  shadow: {shadow}")
         if topic.get("error"):
             print(f"  ERROR: {topic['error']}")
+
+
+def _shadow_line(topic: dict) -> str:
+    """The dispatcher's shadow record for one topic, in words, or "" before its first shadow turn:
+    the mismatches with what the schedules did, the days the check could not answer (neither counts
+    as a match), and the last turns it would have dispatched."""
+    research = topic.get("shadow_last_research_dispatch_at")
+    daily = topic.get("shadow_last_daily_dispatch_at")
+    if not research and not daily:
+        return ""
+    mismatches = int(topic.get("shadow_mismatches") or 0)
+    unchecked = int(topic.get("shadow_unchecked") or 0)
+    parts = [
+        f"{mismatches} mismatch{'es' if mismatches != 1 else ''}",
+        f"{unchecked} unchecked day{'s' if unchecked != 1 else ''}",
+    ]
+    if research:
+        parts.append(f"last research turn {research}")
+    if daily:
+        parts.append(f"last daily turn {daily}")
+    return " · ".join(parts)
 
 
 def _cmd_topics_schedule(args: argparse.Namespace) -> None:

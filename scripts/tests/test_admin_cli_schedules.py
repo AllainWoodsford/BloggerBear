@@ -59,6 +59,26 @@ def test_topics_schedule_prints_each_topic_in_plain_words_and_as_written(capsys)
     assert "pipeline-config set --stagger-minutes N" in out and "topics reschedule" in out
 
 
+def test_topics_schedule_shows_the_dispatchers_shadow_record_when_there_is_one(capsys):
+    shadowed = {
+        **LISTING["topics"][0],
+        "shadow_last_research_dispatch_at": "2026-10-15T04:05:30+00:00",
+        "shadow_last_daily_dispatch_at": "2026-10-14T23:10:30+00:00",
+        "shadow_mismatches": 0,
+        "shadow_unchecked": 1,
+    }
+    answer = {**LISTING, "topics": [shadowed, LISTING["topics"][1]]}
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, answer)):
+        _run(["topics", "schedule"])
+
+    out = capsys.readouterr().out
+    assert (
+        "  shadow: 0 mismatches · 1 unchecked day · last research turn 2026-10-15T04:05:30+00:00 · "
+        "last daily turn 2026-10-14T23:10:30+00:00"
+    ) in out
+    assert out.count("shadow:") == 1  # the topic with no shadow turn yet shows none
+
+
 def test_topics_schedule_can_print_the_raw_json(capsys):
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, LISTING)):
         _run(["topics", "schedule", "--json"])

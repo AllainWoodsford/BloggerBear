@@ -468,11 +468,44 @@ CATALOGUE: tuple[Component, ...] = (
     _lambda(
         "research-tick",
         "Checks one topic's source (its adapter) for anything new and writes a finding.",
-        "per topic, on the topic's own EventBridge schedule (its research interval)",
+        "per topic, on the topic's own EventBridge schedule (its research interval); for a topic "
+        f"on the queue (dispatch_mode queue), on each research job on {PREFIX}{ENV}-work.fifo, "
+        "at most worker_concurrency at once",
         details=(
             ("Writes", "findings; topics.last_research_at"),
             ("Schedules", f"{PREFIX}{ENV}-<topic_id>-research-tick"),
         ),
+    ),
+    _lambda(
+        "dispatcher",
+        "Every minute, works out which topics are due for research or their daily cycle and, for a "
+        "topic on the queue, sends the research job or starts the cycle; for a topic still on its "
+        "schedules (every topic until the cutover) it only records what it would have done.",
+        f"every minute ({PREFIX}{ENV}-dispatcher, EventBridge Scheduler)",
+        details=(
+            (
+                "Writes",
+                "topics.research_claimed_at, last_daily_dispatched_on and daily_claim_n; in shadow mode "
+                "topics.shadow_last_research_dispatch_at, shadow_last_daily_dispatch_at, "
+                "shadow_mismatches and shadow_unchecked; last_tick on the model-config pipeline row",
+            ),
+            (
+                "Sends",
+                f"research jobs to {PREFIX}{ENV}-work.fifo; starts {PREFIX}{ENV}-daily-cycle "
+                "executions named <topic>-<date>-<n>",
+            ),
+            (
+                "Settings",
+                "dispatch_shadow and daily_starts_per_tick on the pipeline row (pipeline-config set)",
+            ),
+            (
+                "Logs",
+                "one dispatcher_tick evidence line a tick: considered, dispatched, started, "
+                "skipped_unparsable",
+            ),
+        ),
+        alarms=(f"{PREFIX}{ENV}-dispatcher-heartbeat",),
+        aliases=("dispatch", "queue-dispatcher"),
     ),
     _lambda(
         "daily-cycle",
@@ -511,8 +544,9 @@ CATALOGUE: tuple[Component, ...] = (
     ),
     _lambda(
         "dlq-handler",
-        "Turns each message on the pipeline's dead-letter queue into a failed-executions row.",
-        f"on each message on {PREFIX}{ENV}-pipeline-dlq",
+        "Turns each message on the pipeline's and the work queue's dead-letter queues into a "
+        "failed-executions row.",
+        f"on each message on {PREFIX}{ENV}-pipeline-dlq and {PREFIX}{ENV}-work-dlq.fifo",
     ),
     _lambda(
         "weekly-reflection",
@@ -695,6 +729,32 @@ CATALOGUE: tuple[Component, ...] = (
         aliases=("dlq", "dead-letter-queue"),
     ),
     Component(
+        kind="queue",
+        key="work",
+        name=f"{PREFIX}{ENV}-work.fifo",
+        purpose="The FIFO work queue: the dispatcher's research jobs, one topic at a time, which the "
+        "research tick takes one by one, at most worker_concurrency at once.",
+        details=(
+            ("Message", "topic_id, job, force, due_checked_at, dispatched_at; grouped by topic_id"),
+            ("Deduplicated by", "<topic_id>:research:<minute>"),
+            ("Empty until", "a topic's dispatch_mode is queue; shadow mode sends nothing"),
+            ("After three receives", f"the job goes to {PREFIX}{ENV}-work-dlq.fifo"),
+        ),
+        log_groups=(f"/aws/lambda/{PREFIX}{ENV}-dispatcher", f"/aws/lambda/{PREFIX}{ENV}-research-tick"),
+        alarms=(f"{PREFIX}{ENV}-work-queue-age",),
+        aliases=("work-queue", "fifo"),
+    ),
+    Component(
+        kind="queue",
+        key="work-dlq",
+        name=f"{PREFIX}{ENV}-work-dlq.fifo",
+        purpose="Where a queue job lands after three receives without finishing (it timed out or "
+        "crashed); dlq-handler records each one in failed-executions.",
+        log_groups=(f"/aws/lambda/{PREFIX}{ENV}-dlq-handler",),
+        alarms=(f"{PREFIX}{ENV}-work-dlq-messages", f"{PREFIX}{ENV}-work-dlq-received"),
+        aliases=("work-dead-letter-queue",),
+    ),
+    Component(
         kind="topic",
         key="alerts",
         name=f"{PREFIX}{ENV}-alerts",
@@ -810,6 +870,18 @@ CATALOGUE: tuple[Component, ...] = (
         # A run Scheduler gave up on is silent: the function is never invoked, so it has no error.
         alarms=(f"{PREFIX}{ENV}-schedule-invocations-dropped",),
         aliases=("schedules", "scheduler", "eventbridge"),
+    ),
+    Component(
+        kind="schedule",
+        key="dispatcher",
+        name=f"{PREFIX}{ENV}-dispatcher",
+        purpose="Invokes the dispatcher every minute (made by Terraform, never retried: the next "
+        "tick looks back to the last one that finished).",
+        details=(("Expression", "rate(1 minute)"),),
+        log_groups=(f"/aws/lambda/{PREFIX}{ENV}-dispatcher",),
+        # A dispatcher that is not invoked has no error to alarm on; the heartbeat notices.
+        alarms=(f"{PREFIX}{ENV}-dispatcher-heartbeat", f"{PREFIX}{ENV}-schedule-invocations-dropped"),
+        aliases=("dispatcher-schedule",),
     ),
     Component(
         kind="bucket",

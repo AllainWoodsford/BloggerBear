@@ -705,11 +705,12 @@ locals {
     # (`model-catalog` row, discover_enabled / reprice_enabled, on unless set to false).
     MODEL_CATALOG_FUNCTION_NAME = "${var.unique_name_prefix}-dev-model-catalog"
 
-    # The FIFO work queue the dispatcher sends research jobs to (phase Q of
-    # docs/enhancements/model-ranch-prompt-assets-evals.md). Empty until the work-queue module
-    # lands (Q1), when it becomes module.work_queue.work_queue_url; common/dispatch.py is not
-    # called by any handler before then, so nothing reads it yet.
-    WORK_QUEUE_URL = ""
+    # The FIFO work queue the dispatcher sends research jobs to (module.work_queue below, phase Q1
+    # of docs/enhancements/model-ranch-prompt-assets-evals.md). Read by the dispatcher (which the
+    # module also tells it directly) and, from the per-topic cutover (Q2), by the admin API's
+    # manual triggers; harmless on every other Lambda. Not a cycle although the module is given
+    # this map: its work_queue_url output depends on the queue alone.
+    WORK_QUEUE_URL = module.work_queue.work_queue_url
   }
 }
 
@@ -1468,6 +1469,35 @@ resource "aws_lambda_event_source_mapping" "dlq_handler" {
   event_source_arn = aws_sqs_queue.pipeline_dlq.arn
   function_name    = aws_lambda_function.dlq_handler.function_name
   batch_size       = 10
+}
+
+# -----------------------------------------------------------------------
+# The queue platform (infra/modules/work-queue; phase Q1 of
+# docs/enhancements/model-ranch-prompt-assets-evals.md): a dispatcher every minute in place of each
+# topic's two schedules, a FIFO work queue in front of the research tick, and worker_concurrency,
+# the one knob on how many queue jobs run at once. Shadow mode only until a topic's dispatch_mode is
+# "queue" (Q2): the dispatcher records what it would have done and sends nothing, and the per-topic
+# schedules (common/scheduler.py) keep running every topic. Its dead-letter queue is consumed by
+# dlq_handler above; the dispatcher's errors and throttles alarms are module.observability's
+# (local.pipeline_lambda_function_names).
+# -----------------------------------------------------------------------
+module "work_queue" {
+  source = "../../modules/work-queue"
+
+  unique_name_prefix = var.unique_name_prefix
+  environment_name   = "dev"
+
+  lambda_exec_role_arn  = aws_iam_role.lambda_exec.arn
+  lambda_exec_role_name = aws_iam_role.lambda_exec.name
+  lambda_package_path   = data.archive_file.lambdas.output_path
+  lambda_package_hash   = data.archive_file.lambdas.output_base64sha256
+  lambda_environment    = local.lambda_env_variables
+
+  research_tick_arn  = aws_lambda_function.research_tick.arn
+  dlq_handler_arn    = aws_lambda_function.dlq_handler.arn
+  state_machine_arn  = aws_sfn_state_machine.daily_cycle.arn
+  worker_concurrency = var.worker_concurrency
+  alerts_topic_arn   = module.observability.sns_topic_arn
 }
 
 # -----------------------------------------------------------------------
@@ -2733,7 +2763,7 @@ locals {
     aws_lambda_function.model_catalog.function_name,
     aws_lambda_function.security_events.function_name,
     aws_lambda_function.sign_in_events.function_name,
-  ], aws_lambda_function.reviewer[*].function_name)
+  ], aws_lambda_function.reviewer[*].function_name, module.work_queue.function_names)
 }
 
 module "observability" {
