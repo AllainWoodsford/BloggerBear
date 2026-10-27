@@ -4297,7 +4297,7 @@
         "status",
         "digest"
       ],
-      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest} ...\n\npositional arguments:\n  {get,set,rollup,status,digest}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the rollup, late events, the judge, gated models, the eval-work\n                        queue and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest} ...\n\npositional arguments:\n  {get,set,rollup,status,digest}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the rollup, late events, the judge, gated models, the cull\n                        proposal, the eval-work and work.fifo queues and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n\noptions:\n  -h, --help            show this help message and exit\n"
     },
     "evals get": {
       "help": "Show the evals settings, the values in effect and the judge's model",
@@ -4543,7 +4543,7 @@
       "help_text": "usage: admin_cli.py evals rollup [-h] [--from DAY] [--to DAY]\n\noptions:\n  -h, --help  show this help message and exit\n  --from DAY  First day to add up again, YYYY-MM-DD (118 days back at most)\n  --to DAY    Last day to add up again, YYYY-MM-DD (default today)\n"
     },
     "evals status": {
-      "help": "Switches, the rollup, late events, the judge, gated models, the eval-work queue and topics by dispatch mode",
+      "help": "Switches, the rollup, late events, the judge, gated models, the cull proposal, the eval-work and work.fifo queues and topics by dispatch mode",
       "group": false,
       "arguments": [],
       "destructive": false,

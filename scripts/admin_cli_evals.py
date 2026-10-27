@@ -9,8 +9,9 @@ which admin_cli.build_parser calls. Today's commands:
   row in DynamoDB only.
 - `evals rollup [--from DAY [--to DAY]]`: run the hourly rollup now (POST /evals/rollup), from its
   watermark, or for those days again.
-- `evals status`: the switches, the rollup, late events, the judge, gated models, the eval-work
-  queue and the topics by dispatch mode, each part on its own (GET /evals/status).
+- `evals status`: the switches, the rollup, late events, the judge, gated models, the cull
+  proposal, the eval-work and work.fifo queues and the topics by dispatch mode, each part on its
+  own (GET /evals/status).
 - `evals digest [--since DAY]`: the day totals per model and prompt version since a day, a week by
   default (GET /evals/digest).
 
@@ -158,8 +159,8 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
 
     evals_sub.add_parser(
         "status",
-        help="Switches, the rollup, late events, the judge, gated models, the eval-work queue and topics "
-        "by dispatch mode",
+        help="Switches, the rollup, late events, the judge, gated models, the cull proposal, the eval-work "
+        "and work.fifo queues and topics by dispatch mode",
     ).set_defaults(func=lambda args: do_request(args, "GET", "/evals/status"))
 
     digest_parser = evals_sub.add_parser(

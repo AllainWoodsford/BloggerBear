@@ -3,11 +3,12 @@ GET /evals/digest (docs/enhancements/model-ranch-prompt-assets-evals.md, PR13).
 
 **status** answers "are evals working, and what are they holding back?" in parts, each read on its
 own: the switches, the rollup (its watermark and last run), `late_dropped`, the judge (its agreement
-with people, pairs and whether it is calibrated), the gated models, the eval-work queue's depth and
-the age of its oldest job, and the topics by dispatch mode. A part that cannot be read says "could
-not check" (COULD_NOT_CHECK) and the others still answer, so one missing grant or one slow service
-never hides the rest. The prompt release in place and the prompt fallbacks of the last 24 hours join
-it where prompts as assets meet evals (PR14); the last cull or proposal with culling (PR16).
+with people, pairs and whether it is calibrated), the gated models, the cull proposal in place, each
+queue's depth and the age of its oldest job (eval-work's, and the queue platform's work.fifo), and
+the topics by dispatch mode. A part that cannot be read says "could not check" (COULD_NOT_CHECK) and
+the others still answer, so one missing grant or one slow service never hides the rest. The prompt
+release in place and the prompt fallbacks of the last 24 hours join it where prompts as assets meet
+evals (PR14); the last cull applied with culling (PR16), which writes the proposal too.
 
 **digest** adds the day rows up from a day (`since`, a week ago by default) to today, per model and
 per prompt version: perf, events, good and bad with the Wilson interval of good/(good + bad)
@@ -24,11 +25,20 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Key
 
-from common import dynamo, evals, evals_rollup, evals_settings, evidence
+from common import dynamo, evals, evals_rollup, evals_settings, evidence, model_catalog
 from common.model_pricing import canonical_model_id
 
 COULD_NOT_CHECK = "could not check"
-# eval-work's oldest job: the most recent of SQS's five-minute datapoints within this.
+# The queues whose depth and age status shows, by the name it shows each under, and the variable
+# that holds each one's URL. "Queue depth and age" could mean either, so both are shown: eval-work
+# (the judge's and offline scoring's jobs; empty while evals are off) and work.fifo (the topics'
+# research jobs; empty until the queue platform is deployed).
+QUEUES = {"eval-work": "EVAL_WORK_QUEUE_URL", "work.fifo": "WORK_QUEUE_URL"}
+QUEUE_OFF = {
+    "eval-work": "evals are off: there is no eval-work queue (EVAL_WORK_QUEUE_URL is empty)",
+    "work.fifo": "the queue platform is not deployed: there is no work queue (WORK_QUEUE_URL is empty)",
+}
+# A queue's oldest job: the most recent of SQS's five-minute datapoints within this.
 AGE_LOOKBACK = timedelta(minutes=15)
 QUEUE_ATTRIBUTES = (
     "ApproximateNumberOfMessages",
@@ -95,30 +105,28 @@ def _number(value):
     return value
 
 
-def _queue_url() -> str:
-    return os.environ.get("EVAL_WORK_QUEUE_URL", "")
+def _queue_url(queue: str) -> str:
+    return os.environ.get(QUEUES[queue], "")
 
 
-QUEUE_OFF = {
-    "status": "off",
-    "detail": "evals are off: there is no eval-work queue (EVAL_WORK_QUEUE_URL is empty)",
-}
+def _queue_off(queue: str) -> dict:
+    return {"status": "off", "detail": QUEUE_OFF[queue]}
 
 
-def _queue_depth() -> dict:
-    url = _queue_url()
+def _queue_depth(queue: str) -> dict:
+    url = _queue_url(queue)
     if not url:
-        return dict(QUEUE_OFF)
+        return _queue_off(queue)
     attributes = _sqs_client().get_queue_attributes(QueueUrl=url, AttributeNames=list(QUEUE_ATTRIBUTES))
     found = attributes.get("Attributes") or {}
     waiting, in_flight, delayed = (int(found.get(name, 0)) for name in QUEUE_ATTRIBUTES)
     return {"queue": url.rsplit("/", 1)[-1], "waiting": waiting, "in_flight": in_flight, "delayed": delayed}
 
 
-def _queue_age(now: datetime) -> dict:
-    url = _queue_url()
+def _queue_age(queue: str, now: datetime) -> dict:
+    url = _queue_url(queue)
     if not url:
-        return dict(QUEUE_OFF)
+        return _queue_off(queue)
     name = url.rsplit("/", 1)[-1]
     points = _cloudwatch_client().get_metric_statistics(
         Namespace="AWS/SQS",
@@ -165,6 +173,15 @@ def _gated_models(settings: dict, now: datetime) -> dict:
     return {"gated": gated, "held_open": held_open, "gates": gates}
 
 
+def _cull() -> dict:
+    """The cull proposal in place: model-catalog-state's `cull_proposal` as stored, which culling's
+    weekly proposal writes (PR16); None until there is one."""
+    proposal = _number(model_catalog.get_state().get("cull_proposal"))
+    if proposal is None:
+        return {"proposal": None, "detail": "no cull proposal yet"}
+    return {"proposal": proposal}
+
+
 def _judge(settings: dict, index: dict) -> dict:
     agreement = _number(index.get("judge_agreement"))
     pairs = _number(index.get("judge_pairs")) or 0
@@ -208,8 +225,14 @@ def status(now: datetime | None = None) -> dict:
         "late_dropped": _part("late_dropped", lambda: {"late_dropped": _late_dropped(index())}),
         "judge": _part("judge", lambda: _judge(settings(), index())),
         "gated_models": _part("gated_models", lambda: _gated_models(settings(), now)),
-        "queue_depth": _part("queue_depth", _queue_depth),
-        "queue_age": _part("queue_age", lambda: _queue_age(now)),
+        "cull": _part("cull", _cull),
+        # One part per queue, so one that cannot be read never hides the other.
+        "queue_depth": {
+            queue: _part(f"queue_depth/{queue}", lambda queue=queue: _queue_depth(queue)) for queue in QUEUES
+        },
+        "queue_age": {
+            queue: _part(f"queue_age/{queue}", lambda queue=queue: _queue_age(queue, now)) for queue in QUEUES
+        },
         "topics_by_dispatch_mode": _part("topics_by_dispatch_mode", _topics_by_dispatch_mode),
     }
 

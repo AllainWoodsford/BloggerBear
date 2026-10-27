@@ -3,14 +3,18 @@ sections 4.4, 4.6, 4.9 and 5.3), against moto tables and a Logs Insights stand-i
 a list of log lines as Logs would (whole seconds, both ends included, at most `limit` rows).
 
 What is held: each event counts for the rows its reason applies to, the model once per article for
-a reason written once per prompt; the watermark moves to a day two hours after the midnight that
-ends it, and an event written after that is late, counted once and in no row; two runs over one log
-write the same rows; weeks and months are summed across a month's end without a day counted twice;
-days are Sydney's across daylight saving; a model with no row is never given one back; excluded
-sources are left out and their rows deleted when a day is added up again; a window of 10,000 rows
-is split and every event counted; the judge's agreement comes from pair# rows, and its verdicts gate
-only while it is calibrated; readers' votes reach cells and never a gate; the line the rollup ends
-with is the one the heartbeat filter counts.
+a reason written once per prompt, even across midnight; the watermark moves to a day two hours after
+the midnight that ends it, never back, and an event written after that is late, counted once and in
+no row, whether or not the watermark has reached its day; a copy of an event logged again counts as
+its first copy did; two runs over one log write the same rows; a week is seven days and weeks and
+months are summed across a month's end without a day counted twice; days are those of the settings'
+time zone, Sydney's by default and across daylight saving; a model with no row is never given one
+back, and the judge in effect is among a model's roles; a purpose written while Bedrock is listed is
+kept; excluded sources are left out and their rows deleted when a day is added up again; a window of
+10,000 rows is split and every event counted, and a minute that alone holds them raises rather than
+splitting forever; the judge's agreement comes from pair# rows, and its verdicts gate only while it
+is calibrated; readers' votes reach cells and never a gate; the line the rollup ends with is the one
+the heartbeat filter counts.
 """
 
 from __future__ import annotations
@@ -59,12 +63,16 @@ class FakeLogs:
         self.lines: list[tuple[datetime, str]] = []
         self.queries: list[dict] = []
         self.fail = False
+        # When set, a query past this many fails, so a read that would split forever stops.
+        self.max_queries: int | None = None
         self._results: dict[str, list] = {}
 
     def put(self, message: str, logged_at: datetime) -> None:
         self.lines.append((logged_at.astimezone(UTC), message))
 
     def start_query(self, *, logGroupName, startTime, endTime, queryString, limit):  # noqa: N803
+        if self.max_queries is not None and len(self.queries) >= self.max_queries:
+            raise AssertionError("split without end")
         self.queries.append(
             {"group": logGroupName, "start": startTime, "end": endTime, "query": queryString, "limit": limit}
         )
@@ -267,6 +275,25 @@ def test_an_articles_completion_counts_once_for_its_model_and_once_for_each_prom
     }  # fmt: skip
 
 
+def test_an_article_written_across_midnight_counts_once_for_its_model_after_the_day_is_final(aws):
+    logs = FakeLogs()
+    completion(logs, "a1", IDEATION, sydney("2026-10-26T23:59:50"))
+    completion(logs, "a1", DRAFT, sydney("2026-10-27T00:00:10"))
+    rollup(logs, now=sydney("2026-10-27T14:00"))
+    assert index(aws)["last_rolled_day"] == "2026-10-26"
+
+    rollup(logs, now=sydney("2026-10-27T15:00"))  # adds up the 27th alone: the 26th is final
+
+    model = plain(row(aws, f"model#{ALPHA}", "2026-10-26"))
+    assert model["by_reason"]["Article Completion"]["events"] == 1
+    assert row(aws, f"model#{ALPHA}", "2026-10-27") is None
+    # Only the model's share is taken once: each prompt still counts on its own day.
+    assert plain(row(aws, f"prompt#{IDEATION}#v1", "2026-10-26"))["perf"] == 2
+    assert plain(row(aws, f"prompt#{DRAFT}#v1", "2026-10-27"))["perf"] == 2
+    alpha = plain(model_row(aws, ALPHA))
+    assert (alpha["total_perf"], alpha["perf_events"]["total"]) == (2, 1)
+
+
 def test_a_prompt_fallback_is_counted_for_its_prompt_version_and_scores_nothing(aws):
     logs = FakeLogs()
     log(
@@ -373,7 +400,30 @@ def test_the_watermark_moves_to_yesterday_only_once_its_midnight_is_two_hours_pa
     rollup(logs, now=sydney("2026-10-27T02:01"))
     assert index(aws)["last_rolled_day"] == "2026-10-26"
 
-    rollup(logs, now=sydney("2026-10-27T01:00"))  # a run alongside, behind: never moves it back
+    rollup(logs, now=sydney("2026-10-27T01:00"))  # a later run whose clock is behind: never moves it back
+    assert index(aws)["last_rolled_day"] == "2026-10-26"
+
+
+def test_a_run_that_read_the_watermark_before_another_moved_it_never_moves_it_back(aws, monkeypatch):
+    logs = FakeLogs()
+    aws.Table("Evals").put_item(Item={**evals_rollup.INDEX_KEY, "last_rolled_day": "2026-10-24"})
+    read = evals_rollup.get_index
+
+    def read_then_overtaken(table=None):
+        held = read(table)
+        # The scheduled run and `evals rollup` at once: the other one saves its watermark first.
+        aws.Table("Evals").update_item(
+            Key=evals_rollup.INDEX_KEY,
+            UpdateExpression="SET last_rolled_day = :day",
+            ExpressionAttributeValues={":day": "2026-10-26"},
+        )
+        return held
+
+    monkeypatch.setattr(evals_rollup, "get_index", read_then_overtaken)
+    summary = rollup(logs, now=sydney("2026-10-27T01:00"))
+
+    # This run tried to move it to its own newest final day, and was refused.
+    assert summary["last_rolled_day"] == "2026-10-25"
     assert index(aws)["last_rolled_day"] == "2026-10-26"
 
 
@@ -402,6 +452,57 @@ def test_an_event_written_late_is_counted_once_in_late_dropped_and_in_no_day_row
         assert rollup(logs, now=sydney(now))["late_dropped"] == 1
     assert plain(index(aws))["late_dropped"] == 1
     assert plain(row(aws, f"model#{ALPHA}", "2026-10-26")) == counted
+
+
+def test_an_event_written_after_its_day_became_final_is_late_before_the_watermark_reaches_that_day(aws):
+    logs = FakeLogs()
+    # Written at 02:01 on the 27th: a minute after the 26th became final, and before the 02:05 run
+    # that moves the watermark to it.
+    completion(logs, "a1", DRAFT, sydney("2026-10-26T23:00"), logged_at=sydney("2026-10-27T02:01"))
+    rollup(logs, now=sydney("2026-10-27T01:45"))
+    assert index(aws)["last_rolled_day"] == "2026-10-25"
+
+    moving = rollup(logs, now=sydney("2026-10-27T02:05"))
+    assert index(aws)["last_rolled_day"] == "2026-10-26"
+    after = rollup(logs, now=sydney("2026-10-27T03:05"))
+
+    for summary in (moving, after):
+        assert (summary["late"], summary["late_dropped"]) == (1, 1)
+    assert row(aws, f"model#{ALPHA}", "2026-10-26") is None
+    # Added up again, the day leaves it out by the same rule.
+    the_26th = date(2026, 10, 26)
+    rollup(logs, now=sydney("2026-10-27T04:00"), trigger="admin", day_from=the_26th, day_to=the_26th)
+    assert row(aws, f"model#{ALPHA}", "2026-10-26") is None
+    assert plain(index(aws))["late_dropped"] == 1
+
+
+def test_a_first_run_counts_an_event_written_after_its_day_became_final_as_late(aws):
+    logs = FakeLogs()
+    completion(logs, "a1", DRAFT, sydney("2026-10-26T23:00"), logged_at=sydney("2026-10-27T02:01"))
+
+    summary = rollup(logs, now=sydney("2026-10-27T02:05"))
+
+    assert (summary["late"], summary["late_dropped"]) == (1, 1)
+    assert row(aws, f"model#{ALPHA}", "2026-10-26") is None
+
+
+def test_a_copy_of_an_event_logged_after_its_day_is_final_is_not_late(aws):
+    logs = FakeLogs()
+    record = completion(logs, "a1", DRAFT, sydney("2026-10-26T23:00"))
+    rollup(logs, now=sydney("2026-10-27T01:00"))
+    rollup(logs, now=sydney("2026-10-27T03:00"))
+    assert index(aws)["last_rolled_day"] == "2026-10-26"
+    counted = plain(row(aws, f"model#{ALPHA}", "2026-10-26"))
+    logs.put(evals.line(record), sydney("2026-10-27T04:00"))  # a retried step's copy, after 02:00
+
+    summary = rollup(logs, now=sydney("2026-10-27T05:00"))
+
+    assert (summary["late"], summary["late_dropped"], summary["duplicates"]) == (0, 0, 1)
+    assert counted["perf"] == 2 and plain(row(aws, f"model#{ALPHA}", "2026-10-26")) == counted
+    # Added up again, the day keeps the event its first copy counted in time.
+    the_26th = date(2026, 10, 26)
+    rollup(logs, now=sydney("2026-10-27T06:00"), trigger="admin", day_from=the_26th, day_to=the_26th)
+    assert plain(row(aws, f"model#{ALPHA}", "2026-10-26"))["perf"] == 2
 
 
 def test_two_runs_over_the_same_log_write_the_same_rows(aws):
@@ -445,17 +546,18 @@ def test_weeks_and_months_are_summed_across_a_months_end_without_a_day_counted_t
 
 
 def test_the_windows_are_sums_of_the_day_rows_read_back():
+    # 26 December is the week's first day; 25 December, the day before it, counts in the total only.
     rows = [
         {"sk": f"day#{day}", "by_reason": {"Article Completion": {"perf": 2, "events": 1}}}
-        for day in ("2026-12-26", "2026-12-31", "2027-01-01")
+        for day in ("2026-12-25", "2026-12-26", "2026-12-31", "2027-01-01")
     ]
     rows.append({"sk": "day#not-a-date", "by_reason": {"Article Completion": {"perf": 99, "events": 9}}})
 
     found = evals_rollup.windows(rows, [{"delta": Decimal("-5")}], date(2027, 1, 1), calibrated=False)
 
     assert found == {
-        "daily_perf": 2, "weekly_perf": 6, "monthly_perf": 2, "total_perf": 1,
-        "perf_events": {"daily": 1, "weekly": 3, "monthly": 1, "total": 3},
+        "daily_perf": 2, "weekly_perf": 6, "monthly_perf": 2, "total_perf": 3,
+        "perf_events": {"daily": 1, "weekly": 3, "monthly": 1, "total": 4},
     }  # fmt: skip
 
 
@@ -480,6 +582,22 @@ def test_days_are_sydney_days_across_daylight_saving(aws):
     assert evals_rollup.day_start(date(2026, 4, 6), SYDNEY) - evals_rollup.day_start(
         date(2026, 4, 5), SYDNEY
     ) == timedelta(hours=25)
+
+
+def test_days_are_those_of_the_settings_time_zone_and_so_is_the_watermark(aws):
+    aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "timezone": "UTC"})
+    logs = FakeLogs()
+    # 20:00 on the 26th in UTC is 07:00 on the 27th in Sydney.
+    completion(logs, "a1", DRAFT, datetime(2026, 10, 26, 20, 0, tzinfo=UTC))
+
+    rollup(logs, now=datetime(2026, 10, 27, 1, 59, tzinfo=UTC))
+
+    assert row(aws, f"model#{ALPHA}", "2026-10-26") is not None
+    assert row(aws, f"model#{ALPHA}", "2026-10-27") is None
+    # The 26th becomes final at 02:00 UTC on the 27th; Sydney's 26th had been since 15:00 UTC.
+    assert index(aws)["last_rolled_day"] == "2026-10-25"
+    rollup(logs, now=datetime(2026, 10, 27, 2, 1, tzinfo=UTC))
+    assert index(aws)["last_rolled_day"] == "2026-10-26"
 
 
 # --- the models row -------------------------------------------------------------------------------
@@ -515,6 +633,18 @@ def test_every_registry_model_gets_its_windows_roles_and_time_and_keeps_its_othe
     locked = plain(model_row(aws, "maker.locked-v1:0"))
     assert locked["model_roles"] == ["price_locked"] and locked["input_price_usd_per_1k_tokens"] == 0.001
     assert locked["display_name"] == "maker.locked-v1:0" and locked["model_purpose"] == "text"
+
+
+def test_the_judge_in_effect_is_among_a_models_roles_when_no_judge_model_id_is_set(aws):
+    config = {"config_id": "default", "model_id": ALPHA, "fallback_model_id": BETA}
+    aws.Table("ModelConfig").put_item(Item=config)
+    # An evals row that names no judge: the judge is the default row's fallback (section 4.5).
+    aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "judge_enabled": True})
+
+    rollup(FakeLogs())
+
+    assert plain(model_row(aws, BETA))["model_roles"] == ["fallback", "judge"]
+    assert plain(model_row(aws, ALPHA))["model_roles"] == ["default"]
 
 
 def test_models_without_a_purpose_are_classified_from_everything_bedrock_lists(aws):
@@ -563,6 +693,30 @@ def test_a_listing_that_fails_leaves_models_unclassified_and_the_run_finishes(aw
     assert summary["classify"] == "failed" and "model_purpose" not in model_row(aws, BETA)
     said = "could not list Bedrock's models to classify 1: RuntimeError('bedrock\\nunavailable')"
     assert f"evals_rollup: {said}" in capsys.readouterr().out
+
+
+def test_a_purpose_another_job_writes_while_bedrock_is_listed_is_kept(aws):
+    aws.Table("Models").update_item(Key={"model_id": BETA}, UpdateExpression="REMOVE model_purpose")
+
+    class Raced(FakeBedrock):
+        def list_foundation_models(self):
+            # The classify job records the purpose after the rollup read the registry.
+            aws.Table("Models").update_item(
+                Key={"model_id": BETA},
+                UpdateExpression="SET model_purpose = :p",
+                ExpressionAttributeValues={":p": "image"},
+            )
+            return super().list_foundation_models()
+
+    listed = {
+        "modelId": BETA, "outputModalities": ["TEXT"], "inputModalities": ["TEXT"],
+        "modelLifecycle": {"status": "ACTIVE"},
+    }  # fmt: skip
+    summary = rollup(FakeLogs(), bedrock=Raced([listed]))
+
+    beta = model_row(aws, BETA)
+    assert beta["model_purpose"] == "image" and "model_inputs" not in beta
+    assert (summary["classify"], summary["classified"], summary["unknown"]) == ("done", 0, 0)
 
 
 # --- excluded sources -----------------------------------------------------------------------------
@@ -675,6 +829,21 @@ def test_a_window_of_ten_thousand_rows_is_split_and_every_event_counted(aws):
     whole = sorted((query["start"], query["end"]) for query in logs.queries if query["returned"] < 10_000)
     assert whole[0][0] == first["start"] and whole[-1][1] == first["end"]
     assert all(later[0] == earlier[1] + 1 for earlier, later in zip(whole, whole[1:], strict=False))
+
+
+def test_a_minute_that_alone_holds_ten_thousand_rows_raises_rather_than_splitting_forever(aws):
+    logs = FakeLogs()
+    # Halving a first run's 119 days to a minute takes under forty queries; a read that split
+    # without end fails here, as a failed query, instead of hanging.
+    logs.max_queries = 100
+    at = sydney("2026-10-27T09:00")
+    for n in range(10_000):
+        rewrite(logs, f"rw{n}", "a1", at)
+
+    with pytest.raises(evals_rollup.RollupError, match="minute"):
+        rollup(logs)
+
+    assert entities(aws) == set() and len(logs.queries) < logs.max_queries
 
 
 def test_a_query_that_fails_raises_and_writes_nothing(aws):

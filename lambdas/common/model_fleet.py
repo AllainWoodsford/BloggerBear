@@ -58,6 +58,9 @@ EVALS_CONFIG_ID = evals_settings.CONFIG_ID
 JUDGE_FIELD = "judge_model_id"
 # Every role a model can play, as the models row's `model_roles` lists them (section 4.6 of
 # docs/enhancements/model-ranch-prompt-assets-evals.md): protected_models' roles, and price_locked.
+# In model_roles, `judge` marks the judge in effect (section 4.5's chain, the one `evals status`
+# names). Protection reads `judge_model_id` as stored, because the default judge is protected as
+# `fallback` or `default` already.
 ROLES = ("default", "fallback", "topic_model", "topic_fallback", "rotation", "pool", "price_locked", "judge")
 
 
@@ -171,7 +174,10 @@ def model_roles(
     protected_models gives (all of them, not the first), and `price_locked` for a registry row
     (`models`) that is locked. The evals rollup writes them on the models row as `model_roles`, for
     display: they drift as topics change, so anything that acts on them derives them again
-    (section 3, deviation 7). `evals` is the evals settings row ({} for none)."""
+    (section 3, deviation 7). `evals` is the evals settings in effect
+    (evals_settings.effective_settings), and `judge` goes to the judge they make
+    (evals_settings.judge_model): `judge_model_id`, else the default row's fallback, else
+    BEDROCK_MODEL_ID, the model `evals status` names."""
     config = config or {}
     found: dict[str, set[str]] = {}
 
@@ -193,7 +199,8 @@ def model_roles(
     for model in models:
         if model.get("price_locked"):
             add(model.get("model_id"), "price_locked")
-    add(judge_model(evals or {}), "judge")
+    # `config` is a row by now, so the judge's chain reads nothing more.
+    add(evals_settings.judge_model(evals or {}, config), "judge")
     return {key: [role for role in ROLES if role in roles] for key, roles in found.items()}
 
 

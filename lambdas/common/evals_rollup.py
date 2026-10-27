@@ -17,11 +17,11 @@ the clocks change.
 **The watermark.** The index row's `last_rolled_day` is the newest final day. A scheduled run reads
 the log from the start of that day to now and adds up every day after it. A day becomes final two
 hours after the midnight that ends it (FINAL_AFTER), when everything written during it can long be
-read; the watermark then moves to it. An event dated on or before the watermark but written after
-its day became final is late: it is counted in `late_dropped`, by the day it was written, and in no
-day row. One dated on a final day and written before the day became final was added up while the
-day was open, and is passed over. A first run, with no watermark, adds up OLDEST_DAY_BACK days: what
-the log group still holds whole (it keeps 120).
+read; the watermark then moves to it. An event written after its day became final is late, whether
+or not a run has yet moved the watermark to that day: it is counted in `late_dropped`, by the day
+it was written, and in no day row. One dated on a final day and written before the day became
+final was added up while the day was open, and is passed over. A first run, with no watermark, adds
+up OLDEST_DAY_BACK days: what the log group still holds whole (it keeps 120).
 
 **What an event counts for** (sections 3 and 4.3). `evals.parse` checks every line exactly as `emit`
 wrote it; a line that fails is unreadable and skipped. Events are deduplicated by `event_id` (the
@@ -132,11 +132,10 @@ class RollupError(Exception):
 
 
 def function_name() -> str:
-    """eval-jobs' name, for the admin API to start a rollup: EVAL_JOBS_FUNCTION_NAME when set, else
-    `<prefix>-<env>-eval-jobs`, the name the evals module gives it."""
-    return os.environ.get("EVAL_JOBS_FUNCTION_NAME") or (
-        f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}eval-jobs"
-    )
+    """eval-jobs' name, for the admin API to start a rollup: `<prefix>-<env>-eval-jobs`, the name the
+    evals module gives it and the ARN its InvokeEvalJobs grant is scoped to, so no other name could
+    be invoked anyway."""
+    return f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}eval-jobs"
 
 
 # --- days -----------------------------------------------------------------------------------------
@@ -523,18 +522,19 @@ def calibrated(agreement: float | None, pairs: int, settings: dict) -> bool:
 
 
 def update_models(
-    table, touched: set[str], today: date, is_calibrated: bool, evals_row: dict, now_iso: str
+    table, touched: set[str], today: date, is_calibrated: bool, settings: dict, now_iso: str
 ) -> tuple[int, int, list[dict]]:
     """Put the windows, `model_roles` and `perf_updated_at` on every registry model's row and on any
     other model an event named, never making a row (dynamo.set_model_fields' condition is
-    `attribute_exists(model_id)`). (rows updated, models with no row, the registry)."""
+    `attribute_exists(model_id)`). `settings` are the evals settings in effect, whose judge the
+    roles name. (rows updated, models with no row, the registry)."""
     registry = dynamo.list_models()
     by_key = {canonical_model_id(model["model_id"]): model for model in registry}
     roles = model_fleet.model_roles(
         dynamo.list_topics(),
         dynamo.get_model_config(),
         dynamo.get_model_rotation_candidates(),
-        evals_row,
+        settings,
         registry,
     )
     updated = missing = 0
@@ -639,8 +639,7 @@ def run(
 
 def _run(trigger, day_from, day_to, now, logs_client, bedrock, started) -> dict:
     now_iso = now.astimezone(UTC).isoformat()
-    evals_row = evals_settings.get_row()
-    settings = evals_settings.effective_settings(evals_row)
+    settings = evals_settings.get_settings()
     zone = evals_settings.zone(settings)
     today = local_day(now, zone)
     table = evals_table()
@@ -677,14 +676,17 @@ def _run(trigger, day_from, day_to, now, logs_client, bedrock, started) -> dict:
     late = 0
     for event in kept:
         day = local_day(event.at, zone)
+        # Late is the event's own fact, whatever the watermark says: written after its day became
+        # final, even when no run has moved the watermark to that day yet.
+        too_late = event.logged_at >= final_at(day, zone)
+        # Final by the watermark: its on-time events were added up while it was open.
         final = watermark is not None and day <= watermark
-        too_late = final and event.logged_at >= final_at(day, zone)
         if scheduled:
             if too_late:
                 late += 1
                 written_on = local_day(event.logged_at, zone).isoformat()
                 late_by_day[written_on] = late_by_day.get(written_on, 0) + 1
-            if final or day < first:
+            if too_late or final or day < first:
                 continue  # late, added up while its day was open, or older than a run adds up
         elif too_late or not first <= day <= last:
             continue  # outside the days asked for, or late: left out as the scheduled run left it
@@ -725,7 +727,7 @@ def _run(trigger, day_from, day_to, now, logs_client, bedrock, started) -> dict:
     is_calibrated = calibrated(agreement, pairs, settings)
     touched = {entity[len("model#") :] for entity, _ in totals if entity.startswith("model#")}
     models, not_in_registry, registry = update_models(
-        table, touched, today, is_calibrated, evals_row, now_iso
+        table, touched, today, is_calibrated, settings, now_iso
     )
     classify, classified, unknown = classify_unclassified(registry, region, bedrock)
 

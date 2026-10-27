@@ -183,9 +183,9 @@ data "aws_iam_policy_document" "evals" {
     resources = [local.eval_jobs_arn]
   }
 
-  # GET /evals/status shows how long eval-work's oldest job has waited: SQS's
-  # ApproximateAgeOfOldestMessage metric, which GetQueueAttributes does not give. Reading a metric
-  # takes no resource; it reads numbers only.
+  # GET /evals/status shows how long each queue's oldest job has waited (eval-work's, and the queue
+  # platform's work.fifo): SQS's ApproximateAgeOfOldestMessage metric, which GetQueueAttributes does
+  # not give. Reading a metric takes no resource; it reads numbers only.
   statement {
     sid       = "EvalWorkAge"
     effect    = "Allow"
