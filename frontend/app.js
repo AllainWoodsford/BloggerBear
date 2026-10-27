@@ -1130,6 +1130,7 @@
     vision_triage: "Vision triage",
     model_pricing: "Model pricing",
     reviewer: "Reviewer bear",
+    evals: "Model evals",
   };
 
   function formatHours(value) {

@@ -373,3 +373,15 @@ variable "web_search_region" {
     error_message = "web_search_region must be one of the Web Search Tool's regions: us-east-1, eu-west-1 or ap-northeast-1."
   }
 }
+
+variable "evals_enabled" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Whether continuous evals run (docs/enhancements/model-ranch-prompt-assets-evals.md): the scored
+    events the pipeline writes, the hourly rollup of them into the evals table, the judge and the
+    offline scoring runs. Off by default. Handed to every Lambda as EVALS_ENABLED ("true" or
+    "false"); nothing reads it until the evals module is added. Set from the EVALS_ENABLED GitHub
+    variable (docs/configuration.md).
+  EOT
+}

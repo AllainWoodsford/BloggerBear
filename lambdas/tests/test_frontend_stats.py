@@ -326,6 +326,20 @@ def test_the_operator_assistant_is_one_row_per_section_and_never_a_tile():
         assert rows.count("Operator assistant") == 1
 
 
+@needs_node
+def test_every_category_the_api_answers_with_is_drawn_under_its_label_never_its_key():
+    """A category app.js has no label for is drawn as its storage key. The evals jobs' category
+    ("evals": the judge and the offline scoring runs, docs/enhancements/model-ranch-prompt-assets-
+    evals.md) has its row in both sections before they first run, under its label, at a real $0."""
+    page = _render(_response(TOTALS_ROW, CURRENT_ROW))
+
+    keys = {*st.BEDROCK_CATEGORIES, st.ARTICLES_CATEGORY}
+    for section in ("Total Stats", "Weekly Stats"):
+        rows = {row[0]: row for row in _table(page[section], "AI spend by token estimate")[1:-1]}
+        assert len(rows) == len(keys) and not keys & set(rows), section
+        assert rows["Model evals"][1:] == ["0", "0", "0", "$0"], section
+
+
 # --- the token estimates ----------------------------------------------------------------------------
 
 

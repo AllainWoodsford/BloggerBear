@@ -198,6 +198,17 @@ def test_the_table_knows_every_secret_and_variable_a_workflow_reads():
     assert sr.NOT_ASKED <= secrets | variables
 
 
+def test_the_evals_switch_is_read_by_both_deploys_and_deliberately_not_asked():
+    """Continuous evals stay off on a first deploy; an operator switches them on by hand once the
+    evals module is deployed, so the script leaves EVALS_ENABLED alone and its table does not list
+    it. Both deploy workflows read it, as a switch."""
+    assert "EVALS_ENABLED" in sr.NOT_ASKED
+    assert all(s.name != "EVALS_ENABLED" for s in sr.SETTINGS)
+    switch = "TF_VAR_evals_enabled: ${{ vars.EVALS_ENABLED == 'true' && 'true' || 'false' }}"
+    for name in ("terraform.yml", "terraform-production-release.yml"):
+        assert switch in (WORKFLOWS / name).read_text(encoding="utf-8"), name
+
+
 def test_the_sensitive_settings_are_secrets_with_no_variable_fallback():
     _, variables = _workflow_names()
     for name in ("AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD"):

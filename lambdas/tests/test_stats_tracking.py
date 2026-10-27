@@ -164,6 +164,28 @@ def test_each_category_gets_its_own_counters(table):
         assert row[f"{category}_calls"] == 1
 
 
+def test_the_evals_jobs_have_a_category_of_their_own_before_their_first_call(table):
+    """Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md): the judge and the
+    offline scoring runs tally under "evals". Nothing calls it yet; the category comes first, so the
+    first such call is counted on its own counters, rolls into the all-time row like every counter,
+    and the Stats page has the row, at a real zero, from the start."""
+    assert "evals" in st.BEDROCK_CATEGORIES
+    _put_model()
+    with patch("common.stats_tracking.invoke_model_tracked", return_value=_tracked_result()):
+        st.tracked_claude("evals", "p", "model-a")
+
+    row = _row(table)
+    assert (row["evals_calls"], row["evals_input_tokens"], row["evals_output_tokens"]) == (1, 100, 50)
+    assert {key for key in row if key.endswith("_calls")} == {"evals_calls"}  # nobody else's counters
+    additive, snapshot = st.split_for_rollover({"week_start": "2026-10-05", "evals_calls": 1})
+    assert additive == {"evals_calls": 1} and snapshot == {}
+    by_category = {c["category"]: c for c in st.public_view({})["categories"]}
+    assert by_category["evals"] == {
+        "category": "evals", "calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_aud": None,
+        "unpriced": 0,
+    }  # fmt: skip
+
+
 def test_an_unknown_category_is_refused_before_any_model_call():
     with patch("common.stats_tracking.invoke_model_tracked") as mock_invoke:
         with pytest.raises(ValueError, match="musings"):

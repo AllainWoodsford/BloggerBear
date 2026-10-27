@@ -15,6 +15,7 @@ import pytest
 from botocore.awsrequest import AWSResponse
 from botocore.exceptions import ClientError
 
+from common import logs_insights
 from ops_mcp import logs, samples
 
 NOW = datetime(2026, 10, 5, 9, 0, tzinfo=UTC)
@@ -424,7 +425,7 @@ def test_logs_is_asked_with_short_timeouts_and_one_retry(monkeypatch):
     throttled call is sent twice in all, one retry, not three times."""
     for name, value in {"AWS_ACCESS_KEY_ID": "testing", "AWS_SECRET_ACCESS_KEY": "testing"}.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr(logs, "_clients", {})
+    monkeypatch.setattr(logs_insights, "_clients", {})  # the shared clients live with the runner
     client = logs.client("ap-southeast-2")
     assert client is logs.client("ap-southeast-2")
     assert client.meta.config.connect_timeout == 3 and client.meta.config.read_timeout == 8

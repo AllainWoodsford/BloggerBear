@@ -54,6 +54,7 @@ be on the `production` environment or on the repository.
 | `ALERT_EMAIL_PROD` | secret | `production` | Where production's alarm emails go. Optional. | `you@example.com` |
 | `PII_DENYLIST` | secret | repo | Your own personal strings (a name, a home address), one per line. The `pii-denylist` check refuses a pull request that adds one. Optional. | not shown, on purpose |
 | `RUFF_AUTOFIX_TOKEN` | secret | repo | A fine-grained token with contents:write on this repository only, so the `ruff-autofix` workflow can push safe lint fixes to a pull request's branch. Optional: without it the workflow only reports the fixes. Not set by the setup script. | not shown |
+| `EVALS_ENABLED` | variable | repo or `production` | Set to `true` to run continuous evals: scored events from the pipeline, rolled up hourly into the evals table, and the judge ([the design](enhancements/model-ranch-prompt-assets-evals.md)). Read as a switch, like `VISION_ENABLED`: only `true`, in any letter case, turns it on; unset or anything else is off, which is the default. Until the evals module is deployed it only sets the Lambdas' `EVALS_ENABLED` environment variable, which nothing reads yet. Set on the `production` environment alone to differ there. | `true` |
 
 **Not in this table, on purpose: the CoinGecko API key, the GitHub API token and your IP
 address.** None is a GitHub secret and the setup script sets none of them. They are kept in AWS,

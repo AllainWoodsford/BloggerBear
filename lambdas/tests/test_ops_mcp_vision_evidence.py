@@ -46,7 +46,7 @@ from table_schemas import create_table
 
 import admin_api_handler
 import research_tick_handler
-from common import dynamo, evidence, vision_decisions
+from common import dynamo, evidence, logs_insights, vision_decisions
 from common.adapters import rail_access as ra
 from common.adapters import satellite_vision as sv
 from common.costing import USD_TO_AUD_RATE
@@ -1496,7 +1496,7 @@ def loopback_env(monkeypatch):
     monkeypatch.setattr(vision_evidence, "CALL_LIMIT_SECONDS", SMALL_LIMIT)
     monkeypatch.setattr(vision_evidence, "DEADLINE_SECONDS", SMALL_LIMIT)
     monkeypatch.setattr(vision_evidence, "WAIT_SECONDS", SMALL_WAIT)
-    monkeypatch.setattr(logs, "POLL_SECONDS", 0.05)
+    monkeypatch.setattr(logs_insights, "POLL_SECONDS", 0.05)  # the runner's own, read where it runs
 
     def point(url):
         for service in ("CLOUDWATCH_LOGS", "DYNAMODB", "STS"):

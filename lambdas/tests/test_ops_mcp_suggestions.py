@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,10 @@ WITHOUT_A_COMMAND = sorted(set(suggestions.CATALOGUE) - set(WITH_A_COMMAND))
 def admin_cli_parser():
     spec = importlib.util.spec_from_file_location("admin_cli_for_catalogue", ADMIN_CLI_PATH)
     module = importlib.util.module_from_spec(spec)
+    # admin_cli's build_parser imports its eval commands from a sibling module in scripts/ by name,
+    # so scripts/ has to be on the path whichever directory pytest was started from.
+    if str(ADMIN_CLI_PATH.parent) not in sys.path:
+        sys.path.insert(0, str(ADMIN_CLI_PATH.parent))
     spec.loader.exec_module(module)
     return module.build_parser()
 
