@@ -646,10 +646,22 @@ data "aws_iam_policy_document" "lambda_backup" {
   }
 }
 
+# Updated only after lambda_exec's policy. The backups' DescribeTable and BatchWriteItem moved from
+# this policy into lambda_exec's DynamoDBAppTables, and without the edge Terraform usually updates
+# this one first: it is ready at the start of an apply, while lambda_exec's waits on everything its
+# document names (a CloudFront distribution among them), so a backup or restore could be refused
+# for minutes. With it, lambda_exec gains the two actions before this policy drops them.
+#
+# A policy added to the lambda_exec role takes its role as aws_iam_role_policy.lambda_backup.role
+# (a module's role input, or the root's own `role`): the same value as aws_iam_role.lambda_exec.id,
+# but its create then waits for this policy's update, and so for lambda_exec's. An apply that
+# shrinks these two and adds a policy never holds the old documents and the new one at once, which
+# could pass the 10,240 characters IAM allows the role's inline policies (test_terraform_wiring.py).
 resource "aws_iam_role_policy" "lambda_backup" {
-  name   = "${var.unique_name_prefix}-production-lambda-backup"
-  role   = aws_iam_role.lambda_exec.id
-  policy = data.aws_iam_policy_document.lambda_backup.json
+  name       = "${var.unique_name_prefix}-production-lambda-backup"
+  role       = aws_iam_role.lambda_exec.id
+  policy     = data.aws_iam_policy_document.lambda_backup.json
+  depends_on = [aws_iam_role_policy.lambda_exec]
 }
 
 resource "aws_iam_role_policy" "lambda_exec" {

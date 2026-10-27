@@ -1765,14 +1765,15 @@ def test_lambda_execs_inline_policies_stay_under_iams_limit_with_room_to_spare(e
     That last needs the deploy role granted iam:*Policy* on the new policy's name in
     infra/bootstrap first, which is applied by hand.
 
-    This holds the end state only. A change that makes room and a change that spends it must not
-    reach production in the same apply: nothing orders a new policy's create after the updates
-    that shrink the others, and if the create wins, the role carries the old documents and the new
-    one at once and PutRolePolicy fails with LimitExceeded part way through a release. Merge the
-    change that makes room to dev, promote it to prod and publish its release before the change
-    that spends the room is merged to dev. If a release does stop this way, the shrinking updates
-    do not wait on the failed policy, so the same run applies them, and running the release's
-    apply again creates the policy."""
+    This holds the end state; Terraform's graph holds the order inside one apply.
+    aws_iam_role_policy.lambda_backup depends on aws_iam_role_policy.lambda_exec, and a policy added
+    to the role must take its role as `aws_iam_role_policy.lambda_backup.role` (in a module's role
+    input, or as the root's own `role`; the work queue's, the prompts' and the evals' policies
+    included), so that its create waits for both of those updates. A release that shrinks those
+    two and adds a policy is then safe in one apply, production's included: the role never carries
+    the old documents and the new one at once. Nothing orders a create after an update to any
+    other policy on the role, so room made by shrinking one of those has to reach production in a
+    release before the one that spends it."""
     sizes = {
         address: terraform_policies.size(document)
         for address, document in terraform_policies.lambda_exec_policies(env).items()
@@ -1815,8 +1816,9 @@ def _write_terraform(directory: Path, text: str) -> None:
 
 def test_the_estimate_counts_a_policy_a_module_attaches_through_a_role_input(tmp_path):
     """No module puts a policy on lambda_exec yet; the work queue's and the prompts' will, given
-    the role's name or id as an input. Those count toward the same 10,240 characters, so the
-    estimate follows an input set to lambda_exec into the module, and no other role's."""
+    the role's name as an input (aws_iam_role_policy.lambda_backup.role, for the order the size
+    test describes). Those count toward the same 10,240 characters, so the estimate follows an
+    input set to lambda_exec into the module, and no other role's."""
     _write_terraform(
         tmp_path / "environments" / "dev",
         """
@@ -1884,10 +1886,11 @@ data "aws_iam_policy_document" "read" {
 
 def test_the_estimate_counts_lambda_execs_policies_however_the_role_is_spelled(tmp_path):
     """The estimate matches a policy's `role` by its value, not its spelling, so a local, a
-    template, or another policy's `role` (the way to order a module's policies after this root's)
-    leaves nothing out. A module's own role is never the root's, even under the same resource
-    name, and is not valued: its name may come from a name_prefix the estimate cannot make. A
-    policy behind a switch counts as if the switch were on."""
+    template, or another policy's `role` (`aws_iam_role_policy.lambda_backup.role`, which a policy
+    added to the role is spelled with, in a module input or in the root, to be created after the
+    root's own policies are updated) leaves nothing out. A module's own role is never the root's,
+    even under the same resource name, and is not valued: its name may come from a name_prefix the
+    estimate cannot make. A policy behind a switch counts as if the switch were on."""
     _write_terraform(
         tmp_path / "environments" / "dev",
         """
@@ -1903,8 +1906,19 @@ def test_the_estimate_counts_lambda_execs_policies_however_the_role_is_spelled(t
           default = false
         }
 
-        resource "aws_iam_role_policy" "direct" {
+        resource "aws_iam_role_policy" "lambda_exec" {
           role   = aws_iam_role.lambda_exec.id
+          policy = data.aws_iam_policy_document.read.json
+        }
+
+        resource "aws_iam_role_policy" "lambda_backup" {
+          role       = aws_iam_role.lambda_exec.id
+          policy     = data.aws_iam_policy_document.read.json
+          depends_on = [aws_iam_role_policy.lambda_exec]
+        }
+
+        resource "aws_iam_role_policy" "through_a_policy" {
+          role   = aws_iam_role_policy.lambda_backup.role
           policy = data.aws_iam_policy_document.read.json
         }
 
@@ -1922,7 +1936,7 @@ def test_the_estimate_counts_lambda_execs_policies_however_the_role_is_spelled(t
         module "queue" {
           source          = "../../modules/queue"
           from_a_local    = local.exec_role
-          from_a_policy   = aws_iam_role_policy.direct.role
+          from_a_policy   = aws_iam_role_policy.lambda_backup.role
           from_a_template = "role/${aws_iam_role.lambda_exec.name}"
         }
         """
@@ -1961,9 +1975,11 @@ def test_the_estimate_counts_lambda_execs_policies_however_the_role_is_spelled(t
     policies = terraform_policies.lambda_exec_policies("dev", tmp_path)
 
     assert sorted(policies) == [
-        "aws_iam_role_policy.direct",
+        "aws_iam_role_policy.lambda_backup",
+        "aws_iam_role_policy.lambda_exec",
         "aws_iam_role_policy.switched_off",
         "aws_iam_role_policy.through_a_local",
+        "aws_iam_role_policy.through_a_policy",
         "module.queue.aws_iam_role_policy.from_a_local",
         "module.queue.aws_iam_role_policy.from_a_policy",
         "module.queue.aws_iam_role_policy.from_a_template",
@@ -2115,6 +2131,24 @@ def test_backups_may_still_describe_and_batch_write_every_app_table(env):
 
     assert {"dynamodb:DescribeTable", "dynamodb:BatchWriteItem"} <= set(_listed(tables["Action"]))
     assert len(every_table) == 16 and sorted(_listed(tables["Resource"])) == sorted(every_table)
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_lambda_backup_is_updated_only_after_lambda_exec(env):
+    """Without the edge Terraform usually updates lambda_backup first (lambda_exec's update waits
+    on everything its document names), and a backup or restore is refused DescribeTable or
+    BatchWriteItem until lambda_exec's lands. A policy added to the role is ordered after both by
+    taking its role as aws_iam_role_policy.lambda_backup.role, so lambda_backup's `role` has to
+    stay the role's name."""
+    block = _uncommented(
+        _resource_block(_read("environments", env, "main.tf"), "aws_iam_role_policy", "lambda_backup")
+    )
+
+    assert re.search(r"^\s*depends_on\s*=\s*\[aws_iam_role_policy\.lambda_exec\]$", block, re.M)
+    assert re.search(r"^\s*role\s*=\s*aws_iam_role\.lambda_exec\.id$", block, re.M)
+    assert terraform_policies.evaluate(env, "aws_iam_role_policy.lambda_backup.role") == (
+        terraform_policies.evaluate(env, "aws_iam_role.lambda_exec.name")
+    )
 
 
 # --- Security events (common/security_events.py) ------------------------------------------------
