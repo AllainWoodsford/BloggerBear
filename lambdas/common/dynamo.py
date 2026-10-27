@@ -2369,11 +2369,12 @@ def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
     )
 
 
-def set_topic_fields(topic_id: str, fields: dict) -> None:
+def set_topic_fields(topic_id: str, fields: dict, *, remove=()) -> None:
     """Set the given attributes on a Topic (`paused`, `stagger_slot`, the schedules
-    written for it, ...), leaving every other attribute alone. Fails
-    (ConditionalCheckFailedException) rather than creating a deleted topic. The
-    attribute names go through placeholders, so a reserved word is fine."""
+    written for it, ...), leaving every other attribute alone, and remove the ones
+    named in `remove` in the same write. Fails (ConditionalCheckFailedException)
+    rather than creating a deleted topic. The attribute names go through
+    placeholders, so a reserved word is fine."""
     if not fields:
         return
     names, values, sets = {}, {}, []
@@ -2381,10 +2382,15 @@ def set_topic_fields(topic_id: str, fields: dict) -> None:
         names[f"#f{index}"] = name
         values[f":v{index}"] = value
         sets.append(f"#f{index} = :v{index}")
+    removes = []
+    for index, name in enumerate(remove):
+        names[f"#r{index}"] = name
+        removes.append(f"#r{index}")
+    update = "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else "")
     table = get_table(os.environ["TOPICS_TABLE"])
     table.update_item(
         Key={"topic_id": topic_id},
-        UpdateExpression="SET " + ", ".join(sets),
+        UpdateExpression=update,
         ConditionExpression="attribute_exists(topic_id)",
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,

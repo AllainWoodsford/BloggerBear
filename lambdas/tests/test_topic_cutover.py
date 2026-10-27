@@ -167,7 +167,8 @@ def test_a_topic_shadow_mode_watched_cleanly_moves_to_the_queue_once_confirmed(w
     status, body = update(world, BEFORE_TURN, dispatch_mode="queue", confirm=True)
 
     assert status == 200 and body["dispatch_mode"] == "queue"
-    world["deleted"].assert_called_once_with("github-trending")
+    # Deleted before the row says queue (_move_to_queue), and once more after it, finding none.
+    assert [deleted.args for deleted in world["deleted"].call_args_list] == [("github-trending",)] * 2
     world["upserted"].assert_not_called()  # a topic on the queue has no schedules
     row = stored()
     assert row["dispatch_mode"] == "queue"
@@ -208,6 +209,13 @@ def test_moving_to_the_queue_is_refused_until_confirmed_and_nothing_is_deleted_m
             {"research_cadence": "at(2026-12-01T00:00:00)"},
             "the dispatcher cannot read its research cadence 'at(2026-12-01T00:00:00)': not a rate(...)",
         ),
+        # The default stagger writes it as a cron, but a stagger of 0 (or a daily offset that comes
+        # to 0) would hand the dispatcher the rate itself.
+        (
+            {"daily_cadence": "rate(1 day)"},
+            "the dispatcher cannot read its daily cadence 'rate(1 day)': a rate; a daily cadence must be "
+            "a cron",
+        ),
         (
             {"daily_timezone": "Mars/Olympus"},
             "daily_timezone 'Mars/Olympus' is not a zone this runtime knows",
@@ -223,6 +231,7 @@ def test_moving_to_the_queue_is_refused_until_confirmed_and_nothing_is_deleted_m
         "no_research_turn_recorded",
         "daily_cadence_unreadable",
         "research_cadence_unreadable",
+        "daily_rate_hidden_by_the_stagger",
         "zone_unknown",
     ],
 )
@@ -265,12 +274,25 @@ def test_a_topic_whose_slug_has_no_letter_or_digit_is_refused(world):
     assert status == 400 and "its slug '---' (the start of its daily runs' execution names)" in body["error"]
 
 
-def test_a_topic_id_the_work_queue_cannot_take_as_a_message_group_is_refused(world):
-    put_topics(ready("rail and sea"))
+# A trailing newline: its slug ('rail-') is fine, so only the queue's own rule can refuse it.
+@pytest.mark.parametrize("topic_id", ["rail and sea", "rail\n"], ids=["space", "trailing_newline"])
+def test_a_topic_id_the_work_queue_cannot_take_as_a_message_group_is_refused(world, topic_id):
+    put_topics(ready(topic_id))
 
-    status, body = update(world, BEFORE_TURN, topic_id="rail and sea", dispatch_mode="queue", confirm=True)
+    status, body = update(world, BEFORE_TURN, topic_id=topic_id, dispatch_mode="queue", confirm=True)
 
     assert status == 400 and "its topic id cannot be the work queue's message group id" in body["error"]
+    world["deleted"].assert_not_called()
+
+
+def test_a_topic_id_too_long_for_the_manual_deduplication_id_is_refused(world):
+    long_id = "a" * 80  # its slug is 'a' * 40, which no other topic here has
+    put_topics(ready(long_id))
+
+    status, body = update(world, BEFORE_TURN, topic_id=long_id, dispatch_mode="queue", confirm=True)
+
+    assert status == 400 and "at most 79 letters, digits and punctuation" in body["error"]
+    assert dispatch.queue_id_problem("a" * 79) is None
 
 
 def test_a_rate_research_cadence_is_judged_by_its_parse_and_its_daily_record_alone(world):
@@ -399,6 +421,129 @@ def test_moving_back_to_the_schedules_recreates_both_without_asking(world):
     assert stored()["dispatch_mode"] == "schedule"
 
 
+def test_a_topic_whose_schedules_fail_on_the_way_back_is_told_nothing_may_be_running_it(world):
+    put_topics(ready(dispatch_mode="queue"))
+    mode_at_upsert = []
+
+    def throttled(topic_id, *args, **kwargs):
+        mode_at_upsert.append(stored(topic_id).get("dispatch_mode"))
+        raise ClientError({"Error": {"Code": "ThrottlingException"}}, "CreateSchedule")
+
+    world["upserted"].side_effect = throttled
+
+    status, body = update(world, AFTER_TURN, dispatch_mode="schedule")
+
+    assert status == 502
+    assert "is off the queue (its row says schedule)" in body["error"]
+    assert "nothing may be running it" in body["error"]
+    assert "`topics update github-trending --dispatch-mode schedule` again" in body["error"]
+    # The row first, so the dispatcher had let go of it before any schedule was written.
+    assert mode_at_upsert == ["schedule"] and stored()["dispatch_mode"] == "schedule"
+
+    world["upserted"].side_effect = None
+    status, _ = update(world, AFTER_TURN, dispatch_mode="schedule")
+    assert status == 200 and world["upserted"].call_count == 2
+
+
+# Weeks before the undo: the topic's last shadow daily turn before it went on the queue.
+STALE_SHADOW_DAY = "2026-10-02T22:10:30+00:00"
+# A page of the day-cycle's executions, every one newer than that day (some 100 topics' runs a day).
+NEWER_RUNS = [
+    {"executionArn": f"arn:x:run-{n}", "startDate": DAILY_TURN - timedelta(minutes=n)} for n in range(100)
+]
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        {"executions": NEWER_RUNS, "nextToken": "more"},  # the check runs out of pages: unchecked
+        {"executions": NEWER_RUNS},  # the list ends before that day: a mismatch
+    ],
+    ids=["pages_run_out", "list_ends"],
+)
+@pytest.mark.parametrize("way_back", ["one_topic", "every_topic"])
+def test_after_the_way_back_the_first_shadow_day_asks_nothing_about_the_day_before_the_cutover(
+    world, way_back, pages
+):
+    put_topics(ready(dispatch_mode="queue", shadow_last_daily_dispatch_at=STALE_SHADOW_DAY))
+
+    if way_back == "one_topic":
+        assert update(world, BEFORE_TURN, dispatch_mode="schedule")[0] == 200
+    else:
+        status, body = reschedule(dispatch_mode="schedule")
+        assert status == 200 and body["moved_to_schedule"] == ["github-trending"]
+        assert body["topics"][0]["shadow_last_daily_dispatch_at"] is None  # as stored
+    assert "shadow_last_daily_dispatch_at" not in stored()
+    world["runs"].list_executions.return_value = pages
+
+    tick(world, DAILY_TURN)  # on its schedules: shadow mode records today's turn
+
+    row = stored()
+    world["runs"].list_executions.assert_not_called()
+    assert row["shadow_unchecked"] == 0 and row["shadow_mismatches"] == 0
+    assert row["shadow_checked_days"] == 1  # the record from before the cutover still counts
+    assert update(world, AFTER_TURN, dispatch_mode="queue", confirm=True)[0] == 200
+
+
+def test_a_topic_whose_row_the_bulk_undo_could_not_write_stays_on_the_queue_and_is_not_reported_moved(
+    world, monkeypatch, capsys
+):
+    put_topics(ready("alpha", dispatch_mode="queue"), ready("bravo", stagger_slot=2, dispatch_mode="queue"))
+    write = admin_api_handler.set_topic_fields
+
+    def throttled_for_alpha(topic_id, fields, **kwargs):
+        if topic_id == "alpha":
+            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
+        return write(topic_id, fields, **kwargs)
+
+    monkeypatch.setattr(admin_api_handler, "set_topic_fields", throttled_for_alpha)
+
+    status, body = reschedule(dispatch_mode="schedule")
+
+    assert status == 200 and body["moved_to_schedule"] == ["bravo"]
+    alpha, bravo = body["topics"]
+    assert alpha["dispatch_mode"] == "queue" and "ProvisionedThroughputExceededException" in alpha["error"]
+    assert "off the queue" not in alpha["error"]
+    assert bravo["dispatch_mode"] == "schedule" and "error" not in bravo
+    assert stored("alpha")["dispatch_mode"] == "queue" and stored("bravo")["dispatch_mode"] == "schedule"
+    assert [upsert.args[0] for upsert in world["upserted"].call_args_list] == ["bravo"]
+    lines = [evidence.parse(line) for line in capsys.readouterr().out.splitlines()]
+    assert [line["topic_id"] for line in lines if line and line["event"] == "topic_changed"] == ["bravo"]
+
+
+def test_a_topic_whose_schedules_fail_in_the_bulk_undo_is_told_nothing_may_be_running_it(world):
+    put_topics(
+        ready("alpha", dispatch_mode="queue"),
+        ready("bravo", stagger_slot=2, dispatch_mode="queue"),
+        ready("charlie", stagger_slot=3),
+    )
+    mode_at_upsert = {}
+
+    def throttled_for_alpha(topic_id, *args, **kwargs):
+        mode_at_upsert[topic_id] = stored(topic_id).get("dispatch_mode")
+        if topic_id == "alpha":
+            raise ClientError({"Error": {"Code": "ThrottlingException"}}, "CreateSchedule")
+
+    world["upserted"].side_effect = throttled_for_alpha
+
+    status, body = reschedule(dispatch_mode="schedule")
+
+    assert status == 200 and body["moved_to_schedule"] == ["alpha", "bravo"]
+    alpha = body["topics"][0]
+    assert alpha["dispatch_mode"] == "schedule"
+    assert "it is off the queue" in alpha["error"] and "nothing may be running it" in alpha["error"]
+    assert "ThrottlingException" in alpha["error"]
+    assert all("error" not in row for row in body["topics"][1:])
+    assert stored("alpha")["dispatch_mode"] == "schedule"
+    # Each row said schedule before its schedules were written.
+    assert mode_at_upsert == {"alpha": "schedule", "bravo": "schedule", "charlie": None}
+
+    world["upserted"].side_effect = None
+    world["upserted"].reset_mock()
+    reschedule()
+    assert "alpha" in [upsert.args[0] for upsert in world["upserted"].call_args_list]
+
+
 def test_the_bulk_undo_moves_every_topic_on_the_queue_back_and_writes_their_schedules(world, capsys):
     put_topics(
         ready("alpha", dispatch_mode="queue"),
@@ -427,6 +572,7 @@ def test_the_bulk_undo_as_a_dry_run_changes_nothing(world):
 
     assert status == 200 and body["dry_run"] is True and body["moved_to_schedule"] == ["alpha"]
     assert stored("alpha")["dispatch_mode"] == "queue"
+    assert stored("alpha")["shadow_last_daily_dispatch_at"] == ready()["shadow_last_daily_dispatch_at"]
     world["upserted"].assert_not_called()
 
 
@@ -439,7 +585,9 @@ def test_the_bulk_undo_never_moves_topics_to_the_queue(world):
     world["upserted"].assert_not_called()
 
 
-def test_rescheduling_without_the_undo_writes_no_schedules_for_a_topic_on_the_queue(world):
+def test_rescheduling_without_the_undo_writes_no_schedules_for_a_topic_on_the_queue_and_removes_any_left(
+    world,
+):
     put_topics(ready("alpha", dispatch_mode="queue"), ready("charlie", stagger_slot=3))
     dynamo.put_pipeline_config(stagger_minutes=10)
 
@@ -447,6 +595,7 @@ def test_rescheduling_without_the_undo_writes_no_schedules_for_a_topic_on_the_qu
 
     assert status == 200 and "moved_to_schedule" not in body
     assert [call.args[0] for call in world["upserted"].call_args_list] == ["charlie"]
+    world["deleted"].assert_called_once_with("alpha")
     assert stored("alpha")["dispatch_mode"] == "queue"
     # The row still records what the dispatcher reads with the new stagger.
     assert stored("alpha")["research_schedule"] == "cron(10 * * * ? *)"
@@ -475,7 +624,6 @@ def test_a_topic_on_the_queue_is_refused_a_cadence_the_dispatcher_cannot_read(wo
 
 
 def test_a_topic_on_the_queue_is_refused_a_daily_rate(world):
-    dynamo.put_pipeline_config(stagger_minutes=0)  # with the stagger on, a daily rate becomes a cron
     put_topics(ready(dispatch_mode="queue"))
 
     status, body = update(world, AFTER_TURN, daily_cadence="rate(1 day)")
@@ -484,6 +632,24 @@ def test_a_topic_on_the_queue_is_refused_a_daily_rate(world):
     assert body["error"] == (
         "the dispatcher cannot read its daily cadence 'rate(1 day)': a rate; a daily cadence must be a cron"
     )
+
+
+def test_rescheduling_names_a_topic_on_the_queue_the_dispatcher_cannot_read_and_leaves_its_schedules(world):
+    # Put in DynamoDB straight, as a row from before this check (or a restore) could hold it.
+    put_topics(
+        ready("alpha", dispatch_mode="queue", daily_cadence="rate(1 day)"), ready("charlie", stagger_slot=3)
+    )
+
+    status, body = reschedule()
+
+    assert status == 200
+    alpha, charlie = body["topics"]
+    assert alpha["error"] == (
+        "the dispatcher cannot read its daily cadence 'rate(1 day)': a rate; a daily cadence must be a cron"
+    )
+    assert "error" not in charlie
+    assert [upsert.args[0] for upsert in world["upserted"].call_args_list] == ["charlie"]
+    world["deleted"].assert_not_called()  # the dispatcher skips it: its schedules are all that run it
 
 
 def test_a_topic_on_its_schedules_keeps_the_scheduler_s_check_only(world):
@@ -502,7 +668,7 @@ def test_an_ordinary_edit_of_a_topic_on_the_queue_writes_no_schedules_and_asks_n
 
     assert status == 200 and body["name"] == "GitHub Trending" and body["dispatch_mode"] == "queue"
     world["upserted"].assert_not_called()
-    world["deleted"].assert_not_called()
+    world["deleted"].assert_called_once_with("github-trending")  # any it still had; none is fine
     assert "last_daily_dispatched_on" not in stored()  # only a move to the queue claims the day
 
 
@@ -542,6 +708,61 @@ def test_a_new_topic_on_the_queue_is_refused_a_slug_another_topic_has(world):
 
     assert status == 400 and "is also topic 'github-trending''s" in body["error"]
     assert stored("GitHub-Trending") == {}
+
+
+def test_a_new_topic_on_the_queue_is_refused_a_daily_rate_whatever_the_stagger(world):
+    status, body = create(
+        world, BEFORE_TURN, topic_id="new-topic", name="New", dispatch_mode="queue",
+        daily_cadence="rate(1 day)",
+    )
+
+    assert status == 400
+    assert "the dispatcher cannot read its daily cadence 'rate(1 day)'" in body["error"]
+    assert stored("new-topic") == {}
+
+
+def _room_for_a_topic_id() -> int:
+    """How long a topic id may be before its longer schedule name passes EventBridge Scheduler's 64
+    characters, with this test environment's prefix."""
+    return 64 - max(len(name) for name in topic_schedule_names(""))
+
+
+@pytest.mark.parametrize("too_long", [False, True], ids=["a_character_schedule_names_refuse", "too_long"])
+def test_a_new_topic_on_the_queue_is_refused_an_id_its_schedules_could_never_be_named_by(world, too_long):
+    # The environment's prefix is known only once the fixture has set it.
+    topic_id = "a" * (_room_for_a_topic_id() + 1) if too_long else "rail:sea"
+
+    status, body = create(world, BEFORE_TURN, topic_id=topic_id, name="New", dispatch_mode="queue")
+
+    assert status == 400
+    assert "its topic id could never go back to its schedules" in body["error"]
+    assert f"at most {_room_for_a_topic_id()} characters here" in body["error"]
+    assert stored(topic_id) == {}
+
+
+def test_a_new_topic_on_the_queue_may_have_an_id_that_brings_its_schedule_name_to_64_characters(world):
+    topic_id = "a" * _room_for_a_topic_id()
+    assert max(len(name) for name in topic_schedule_names(topic_id)) == 64
+
+    status, _ = create(world, BEFORE_TURN, topic_id=topic_id, name="New", dispatch_mode="queue")
+
+    assert status == 201 and stored(topic_id)["dispatch_mode"] == "queue"
+
+
+# --- a restore -------------------------------------------------------------------------------------
+
+
+def test_a_restore_of_a_topic_on_the_queue_removes_the_schedules_it_went_back_to(world):
+    """A snapshot taken while the topic was on the queue, restored after it went back to its
+    schedules: the load phase writes the row saying queue, and the schedules phase must not leave
+    the Scheduler running it too."""
+    row = ready(dispatch_mode="queue")
+    put_topics(row)
+
+    assert admin_api_handler._restore_schedules([row]) == {"written": 1, "failed": []}
+
+    world["deleted"].assert_called_once_with("github-trending")
+    world["upserted"].assert_not_called()
 
 
 # --- manual runs -------------------------------------------------------------------------------------

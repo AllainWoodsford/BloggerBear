@@ -130,9 +130,10 @@ _SLUG_LETTER_OR_DIGIT = re.compile(r"[a-z0-9]")
 
 # SQS takes a message group id and a deduplication id of at most 128 letters, digits and
 # punctuation. The topic id is the first and starts the second (research_dedup_id, and the longer
-# manual_research_dedup_id with its token of MANUAL_TOKEN_CHARS).
+# manual_research_dedup_id with its token of MANUAL_TOKEN_CHARS). Matched with fullmatch: `$`
+# would also match before a trailing newline, which SQS refuses.
 _SQS_ID_MAX_CHARS = 128
-_SQS_ID = re.compile(r"^[A-Za-z0-9!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~]+$")
+_SQS_ID = re.compile(r"[A-Za-z0-9!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~]+")
 MANUAL_TOKEN_CHARS = 32
 
 # The day count the daily check answered (see the module docstring).
@@ -749,19 +750,27 @@ class Dispatcher:
 
 
 def cadence_problem(topic: dict, *, config: dict | None, topic_count: int) -> str | None:
-    """Why the dispatcher could not run this topic, in the matcher's words, or None: its effective
-    research cadence, then its effective daily cadence (a rate refused), then its zone. The
-    dispatcher would skip such a topic every minute (`cadence unparsable`), so a topic on the queue
-    is never allowed one. `topic_count` counts every topic, this one included, as a tick does."""
+    """Why the dispatcher could not run this topic, in the matcher's words, or None: its research
+    cadence, then its daily cadence (a rate refused), then its zone. The dispatcher would skip such
+    a topic every minute (`cadence unparsable`), so a topic on the queue is never allowed one.
+    `topic_count` counts every topic, this one included, as a tick does.
+
+    Each cadence is judged twice: as the stagger writes it now, and as stored. The dispatcher works
+    out the first again every tick, and it falls back to the stored text whenever the topic's
+    offset comes to 0 (`stagger_minutes` set to 0, or, for the daily cadence, a topic added or
+    deleted), with no check made then. So a daily `rate(...)`, which the stagger turns into a cron
+    only while the offset is not 0, is refused whatever the stagger is now (spec 4.8)."""
     effective = effective_cadences(topic, config=config, topic_count=topic_count)
     for kind, allow_rate in (("research", True), ("daily", False)):
-        try:
-            cron_match.parse(effective[kind], allow_rate=allow_rate)
-        except CadenceError as exc:
-            # The stagger may have rewritten the cadence (its minute); name both when it did.
-            stored = (topic.get(f"{kind}_cadence") or "").strip() or exc.expression
-            written = f" (written as {exc.expression!r})" if stored != exc.expression else ""
-            return f"the dispatcher cannot read its {kind} cadence {stored!r}{written}: {exc.why}"
+        stored = (topic.get(f"{kind}_cadence") or "").strip()
+        for expression in dict.fromkeys((effective[kind], stored)):
+            try:
+                cron_match.parse(expression, allow_rate=allow_rate)
+            except CadenceError as exc:
+                # The stagger may have rewritten the cadence (its minute); name both when it did.
+                shown = stored or exc.expression
+                written = f" (written as {exc.expression!r})" if shown != exc.expression else ""
+                return f"the dispatcher cannot read its {kind} cadence {shown!r}{written}: {exc.why}"
     try:
         topic_zone(topic)
     except ValueError as exc:
@@ -790,7 +799,7 @@ def queue_id_problem(topic_id: str) -> str | None:
     """Why SQS would refuse the topic id as a research job's message group id (the deduplication
     ids start with it too), or None. A send SQS refuses fails the whole tick, not only the topic."""
     longest = manual_research_dedup_id(topic_id, "0" * MANUAL_TOKEN_CHARS)
-    if _SQS_ID.match(topic_id or "") and len(longest) <= _SQS_ID_MAX_CHARS:
+    if _SQS_ID.fullmatch(topic_id or "") and len(longest) <= _SQS_ID_MAX_CHARS:
         return None
     limit = _SQS_ID_MAX_CHARS - len(manual_research_dedup_id("", "0" * MANUAL_TOKEN_CHARS))
     return (

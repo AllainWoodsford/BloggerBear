@@ -259,6 +259,27 @@ def test_an_operator_s_research_message_is_forced_and_has_a_dedup_id_of_its_own(
     )
 
 
+@pytest.mark.parametrize(
+    "topic_id",
+    ["abc\n", "abc def", "", "a" * 80],
+    ids=["trailing_newline", "space", "empty", "too_long"],
+)
+def test_a_topic_id_sqs_would_refuse_as_a_message_group_id_is_named(topic_id):
+    assert "its topic id cannot be the work queue's message group id" in dispatch.queue_id_problem(topic_id)
+
+
+def test_a_topic_id_with_punctuation_the_queue_takes_is_fine():
+    assert dispatch.queue_id_problem("github-trending") is None
+    assert dispatch.queue_id_problem("rail:sea/2.0") is None
+
+
+def test_a_topic_id_longer_than_the_queue_s_ids_allow_is_refused_and_one_at_the_limit_is_not():
+    # At 79 characters the manual deduplication id, the longest id built from it, is SQS's 128.
+    assert len(dispatch.manual_research_dedup_id("a" * 79, "0" * dispatch.MANUAL_TOKEN_CHARS)) == 128
+    assert dispatch.queue_id_problem("a" * 79) is None
+    assert "at most 79 letters, digits and punctuation" in dispatch.queue_id_problem("a" * 80)
+
+
 def test_the_research_claim_expires_one_interval_back_less_the_due_tolerance():
     now = at("2026-10-25T04:05:30")
 

@@ -308,7 +308,12 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
     if not body:
         raise CliError("topics update requires at least one field to change")
 
-    _put_topic(args, body, assume_yes=args.yes)
+    # Only a move to the queue can be refused with 409 confirm_required (the Admin API's
+    # _move_to_queue); every other update stays on the shared request path.
+    if body.get("dispatch_mode") == "queue":
+        _put_topic(args, body, assume_yes=args.yes)
+    else:
+        _do_request(args, "PUT", f"/topics/{args.topic_id}", body=body)
 
 
 def _put_topic(args: argparse.Namespace, body: dict, *, assume_yes: bool) -> None:
@@ -1577,7 +1582,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--editorial-goals-json",
         dest="editorial_goals_json",
         default=None,
-        help="Replaces the topic's whole editorial_goals block; '{}' clears it (back to the default)",
+        help="Replaces the whole editorial_goals block; '{}' clears it (the default)",
     )
     update_parser.add_argument(
         "--goal-rotation-json",
@@ -1611,9 +1616,8 @@ def build_parser() -> argparse.ArgumentParser:
         dest="findings_window_hours",
         default=None,
         help=(
-            "How many hours back the daily article reads findings, never past the topic's last "
-            "article: whole hours, 1 to 336, for a topic that does not write every day; '' "
-            "clears it (back to 24)"
+            "Hours back the daily article reads findings (1 to 336, never past its last article); "
+            "'' clears it (24)"
         ),
     )
     update_parser.add_argument(
@@ -1622,8 +1626,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["off", "shadow", "enforce", ""],
         help=(
-            "This topic's fresh-data review mode, overriding the pipeline-wide one: 'off', "
-            "'shadow' (record only) or 'enforce' (act on it); '' clears it (inherit)"
+            "This topic's fresh-data review mode: 'off', 'shadow' (record only) or 'enforce' "
+            "(act on it); '' inherits the pipeline-wide one"
         ),
     )
     update_parser.add_argument(
@@ -1645,10 +1649,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--stagger-slot",
         dest="stagger_slot",
         default=None,
-        help=(
-            "Move this topic to another turn in the stagger (a whole number no other topic "
-            "holds); '' gives it the next free slot. Its two schedules are rewritten at once"
-        ),
+        help="Its turn in the stagger (a free whole number); '' gives the next free one",
     )
     _add_model_flags(update_parser)
     update_parser.add_argument(
@@ -1656,21 +1657,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="reviewer_may_approve",
         choices=["on", "off", ""],
         default=None,
-        help="May the reviewer bear approve this topic's held articles; '' = `reviewer` setting",
+        help="May the reviewer bear approve its held articles; '' = `reviewer` setting",
     )
     update_parser.add_argument(
         "--dispatch-mode",
         dest="dispatch_mode",
         choices=["queue", "schedule"],
         default=None,
-        help=(
-            "'queue': the dispatcher runs the topic and its two schedules are deleted (asks first). "
-            "Refused unless it is running and shadow mode watched a full day of it with no "
-            "mismatch and no unchecked day (`topics schedule`). 'schedule': back on its schedules"
-        ),
+        help="'queue' (asks first; deletes its two schedules) or 'schedule' to undo it",
     )
     update_parser.add_argument(
-        "--yes", action="store_true", default=False, help="Do not ask before moving it to the queue"
+        "--yes", action="store_true", default=False, help="Do not ask before --dispatch-mode queue"
     )
     update_parser.set_defaults(func=_cmd_topics_update)
 
