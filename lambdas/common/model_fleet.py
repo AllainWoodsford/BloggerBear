@@ -24,6 +24,11 @@ working and fresh (docs/enhancements/archive/model-catalog-refresh.md, "Pruning 
   have gone inactive, denied or unsuitable and gains one new model while it has fewer than
   `rotation_max` (10): an active, callable, priced text model that is nobody's fallback and not
   already in it, the cheapest in `value_for_money` mode, the most expensive in `frontier`.
+* **Gated** models (common/model_ranch.py, the rotation guard, while evals are on): a model the
+  Model Ranch's gates hold back is no pick for a rotation and no roll forward from the shared pool,
+  until its windows recover. It is left out before `prune_mode` orders the picks, and the order
+  itself is untouched; pruning never looks at the gates. A gated model already in a rotation or the
+  pool stays there: routing passes it over (common/model_routing.py) while it is gated.
 * **Deactivation** (deactivated, when the admin API disables a model): the model leaves every
   topic's rotation (replaced by the cycler's pick when there is one), model and fallback, and the
   shared rotation pool.
@@ -36,7 +41,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 
-from common import dynamo, evals_settings, evidence
+from common import dynamo, evals_settings, evidence, model_ranch
 from common.model_pricing import canonical_model_id
 
 PRUNE_MODES = ("value_for_money", "frontier")
@@ -268,10 +273,19 @@ def prune(settings: dict, now: datetime) -> dict:
     return result
 
 
-def rotation_picks(models: list[dict], config: dict | None, topics: list[dict], mode: str) -> list[dict]:
+def rotation_picks(
+    models: list[dict],
+    config: dict | None,
+    topics: list[dict],
+    mode: str,
+    guard: model_ranch.Guard | None = None,
+) -> list[dict]:
     """The models a rotation may gain, best first: usable (active, not denied), priced models
-    suitable for text that are nobody's fallback, the cheapest first in value_for_money mode, the
-    most expensive in frontier."""
+    suitable for text that are nobody's fallback and that the rotation guard (`guard`, loaded here
+    when not given) has not gated, the cheapest first in value_for_money mode, the most expensive in
+    frontier."""
+    if guard is None:
+        guard = model_ranch.load_guard(config)
     config = config or {}
     fallbacks = {_key(config.get("fallback_model_id"))} | {_key(t.get("fallback_model_id")) for t in topics}
     eligible = [
@@ -282,6 +296,8 @@ def rotation_picks(models: list[dict], config: dict | None, topics: list[dict], 
         and blended_price(model) is not None
         and _key(model["model_id"]) not in fallbacks
     ]
+    # Gated models go before the ordering, which is prune_mode's and stays as it is (section 2).
+    eligible = model_ranch.filter_healthy(eligible, guard)
     return sorted(
         eligible,
         key=lambda m: (blended_price(m) if mode == "value_for_money" else -blended_price(m), m["model_id"]),
@@ -295,20 +311,24 @@ def _pick_for(rotation: list[str], picks: list[dict]) -> str | None:
 
 def rotation_pool(candidates: list[str], models: list[dict] | None = None) -> list[str]:
     """The shared pool's candidates a topic may be rolled to (daily_cycle_handler's
-    _assign_rotated_model): each one whose registry row is usable and suitable for text. One with
-    no row is kept, and so is every one when the registry cannot be read: rolling a model forward
-    never fails over a registry read, as routing has it."""
+    _assign_rotated_model): each one whose registry row is usable and suitable for text, and that
+    the rotation guard has not gated (common/model_ranch.py, while evals are on). One with no row
+    is kept, and so is every one when the registry cannot be read: rolling a model forward never
+    fails over a registry read, as routing has it."""
+    if not candidates:
+        return []  # no pool configured: nothing to read
     try:
         rows = dynamo.list_models() if models is None else models
     except Exception as exc:  # noqa: BLE001 - the pool stands as configured
         print(f"model_fleet: could not read the models to pick from the pool: {exc!r}")
         return list(candidates)
     by_key = {_key(m["model_id"]): m for m in rows}
-    return [
-        c
-        for c in candidates
-        if _key(c) not in by_key or (is_usable(by_key[_key(c)]) and suitable(by_key[_key(c)], TEXT))
-    ]
+    guard = model_ranch.load_guard()
+
+    def fit(row: dict) -> bool:
+        return is_usable(row) and suitable(row, TEXT) and not guard.gated(row)
+
+    return [c for c in candidates if _key(c) not in by_key or fit(by_key[_key(c)])]
 
 
 def cycle(settings: dict, now: datetime) -> dict:

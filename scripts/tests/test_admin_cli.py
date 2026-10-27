@@ -1186,13 +1186,47 @@ def test_articles_feedback_lock_and_unlock():
     assert m.call_args.kwargs["body"] == {"locked": False, "reset_count": True}
 
 
+def _rewrite_api(models: dict):
+    """signed_request for `articles rewrite`: GET /models answers `models`, anything else 202."""
+
+    def answer(method, api_url, path, region, body=None):
+        return FakeResponse(200, models) if (method, path) == ("GET", "/models") else FakeResponse(202, {})
+
+    return answer
+
+
 def test_articles_rewrite_posts_the_instructions_and_the_model_when_given():
-    with patch("admin_cli.signed_request", return_value=FakeResponse(202, {})) as m:
+    with patch("admin_cli.signed_request", side_effect=_rewrite_api({"models": []})) as m:
         _run(["articles", "rewrite", "article-1", "-i", "The intro is wrong."])
         _run(["articles", "rewrite", "article-1", "--instructions", "x", "--model", "haiku"])
-    assert m.call_args_list[0].args[2] == "/articles/article-1/rewrite"
-    assert m.call_args_list[0].kwargs["body"] == {"instructions": "The intro is wrong."}
-    assert m.call_args_list[1].kwargs["body"] == {"instructions": "x", "model_id": "haiku"}
+    posts = [call for call in m.call_args_list if call.args[0] == "POST"]
+    assert posts[0].args[2] == "/articles/article-1/rewrite"
+    # No model ranked for a rewrite: none is named, and the API uses the topic's own model.
+    assert posts[0].kwargs["body"] == {"instructions": "The intro is wrong."}
+    assert posts[1].kwargs["body"] == {"instructions": "x", "model_id": "haiku"}
+    assert [call.args[2] for call in m.call_args_list].count("/models") == 1  # --model reads none
+
+
+def test_articles_rewrite_without_a_model_takes_the_best_ranked_one(capsys):
+    def priced(model_id, price, **fields):
+        prices = {"input_price_usd_per_1k_tokens": price, "output_price_usd_per_1k_tokens": price * 4}
+        return {"model_id": model_id, **prices, **fields}
+
+    listed = {
+        "models": [
+            priced("cheap", 0.001),
+            priced("proven", 0.003, perf_good={"total": 30}, perf_bad={"total": 2}),
+            priced("held-back", 0.0001, perf_good={"total": 90}, perf_bad={"total": 0}),
+        ],
+        "ranch": {"gated": ["held-back"], "min_events": 10},
+    }
+    with patch("admin_cli.signed_request", side_effect=_rewrite_api(listed)) as m:
+        _run(["articles", "rewrite", "article-1", "-i", "The intro is wrong."])
+
+    post = m.call_args_list[-1]
+    assert (post.args[0], post.args[2]) == ("POST", "/articles/article-1/rewrite")
+    assert post.kwargs["body"] == {"instructions": "The intro is wrong.", "model_id": "proven"}
+    assert "Rewriting with proven, the best-ranked model" in capsys.readouterr().err
 
 
 def test_articles_rewrite_needs_instructions():

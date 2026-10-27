@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -3966,6 +3967,78 @@ def test_an_article_rewrite_needs_instructions_and_a_real_model(aws_resources):
     assert _rewrite_article(body={"instructions": "x", "force": "yes"})[0]["statusCode"] == 400
     assert _rewrite_article(article_id="nope")[0]["statusCode"] == 404
     assert _article_row()["status"] == "published"  # nothing was taken down by a bad request
+
+
+# --- the rotation guard on Re-Write and GET /models (common/model_ranch.py, PR15) ----------------
+
+# Below the daily gate (-50) with more than min_events (10) events behind it.
+GATED_SCORES = {"daily_perf": -80, "perf_events": {"daily": 20, "weekly": 20, "monthly": 20, "total": 20}}
+
+
+def _put_scored_model(model_id, **fields):
+    item = {"model_id": model_id, "display_name": model_id, "provider": "test", "enabled": True, **fields}
+    boto3.resource("dynamodb", region_name=REGION).Table("Models").put_item(Item=item)
+
+
+def _protected_lines(capsys):
+    found = [evidence.parse(text) for text in capsys.readouterr().out.splitlines()]
+    return [line for line in found if line and line["event"] == "model_gated_protected"]
+
+
+def test_a_rewrite_refuses_a_model_that_writes_no_text_or_is_gated_with_a_plain_400(
+    aws_resources, monkeypatch
+):
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+    _put_article(status="published")
+    _put_scored_model("embed", model_purpose="embedding")
+    _put_scored_model("low", model_purpose="text", **GATED_SCORES)
+
+    refusals = {"embed": "does not write text", "low": "is gated by the Model Ranch (its daily"}
+    for model_id, words in refusals.items():
+        result, body, client = _rewrite(body={"model_id": model_id})
+        assert (result["statusCode"], words in body["error"]) == (400, True), body
+        client.invoke.assert_not_called()
+        result, body, client, _ = _rewrite_article(body={"instructions": "x", "model_id": model_id})
+        assert (result["statusCode"], words in body["error"]) == (400, True), body
+        client.invoke.assert_not_called()
+
+    assert _queue_row()["status"] == "pending" and _article_row()["status"] == "published"
+
+
+def test_a_gated_default_may_still_rewrite_and_its_serving_says_so(aws_resources, monkeypatch, capsys):
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+    default = os.environ["BEDROCK_MODEL_ID"]
+    _put_scored_model(default, model_purpose="text", **GATED_SCORES)
+
+    assert _rewrite(body={"model_id": default})[0]["statusCode"] == 202
+
+    [line] = _protected_lines(capsys)
+    assert (line["model_id"], line["role"], line["caller"]) == (default, "default", "rewrite")
+
+
+def test_with_evals_off_a_model_with_low_scores_may_rewrite(aws_resources, monkeypatch):
+    monkeypatch.setenv("EVALS_ENABLED", "false")
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+    _put_scored_model("low", model_purpose="text", **GATED_SCORES)
+
+    assert _rewrite(body={"model_id": "low"})[0]["statusCode"] == 202
+
+
+def test_get_models_says_what_the_model_ranch_holds_back_only_while_evals_are_on(aws_resources, monkeypatch):
+    _put_scored_model("low", model_purpose="text", **GATED_SCORES)
+    _put_scored_model("fine", model_purpose="text")
+    _put_scored_model(os.environ["BEDROCK_MODEL_ID"], model_purpose="text", **GATED_SCORES)
+
+    off = json.loads(admin_api_handler.handler(_event("GET /models"), None)["body"])
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    on = json.loads(admin_api_handler.handler(_event("GET /models"), None)["body"])
+
+    assert set(off) == {"models"} and len(off["models"]) == 3
+    # The default (BEDROCK_MODEL_ID) is never gated, whatever its scores.
+    assert on["ranch"] == {"gated": ["low"], "min_events": 10}
+    assert on["models"] == off["models"]
 
 
 def test_a_forced_rewrite_that_cannot_start_stays_down_and_waits_in_the_inbox(aws_resources):

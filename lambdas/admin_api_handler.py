@@ -50,6 +50,7 @@ from common import (
     gear,
     model_catalog,
     model_fleet,
+    model_ranch,
     reviewer,
     security_events,
     sign_ins,
@@ -1531,7 +1532,23 @@ def _rewrite_moderation_item(event: dict) -> dict:
 
 
 def _rewrite_model_error(model_id: str) -> str | None:
-    return _registered_model_error(model_id, get_model(model_id))
+    """Why `model_id` cannot rewrite, or None: it must be registered and enabled, write text
+    (model_fleet.suitable) and not be held back by the Model Ranch's gates (common/model_ranch.py,
+    while evals are on). The default, the fallback and the judge are never gated: one of them the
+    gates would hold back may rewrite, with a `model_gated_protected` line."""
+    model = get_model(model_id)
+    problem = _registered_model_error(model_id, model) or _not_a_text_model_error(model_id, model)
+    if problem:
+        return problem
+    guard = model_ranch.load_guard()
+    if guard.gated(model):
+        windows = ", ".join(model_ranch.gated_windows(model, guard.settings))
+        return (
+            f"model '{model_id}' is gated by the Model Ranch (its {windows} score is below the gate); "
+            "pick another, or see admin_cli evals status"
+        )
+    guard.served(model_id, model, caller="rewrite")
+    return None
 
 
 def _registered_model_error(model_id: str, model: dict | None) -> str | None:
@@ -2674,7 +2691,19 @@ def _unlock_sign_in(event: dict) -> dict:
 
 
 def _list_models(event: dict) -> dict:
-    return _response(200, {"models": list_models()})
+    """Every registry row, as stored. While evals are on, `ranch` says what the Model Ranch's gates
+    hold back (common/model_ranch.py): `gated`, the ids of the models no candidate list may offer,
+    and `min_events`, the events a window needs before it counts, which the rewrite picker
+    (scripts/review_inbox.py) ranks by. Off, or when its settings cannot be read, there is none."""
+    models = list_models()
+    body: dict = {"models": models}
+    guard = model_ranch.load_guard()
+    if guard.on:
+        body["ranch"] = {
+            "gated": sorted(model["model_id"] for model in models if guard.gated(model)),
+            "min_events": guard.settings["min_events"],
+        }
+    return _response(200, body)
 
 
 def _put_model(event: dict) -> dict:

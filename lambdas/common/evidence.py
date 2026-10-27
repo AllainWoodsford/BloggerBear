@@ -319,6 +319,18 @@ EVENTS: dict[str, dict[str, str]] = {
         "splits": "int",
         "ms": "int",
     },
+    # The rotation guard (common/model_ranch.py): a model the gates would hold back was served all
+    # the same, because the pipeline never goes without it or it is a topic's own model. `role` is
+    # what keeps it (default, fallback, judge, topic_model, topic_fallback); `slot` what it was
+    # served as (model or fallback); `windows` the windows that gate it (daily, weekly, total);
+    # `caller` the code that served it (routing, rewrite). The model's id, never its name.
+    "model_gated_protected": {
+        "model_id": "model",
+        "role": "code",
+        "slot": "code",
+        "windows": "codes",
+        "caller": "code",
+    },
 }
 
 # The invocation this process is in: {"fields": {...}, "counts": {event: n}}, or None outside one.

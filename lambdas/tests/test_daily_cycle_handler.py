@@ -13,7 +13,7 @@ from moto import mock_aws
 import common.dynamo as dynamo
 import daily_cycle_handler
 import research_tick_handler
-from common import compliance, editorial_resolver, findings_window
+from common import compliance, editorial_resolver, evals_settings, findings_window
 from common.adapters.base import DaySubject
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.registry import ADAPTER_REGISTRY
@@ -1470,6 +1470,36 @@ def test_rotation_passes_over_a_pooled_model_that_is_disabled_or_not_a_text_mode
     assert result["status"] == "published"
     mock_choice.assert_called_once_with(["words"])
     mock_set.assert_called_once_with("github-trending", "words")
+
+
+def test_rotation_never_rolls_a_topic_to_a_model_the_model_ranch_has_gated(
+    _no_rotation_pool_by_default, monkeypatch
+):
+    """While evals are on, a pooled model whose scores are below a gate is passed over
+    (common/model_ranch.py): once written, a topic's own model_id is never gated, so the roll
+    forward must not put one there. When every pooled model is gated, nothing is written."""
+    mock_get, mock_set = _no_rotation_pool_by_default
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    gated = {"daily_perf": -80, "perf_events": {"daily": 20}}
+    registry = [
+        {"model_id": "low", "model_purpose": "text", **gated},
+        {"model_id": "fine", "model_purpose": "text"},
+    ]
+    with (
+        patch("common.model_fleet.dynamo.list_models", return_value=registry),
+        patch("common.evals_settings.get_settings", return_value=evals_settings.effective_settings(None)),
+        patch("common.model_ranch.dynamo.get_model_config", return_value={}),
+    ):
+        mock_get.return_value = ["low", "fine"]
+        with patch("daily_cycle_handler.random.choice", side_effect=lambda c: c[0]) as mock_choice:
+            daily_cycle_handler._assign_rotated_model("github-trending")
+        mock_choice.assert_called_once_with(["fine"])
+        mock_set.assert_called_once_with("github-trending", "fine")
+
+        mock_set.reset_mock()
+        mock_get.return_value = ["low"]
+        daily_cycle_handler._assign_rotated_model("github-trending")
+        mock_set.assert_not_called()
 
 
 def test_top_voted_article_excerpt_appended_to_draft_prompt_only(s3_bucket):

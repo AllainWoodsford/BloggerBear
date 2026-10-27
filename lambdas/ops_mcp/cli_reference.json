@@ -1201,7 +1201,7 @@
           "flags": [
             "--model"
           ],
-          "help": "A registered model to rewrite with (admin_cli models list). Default: the topic's model",
+          "help": "A registered model to rewrite with (admin_cli models list). Default: the best-ranked enabled text model the Model Ranch has not gated, as approve's Re-Write lists them (else the topic's model)",
           "type": "str",
           "choices": null,
           "default": null,
@@ -1229,7 +1229,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py articles rewrite [-h] --instructions INSTRUCTIONS [--model MODEL_ID] [--force]\n                                     article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help            show this help message and exit\n  --instructions, -i INSTRUCTIONS\n                        What is wrong with the article, e.g. \"the second section confuses staking\n                        with lending\"\n  --model MODEL_ID      A registered model to rewrite with (admin_cli models list). Default: the\n                        topic's model\n  --force               Published articles only: take it down now, before rewriting, instead of\n                        leaving it up until the rewrite is ready. If the rewrite then fails, it\n                        waits in the inbox, down\n"
+      "help_text": "usage: admin_cli.py articles rewrite [-h] --instructions INSTRUCTIONS [--model MODEL_ID] [--force]\n                                     article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help            show this help message and exit\n  --instructions, -i INSTRUCTIONS\n                        What is wrong with the article, e.g. \"the second section confuses staking\n                        with lending\"\n  --model MODEL_ID      A registered model to rewrite with (admin_cli models list). Default: the\n                        best-ranked enabled text model the Model Ranch has not gated, as approve's\n                        Re-Write lists them (else the topic's model)\n  --force               Published articles only: take it down now, before rewriting, instead of\n                        leaving it up until the rewrite is ready. If the rewrite then fails, it\n                        waits in the inbox, down\n"
     },
     "articles feedback-lock": {
       "help": "Stop taking feedback on one article (its feedback_locked flag, set to true)",

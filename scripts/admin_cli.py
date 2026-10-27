@@ -599,9 +599,29 @@ def _cmd_articles_rewrite(args: argparse.Namespace) -> None:
     body = {"instructions": args.instructions}
     if args.model_id:
         body["model_id"] = args.model_id
+    else:
+        body.update(_best_rewrite_model(args))
     if args.force:
         body["force"] = True
     _do_request(args, "POST", f"/articles/{args.article_id}/rewrite", body)
+
+
+def _best_rewrite_model(args: argparse.Namespace) -> dict:
+    """{"model_id": ...} for the best-ranked model `approve`'s Re-Write would offer first
+    (review_inbox.rewrite_models: enabled text models the Model Ranch has not gated, by their scores
+    then price), or {} when there is none, and the API then uses the topic's own model."""
+    import review_inbox
+
+    try:
+        ranked = review_inbox.rewrite_models(_review_api(args))
+    except review_inbox.ApiError as exc:
+        raise CliError(f"could not read the models to pick the best-ranked one: {exc.message}") from exc
+    if not ranked:
+        print("No model is ranked for a rewrite; the topic's own model writes it.", file=sys.stderr)
+        return {}
+    best = ranked[0]["model_id"]
+    print(f"Rewriting with {best}, the best-ranked model (--model picks another).", file=sys.stderr)
+    return {"model_id": best}
 
 
 # --- feedback subcommands -----------------------------------------------
@@ -1838,7 +1858,11 @@ def build_parser() -> argparse.ArgumentParser:
     rewrite_parser.add_argument(
         "--model",
         dest="model_id",
-        help="A registered model to rewrite with (admin_cli models list). Default: the topic's model",
+        help=(
+            "A registered model to rewrite with (admin_cli models list). Default: the best-ranked "
+            "enabled text model the Model Ranch has not gated, as approve's Re-Write lists them "
+            "(else the topic's model)"
+        ),
     )
     rewrite_parser.add_argument(
         "--force",
