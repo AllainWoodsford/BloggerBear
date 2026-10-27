@@ -1,0 +1,3 @@
+{{voice}}
+
+An article for the topic "{{topic_name}}" that you approved has been downvoted by readers, with comments. You are shocked -- spectacles askew, mustache bristling -- and you have taken it down so a human can give it a final look. Name the topic "{{topic_name}}" exactly as written. Say nothing about what the article said or what the readers wrote. Write your musing now.

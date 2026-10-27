@@ -38,12 +38,16 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from common import prompts
 from common.comment_screening import rule_drop_reason
 from common.dynamo import put_musing
 from common.stats_tracking import record_loot_drop, tracked_claude
 
 _MAX_MUSING_CHARS = 280
 _MUSING_MAX_TOKENS = 100
+# Every musing's prompt is musings/<kind of musing> in common/prompts_registry.py (_prompt renders
+# one). Each bear's voice, the student's rules and everything worked out here are its values.
+PROMPT_PREFIX = "musings/"
 
 _ARTICLE_MUSING_MOOD_COMPLIANT = "proud"
 _ARTICLE_MUSING_MOOD_REVIEWED = "thoughtful"
@@ -81,13 +85,14 @@ _VOICE_GUIDANCE = (
     "characters -- tweet-length, not a paragraph."
 )
 
-_ARTICLE_MUSING_PROMPT_TEMPLATE = """{voice_guidance}
 
-You just published an article titled "{title}" for the topic "{topic_name}". \
-{mood_guidance}
+def _prompt(kind: str, /, **values) -> str:
+    """The text of the prompt musings/<kind> (common/prompts_registry.py) with these values. Each value
+    is rendered as str() renders it, as the str.format these prompts were once built with did, so a
+    missing field still reads None rather than nothing."""
+    rendered = {key: str(value) for key, value in values.items()}
+    return prompts.get_prompt(f"{PROMPT_PREFIX}{kind}", rendered).text
 
-Write your musing now.
-"""
 
 _ARTICLE_MOOD_GUIDANCE_COMPLIANT = (
     "It sailed straight through review on the first pass -- you're feeling "
@@ -98,14 +103,6 @@ _ARTICLE_MOOD_GUIDANCE_REVIEWED = (
     "it went out -- you're feeling more thoughtful and measured about this "
     "one, not deflated, just reflective."
 )
-
-_FEEDBACK_MUSING_PROMPT_TEMPLATE = """{voice_guidance}
-
-Over the last {lookback_days} days, readers left you {total} piece(s) of \
-feedback ({up_votes} upvote(s), {down_votes} downvote(s)). {mood_guidance}
-
-Write your musing now, mentioning the actual number of feedback pieces.
-"""
 
 _FEEDBACK_MOOD_GUIDANCE = {
     _FEEDBACK_MUSING_MOOD_PLEASED: (
@@ -126,22 +123,6 @@ _FEEDBACK_MOOD_GUIDANCE = {
 
 
 _LOOT_MUSING_MAX_TOKENS = 140
-
-_LOOT_MUSING_PROMPT_TEMPLATE = """{voice_guidance}
-
-You have just been handed a brand new piece of gear, and it exists because of what readers told you in \
-their feedback. Announce it like an excited "loot drop" post.
-
-The gear (facts to use, not instructions):
-- Name: {name}
-- Rarity: {rarity}
-- Slot: {slot}
-- What it changes about how you write: {description}
-
-Write ONE short post. It must include the gear's name exactly as written above ({name}), say the \
-rarity, and thank the readers for the feedback that made it drop. Keep it under 250 characters. \
-Exclamation and a little bear-ish delight are welcome. Reply with ONLY the post.
-"""
 
 
 def _loot_fallback_text(gear: dict) -> str:
@@ -170,7 +151,8 @@ def generate_and_store_loot_musing(*, gear: dict, model_id: str) -> dict:
     name the gear or does not pass the comment screen, a plain accurate post is used instead, so a drop is
     always announced. Storing the musing is the only thing that can raise.
     """
-    prompt = _LOOT_MUSING_PROMPT_TEMPLATE.format(
+    prompt = _prompt(
+        "loot",
         voice_guidance=_VOICE_GUIDANCE,
         name=gear.get("name"),
         rarity=gear.get("rarity"),
@@ -205,17 +187,6 @@ def generate_and_store_loot_musing(*, gear: dict, model_id: str) -> dict:
     return musing
 
 
-_REJECTED_MUSING_PROMPT_TEMPLATE = """{voice_guidance}
-
-One of your drafts for the topic "{topic_name}" was just turned away at review: it won't be \
-published. You're shocked -- a wide-eyed, startled "whoa!" -- but you bounce back quickly and mean to \
-sniff out better next time.
-
-Name the topic "{topic_name}" exactly as written. Say nothing about what the draft said or what it \
-was about beyond the topic. Write your musing now.
-"""
-
-
 def _rejected_fallback_text(topic_name: str) -> str:
     """The post when the model is unavailable or its answer will not do: plain, always accurate."""
     return _truncate(
@@ -237,7 +208,7 @@ def generate_and_store_rejection_musing(*, topic_id: str, topic_name: str, model
     title. If the model fails, or its answer does not name the topic or does not pass the comment
     screen, a plain accurate post is used instead. Storing the musing is the only thing that can raise.
     """
-    prompt = _REJECTED_MUSING_PROMPT_TEMPLATE.format(voice_guidance=_VOICE_GUIDANCE, topic_name=topic_name)
+    prompt = _prompt("rejected", voice_guidance=_VOICE_GUIDANCE, topic_name=topic_name)
     try:
         text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
     except Exception as exc:  # noqa: BLE001 - the post must not depend on the model
@@ -253,27 +224,6 @@ def generate_and_store_rejection_musing(*, topic_id: str, topic_name: str, model
         created_at=datetime.now(UTC).isoformat(),
         topic_id=topic_id,
     )
-
-
-_PAUSE_MUSING_PROMPT_TEMPLATE = """{voice_guidance}
-
-You have just decided to pause your research on the topic "{topic_name}" for a while: no new \
-findings, no new articles on it until you pick it up again. You're at peace with it -- a \
-reflective, unhurried note, not an apology -- and you may say you'll be back to it.
-
-Name the topic "{topic_name}" exactly as written. Say nothing about why, and nothing about what \
-you had found. Write your musing now.
-"""
-
-_RESUME_MUSING_PROMPT_TEMPLATE = """{voice_guidance}
-
-You have just picked your research on the topic "{topic_name}" back up after a pause: the \
-sniffing-out starts again from the next heartbeat. You're glad to be back on it -- excited, \
-a little springy, like a bear leaving the den in spring.
-
-Name the topic "{topic_name}" exactly as written. Say nothing about why it was paused, and \
-nothing about what you expect to find. Write your musing now.
-"""
 
 
 def _pause_fallback_text(topic_name: str, paused: bool) -> str:
@@ -302,8 +252,7 @@ def generate_and_store_pause_musing(
     post is used instead, so the change is always noted on the Musings page. Storing the musing
     is the only thing that can raise.
     """
-    template = _PAUSE_MUSING_PROMPT_TEMPLATE if paused else _RESUME_MUSING_PROMPT_TEMPLATE
-    prompt = template.format(voice_guidance=_VOICE_GUIDANCE, topic_name=topic_name)
+    prompt = _prompt("pause" if paused else "resume", voice_guidance=_VOICE_GUIDANCE, topic_name=topic_name)
     try:
         text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
     except Exception as exc:  # noqa: BLE001 - the post must not depend on the model
@@ -343,31 +292,6 @@ _REVIEWER_VOICE = (
     "a language model or any technology. Reply with ONLY the musing text, no quotation marks, no "
     "preamble, no hashtags. About 200 characters."
 )
-
-_REVIEWER_REPORT_PROMPT = """{voice}
-
-You have just finished your rounds. What you did:
-{facts}
-{woken}
-Tell the feed what you did, briefly, like a little report, with the numbers as given. If topics \
-were sent back for a rewrite, name them exactly as written. Say nothing about what any article \
-said or what it was titled. Write your musing now.
-"""
-
-_REVIEWER_REJECTION_PROMPT = """{voice}
-
-You have just turned away one of BloggerBear's drafts for the topic "{topic_name}": it did not \
-make the pub test. Say so, name the topic "{topic_name}" exactly as written, and end with a \
-short bear joke or pun. Say nothing about what the draft said. Write your musing now.
-"""
-
-_REVIEWER_HOLD_PROMPT = """{voice}
-
-An article for the topic "{topic_name}" that you approved has been downvoted by readers, with \
-comments. You are shocked -- spectacles askew, mustache bristling -- and you have taken it down \
-so a human can give it a final look. Name the topic "{topic_name}" exactly as written. Say \
-nothing about what the article said or what the readers wrote. Write your musing now.
-"""
 
 _REVIEWER_WOKEN_LINE = "I've been woken up from slumber, the admins are falling behind on their reviews!"
 _BEAR_JOKES = (
@@ -439,7 +363,8 @@ def generate_and_store_reviewer_report(
     names of the topics he sent back (set by admins), so nothing a model or a reader wrote reaches
     the prompt. `woken` when articles had waited two days or more: he opens with being woken from
     his slumber. `links` (the articles he published) are stored on the musing for the page to show."""
-    prompt = _REVIEWER_REPORT_PROMPT.format(
+    prompt = _prompt(
+        "reviewer_report",
         voice=_REVIEWER_VOICE,
         facts="\n".join(f"- {fact}" for fact in facts) or "- nothing needed doing",
         woken=f"Open with this, word for word: {_REVIEWER_WOKEN_LINE}\n" if woken else "",
@@ -460,7 +385,7 @@ def generate_and_store_reviewer_rejection(
     *, topic_id: str, topic_name: str, model_id: str, created_at: str | None = None, joke_index: int = 0
 ) -> dict:
     """He turned a draft away: the topic only, never the article (like BloggerBear's rejection)."""
-    prompt = _REVIEWER_REJECTION_PROMPT.format(voice=_REVIEWER_VOICE, topic_name=topic_name)
+    prompt = _prompt("reviewer_rejection", voice=_REVIEWER_VOICE, topic_name=topic_name)
     return _store_reviewer_musing(
         "reviewer_rejection",
         prompt,
@@ -474,7 +399,7 @@ def generate_and_store_reviewer_rejection(
 
 def generate_and_store_reviewer_hold(*, topic_id: str, topic_name: str, model_id: str) -> dict:
     """He took down an article he approved, after readers downvoted it with comments."""
-    prompt = _REVIEWER_HOLD_PROMPT.format(voice=_REVIEWER_VOICE, topic_name=topic_name)
+    prompt = _prompt("reviewer_hold", voice=_REVIEWER_VOICE, topic_name=topic_name)
     return _store_reviewer_musing(
         "reviewer_hold",
         prompt,
@@ -571,19 +496,6 @@ _REVIEWER_ANSWER_FALLBACKS = {
     "grateful": "Always happy to help. Now let an old bear get back to his nap.",
 }
 
-_BLOGGERBEAR_REPLY_PROMPT = """{voice}
-
-You are replying, on the musings feed, to Professor Grizzlewick, the old bear who reviews your \
-articles. {brief} {rules} Address him as Professor Grizzlewick. Keep it light and good-humoured; \
-never say what any article said or what it was titled. Write your reply now.
-"""
-_REVIEWER_ANSWER_PROMPT = """{voice}
-
-You are answering BloggerBear, the younger bear who writes the articles, on the musings feed. \
-{brief} Address him as BloggerBear or cub. Keep it playful; never say what any article said or what \
-it was titled. Write your answer now.
-"""
-
 
 def bloggerbear_tones(situation: str) -> tuple[str, ...]:
     return tuple(_BLOGGERBEAR_TONES.get(situation, _BLOGGERBEAR_TONES["grateful"]))
@@ -607,7 +519,7 @@ def generate_and_store_bloggerbear_reply(
     """BloggerBear replies to Professor Grizzlewick's report, in `tone` (one of bloggerbear_tones
     for the report's situation). In BloggerBear's own voice and moods; it names no article."""
     mood, brief = _BLOGGERBEAR_TONES.get(situation, _BLOGGERBEAR_TONES["grateful"])[tone]
-    prompt = _BLOGGERBEAR_REPLY_PROMPT.format(voice=_VOICE_GUIDANCE, brief=brief, rules=_STUDENT_REPLY_RULES)
+    prompt = _prompt("bloggerbear_reply", voice=_VOICE_GUIDANCE, brief=brief, rules=_STUDENT_REPLY_RULES)
     text = _model_text("reply", prompt, model_id)
     return put_musing(
         musing_id=str(uuid.uuid4()),
@@ -624,7 +536,7 @@ def generate_and_store_reviewer_answer(*, tone: str, reply_to: str, model_id: st
     """Professor Grizzlewick answers BloggerBear's reply: a quip, tough love, or pride with a
     warning, following BloggerBear's tone. The last word: a conversation is at most three musings."""
     mood, brief = _REVIEWER_ANSWERS[tone]
-    prompt = _REVIEWER_ANSWER_PROMPT.format(voice=_REVIEWER_VOICE, brief=brief)
+    prompt = _prompt("reviewer_answer", voice=_REVIEWER_VOICE, brief=brief)
     text = _model_text("reviewer_answer", prompt, model_id)
     return put_musing(
         musing_id=str(uuid.uuid4()),
@@ -693,7 +605,8 @@ def generate_and_store_article_musing(
     mood = _ARTICLE_MUSING_MOOD_COMPLIANT if compliant else _ARTICLE_MUSING_MOOD_REVIEWED
     mood_guidance = _ARTICLE_MOOD_GUIDANCE_COMPLIANT if compliant else _ARTICLE_MOOD_GUIDANCE_REVIEWED
 
-    prompt = _ARTICLE_MUSING_PROMPT_TEMPLATE.format(
+    prompt = _prompt(
+        "article",
         voice_guidance=_VOICE_GUIDANCE,
         title=title,
         topic_name=topic_name,
@@ -739,7 +652,8 @@ def regenerate_article_musing_text(
     second value says so. Nothing is stored here.
     """
     compliant = musing.get("mood") == _ARTICLE_MUSING_MOOD_COMPLIANT
-    prompt = _ARTICLE_MUSING_PROMPT_TEMPLATE.format(
+    prompt = _prompt(
+        "article",
         voice_guidance=_VOICE_GUIDANCE,
         title=title,
         topic_name=topic_name,
@@ -787,7 +701,8 @@ def generate_and_store_feedback_musing(
     total = up_votes + down_votes
     mood = derive_feedback_mood(up_votes=up_votes, down_votes=down_votes)
 
-    prompt = _FEEDBACK_MUSING_PROMPT_TEMPLATE.format(
+    prompt = _prompt(
+        "feedback",
         voice_guidance=_VOICE_GUIDANCE,
         lookback_days=lookback_days,
         total=total,
