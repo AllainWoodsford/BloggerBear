@@ -78,6 +78,12 @@ def _schedule_name(topic_id: str, suffix: str) -> str:
     return f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}{topic_id}-{suffix}"
 
 
+def topic_schedule_names(topic_id: str) -> list[str]:
+    """The names of a topic's two schedules, research tick first: what delete_topic_schedules
+    deletes, for an operator to be told before it happens."""
+    return [_schedule_name(topic_id, suffix) for suffix in ("research-tick", "daily-cycle")]
+
+
 def _schedule_state(enabled: bool) -> str:
     return "ENABLED" if enabled else "DISABLED"
 

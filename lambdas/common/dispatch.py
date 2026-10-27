@@ -46,7 +46,7 @@ counted where the two paths really disagreed:
   after the drift began, which is counted once. From then on the topic is not due at the computed
   minute (just researched, or its interval not yet out), so those turns are neither recorded nor
   judged. One mismatch is enough to stop the cutover; a drift that was there before shadow mode
-  began leaves no research turn recorded at all, which the Q2 pre-flight must refuse too. Missing
+  began leaves no research turn recorded at all, which the Q2 pre-flight refuses too. Missing
   it costs little: at cutover the research minute moves to the computed one, the stagger's own.
   Counting more would mean judging every move of `last_research_at`, and every operator run-now
   moves it.
@@ -57,14 +57,21 @@ counted where the two paths really disagreed:
   recorded turn is compared with, or one the next turn then finds not due.
 - **daily**: a turn whose previous recorded day saw no execution of this topic (_daily_ran). A
   day the check could not answer (Step Functions refused, or its pages ran out) is counted in
-  `shadow_unchecked`, never as a match: a missing grant must not pass as zero mismatches. The Q2
-  pre-flight asks for zero of both.
+  `shadow_unchecked`, never as a match: a missing grant must not pass as zero mismatches. A day it
+  did answer is counted in `shadow_checked_days`, so a full day watched can be told from a first
+  shadow day that had nothing to compare yet. The Q2 pre-flight asks for zero mismatches, zero
+  unchecked days and at least one checked day.
+
+**The cutover** (Q2, the admin API's `topics update <id> --dispatch-mode queue`): before a topic's
+two schedules are deleted, cutover_refusals must find nothing wrong (it is not paused, the
+dispatcher reads its cadences and zone, its slug and queue ids are usable, and shadow mode watched
+it as above), and every cadence of a topic on the queue must stay readable (cadence_problem).
 
 **Cutover day.** The Scheduler may already have run today's daily cycle when a topic is flipped to
 the queue. The live path counts a same-day shadow daily record as today's dispatch (a live topic
-never writes one, so it can only mean the Scheduler owned today), and the Q2 flip must also write
-`last_daily_dispatched_on` (today, in the topic's zone) when today's turn has already passed,
-which covers a flip made while shadow mode was off.
+never writes one, so it can only mean the Scheduler owned today), and the Q2 flip also writes
+`last_daily_dispatched_on` (today, in the topic's zone) when today's turn has already passed
+(cutover_day), which covers a flip made while shadow mode was off.
 
 **Settings** are two more fields of the `pipeline` config row (SETTINGS below, the model catalog's
 pattern): `dispatch_shadow` and `daily_starts_per_tick` (1 to 10). `last_tick` on the same row is
@@ -110,7 +117,7 @@ SETTINGS: dict[str, object] = {DISPATCH_SHADOW: True, DAILY_STARTS_PER_TICK: 3}
 LAST_TICK = "last_tick"
 
 # A topic's dispatch_mode: on its two schedules (the default, and the permanent undo), or on the
-# queue. The admin API lets a topic be flipped in Q2.
+# queue. The admin API flips a topic (`topics update <id> --dispatch-mode`, the cutover below).
 SCHEDULE_MODE = "schedule"
 QUEUE_MODE = "queue"
 RESEARCH_JOB = "research"
@@ -119,6 +126,17 @@ RESEARCH_JOB = "research"
 # Step Functions' 80 characters.
 SLUG_MAX_CHARS = 40
 _NOT_SLUG = re.compile(r"[^a-z0-9-]")
+_SLUG_LETTER_OR_DIGIT = re.compile(r"[a-z0-9]")
+
+# SQS takes a message group id and a deduplication id of at most 128 letters, digits and
+# punctuation. The topic id is the first and starts the second (research_dedup_id, and the longer
+# manual_research_dedup_id with its token of MANUAL_TOKEN_CHARS).
+_SQS_ID_MAX_CHARS = 128
+_SQS_ID = re.compile(r"^[A-Za-z0-9!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~]+$")
+MANUAL_TOKEN_CHARS = 32
+
+# The day count the daily check answered (see the module docstring).
+SHADOW_CHECKED_DAYS = "shadow_checked_days"
 
 # The claims (spec 4.7), word for word.
 DAILY_CLAIM_UPDATE = "SET last_daily_dispatched_on = :today ADD daily_claim_n :one"
@@ -211,7 +229,8 @@ def execution_name(topic_id: str, local_date: str, n: int) -> str:
 
 
 def manual_execution_name(topic_id: str, local_date: str, now: datetime) -> str:
-    """An operator's trigger (Q2): `<slug>-<local date>-manual-<HHMMSS>`."""
+    """An operator's trigger (Q2): `<slug>-<local date>-manual-<HHMMSS>`, `now` on the topic's
+    local clock like the date."""
     return f"{slug(topic_id)}-{local_date}-manual-{now.strftime('%H%M%S')}"
 
 
@@ -221,8 +240,9 @@ def _iso(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat(timespec="seconds")
 
 
-def research_message(topic_id: str, *, now: datetime) -> dict:
-    """The body of a research job; `force` is only ever true from an operator.
+def research_message(topic_id: str, *, now: datetime, force: bool = False) -> dict:
+    """The body of a research job; `force` is only ever true from an operator (the admin API's
+    manual trigger of a topic on the queue).
 
     The contract the research tick honours for a queue record (research_tick_handler): it ignores
     `job`, and it uses `due_checked_at` as the run's time both for its own is_due check and for the
@@ -234,7 +254,7 @@ def research_message(topic_id: str, *, now: datetime) -> dict:
     return {
         "topic_id": topic_id,
         "job": RESEARCH_JOB,
-        "force": False,
+        "force": force,
         "due_checked_at": _iso(now),
         "dispatched_at": _iso(now),
     }
@@ -243,6 +263,13 @@ def research_message(topic_id: str, *, now: datetime) -> dict:
 def research_dedup_id(topic_id: str, now: datetime) -> str:
     """`<topic_id>:research:<yyyy-mm-ddTHH:MM>`: SQS's own guard against the same minute twice."""
     return f"{topic_id}:{RESEARCH_JOB}:{now.astimezone(UTC).strftime('%Y-%m-%dT%H:%M')}"
+
+
+def manual_research_dedup_id(topic_id: str, token: str) -> str:
+    """`<topic_id>:research:manual:<token>`, a deduplication id of its own for an operator's
+    research job, so SQS never takes it for the dispatcher's job of the same minute, or for the
+    operator's last one. `token` is fresh each time (MANUAL_TOKEN_CHARS hex characters)."""
+    return f"{topic_id}:{RESEARCH_JOB}:manual:{token}"
 
 
 def research_claim_expiry(now: datetime, interval_hours: int) -> str:
@@ -381,14 +408,38 @@ def _parse_time(value) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def _zone(topic: dict) -> tzinfo:
+def topic_zone(topic: dict) -> tzinfo:
     """The zone the topic's daily cadence is read in: its daily_timezone, else UTC (the zone a topic
-    from before the field existed keeps, as the admin API reads it)."""
+    from before the field existed keeps, as the admin API reads it). ValueError when the runtime
+    does not know it."""
     name = topic.get("daily_timezone") or DEFAULT_TIMEZONE
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
         raise ValueError(f"daily_timezone {name!r} is not a zone this runtime knows") from exc
+
+
+def effective_cadences(topic: dict, *, config: dict | None, topic_count: int) -> dict:
+    """The topic's effective expressions as the stagger writes them for the Scheduler
+    (stagger.effective_schedules), from the arguments every tick passes: the topic's cadences and
+    slot, the pipeline row's stagger, and how many topics there are. The admin API reads a queue
+    topic's cadences through this too, so it judges exactly what the dispatcher will read."""
+    return stagger.effective_schedules(
+        research_cadence=topic.get("research_cadence") or "",
+        daily_cadence=topic.get("daily_cadence") or "",
+        slot=stagger.topic_slot(topic),
+        stagger_minutes=stagger.resolve_stagger_minutes(config),
+        topic_count=topic_count,
+    )
+
+
+def parse_cadences(
+    topic: dict, *, config: dict | None, topic_count: int
+) -> tuple[cron_match.Cadence, cron_match.Cadence]:
+    """The effective research and daily cadences, parsed (a daily rate is refused). CadenceError
+    names the expression the matcher refused."""
+    effective = effective_cadences(topic, config=config, topic_count=topic_count)
+    return cron_match.parse(effective["research"]), cron_match.parse(effective["daily"], allow_rate=False)
 
 
 def _local_date(value, zone: tzinfo) -> date | None:
@@ -479,16 +530,8 @@ class Dispatcher:
         self, topic: dict, *, now, last_tick, config, topic_count, live, starts_left, counts
     ) -> None:
         topic_id = topic["topic_id"]
-        effective = stagger.effective_schedules(
-            research_cadence=topic.get("research_cadence") or "",
-            daily_cadence=topic.get("daily_cadence") or "",
-            slot=stagger.topic_slot(topic),
-            stagger_minutes=stagger.resolve_stagger_minutes(config),
-            topic_count=topic_count,
-        )
-        research = cron_match.parse(effective["research"])
-        daily = cron_match.parse(effective["daily"], allow_rate=False)
-        zone = _zone(topic)
+        research, daily = parse_cadences(topic, config=config, topic_count=topic_count)
+        zone = topic_zone(topic)
         interval_hours = resolve_interval_hours(topic, config)
 
         research_turn = cron_match.research_turn(research, last_tick, now)
@@ -607,26 +650,34 @@ class Dispatcher:
     def _shadow_daily(self, topic: dict, now: datetime, today: date, zone: tzinfo) -> None:
         """Record today's turn, and count a mismatch when the previous recorded day saw no execution
         of this topic on the Scheduler path. A check that could not run is no mismatch, and no match
-        either: it counts one day in `shadow_unchecked`."""
+        either: it counts one day in `shadow_unchecked`. A check that answered, either way, counts
+        one day in `shadow_checked_days`: the first shadow day has nothing to compare, and must not
+        pass for a day watched."""
         previous = _parse_time(topic.get("shadow_last_daily_dispatch_at"))
-        mismatch = unchecked = 0
+        mismatch = unchecked = checked = 0
         if previous is not None:
             previous_day = previous.astimezone(zone).date()
             ran = self._daily_ran(topic["topic_id"], previous_day, zone)
-            if ran is False:
-                mismatch = 1
-                print(
-                    f"dispatcher: shadow daily mismatch topic_id={topic['topic_id']} "
-                    f"local_date={previous_day.isoformat()}"
-                )
-            elif ran is None:
+            if ran is None:
                 unchecked = 1
                 print(
                     f"dispatcher: shadow daily unchecked topic_id={topic['topic_id']} "
                     f"local_date={previous_day.isoformat()}"
                 )
+            else:
+                checked = 1
+                if ran is False:
+                    mismatch = 1
+                    print(
+                        f"dispatcher: shadow daily mismatch topic_id={topic['topic_id']} "
+                        f"local_date={previous_day.isoformat()}"
+                    )
         self._write_shadow(
-            topic["topic_id"], "shadow_last_daily_dispatch_at", now, mismatch, unchecked=unchecked
+            topic["topic_id"],
+            "shadow_last_daily_dispatch_at",
+            now,
+            mismatch,
+            daily_counts={"unchecked": unchecked, "checked": checked},
         )
 
     def _daily_ran(self, topic_id: str, day: date, zone: tzinfo) -> bool | None:
@@ -672,13 +723,15 @@ class Dispatcher:
         return None
 
     def _write_shadow(
-        self, topic_id: str, field: str, now: datetime, mismatch: int, *, unchecked: int | None = None
+        self, topic_id: str, field: str, now: datetime, mismatch: int, *, daily_counts: dict | None = None
     ) -> None:
         """Record a shadow turn and add to the counts. A daily record also adds to
-        `shadow_unchecked` (zero included, so the field is there from the first shadow day)."""
+        `shadow_unchecked` and `shadow_checked_days` (`daily_counts`; zero included, so the fields
+        are there from the first shadow day)."""
         update, values = "SET #f = :t ADD shadow_mismatches :n", {":t": _iso(now), ":n": mismatch}
-        if unchecked is not None:
-            update, values = f"{update}, shadow_unchecked :u", {**values, ":u": unchecked}
+        if daily_counts is not None:
+            update = f"{update}, shadow_unchecked :u, {SHADOW_CHECKED_DAYS} :c"
+            values = {**values, ":u": daily_counts["unchecked"], ":c": daily_counts["checked"]}
         self.topics_table.update_item(
             Key={"topic_id": topic_id},
             UpdateExpression=update,
@@ -686,3 +739,141 @@ class Dispatcher:
             ExpressionAttributeNames={"#f": field},
             ExpressionAttributeValues=values,
         )
+
+
+# --- the cutover (Q2) -----------------------------------------------------------------------------
+#
+# A topic moves from its two schedules to the queue with `topics update <id> --dispatch-mode queue`
+# (admin_api_handler). The checks below are what the admin API refuses that move on, each as one
+# reason in plain words; it answers 400 with them before anything is deleted.
+
+
+def cadence_problem(topic: dict, *, config: dict | None, topic_count: int) -> str | None:
+    """Why the dispatcher could not run this topic, in the matcher's words, or None: its effective
+    research cadence, then its effective daily cadence (a rate refused), then its zone. The
+    dispatcher would skip such a topic every minute (`cadence unparsable`), so a topic on the queue
+    is never allowed one. `topic_count` counts every topic, this one included, as a tick does."""
+    effective = effective_cadences(topic, config=config, topic_count=topic_count)
+    for kind, allow_rate in (("research", True), ("daily", False)):
+        try:
+            cron_match.parse(effective[kind], allow_rate=allow_rate)
+        except CadenceError as exc:
+            # The stagger may have rewritten the cadence (its minute); name both when it did.
+            stored = (topic.get(f"{kind}_cadence") or "").strip() or exc.expression
+            written = f" (written as {exc.expression!r})" if stored != exc.expression else ""
+            return f"the dispatcher cannot read its {kind} cadence {stored!r}{written}: {exc.why}"
+    try:
+        topic_zone(topic)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def slug_problem(topic_id: str, topics) -> str | None:
+    """Why the topic's slug (spec 4.7, the start of its daily runs' execution names) will not do,
+    or None: it must name a letter or a digit, and no other topic in `topics` may share it, or the
+    two topics' runs would take each other's names and one would be refused as already started."""
+    own = slug(topic_id)
+    if not _SLUG_LETTER_OR_DIGIT.search(own):
+        return f"its slug {own!r} (the start of its daily runs' execution names) has no letter or digit"
+    for other in topics:
+        other_id = other.get("topic_id")
+        if other_id and other_id != topic_id and slug(other_id) == own:
+            return (
+                f"its slug {own!r} is also topic '{other_id}''s, so the two topics' daily runs "
+                "would share execution names"
+            )
+    return None
+
+
+def queue_id_problem(topic_id: str) -> str | None:
+    """Why SQS would refuse the topic id as a research job's message group id (the deduplication
+    ids start with it too), or None. A send SQS refuses fails the whole tick, not only the topic."""
+    longest = manual_research_dedup_id(topic_id, "0" * MANUAL_TOKEN_CHARS)
+    if _SQS_ID.match(topic_id or "") and len(longest) <= _SQS_ID_MAX_CHARS:
+        return None
+    limit = _SQS_ID_MAX_CHARS - len(manual_research_dedup_id("", "0" * MANUAL_TOKEN_CHARS))
+    return (
+        "its topic id cannot be the work queue's message group id "
+        f"(at most {limit} letters, digits and punctuation, no spaces)"
+    )
+
+
+def _shadow_count(topic: dict, field: str) -> int | None:
+    """A shadow counter as a number (none yet is 0), or None when the row holds something else."""
+    value = topic.get(field)
+    if value is None:
+        return 0
+    return int(value) if _whole(value) else None
+
+
+def shadow_problems(topic: dict, *, research_is_rate: bool) -> list[str]:
+    """What shadow mode has not yet shown about this topic: a full day watched (one day its daily
+    check answered), no mismatch, no day it could not check (a check that could not run never
+    passes as a match), and for a cron research cadence at least one research turn recorded: a
+    heartbeat that drifted off its computed minute before shadow mode began records none, and is
+    otherwise never seen. A `rate(...)` research cadence is recorded but never judged (the module
+    docstring), so such a topic is judged by its daily record alone."""
+    counts = {
+        field: _shadow_count(topic, field)
+        for field in ("shadow_mismatches", "shadow_unchecked", SHADOW_CHECKED_DAYS)
+    }
+    unreadable = sorted(field for field, count in counts.items() if count is None)
+    if unreadable:
+        return [f"its shadow record is unreadable ({', '.join(unreadable)})"]
+    reasons = []
+    mismatches, unchecked = counts["shadow_mismatches"], counts["shadow_unchecked"]
+    if mismatches:
+        reasons.append(
+            f"shadow mode counted {mismatches} mismatch{'es' if mismatches != 1 else ''} with its "
+            "schedules (`topics schedule` shows the record)"
+        )
+    if unchecked:
+        reasons.append(
+            f"shadow mode could not check {unchecked} of its days, and a day it could not check "
+            "never counts as a match"
+        )
+    if counts[SHADOW_CHECKED_DAYS] < 1:
+        reasons.append(
+            "shadow mode has not yet watched a full day of it (its first check runs at its second "
+            "shadow daily turn)"
+        )
+    if not research_is_rate and not topic.get("shadow_last_research_dispatch_at"):
+        reasons.append(
+            "shadow mode has recorded none of its research turns (a heartbeat running off the "
+            "dispatcher's minute records none)"
+        )
+    return reasons
+
+
+def cutover_refusals(topic: dict, *, topics: list[dict], config: dict | None) -> list[str]:
+    """Every reason the topic may not leave its schedules for the queue now, or [] when it may.
+    `topic` is the row as it would be written; `topics` is every topic, this one included."""
+    reasons = []
+    if topic.get("paused") is True:
+        reasons.append("it is paused, and shadow mode does not watch a paused topic: resume it first")
+    problem = cadence_problem(topic, config=config, topic_count=len(topics))
+    if problem:
+        reasons.append(problem)
+    topic_id = topic.get("topic_id") or ""
+    reasons.extend(check for check in (slug_problem(topic_id, topics), queue_id_problem(topic_id)) if check)
+    research = effective_cadences(topic, config=config, topic_count=len(topics))["research"]
+    try:
+        research_is_rate = cron_match.parse(research).is_rate
+    except CadenceError:
+        research_is_rate = False  # already refused above; judge it by the stricter rule
+    reasons.extend(shadow_problems(topic, research_is_rate=research_is_rate))
+    return reasons
+
+
+def cutover_day(topic: dict, *, config: dict | None, topic_count: int, now: datetime) -> str | None:
+    """What `last_daily_dispatched_on` must say when the topic starts on the queue at `now`: today's
+    date in its zone when today's daily turn has already passed (the Scheduler had today, or would
+    have, and the dispatcher must not start a second run), else None (the dispatcher starts today's
+    run at its turn). Its claim count, `daily_claim_n`, is left as it is: tomorrow's run is named
+    with the next number. Raises CadenceError or ValueError as cadence_problem reports them."""
+    _research, daily = parse_cadences(topic, config=config, topic_count=topic_count)
+    zone = topic_zone(topic)
+    if cron_match.daily_turn_passed(daily, now, zone):
+        return now.astimezone(zone).date().isoformat()
+    return None

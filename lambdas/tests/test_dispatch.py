@@ -246,6 +246,19 @@ def test_the_research_message_and_its_dedup_id_are_the_spec_s():
     assert dispatch.research_dedup_id("github-trending", now) == "github-trending:research:2026-10-25T03:04"
 
 
+def test_an_operator_s_research_message_is_forced_and_has_a_dedup_id_of_its_own():
+    now = at("2026-10-25T03:04:05")
+
+    assert dispatch.research_message("github-trending", now=now, force=True)["force"] is True
+    assert dispatch.manual_research_dedup_id("github-trending", "ab12") == (
+        "github-trending:research:manual:ab12"
+    )
+    # Never the dispatcher's id for the same minute, whatever the token.
+    assert dispatch.manual_research_dedup_id("github-trending", "2026-10-25T03:04") != (
+        dispatch.research_dedup_id("github-trending", now)
+    )
+
+
 def test_the_research_claim_expires_one_interval_back_less_the_due_tolerance():
     now = at("2026-10-25T04:05:30")
 
@@ -1107,6 +1120,51 @@ def test_the_first_shadow_day_already_shows_no_unchecked_days(aws_resources):
     dispatcher().tick(at("2026-10-24T22:00:00"))
 
     assert stored()["shadow_unchecked"] == 0 and stored()["shadow_mismatches"] == 0
+
+
+def test_the_first_shadow_day_is_no_checked_day_since_it_had_nothing_to_compare(aws_resources):
+    """Zero mismatches and zero unchecked days after one shadow turn would pass for a clean day:
+    shadow_checked_days says no day was checked yet, which the cutover's pre-flight refuses."""
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(topic(dispatch_mode="schedule", research_cadence="cron(30 * * * ? *)"))
+
+    dispatcher().tick(at("2026-10-24T22:00:00"))
+
+    assert stored()["shadow_checked_days"] == 0
+
+
+@pytest.mark.parametrize(
+    ("ran_for", "checked", "mismatches"),
+    [("github-trending", 1, 0), ("someone-else", 1, 1)],
+    ids=["the_day_had_its_run", "the_day_had_no_run"],
+)
+def test_a_daily_check_that_answers_counts_a_checked_day_whatever_it_found(
+    aws_resources, ran_for, checked, mismatches
+):
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(topic(dispatch_mode="schedule", shadow_last_daily_dispatch_at=YESTERDAY_TURN.isoformat()))
+    sfn = MagicMock()
+    sfn.list_executions.return_value = {"executions": [_execution("arn:x:run", at("2026-10-23T22:00:10"))]}
+    sfn.describe_execution.return_value = {"input": json.dumps({"topic_id": ran_for})}
+
+    dispatcher(sfn=sfn).tick(at("2026-10-24T22:00:00"))
+
+    row = stored()
+    assert row["shadow_checked_days"] == checked
+    assert row["shadow_mismatches"] == mismatches and row["shadow_unchecked"] == 0
+
+
+def test_a_daily_check_that_could_not_run_is_no_checked_day(aws_resources):
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(topic(dispatch_mode="schedule", shadow_last_daily_dispatch_at=YESTERDAY_TURN.isoformat()))
+    sfn = MagicMock()
+    sfn.list_executions.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException"}}, "ListExecutions"
+    )
+
+    dispatcher(sfn=sfn).tick(at("2026-10-24T22:00:00"))
+
+    assert stored()["shadow_checked_days"] == 0 and stored()["shadow_unchecked"] == 1
 
 
 def test_the_first_shadow_day_has_nothing_to_compare_and_a_day_is_recorded_once(aws_resources):
