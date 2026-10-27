@@ -1843,7 +1843,12 @@ def test_the_lambdas_may_publish_to_the_alerts_topic_and_to_no_other_topic(env):
     assert "condition" not in document and "not_actions" not in document
     attached = _resource_block(main, "aws_iam_role_policy", "lambda_publish_alerts")
     assert re.search(rf'name\s*=\s*"{DEFAULT_PREFIX}-{env}-lambda-publish-alerts"$', attached, re.M)
-    assert re.search(r"role\s*=\s*aws_iam_role\.lambda_exec\.id$", attached, re.M)
+    # The role is named through lambda_backup's `role`, which is lambda_exec's name, so the create
+    # waits for lambda_backup's write: an apply that shrinks it must do so before this policy adds
+    # to the role's 10,240-character inline-policy total, or IAM refuses with LimitExceeded.
+    assert re.search(r"role\s*=\s*aws_iam_role_policy\.lambda_backup\.role$", attached, re.M)
+    backup = _resource_block(main, "aws_iam_role_policy", "lambda_backup")
+    assert re.search(r"role\s*=\s*aws_iam_role\.lambda_exec\.id$", backup, re.M)
     policy = r"policy\s*=\s*data\.aws_iam_policy_document\.lambda_publish_alerts\.json$"
     assert re.search(policy, attached, re.M)
     assert re.findall(r'"sns:[A-Za-z*]+"', main) == ['"sns:Publish"']

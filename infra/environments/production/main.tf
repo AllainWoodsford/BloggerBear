@@ -2956,9 +2956,13 @@ data "aws_iam_policy_document" "lambda_publish_alerts" {
   }
 }
 
+# The role is lambda_exec, named through lambda_backup's `role` (the same name) so that this policy
+# is only created after lambda_backup's has been written. IAM caps a role's inline policies at
+# 10,240 characters in all, and an apply that shrinks lambda_backup while adding this one must
+# shrink first, or it can stop with LimitExceeded.
 resource "aws_iam_role_policy" "lambda_publish_alerts" {
   name   = "${var.unique_name_prefix}-production-lambda-publish-alerts"
-  role   = aws_iam_role.lambda_exec.id
+  role   = aws_iam_role_policy.lambda_backup.role
   policy = data.aws_iam_policy_document.lambda_publish_alerts.json
 }
 
