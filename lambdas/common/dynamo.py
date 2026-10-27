@@ -1466,9 +1466,9 @@ def put_feedback(
 ) -> None:
     """Write a Feedback item to the Feedback table.
 
-    `comment` is None when no comment was submitted, or when the Bedrock
-    redaction-review pass (`common.compliance.bedrock_redact_review`) could
-    not confirm the text was safe to store.
+    `comment` is None when no comment was submitted. A comment the screening
+    (`common.comment_screening.screen_comment`) drops is never written: the
+    whole submission is refused before this is called.
     """
     table = get_table(os.environ["FEEDBACK_TABLE"])
     table.put_item(

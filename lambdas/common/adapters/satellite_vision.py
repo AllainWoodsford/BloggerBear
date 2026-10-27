@@ -64,7 +64,7 @@ import statistics
 import time
 from datetime import UTC, datetime
 
-from common import vision_client, vision_decisions, vision_sites, vision_triage
+from common import prompts, vision_client, vision_decisions, vision_sites, vision_triage
 from common.adapters.base import Adapter, render_review_evidence
 from common.vision_sites import (
     ASSETS_SHIPS,
@@ -133,6 +133,12 @@ _FLOAT_KEYS = vision_sites.FLOAT_KEYS + ("relative_threshold", "absolute_thresho
 # What the operator's assistant calls a site's count (status): fixed words, never `object_noun`,
 # which is the operator's own text and is never spoken.
 MEASURE_LABEL = "objects counted"
+# The summary prompt's locked rules (satellite_vision/summary in common/prompts_registry.py).
+_SUMMARY_RULES = (
+    "Rules: name no ship, vessel, owner, company or person (none can be identified at this resolution); "
+    "give no cause, prediction, price, market or trading view; do not say any area is safe, clear or "
+    "unaffected; do not invent place names or numbers that are not given above."
+)
 # The adapter's fixed words for its evidence (Adapter.decision_vocabulary): the measures a decision
 # ring entry keeps, the words for the one measure `_judge` can name as moved, which input it depends
 # on (the imagery alone), and the words for look_again's settings (the worker contract's
@@ -461,20 +467,14 @@ class SatelliteVisionAdapter(Adapter):
                 }
         return render_review_evidence({"object_noun": latest_state.get("object_noun"), "sites": latest})
 
-    def build_summary_prompt(self, topic: dict, diff_summary: str, new_state: dict) -> str | None:
-        noun = new_state.get("object_noun") or DEFAULTS["object_noun"]
-        name = topic.get("name") or topic.get("topic_id") or "this topic"
-        return (
-            f'You are summarising a change measured in satellite imagery for the topic "{name}".\n\n'
-            f"What was measured: {diff_summary}\n\n"
-            f"The counts are of {noun} detected by an automated image-analysis pipeline (OpenCV) in "
-            "Sentinel-2 imagery at 10 m resolution, compared with the same site's recent scenes.\n\n"
-            "Write 2-4 plain sentences describing only these observations: the site names exactly as "
-            "given, the counts, the change against the baseline, and the capture date. Rules: name no "
-            "ship, vessel, owner, company or person (none can be identified at this resolution); give "
-            "no cause, prediction, price, market or trading view; do not say any area is safe, clear "
-            "or unaffected; do not invent place names or numbers that are not given above."
-        )
+    def summary_prompt(self, topic: dict, diff_summary: str, new_state: dict) -> prompts.Prompt | None:
+        """satellite_vision/summary (common/prompts_registry.py), its rules locked at the end."""
+        values = {
+            "topic_name": topic.get("name") or topic.get("topic_id") or "this topic",
+            "diff_summary": diff_summary,
+            "object_noun": new_state.get("object_noun") or DEFAULTS["object_noun"],
+        }
+        return prompts.get_prompt("satellite_vision/summary", values, {"rules": _SUMMARY_RULES})
 
 
 def _thresholds(state: dict) -> dict:

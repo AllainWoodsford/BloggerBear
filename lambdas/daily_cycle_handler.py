@@ -51,7 +51,7 @@ from datetime import UTC, date, datetime
 
 import boto3
 
-from common import compliance, equipment, fresh_review, goal_rotation, model_fleet
+from common import compliance, equipment, fresh_review, goal_rotation, model_fleet, prompts
 from common.adapters.base import DaySubject
 from common.attribution import sources_for_topic
 from common.bedrock import invoke_model_tracked
@@ -199,6 +199,20 @@ def _is_plausible_reply(text: str, *, max_words: int) -> bool:
 _FEEDBACK_GUIDANCE_HEADER = "Additional guidance based on reader feedback:"
 _FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
 _SOURCE_GUIDANCE_HEADER = "How articles on this topic are written (mandatory):"
+# The reply formats the two parsers depend on: ideation's one angle per line (the parser in
+# `_ideate`), and the title's single short line (`_is_plausible_reply`), with the retry's firmer
+# line after it. Values and locked blocks of the daily_cycle prompts (common/prompts_registry.py),
+# so a prompt asset can place them but never reword them.
+_IDEATION_REPLY_RULE = "Reply with exactly one angle per line, no numbering, no extra commentary."
+_TITLE_REPLY_RULE = (
+    f"Reply with the title only, as a single line of no more than {_MAX_TITLE_WORDS} words. "
+    "No surrounding quotes, no markdown, no explanation, and no questions back -- if the "
+    "angle is unclear, title it as best you can rather than asking for clarification."
+)
+_TITLE_RETRY = (
+    "\n\nYour previous reply was not a usable title -- reply with nothing but the title itself "
+    "this time."
+)
 
 
 # Outcomes that wrote an article or rewrote one: the Stats page's Articles figures are rebuilt
@@ -248,7 +262,10 @@ def _handle(event: dict, context=None) -> dict:
         if not queue_id or not rewrite_id:
             return {"status": "error", "error": "rewrite event needs 'queue_id' and 'rewrite_id'"}
         print(f"daily_cycle_handler: starting rewrite for queue_id={queue_id}")
-        return run_rewrite(queue_id, rewrite_id)
+        # A Re-Write is a run of its own: its review prompts draw their A/B arms by its id
+        # (common/prompts.py), so a redelivery of the same rewrite is given the same versions.
+        with prompts.bind_run(rewrite_id):
+            return run_rewrite(queue_id, rewrite_id)
 
     topic_id = (event or {}).get("topic_id")
     if not topic_id:
@@ -258,8 +275,12 @@ def _handle(event: dict, context=None) -> dict:
     force = (event or {}).get("force") is True
 
     print(f"daily_cycle_handler: starting run for topic_id={topic_id} force={force}")
+    run_id = _run_id(event, context)
     try:
-        return _run_daily_cycle(topic_id, force=force, run_id=_run_id(event, context))
+        # Every prompt of this run draws its A/B arm by the run's id (common/prompts.py), so a
+        # retry of the run is given the same versions; a run with no id draws at random.
+        with prompts.bind_run(run_id):
+            return _run_daily_cycle(topic_id, force=force, run_id=run_id)
     except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
         # Said in the log too: a caught error is a successful invocation to Step Functions, so
         # without this line it shows only in the execution's output.
@@ -1022,6 +1043,20 @@ def _get_few_shot_excerpt(topic_id: str) -> str | None:
     return body[:_FEW_SHOT_EXCERPT_CHARS] or None
 
 
+def _guidance_block(guidance: str | None) -> str:
+    """The gear's guidance under its header, or nothing when the bear wears none (the prompt is
+    then exactly what it was before Phase 5)."""
+    return f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}" if guidance else ""
+
+
+def _financial_guidance_block(topic: dict) -> str:
+    """The mandatory financial-topic guidance, or nothing on any other topic: a locked block of
+    the ideation and draft prompts, so an asset can never drop it or put text after it."""
+    if not compliance.is_financial_topic(topic):
+        return ""
+    return f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
+
+
 def _ideate(
     topic: dict,
     summaries_block: str,
@@ -1033,19 +1068,6 @@ def _ideate(
     rotation: goal_rotation.Pick | None = None,
 ) -> tuple[list[str], dict]:
     topic_name = topic_label(topic)
-    # The relevance rule sits before the data in both variants: findings from
-    # community feeds and web search can be off-topic noise, and it is the
-    # active topic's name (never a hardcoded topic) that anchors what counts
-    # as on-topic.
-    # The topic's standing editorial goal (topic -> adapter -> global default,
-    # see common/editorial_resolver.py) comes first, and the relevance rule
-    # then holds every angle to both the topic and that goal.
-    standing_goal = (
-        f"ACTIVE EDITORIAL MANDATE:\n{resolve_editorial_goals(topic, goal, _rotation_focus(rotation))}\n\n"
-        f"{ideation_relevance_rule(topic_name)}\n"
-        f"{MANDATE_ALIGNMENT_RULE}"
-        f"{_revisit_note(rotation)}"
-    )
     # A source that stays trending for days (a GitHub repo whose star count keeps climbing, say)
     # looks like fresh material to this call every single day, even when the underlying story is
     # the one already told -- this is the one thing that reminds it. Empty for a topic's first
@@ -1058,39 +1080,37 @@ def _ideate(
             "\n\nAlready covered recently -- propose a genuinely different angle, not a rehash "
             f"of the same story with new numbers:\n{titles_block}"
         )
-    if goal is None:
-        prompt = (
-            f"Based on the following recent research findings about "
-            f"'{topic_name}', propose exactly "
-            f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
-            "Reply with exactly one angle per line, no numbering, no extra "
-            "commentary.\n\n"
-            f"{standing_goal}{already_covered}\n\n"
-            f"Findings:\n{summaries_block}"
-        )
-    else:
+    # The templates are daily_cycle/ideation and daily_cycle/ideation_goal (common/prompts_registry.py).
+    # The relevance rule sits before the data in both variants: findings from
+    # community feeds and web search can be off-topic noise, and it is the
+    # active topic's name (never a hardcoded topic) that anchors what counts
+    # as on-topic.
+    # The topic's standing editorial goal (topic -> adapter -> global default,
+    # see common/editorial_resolver.py) comes first, and the relevance rule
+    # then holds every angle to both the topic and that goal.
+    values = {
+        "topic_name": topic_name,
+        "num_angles": _NUM_CANDIDATE_ANGLES,
+        "reply_rule": _IDEATION_REPLY_RULE,
+        "editorial_goals": resolve_editorial_goals(topic, goal, _rotation_focus(rotation)),
+        "relevance_rule": ideation_relevance_rule(topic_name),
+        "alignment_rule": MANDATE_ALIGNMENT_RULE,
+        "revisit_note": _revisit_note(rotation),
+        "already_covered": already_covered,
+        "summaries": summaries_block,
+        "guidance_block": _guidance_block(guidance),
+    }
+    prompt_id = "daily_cycle/ideation"
+    if goal is not None:
         # The day's rotating editorial mandate shapes the angles within the
-        # standing goal above; the relevance rule keeps it inside the topic.
-        # The one-angle-per-line reply instruction stays -- the parser below
+        # standing goal; the relevance rule keeps it inside the topic. The
+        # one-angle-per-line reply instruction stays -- the parser below
         # depends on it.
-        prompt = (
-            "Based on the following recent research findings and the assigned daily "
-            f"editorial vector for '{topic_name}', propose exactly "
-            f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
-            "Reply with exactly one angle per line, no numbering, no extra "
-            "commentary.\n\n"
-            f"{standing_goal}{already_covered}\n\n"
-            f"Editorial Mandate: {_goal_mandate(goal)}\n"
-            f"Apply this mandate strictly within the theme of '{topic_name}' and the Active "
-            "Editorial Mandate above: it decides the shape of each angle, never the subject.\n\n"
-            f"Data Payload:\n{summaries_block}"
-        )
-    if guidance:
-        prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
-    if compliance.is_financial_topic(topic):
-        prompt += f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
+        prompt_id = "daily_cycle/ideation_goal"
+        values["daily_mandate"] = _goal_mandate(goal)
+    prompt = prompts.get_prompt(prompt_id, values, {"financial_guidance": _financial_guidance_block(topic)})
     result = invoke_model_tracked(
-        prompt,
+        prompt.text,
         model_id,
         fallback_model_id=fallback_model_id,
         max_tokens=IDEATION_MAX_TOKENS,
@@ -1107,7 +1127,7 @@ def _ideate(
         )
         first = result
         result = invoke_model_tracked(
-            prompt,
+            prompt.text,
             fallback_model_id,
             max_tokens=IDEATION_MAX_TOKENS,
             retry_max_tokens=IDEATION_RETRY_MAX_TOKENS,
@@ -1146,6 +1166,7 @@ def _ideate(
         "used_fallback": result["used_fallback"],
         "stop_reason": result.get("stop_reason"),
         "reply_chars": len(response),
+        **prompts.lineage_fields(prompt),
     }
     if result.get("attempts", 1) > 1:
         lineage_call["attempts"] = result["attempts"]
@@ -1184,37 +1205,39 @@ def _draft_article(
     rotation: goal_rotation.Pick | None = None,
 ) -> tuple[str, dict]:
     topic_name = topic_label(topic)
-    # The boundary backs up the ideation rule: an imperfect angle can still
-    # slip through, and the draft must not follow noisy data off-topic.
-    prompt = (
-        "Write a full article draft in markdown (a few paragraphs) for a blog "
-        f"about '{topic_name}', on this angle: {angle}\n\n"
-        f"CORE EDITORIAL DIRECTION:\n{resolve_editorial_goals(topic, goal, _rotation_focus(rotation))}"
-        f"{_revisit_note(rotation)}\n\n"
-        f"Base it on these recent findings:\n{summaries_block}"
-        f"\n\n{draft_relevance_boundary(topic_name)}"
-        f"\n\n{DRAFT_ALIGNMENT_DIRECTIVE}"
-    )
-    if goal is not None:
-        prompt += f"\n\nArticle style: {_goal_style(goal)}"
-    if guidance:
-        prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
-    if compliance.is_financial_topic(topic):
-        prompt += f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
     # What the topic's adapter says its articles must always do (how to write figures that move,
     # how the article ends). Declared on the adapter, so nothing here knows the domain.
     rules = fresh_review.writing_rules(topic)
     source_guidance = "\n".join(filter(None, [rules["figure_guidance"], rules["drafting_guidance"]]))
-    if source_guidance:
-        prompt += f"\n\n{_SOURCE_GUIDANCE_HEADER}\n{source_guidance}"
+    few_shot = ""
     if few_shot_excerpt:
-        prompt += (
+        few_shot = (
             "\n\nHere is an excerpt from a well-received past article on this "
             "topic, for style reference only (do not repeat its content):\n"
             f"{few_shot_excerpt}"
         )
+    # The template is daily_cycle/draft (common/prompts_registry.py). The boundary backs up the
+    # ideation rule: an imperfect angle can still slip through, and the draft must not follow
+    # noisy data off-topic.
+    values = {
+        "topic_name": topic_name,
+        "angle": angle,
+        "editorial_goals": resolve_editorial_goals(topic, goal, _rotation_focus(rotation)),
+        "revisit_note": _revisit_note(rotation),
+        "summaries": summaries_block,
+        "relevance_boundary": draft_relevance_boundary(topic_name),
+        "alignment_directive": DRAFT_ALIGNMENT_DIRECTIVE,
+        "style_block": f"\n\nArticle style: {_goal_style(goal)}" if goal is not None else "",
+        "guidance_block": _guidance_block(guidance),
+    }
+    locked = {
+        "financial_guidance": _financial_guidance_block(topic),
+        "source_guidance": f"\n\n{_SOURCE_GUIDANCE_HEADER}\n{source_guidance}" if source_guidance else "",
+        "few_shot": few_shot,
+    }
+    prompt = prompts.get_prompt("daily_cycle/draft", values, locked)
     result = invoke_model_tracked(
-        prompt,
+        prompt.text,
         model_id,
         fallback_model_id=fallback_model_id,
         max_tokens=DRAFT_MAX_TOKENS,
@@ -1228,6 +1251,7 @@ def _draft_article(
         "used_fallback": result["used_fallback"],
         # "max_tokens" here means the draft is cut off even after the retry.
         "stop_reason": result.get("stop_reason"),
+        **prompts.lineage_fields(prompt),
     }
     if result.get("attempts", 1) > 1:
         lineage_call["attempts"] = result["attempts"]
@@ -1243,14 +1267,12 @@ def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tu
     moderation, where the caller routes it when the third element here is False, sees exactly what
     the model actually said -- rather than something invented in its place.
     """
-    prompt = (
-        "Write a short, engaging article title for an article with this angle: "
-        f"{angle}\n\n"
-        f"Reply with the title only, as a single line of no more than {_MAX_TITLE_WORDS} words. "
-        "No surrounding quotes, no markdown, no explanation, and no questions back -- if the "
-        "angle is unclear, title it as best you can rather than asking for clarification."
+    # The template is daily_cycle/title (common/prompts_registry.py).
+    values = {"angle": angle}
+    prompt = prompts.get_prompt(
+        "daily_cycle/title", values, {"reply_rule": _TITLE_REPLY_RULE, "title_retry": ""}
     )
-    result = invoke_model_tracked(prompt, model_id, fallback_model_id=fallback_model_id)
+    result = invoke_model_tracked(prompt.text, model_id, fallback_model_id=fallback_model_id)
     title = result["text"].strip()
     input_tokens, output_tokens, used_fallback = (
         result["input_tokens"],
@@ -1260,11 +1282,12 @@ def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tu
     attempts = 1
 
     if not _is_plausible_reply(title, max_words=_MAX_TITLE_WORDS):
-        retry_prompt = (
-            f"{prompt}\n\nYour previous reply was not a usable title -- reply with nothing but "
-            "the title itself this time."
+        # The same prompt with the retry's line added, from the same arm of a split whenever the
+        # run is bound (`_handle`); lineage records the version of this, the call that counted.
+        prompt = prompts.get_prompt(
+            "daily_cycle/title", values, {"reply_rule": _TITLE_REPLY_RULE, "title_retry": _TITLE_RETRY}
         )
-        result = invoke_model_tracked(retry_prompt, model_id, fallback_model_id=fallback_model_id)
+        result = invoke_model_tracked(prompt.text, model_id, fallback_model_id=fallback_model_id)
         title = result["text"].strip()
         # A discarded first reply still cost real tokens -- summed in below, not dropped from the
         # total, the same principle invoke_model_tracked's own max_tokens retry already follows.
@@ -1279,6 +1302,7 @@ def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tu
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "used_fallback": used_fallback,
+        **prompts.lineage_fields(prompt),
     }
     if attempts > 1:
         lineage_call["attempts"] = attempts

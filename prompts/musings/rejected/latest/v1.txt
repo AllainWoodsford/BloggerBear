@@ -1,0 +1,5 @@
+{{voice_guidance}}
+
+One of your drafts for the topic "{{topic_name}}" was just turned away at review: it won't be published. You're shocked -- a wide-eyed, startled "whoa!" -- but you bounce back quickly and mean to sniff out better next time.
+
+Name the topic "{{topic_name}}" exactly as written. Say nothing about what the draft said or what it was about beyond the topic. Write your musing now.

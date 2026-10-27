@@ -390,3 +390,32 @@ variable "worker_concurrency" {
     error_message = "worker_concurrency must be at least 2: the smallest maximum_concurrency an SQS event source mapping accepts."
   }
 }
+
+variable "prompt_as_asset_enabled" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Whether the Lambdas read their prompts from the prompts bucket (prompts as assets,
+    docs/enhancements/model-ranch-prompt-assets-evals.md) rather than the copies in their code.
+    Off by default: every prompt stays as it is in the code, and nothing of the prompts stack is
+    read. Handed to every Lambda as PROMPT_AS_ASSET_ENABLED ("true" or "false"). Set from the
+    PROMPT_AS_ASSET_ENABLED GitHub variable (docs/configuration.md).
+  EOT
+}
+
+variable "prompts_publisher_role_arn" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    The IAM role the prompts publisher workflow signs in as (gha-<prefix>-prod-prompts, made by
+    infra/bootstrap): the one principal the prompts bucket's policy will let write prompt objects.
+    Empty (the default): no publisher, so the bucket gets no such policy and nothing is published.
+    CI supplies it as TF_VAR_prompts_publisher_role_arn from the AWS_PROD_PROMPTS_ROLE_ARN secret; never
+    put it in terraform.tfvars (a role ARN carries the account ID).
+  EOT
+
+  validation {
+    condition     = var.prompts_publisher_role_arn == "" || can(regex("^arn:aws:iam::[0-9]{12}:role/[\\w+=,.@/-]{1,128}$", var.prompts_publisher_role_arn))
+    error_message = "prompts_publisher_role_arn must be empty or an IAM role ARN: arn:aws:iam::<account id>:role/<name>."
+  }
+}

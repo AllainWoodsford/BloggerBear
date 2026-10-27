@@ -12,6 +12,10 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # the contract names the type; an adapter that renders a prompt imports prompts itself
+    from common import prompts
 
 # Reserved snapshot key. The research tick records, in every snapshot it
 # stores, which items it has already reported (item key -> the UTC date it was
@@ -277,15 +281,28 @@ class Adapter(ABC):
         """
         return []
 
-    def build_summary_prompt(
+    def summary_prompt(
         self, topic: dict, diff_summary: str, new_state: dict
-    ) -> str | None:
-        """Optionally return the exact Bedrock prompt used to summarize a
-        material change, for sources whose state needs domain-specific
-        framing (e.g. a rotating editorial focus). Return None -- the
-        default -- to use the research tick's generic prompt.
+    ) -> prompts.Prompt | None:
+        """Optionally return the Bedrock prompt used to summarize a material
+        change, for sources whose state needs domain-specific framing (e.g. a
+        rotating editorial focus): a spec of the adapter's own in
+        common/prompts_registry.py, rendered by prompts.get_prompt, so the
+        Finding records which prompt and version wrote its summary. Return
+        None -- the default -- to use the research tick's generic prompt.
 
         Lives on the adapter rather than in research_tick_handler.py so that
         handler stays topic-agnostic (docs/project-plan.md §2 rule 5, §6).
         """
         return None
+
+    def build_summary_prompt(
+        self, topic: dict, diff_summary: str, new_state: dict
+    ) -> str | None:
+        """The text `summary_prompt` renders (None without one), for a caller
+        that needs only what is sent. The research tick still honours an
+        adapter that overrides this hook instead, sending its text with no
+        prompt id or version on the Finding.
+        """
+        prompt = self.summary_prompt(topic, diff_summary, new_state)
+        return None if prompt is None else prompt.text

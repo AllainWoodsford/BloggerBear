@@ -88,6 +88,10 @@ SAMPLES = {
         "models": 18, "not_in_registry": 1, "classify": "done", "classified": 2, "unknown": 0,
         "judge_pairs": 24, "judge_agreement": 0.7917, "calibrated": True, "splits": 0, "ms": 5310,
     },
+    "prompt_fallback": {
+        "topic_id": "rail-sydney", "lambda_id": "daily_cycle", "prompt_name": "draft", "version": "v2",
+        "code": "locked_order",
+    },
 }  # fmt: skip
 
 

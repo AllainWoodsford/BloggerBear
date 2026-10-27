@@ -91,6 +91,44 @@ run "no_security_alarm_without_log_groups" {
   }
 }
 
+# A prompt asset that cannot be used is a quiet failure (the pipeline carries on with the code's
+# copy), so the evidence line it leaves in whichever Lambda's log raises an alarm of its own.
+run "a_prompt_fallback_in_any_pipeline_log_group_raises_one_alarm" {
+  command = plan
+  variables {
+    prompt_fallback_log_groups = ["/aws/lambda/bloggerbear-test-daily-cycle", "/aws/lambda/bloggerbear-test-research-tick"]
+  }
+  assert {
+    condition     = length(aws_cloudwatch_log_metric_filter.prompt_fallback) == 2 && length(aws_cloudwatch_metric_alarm.prompt_fallback) == 1
+    error_message = "one metric filter per log group, and one alarm"
+  }
+  assert {
+    condition = alltrue([
+      for filter in aws_cloudwatch_log_metric_filter.prompt_fallback :
+      filter.pattern == "{ $.event = \"prompt_fallback\" }" && filter.metric_transformation[0].name == aws_cloudwatch_metric_alarm.prompt_fallback[0].metric_name
+    ])
+    error_message = "every filter selects the prompt_fallback evidence line and feeds the alarm's metric"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.prompt_fallback[0].alarm_name == "bloggerbear-test-prompt-fallback" &&
+      aws_cloudwatch_metric_alarm.prompt_fallback[0].period == 3600 &&
+      aws_cloudwatch_metric_alarm.prompt_fallback[0].threshold == 0 &&
+      aws_cloudwatch_metric_alarm.prompt_fallback[0].comparison_operator == "GreaterThanThreshold" &&
+      aws_cloudwatch_metric_alarm.prompt_fallback[0].treat_missing_data == "notBreaching"
+    )
+    error_message = "the first fallback in an hour is enough, and no data is not an alarm"
+  }
+}
+
+run "no_prompt_fallback_alarm_without_log_groups" {
+  command = plan
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.prompt_fallback) == 0
+    error_message = "no alarm without log groups"
+  }
+}
+
 # alert_email is sensitive (kept out of plans and public CI logs) and drives the subscription's
 # count. Terraform accepts a sensitive count (unlike for_each); these keep it that way, set or not.
 run "a_sensitive_alert_email_still_subscribes" {

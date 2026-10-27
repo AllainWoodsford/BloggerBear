@@ -1388,6 +1388,83 @@ def test_the_vision_worker_is_deployed_only_when_the_repository_variable_says_so
     assert "`VISION_ENABLED` repository variable" in guide
 
 
+# --- prompts as assets: the wiring that lands before the bucket does ----------------------------------
+#
+# docs/enhancements/model-ranch-prompt-assets-evals.md, P0. The Lambdas are told where the prompts
+# will live and whether to read them, CI passes the switch and the publisher role's ARN, and the
+# fallback a Lambda makes when an asset cannot be used has an alarm, all before any of it exists.
+
+
+def test_prompt_assets_are_wired_in_both_roots_and_off_until_the_repository_variable_says_so():
+    """prompt_as_asset_enabled defaults to false in both roots and CI reads it like VISION_ENABLED
+    (only `true` turns it on), so merging the prompts work changes no prompt. The publisher role's
+    ARN comes from a secret (it carries an account ID), may be empty, and is checked for shape."""
+    for name, secret in (
+        ("terraform.yml", "AWS_DEV_PROMPTS_ROLE_ARN"),
+        ("terraform-production-release.yml", "AWS_PROD_PROMPTS_ROLE_ARN"),
+    ):
+        text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        switch = "${{ vars.PROMPT_AS_ASSET_ENABLED == 'true' && 'true' || 'false' }}"
+        assert f"      TF_VAR_prompt_as_asset_enabled: {switch}\n" in text, name
+        assert f"      TF_VAR_prompts_publisher_role_arn: ${{{{ secrets.{secret} }}}}\n" in text, name
+        assert f"vars.{secret}" not in text, name
+    for env in ("dev", "production"):
+        variables = _read("environments", env, "variables.tf")
+        off = r'variable "prompt_as_asset_enabled" \{\s*\n\s*type\s*=\s*bool\s*\n\s*default\s*=\s*false'
+        assert re.search(off, variables), env
+        arn = variables.split('variable "prompts_publisher_role_arn" {')[1].split("\n}\n")[0]
+        assert re.search(r"^  type\s*=\s*string$", arn, re.M)
+        assert re.search(r'^  default\s*=\s*""$', arn, re.M)
+        condition = re.search(r"condition\s*=\s*(.+)$", arn, re.M).group(1)
+        shape = 'var.prompts_publisher_role_arn == "" || can(regex("^arn:aws:iam::[0-9]{12}:role/'
+        assert condition.startswith(shape)
+        # Every Lambda is told the two names (empty until the prompts module makes them) and the switch.
+        main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
+        shared = main.split("  lambda_env_variables = {")[1].split("\n}\n")[0]
+        assert re.search(r'^\s*PROMPTS_BUCKET\s*=\s*""$', shared, re.M), env
+        assert re.search(r'^\s*PROMPT_HASHES_TABLE\s*=\s*""$', shared, re.M), env
+        switched = r'^\s*PROMPT_AS_ASSET_ENABLED\s*=\s*var\.prompt_as_asset_enabled \? "true" : "false"$'
+        assert re.search(switched, shared, re.M), env
+    table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    assert re.search(r"^\| `PROMPT_AS_ASSET_ENABLED` \| variable \| repo or `production` \|", table, re.M)
+    assert re.search(r"^\| `AWS_DEV_PROMPTS_ROLE_ARN` \| secret \| repo \|", table, re.M)
+    assert re.search(r"^\| `AWS_PROD_PROMPTS_ROLE_ARN` \| secret \| `production` \|", table, re.M)
+
+
+def test_the_prompt_fallback_alarm_reads_the_evidence_line_from_every_pipeline_log_group():
+    """common/evidence.py prints one prompt_fallback line (a JSON object) when a prompt asset cannot
+    be used and the code's copy is. One metric filter per pipeline Lambda log group selects it by
+    its event key and feeds one metric; the alarm fires on the first in an hour, ALARM and OK both
+    to the alerts topic, like the feedback alarms."""
+    from common import evidence
+
+    sample = evidence.line("prompt_fallback", lambda_id="daily_cycle", prompt_name="draft", version="v2",
+                           code="paused")  # fmt: skip
+    assert json.loads(sample)["event"] == "prompt_fallback"  # one JSON object: the filter's selector reads it
+    source = (ROOT / "lambdas" / "common" / "evidence.py").read_text(encoding="utf-8")
+    assert "        print(text)\n" in source  # the line is the whole log event, nothing in front of it
+
+    module = _read("modules", "observability", "main.tf")
+    metric_filter = _resource_block(module, "aws_cloudwatch_log_metric_filter", "prompt_fallback")
+    assert "for_each       = toset(var.prompt_fallback_log_groups)" in metric_filter
+    assert 'pattern        = "{ $.event = \\"prompt_fallback\\" }"' in metric_filter
+    assert 'name          = "PromptFallback"' in metric_filter
+    alarm = _resource_block(module, "aws_cloudwatch_metric_alarm", "prompt_fallback")
+    assert 'metric_name         = "PromptFallback"' in alarm
+    assert re.search(r"period\s*=\s*3600\b", alarm) and re.search(r"evaluation_periods\s*=\s*1\b", alarm)
+    assert 'comparison_operator = "GreaterThanThreshold"' in alarm
+    assert re.search(r"threshold\s*=\s*0\b", alarm)
+    assert 'treat_missing_data  = "notBreaching"' in alarm
+    assert "alarm_actions = [aws_sns_topic.alerts.arn]" in alarm
+    assert "ok_actions    = [aws_sns_topic.alerts.arn]" in alarm
+    for env in ("dev", "production"):
+        block = re.search(
+            r'^module "observability" \{\n(.*?)^\}', _read("environments", env, "main.tf"), re.S | re.M
+        ).group(1)
+        groups = "prompt_fallback_log_groups = [for group in aws_cloudwatch_log_group.lambda : group.name]"
+        assert groups in block, env
+
+
 def test_the_fork_guide_names_every_setting_the_workflows_read():
     guide = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
     # The settings table is its own page, which the guide and the README both link to.

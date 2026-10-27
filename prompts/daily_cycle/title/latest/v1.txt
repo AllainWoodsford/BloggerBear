@@ -1,0 +1,3 @@
+Write a short, engaging article title for an article with this angle: {{angle}}
+
+{{locked:reply_rule}}{{locked:title_retry}}

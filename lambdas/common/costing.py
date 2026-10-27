@@ -109,7 +109,9 @@ def build_research_lineage(findings: list[dict]) -> dict:
     (model, tokens); one written before it does not, and is counted as
     `untracked_findings` and said so in the note rather than passing as free.
     Every research call is included, whether or not the article ended up using
-    that Finding's content.
+    that Finding's content. A call that names the prompt and version that wrote
+    the summary (`prompt_id`, `prompt_version`: Findings since the prompts were
+    registered) keeps them; an older one is carried without them.
     """
     calls: list[dict] = []
     untracked = 0
@@ -118,16 +120,18 @@ def build_research_lineage(findings: list[dict]) -> dict:
         if not research_call:
             untracked += 1
             continue
-        calls.append(
-            {
-                "stage": "research",
-                "captured_at": finding.get("captured_at"),
-                "model_id": canonical_model_id(research_call["model_id"]),
-                "input_tokens": int(research_call["input_tokens"]),
-                "output_tokens": int(research_call["output_tokens"]),
-                "used_fallback": bool(research_call.get("used_fallback", False)),
-            }
-        )
+        call = {
+            "stage": "research",
+            "captured_at": finding.get("captured_at"),
+            "model_id": canonical_model_id(research_call["model_id"]),
+            "input_tokens": int(research_call["input_tokens"]),
+            "output_tokens": int(research_call["output_tokens"]),
+            "used_fallback": bool(research_call.get("used_fallback", False)),
+        }
+        for key in ("prompt_id", "prompt_version"):
+            if research_call.get(key):
+                call[key] = research_call[key]
+        calls.append(call)
 
     return summarise_research(calls, findings=len(findings), untracked=untracked)
 

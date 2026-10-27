@@ -1,0 +1,13 @@
+Based on the following recent research findings and the assigned daily editorial vector for '{{topic_name}}', propose exactly {{num_angles}} distinct, specific candidate article angles. {{reply_rule}}
+
+ACTIVE EDITORIAL MANDATE:
+{{editorial_goals}}
+
+{{relevance_rule}}
+{{alignment_rule}}{{revisit_note}}{{already_covered}}
+
+Editorial Mandate: {{daily_mandate}}
+Apply this mandate strictly within the theme of '{{topic_name}}' and the Active Editorial Mandate above: it decides the shape of each angle, never the subject.
+
+Data Payload:
+{{summaries}}{{guidance_block}}{{locked:financial_guidance}}

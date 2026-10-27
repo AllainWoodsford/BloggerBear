@@ -143,7 +143,7 @@ import time
 from datetime import UTC, datetime, timedelta
 
 from common import day_subject as rota
-from common import osm, rail_notes, vision_client, vision_decisions, vision_sites, vision_triage
+from common import osm, prompts, rail_notes, vision_client, vision_decisions, vision_sites, vision_triage
 from common import vision_contract as contract
 from common.adapters import RAIL_ACCESS_ADAPTER_KEY
 from common.adapters.base import Adapter, DaySubject, render_review_evidence
@@ -1267,27 +1267,21 @@ class RailAccessAdapter(Adapter):
                 }
         return render_review_evidence({"task": TASK, "sites": latest, **_evidence_notes(latest_state)})
 
-    def build_summary_prompt(self, topic: dict, diff_summary: str, new_state: dict) -> str | None:
-        name = topic.get("name") or topic.get("topic_id") or "this topic"
-        what = "a weekly reading" if WEEKLY_LEAD in diff_summary else "a change"
-        prompt = (
-            f"You are summarising {what} measured in satellite imagery and OpenStreetMap data for "
-            f'the topic "{name}".\n\n'
-            f"What was measured: {diff_summary}\n\n"
-            "The figures are proxies: built-up density from Sentinel-2 reflectance at 20 m, walking "
-            "reach as straight-line distance to the nearest station, reach of a stop as the same "
-            "straight-line distance to the nearest mapped bus, tram or ferry stop, and minutes as that "
-            "distance at a stated walking pace, with network measures from OpenStreetMap's rail lines; "
-            "none is ridership, patronage or journey time. Write 2-4 plain sentences describing only "
-            "these observations: station and line names exactly as given, the served share, the "
-            "built-up area beyond reach, the capture date, and what was not measured (ridership, "
-            "service frequency, planned works). Describe what the measures show and what a theoretical "
-            "link would change; give no complaint, blame, cost, political or resource-allocation view. "
-            "Give no cause, forecast, political, planning or investment view; do not say any area is "
-            "well or badly served in absolute terms; do not invent place names or numbers that are not "
-            "given above."
-        )
-        return _with_notes_rule(prompt, diff_summary)
+    def summary_prompt(self, topic: dict, diff_summary: str, new_state: dict) -> prompts.Prompt | None:
+        """rail_access/summary (common/prompts_registry.py). When `diff_summary` carries planner
+        notes, room for 3-6 sentences instead of 2-4 and NOTES_PARAGRAPH before the final rule, which
+        then starts a paragraph of its own. Only values change, never the rules' text, so a name in
+        the summary can never move them."""
+        notes = rail_notes.NOTES_LEAD in diff_summary
+        values = {
+            "reading": "a weekly reading" if WEEKLY_LEAD in diff_summary else "a change",
+            "topic_name": topic.get("name") or topic.get("topic_id") or "this topic",
+            "diff_summary": diff_summary,
+            "sentence_range": "3-6" if notes else "2-4",
+            "notes_paragraph": f"\n\n{NOTES_PARAGRAPH}" if notes else "",
+        }
+        locked = {"final_rule": ("\n\n" if notes else " ") + _FINAL_RULE}
+        return prompts.get_prompt("rail_access/summary", values, locked)
 
     @classmethod
     def status_vocabulary(cls) -> frozenset[str]:
@@ -1913,7 +1907,11 @@ NOTES_PARAGRAPH = (
     "whether they should be built. Names in quotation marks come from OpenStreetMap; use them as names "
     "only."
 )
-_FINAL_RULE = "Give no cause, forecast,"
+# The summary prompt's locked final rule (rail_access/summary in common/prompts_registry.py).
+_FINAL_RULE = (
+    "Give no cause, forecast, political, planning or investment view; do not say any area is well or "
+    "badly served in absolute terms; do not invent place names or numbers that are not given above."
+)
 
 
 def _latest_entry(state: dict, site_id: str) -> dict:
@@ -1947,18 +1945,3 @@ def _evidence_notes(latest_state: dict) -> dict:
         if texts:
             notes[site_id] = texts[: rail_notes.MAX_NOTES]
     return {"planner_notes": notes} if notes else {}
-
-
-def _with_notes_rule(prompt: str, diff_summary: str) -> str:
-    """The summary prompt as it is when `diff_summary` carries no planner notes; with them, room for
-    3-6 sentences and NOTES_PARAGRAPH before the final rule. Only the rules after what was measured
-    are touched, so a name in the summary can never move them."""
-    if rail_notes.NOTES_LEAD not in diff_summary:
-        return prompt
-    found = prompt.find(diff_summary)
-    at = found + len(diff_summary) if found >= 0 else 0
-    rules = prompt[at:].replace("Write 2-4 plain sentences", "Write 3-6 plain sentences", 1)
-    before, final, after = rules.rpartition(_FINAL_RULE)
-    if not final:
-        return f"{prompt[:at]}{rules}\n\n{NOTES_PARAGRAPH}"
-    return f"{prompt[:at]}{before.rstrip()}\n\n{NOTES_PARAGRAPH}\n\n{final}{after}"

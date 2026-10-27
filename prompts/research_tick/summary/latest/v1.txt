@@ -1,0 +1,12 @@
+You are monitoring the topic "{{topic_name}}" for a research digest. New information was just found in its source data.
+
+OPERATIONAL EDITORIAL GOAL:
+{{editorial_goals}}
+
+What's new: {{diff_summary}}
+
+Current state (compact JSON, may be truncated; background for context only): {{compact_state}}
+
+{{relevance_rule}}
+
+Summarize only what is new (the items under "What's new") and why it is highly relevant based on the Operational Editorial Goal above. Do not restate items that are not listed as new. Use only facts, figures and sources present in the data given: never add causes, quotes, numbers or detail that it does not contain, and if it does not say something, do not say it. Be concise (2-4 sentences). {{locked:advice_rule}}

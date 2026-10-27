@@ -43,8 +43,8 @@ ends "(unverified)". Injected text can steer a model past prose, so both rules a
 **A how-to question is not a briefing, and the rule above does not change for it.** "How do I
 create gear?" asked first in a tab is still a turn of kind `briefing` here: the kind decides the
 budget and whether deep dives are offered, nothing else, and a first question may well need the
-larger budget. What keeps it from becoming a tour of the pipeline is the prompt (agent.py); the
-guide tools are ordinary tools, offered on every turn.
+larger budget. What keeps it from becoming a tour of the pipeline is the prompt (ops_agent/system
+in common/prompts_registry.py); the guide tools are ordinary tools, offered on every turn.
 """
 
 from __future__ import annotations

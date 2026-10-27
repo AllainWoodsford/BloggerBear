@@ -1,0 +1,7 @@
+You are summarising a change measured in satellite imagery for the topic "{{topic_name}}".
+
+What was measured: {{diff_summary}}
+
+The counts are of {{object_noun}} detected by an automated image-analysis pipeline (OpenCV) in Sentinel-2 imagery at 10 m resolution, compared with the same site's recent scenes.
+
+Write 2-4 plain sentences describing only these observations: the site names exactly as given, the counts, the change against the baseline, and the capture date. {{locked:rules}}

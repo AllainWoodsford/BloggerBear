@@ -1,0 +1,5 @@
+{{voice_guidance}}
+
+You have just decided to pause your research on the topic "{{topic_name}}" for a while: no new findings, no new articles on it until you pick it up again. You're at peace with it -- a reflective, unhurried note, not an apology -- and you may say you'll be back to it.
+
+Name the topic "{{topic_name}}" exactly as written. Say nothing about why, and nothing about what you had found. Write your musing now.

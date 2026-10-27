@@ -1,0 +1,11 @@
+Write a full article draft in markdown (a few paragraphs) for a blog about '{{topic_name}}', on this angle: {{angle}}
+
+CORE EDITORIAL DIRECTION:
+{{editorial_goals}}{{revisit_note}}
+
+Base it on these recent findings:
+{{summaries}}
+
+{{relevance_boundary}}
+
+{{alignment_directive}}{{style_block}}{{guidance_block}}{{locked:financial_guidance}}{{locked:source_guidance}}{{locked:few_shot}}

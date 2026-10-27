@@ -52,6 +52,7 @@ from common import (
     gear,
     model_catalog,
     model_fleet,
+    prompts,
     reviewer,
     security_events,
     sign_ins,
@@ -2060,7 +2061,7 @@ def _moderation_queue_stats(event: dict) -> dict:
 
     Phase 6 ("Prompt iteration on the compliance-review step based on
     what's actually been flagged so far"): iterating the compliance
-    prompt (common/compliance.py's _REVIEW_PROMPT_TEMPLATE) responsibly
+    prompt (the reviews/compliance prompts in common/prompts_registry.py) responsibly
     needs to look at what has actually tripped it, not guesswork -- this
     is the read-only visibility that makes that possible. The prompt
     edit itself stays a manual, human-reviewed step (same as any other
@@ -3758,7 +3759,11 @@ def handler(event, context) -> dict:
     # API Gateway's request id joins its access log (which holds no caller details); it is bound
     # only when it is an id, so nothing the request carries can be written as one.
     api_request_id = evidence.check("id", ((event or {}).get("requestContext") or {}).get("requestId"))
-    with evidence.bind(tick=getattr(context, "aws_request_id", None), api_request_id=api_request_id):
+    request_id = getattr(context, "aws_request_id", None)
+    # The request id is also the request's run for the prompts (common/prompts.py): every prompt one
+    # request renders, each blank musing an article's regenerate writes among them, draws its A/B arm
+    # by it. The reviewer bear's in-process calls (_call) skip this and keep his own run's key.
+    with evidence.bind(tick=request_id, api_request_id=api_request_id), prompts.bind_run(request_id):
         try:
             return route_fn(event)
         except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled

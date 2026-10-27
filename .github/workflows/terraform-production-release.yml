@@ -75,6 +75,14 @@ jobs:
     # TF_VAR_worker_concurrency: how many queue jobs the pipeline's workers may run at once, as in
     # terraform.yml: the WORKER_CONCURRENCY variable (the `production` environment's, else the
     # repository's), else '2'.
+    # TF_VAR_prompt_as_asset_enabled: whether the Lambdas read their prompts from the prompts
+    # bucket (prompts as assets), as in terraform.yml (see the comment there): only `true`, in any
+    # letter case, turns it on; unset or anything else is `false`. The `production` environment's
+    # PROMPT_AS_ASSET_ENABLED wins over the repository's, so production can stay off while dev
+    # tries it.
+    # TF_VAR_prompts_publisher_role_arn: the role the prompts publisher workflow signs in as for
+    # production (gha-<prefix>-prod-prompts, from infra/bootstrap). A secret on the `production`
+    # environment, like the deploy role's ARN; unset is an empty string, "no publisher yet".
     env:
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_PROD || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_PROD || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
@@ -92,6 +100,8 @@ jobs:
       TF_VAR_web_search_region: ${{ vars.WEB_SEARCH_REGION_PROD || vars.WEB_SEARCH_REGION || 'ap-northeast-1' }}
       TF_VAR_evals_enabled: ${{ vars.EVALS_ENABLED == 'true' && 'true' || 'false' }}
       TF_VAR_worker_concurrency: ${{ vars.WORKER_CONCURRENCY || '2' }}
+      TF_VAR_prompt_as_asset_enabled: ${{ vars.PROMPT_AS_ASSET_ENABLED == 'true' && 'true' || 'false' }}
+      TF_VAR_prompts_publisher_role_arn: ${{ secrets.AWS_PROD_PROMPTS_ROLE_ARN }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

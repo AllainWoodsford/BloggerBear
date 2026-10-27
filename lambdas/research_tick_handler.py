@@ -58,7 +58,7 @@ from decimal import Decimal
 
 import boto3
 
-from common import evidence
+from common import evidence, prompts
 from common.adapters.base import SEEN_KEY
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
@@ -185,32 +185,34 @@ def _subjects(adapter, new_state: dict) -> list[str]:
         return []
 
 
-def _build_prompt(topic: dict, diff_summary: str, new_state: dict, adapter) -> str:
+# The locked end of the generic summary prompt (research_tick/summary in common/prompts_registry.py).
+_ADVICE_RULE = "Do not speculate beyond what the data shows, and do not give financial or investment advice."
+
+
+def _build_prompt(topic: dict, diff_summary: str, new_state: dict, adapter) -> tuple[str, dict]:
+    """The summary prompt to send, and what the Finding's research_call records of it: its id and
+    version (prompts.lineage_fields), or nothing for an adapter's own text outside the registry."""
     # An adapter whose state needs domain-specific framing (e.g. the crypto
     # feed's rotating editorial focus) supplies its own prompt; everything
     # else gets the generic one below. Keeps this handler topic-agnostic.
-    adapter_prompt = adapter.build_summary_prompt(topic, diff_summary, new_state)
-    if adapter_prompt:
-        return adapter_prompt
+    adapter_prompt = adapter.summary_prompt(topic, diff_summary, new_state)
+    if adapter_prompt is not None:
+        return adapter_prompt.text, prompts.lineage_fields(adapter_prompt)
+    # An adapter that overrides the older text-only hook instead is sent its text as it is.
+    adapter_text = adapter.build_summary_prompt(topic, diff_summary, new_state)
+    if adapter_text:
+        return adapter_text, {}
 
-    compact_state = json.dumps(new_state)[:COMPACT_STATE_MAX_CHARS]
     topic_name = topic_label(topic)
-    return (
-        f'You are monitoring the topic "{topic_name}" for a research '
-        "digest. New information was just found in its source data.\n\n"
-        f"OPERATIONAL EDITORIAL GOAL:\n{resolve_editorial_goals(topic)}\n\n"
-        f"What's new: {diff_summary}\n\n"
-        "Current state (compact JSON, may be truncated; background for context "
-        f"only): {compact_state}\n\n"
-        f"{research_relevance_rule(topic_name)}\n\n"
-        'Summarize only what is new (the items under "What\'s new") and why it is '
-        "highly relevant based on the Operational Editorial Goal above. Do not "
-        "restate items that are not listed as new. Use only facts, figures and "
-        "sources present in the data given: never add causes, quotes, numbers or "
-        "detail that it does not contain, and if it does not say something, do "
-        "not say it. Be concise (2-4 sentences). Do not speculate beyond what "
-        "the data shows, and do not give financial or investment advice."
-    )
+    values = {
+        "topic_name": topic_name,
+        "editorial_goals": resolve_editorial_goals(topic),
+        "diff_summary": diff_summary,
+        "compact_state": json.dumps(new_state)[:COMPACT_STATE_MAX_CHARS],
+        "relevance_rule": research_relevance_rule(topic_name),
+    }
+    prompt = prompts.get_prompt("research_tick/summary", values, {"advice_rule": _ADVICE_RULE})
+    return prompt.text, prompts.lineage_fields(prompt)
 
 
 def _queue_record(event) -> tuple[dict | None, datetime | None, str | None]:
@@ -280,7 +282,9 @@ def handler(event, context) -> dict:
 
     print(f"research_tick_handler: starting run for topic_id={topic_id} force={force}")
     tick = getattr(context, "aws_request_id", None)
-    with evidence.bind(tick=tick, run=evidence.new_run(), topic_id=topic_id):
+    # The request id is also the tick's run for the prompts (common/prompts.py): every prompt of one
+    # tick draws its A/B arm by it, so a retried request is given the same versions.
+    with evidence.bind(tick=tick, run=evidence.new_run(), topic_id=topic_id), prompts.bind_run(tick):
         started = time.monotonic()
         outcome, error_type = "error", None
         try:
@@ -454,7 +458,7 @@ def _run_research_tick(topic_id: str, force: bool = False, due_checked_at: datet
     # env var), so research follows the topic's current model instead of always
     # running on the Terraform default.
     model_id, fallback_model_id = resolve_model(topic)
-    prompt = _build_prompt(topic, diff_summary, new_state, adapter)
+    prompt, prompt_fields = _build_prompt(topic, diff_summary, new_state, adapter)
     # Tracked so the spend is recorded on the Finding itself: research runs hourly,
     # long before any article exists, and its cost is bundled into whichever
     # article the Finding later feeds (common/costing.py's build_research_lineage).
@@ -472,6 +476,9 @@ def _run_research_tick(topic_id: str, force: bool = False, due_checked_at: datet
         "output_tokens": result["output_tokens"],
         "used_fallback": result["used_fallback"],
         "stop_reason": result.get("stop_reason"),
+        # Which prompt wrote the summary, and its version (common/costing.py carries both into the
+        # lineage of the article the Finding feeds).
+        **prompt_fields,
     }
     if research_call["stop_reason"] == "max_tokens":
         # Still cut off after the retry. The finding is kept -- a partial summary is

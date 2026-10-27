@@ -1,0 +1,12 @@
+You are monitoring the topic "{{topic_name}}" for a research digest.{{market_anchors}}
+
+OPERATIONAL EDITORIAL GOAL:
+{{editorial_goals}}
+
+What changed: {{diff_summary}}
+
+Today's Analysis Focus: A randomized deep dive into {{coin_count}} altcoins.
+
+Raw Analysis Metrics (JSON): {{compact_state}}
+
+Synthesize the state of the broader market by comparing the {{coin_count}} random altcoins against the baseline performance of the market anchors. Name each analysed coin with its key figures, note major 1-year macro trends and 3-month velocity shifts, and flag any asset experiencing an active 5-day anomaly (price spikes or sharp crashes).{{headlines_rule}} Be concise, objective, and data-grounded. {{locked:advice_rule}}
