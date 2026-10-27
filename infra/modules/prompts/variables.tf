@@ -32,5 +32,5 @@ variable "publisher_role_arn" {
 
 variable "lambda_exec_role_id" {
   type        = string
-  description = "The shared Lambda execution role (the root's aws_iam_role.lambda_exec.id). It gets one inline policy here that reads the bucket and the hash table and writes nothing."
+  description = "The shared Lambda execution role's name. The roots pass aws_iam_role_policy.lambda_backup.role (the same value as aws_iam_role.lambda_exec.id), so this module's policy is created after that one. It gets one inline policy here that reads the bucket and the hash table and writes nothing."
 }

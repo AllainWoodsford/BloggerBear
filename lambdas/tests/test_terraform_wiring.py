@@ -1479,10 +1479,22 @@ def test_both_roots_make_the_prompts_bucket_and_table_with_their_own_names_and_p
     assert re.search(r'^\s*source\s*=\s*"\.\./\.\./modules/prompts"$', block, re.M)
     assert re.search(rf'^\s*environment_name\s*=\s*"{env}"$', block, re.M)
     assert re.search(r"^\s*publisher_role_arn\s*=\s*var\.prompts_publisher_role_arn$", block, re.M)
-    assert re.search(r"^\s*lambda_exec_role_id\s*=\s*aws_iam_role\.lambda_exec\.id$", block, re.M)
     # Production keeps its prompts and their approvals; dev's are disposable.
     protect = re.search(r"^\s*protect_data\s*=\s*(\S+)$", block, re.M)
     assert (protect.group(1) if protect else "false") == ("true" if env == "production" else "false")
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_roots_hand_the_prompts_module_lambda_exec_through_lambda_backups_role(env):
+    """The edge orders the module's new inline policy after lambda_backup's, so a release that also
+    shrinks lambda_backup cannot briefly pass IAM's 10,240-character inline cap on lambda_exec."""
+    main = _uncommented(_read("environments", env, "main.tf"))
+    (block,) = _module_blocks(main, "modules/prompts")
+    roles = re.findall(r"^\s*lambda_exec_role_id\s*=\s*(.+?)\s*$", block, re.M)
+    assert roles == ["aws_iam_role_policy.lambda_backup.role"]
+    # That attribute is lambda_exec's own name, so the module's policy lands on the same role.
+    backup = _resource_block(main, "aws_iam_role_policy", "lambda_backup")
+    assert re.findall(r"^\s*role\s*=\s*(.+?)\s*$", backup, re.M) == ["aws_iam_role.lambda_exec.id"]
 
 
 def test_the_bucket_policy_excepts_the_publisher_by_a_condition_and_never_names_it_as_a_principal():

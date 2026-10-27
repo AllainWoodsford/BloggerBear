@@ -204,10 +204,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "content" {
 module "prompts" {
   source = "../../modules/prompts"
 
-  unique_name_prefix  = var.unique_name_prefix
-  environment_name    = "dev"
-  publisher_role_arn  = var.prompts_publisher_role_arn
-  lambda_exec_role_id = aws_iam_role.lambda_exec.id
+  unique_name_prefix = var.unique_name_prefix
+  environment_name   = "dev"
+  publisher_role_arn = var.prompts_publisher_role_arn
+
+  # lambda_exec's name, read through lambda_backup's `role` so Terraform creates this module's
+  # policy only after lambda_backup is written: in a release that also shrinks lambda_backup, the
+  # smaller policy lands first and the role stays under IAM's 10,240-character inline cap.
+  lambda_exec_role_id = aws_iam_role_policy.lambda_backup.role
 }
 
 # -----------------------------------------------------------------------
