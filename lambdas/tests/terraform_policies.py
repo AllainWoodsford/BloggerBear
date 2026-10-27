@@ -73,11 +73,22 @@ def size(document: dict) -> int:
 
 def lambda_exec_policies(env: str, infra: Path = INFRA) -> dict[str, dict]:
     """Every inline policy on the root's lambda_exec role, by address, rendered: the root's own, and
-    those of any module (or module of a module) whose `role` is an input the root sets to
-    lambda_exec's id or name. A policy behind a count or for_each counts once, as if its switch
-    (`count = var.x ? 1 : 0`) were on."""
+    any module's, at any depth.
+
+    A policy is lambda_exec's when its `role` values to the role's name, however that is spelled:
+    `.id` or `.name`, a local, a module input, a template, another policy's `role`. A `role` this
+    cannot value raises Unresolved rather than being left out of the count, so a function it has
+    not learned (`split()`) or an input given the whole role object fails loudly. The one `role`
+    not valued is a reference to an aws_iam_role the same root or module declares, other than the
+    root's lambda_exec (`aws_iam_role.ops_mcp.id`): it cannot be lambda_exec, and its name may be
+    one this cannot make.
+
+    A policy behind a count or for_each counts once, as if its switch (`count = var.x ? 1 : 0`)
+    were on. One that comes to more than one instance with the variables' defaults raises
+    Unresolved: each instance is a policy of its own."""
+    root = _Scope(infra / "environments" / env)
     found: dict[str, dict] = {}
-    _collect(_Scope(infra / "environments" / env), "", found)
+    _collect(root, "", root.value(_tokens("aws_iam_role.lambda_exec.name")), found)
     return found
 
 
@@ -95,15 +106,20 @@ def evaluate(env: str, expression: str, module: str | None = None, infra: Path =
     return scope.value(_tokens(expression))
 
 
-def _collect(scope: _Scope, prefix: str, found: dict[str, dict]) -> None:
+def _collect(scope: _Scope, prefix: str, role_name: str, found: dict[str, dict]) -> None:
     for (kind, name), block in scope.resources.items():
-        if kind == "aws_iam_role_policy" and scope.is_lambda_exec(block.attributes["role"]):
-            policy = scope.value(block.attributes["policy"])
-            found[f"{prefix}aws_iam_role_policy.{name}"] = json.loads(policy)
+        if kind != "aws_iam_role_policy" or scope.names_another_role(block.attributes["role"]):
+            continue
+        if scope.value(block.attributes["role"]) != role_name:
+            continue
+        address = f"{prefix}aws_iam_role_policy.{name}"
+        if (instances := scope.instances(block)) > 1:
+            raise Unresolved(f"{address}, which comes to {instances} policies: count each one")
+        found[address] = json.loads(scope.value(block.attributes["policy"]))
     for name in scope.modules:
         child = scope.module(name)
         if child is not None:
-            _collect(child, f"{prefix}module.{name}.", found)
+            _collect(child, f"{prefix}module.{name}.", role_name, found)
 
 
 # --- reading HCL ------------------------------------------------------------------------------------
@@ -542,20 +558,29 @@ class _Scope:
             )
         return self._modules[name]
 
-    def is_lambda_exec(self, tokens: list[_Token]) -> bool:
-        """Whether a `role` is the root's lambda_exec, directly or through a module's input."""
+    def names_another_role(self, tokens: list[_Token]) -> bool:
+        """Whether a `role` is `aws_iam_role.<name>.id` or `.name` (`[0]` for one of a count) for a
+        role this scope declares that is not the root's lambda_exec. A module's own roles are never
+        the root's, whatever they are called."""
         expression = _Parser(tokens).whole()
-        if expression[0] != "reference":
+        if expression[0] != "reference" or expression[1] != "aws_iam_role":
             return False
-        steps = [step[1] if step[0] == "attribute" else None for step in expression[2]]
-        if self.caller is None:
-            return [expression[1], *steps] in (
-                ["aws_iam_role", "lambda_exec", "id"],
-                ["aws_iam_role", "lambda_exec", "name"],
-            )
-        if expression[1] == "var" and len(steps) == 1 and steps[0] in self.arguments:
-            return self.caller.is_lambda_exec(self.arguments[steps[0]])
-        return False
+        steps = [step for i, step in enumerate(expression[2]) if not (i == 1 and step[0] == "index")]
+        if len(steps) != 2 or any(step[0] != "attribute" for step in steps):
+            return False
+        role, attribute = steps[0][1], steps[1][1]
+        if attribute not in ("id", "name"):
+            return False
+        return ("aws_iam_role", role) in self.resources and (self.caller is not None or role != "lambda_exec")
+
+    def instances(self, block: _Block) -> int:
+        """How many instances a resource comes to with the variables' defaults: its count, or the
+        length of its for_each, or one."""
+        if "count" in block.attributes:
+            return self.value(block.attributes["count"])
+        if "for_each" in block.attributes:
+            return len(self.value(block.attributes["for_each"]))
+        return 1
 
     def value(self, tokens: list[_Token], names: dict | None = None):
         return self.evaluate(_Parser(tokens).whole(), names or {})

@@ -1755,14 +1755,24 @@ def test_lambda_execs_inline_policies_stay_under_iams_limit_with_room_to_spare(e
     is likely the production release, after dev has applied the same change cleanly.
 
     The estimate (terraform_policies.py) renders every inline policy on the role, the root's own and
-    any a module attaches through a role input, with the default name prefix, a 12-digit account
-    and the home region, and the total has to stay under a budget short of the limit.
+    any a module attaches (a policy whose `role` values to the role's name), with the default name
+    prefix, a 12-digit account and the home region, and the total has to stay under a budget short
+    of the limit.
 
     When this fails, make room before adding a grant: fold a statement into one over the same
     resources, narrow a resource list to what the code uses, or move a document out into a
     customer-managed policy (aws_iam_policy and an attachment, which do not count toward this cap).
     That last needs the deploy role granted iam:*Policy* on the new policy's name in
-    infra/bootstrap first, which is applied by hand."""
+    infra/bootstrap first, which is applied by hand.
+
+    This holds the end state only. A change that makes room and a change that spends it must not
+    reach production in the same apply: nothing orders a new policy's create after the updates
+    that shrink the others, and if the create wins, the role carries the old documents and the new
+    one at once and PutRolePolicy fails with LimitExceeded part way through a release. Merge the
+    change that makes room to dev, promote it to prod and publish its release before the change
+    that spends the room is merged to dev. If a release does stop this way, the shrinking updates
+    do not wait on the failed policy, so the same run applies them, and running the release's
+    apply again creates the policy."""
     sizes = {
         address: terraform_policies.size(document)
         for address, document in terraform_policies.lambda_exec_policies(env).items()
@@ -1778,19 +1788,24 @@ def test_lambda_execs_inline_policies_stay_under_iams_limit_with_room_to_spare(e
 
 @pytest.mark.parametrize("env", ["dev", "production"])
 def test_the_estimate_counts_every_policy_the_root_puts_on_lambda_exec(env):
-    """The size test is only as good as what it finds: every aws_iam_role_policy in the root whose
-    role is lambda_exec, found here by plain text, has to be one the estimate counted."""
-    text = _uncommented(_read("environments", env, "main.tf"))
+    """The size test is only as good as what it finds. The estimate decides by the value of each
+    policy's `role`; this reads the root's files as plain text, so a block the estimate's parser
+    lost, or a role it decided wrongly, shows here. Every aws_iam_role_policy in the root has to be
+    counted unless its role is plainly another of the root's roles (`aws_iam_role.states_exec.id`):
+    a role spelled any other way is counted, or the estimate raises, never left out quietly."""
+    root = INFRA / "environments" / env
+    text = "\n".join(_uncommented(path.read_text(encoding="utf-8")) for path in sorted(root.glob("*.tf")))
     policies = re.findall(r'^resource "aws_iam_role_policy" "(\w+)" \{\n(.*?)^\}', text, re.S | re.M)
-    attached = {
-        f"aws_iam_role_policy.{name}"
-        for name, body in policies
-        if re.search(r"^\s*role\s*=\s*aws_iam_role\.lambda_exec\.(id|name)\s*$", body, re.M)
+    another_role = re.compile(
+        r"^\s*role\s*=\s*aws_iam_role\.(?!lambda_exec\b)\w+(\[\d+\])?\.(id|name)\s*$", re.M
+    )
+    on_lambda_exec = {
+        f"aws_iam_role_policy.{name}" for name, body in policies if not another_role.search(body)
     }
     counted = terraform_policies.lambda_exec_policies(env)
 
-    assert len(attached) > 5
-    assert {address for address in counted if not address.startswith("module.")} == attached
+    assert len(on_lambda_exec) > 5 and len(policies) > len(on_lambda_exec)
+    assert {address for address in counted if not address.startswith("module.")} == on_lambda_exec
 
 
 def _write_terraform(directory: Path, text: str) -> None:
@@ -1857,10 +1872,178 @@ def test_the_estimate_counts_a_policy_a_module_attaches_through_a_role_input(tmp
     assert policies == {"module.queue.aws_iam_role_policy.send": document}
 
 
+_READ_DOCUMENT = """
+data "aws_iam_policy_document" "read" {
+  statement {
+    actions   = ["s3:GetObject"]
+    resources = ["arn:aws:s3:::a/*"]
+  }
+}
+"""
+
+
+def test_the_estimate_counts_lambda_execs_policies_however_the_role_is_spelled(tmp_path):
+    """The estimate matches a policy's `role` by its value, not its spelling, so a local, a
+    template, or another policy's `role` (the way to order a module's policies after this root's)
+    leaves nothing out. A module's own role is never the root's, even under the same resource
+    name, and is not valued: its name may come from a name_prefix the estimate cannot make. A
+    policy behind a switch counts as if the switch were on."""
+    _write_terraform(
+        tmp_path / "environments" / "dev",
+        """
+        resource "aws_iam_role" "lambda_exec" {
+          name = "lambda-exec"
+        }
+
+        locals {
+          exec_role = aws_iam_role.lambda_exec.name
+        }
+
+        variable "switch" {
+          default = false
+        }
+
+        resource "aws_iam_role_policy" "direct" {
+          role   = aws_iam_role.lambda_exec.id
+          policy = data.aws_iam_policy_document.read.json
+        }
+
+        resource "aws_iam_role_policy" "through_a_local" {
+          role   = local.exec_role
+          policy = data.aws_iam_policy_document.read.json
+        }
+
+        resource "aws_iam_role_policy" "switched_off" {
+          count  = var.switch ? 1 : 0
+          role   = "${aws_iam_role.lambda_exec.name}"
+          policy = data.aws_iam_policy_document.read.json
+        }
+
+        module "queue" {
+          source          = "../../modules/queue"
+          from_a_local    = local.exec_role
+          from_a_policy   = aws_iam_role_policy.direct.role
+          from_a_template = "role/${aws_iam_role.lambda_exec.name}"
+        }
+        """
+        + _READ_DOCUMENT,
+    )
+    _write_terraform(
+        tmp_path / "modules" / "queue",
+        """
+        resource "aws_iam_role" "lambda_exec" {
+          name_prefix = "queue-"
+        }
+
+        resource "aws_iam_role_policy" "from_a_local" {
+          role   = var.from_a_local
+          policy = data.aws_iam_policy_document.read.json
+        }
+
+        resource "aws_iam_role_policy" "from_a_policy" {
+          role   = var.from_a_policy
+          policy = data.aws_iam_policy_document.read.json
+        }
+
+        resource "aws_iam_role_policy" "from_a_template" {
+          role   = trimprefix(var.from_a_template, "role/")
+          policy = data.aws_iam_policy_document.read.json
+        }
+
+        resource "aws_iam_role_policy" "own_role" {
+          role   = aws_iam_role.lambda_exec.id
+          policy = data.aws_iam_policy_document.read.json
+        }
+        """
+        + _READ_DOCUMENT,
+    )
+
+    policies = terraform_policies.lambda_exec_policies("dev", tmp_path)
+
+    assert sorted(policies) == [
+        "aws_iam_role_policy.direct",
+        "aws_iam_role_policy.switched_off",
+        "aws_iam_role_policy.through_a_local",
+        "module.queue.aws_iam_role_policy.from_a_local",
+        "module.queue.aws_iam_role_policy.from_a_policy",
+        "module.queue.aws_iam_role_policy.from_a_template",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("argument", "role"),
+    [
+        ("aws_iam_role.lambda_exec", "var.role.name"),  # the whole role object
+        ("aws_iam_role.lambda_exec.arn", 'split("/", var.role)[1]'),  # a function it has not learned
+        ("aws_iam_role.lambda_exec.arn", 'element(split("/", var.role), 1)'),
+        (None, "var.role"),  # an input the caller leaves unset
+        ("aws_iam_role.lambda_exec.name", "aws_iam_role.gone.id"),  # a role the module does not declare
+    ],
+)
+def test_the_estimate_raises_on_a_role_it_cannot_value_rather_than_leave_the_policy_out(
+    tmp_path, argument, role
+):
+    """A policy whose role the estimate cannot value may well be on lambda_exec, so it raises
+    Unresolved (teach it the expression) rather than leave the policy out of the total."""
+    _write_terraform(
+        tmp_path / "environments" / "dev",
+        f"""
+        resource "aws_iam_role" "lambda_exec" {{
+          name = "lambda-exec"
+        }}
+
+        module "evals" {{
+          source = "../../modules/evals"
+          {f'role = {argument}' if argument else ''}
+        }}
+        """,
+    )
+    _write_terraform(
+        tmp_path / "modules" / "evals",
+        f"""
+        variable "role" {{}}
+
+        resource "aws_iam_role_policy" "grants" {{
+          role   = {role}
+          policy = data.aws_iam_policy_document.read.json
+        }}
+        """
+        + _READ_DOCUMENT,
+    )
+
+    with pytest.raises(terraform_policies.Unresolved):
+        terraform_policies.lambda_exec_policies("dev", tmp_path)
+
+
+@pytest.mark.parametrize("instances", ["count = 2", 'for_each = toset(["a", "b"])'])
+def test_the_estimate_raises_on_a_policy_on_lambda_exec_with_several_instances(tmp_path, instances):
+    """Each instance of a counted policy is a policy of its own, so counting it once would leave
+    the rest out; a 0-or-1 switch is the only count the estimate takes as one."""
+    _write_terraform(
+        tmp_path / "environments" / "dev",
+        f"""
+        resource "aws_iam_role" "lambda_exec" {{
+          name = "lambda-exec"
+        }}
+
+        resource "aws_iam_role_policy" "grants" {{
+          {instances}
+          role   = aws_iam_role.lambda_exec.id
+          policy = data.aws_iam_policy_document.read.json
+        }}
+        """
+        + _READ_DOCUMENT,
+    )
+
+    with pytest.raises(terraform_policies.Unresolved, match="2 policies"):
+        terraform_policies.lambda_exec_policies("dev", tmp_path)
+
+
 def test_the_estimate_renders_a_document_the_way_the_aws_provider_does(tmp_path):
     """aws_iam_policy_document writes a list of one as a bare string, treats actions and resources
-    as sets, defaults Effect to Allow, and writes a dynamic statement once for each of its for_each.
-    IAM counts the JSON without its whitespace."""
+    as sets, defaults Effect to Allow, writes NotAction and NotResource the way it writes Action and
+    Resource, and writes a dynamic statement once for each of its for_each, in order. IAM counts the
+    JSON without its whitespace."""
     _write_terraform(
         tmp_path / "environments" / "dev",
         """
@@ -1869,7 +2052,7 @@ def test_the_estimate_renders_a_document_the_way_the_aws_provider_does(tmp_path)
         }
 
         variable "buckets" {
-          default = ["exports"]
+          default = ["exports", "archive"]
         }
 
         data "aws_iam_policy_document" "example" {
@@ -1884,6 +2067,12 @@ def test_the_estimate_renders_a_document_the_way_the_aws_provider_does(tmp_path)
               variable = "s3:prefix"
               values   = ["backup/*"]
             }
+          }
+
+          statement {
+            effect        = "Deny"
+            not_actions   = ["s3:GetObject"]
+            not_resources = ["arn:aws:s3:::a/*"]
           }
 
           dynamic "statement" {
@@ -1905,7 +2094,9 @@ def test_the_estimate_renders_a_document_the_way_the_aws_provider_does(tmp_path)
         '{"Version":"2012-10-17","Statement":['
         '{"Sid":"Read","Effect":"Allow","Action":["s3:GetObject","s3:ListBucket"],'
         '"Resource":["arn:aws:s3:::a","arn:aws:s3:::b"],"Condition":{"StringLike":{"s3:prefix":"backup/*"}}},'
-        '{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::exports/*"}]}'
+        '{"Effect":"Deny","NotAction":"s3:GetObject","NotResource":"arn:aws:s3:::a/*"},'
+        '{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::exports/*"},'
+        '{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::archive/*"}]}'
     )
 
     document = terraform_policies.lambda_exec_policies("dev", tmp_path)["aws_iam_role_policy.example"]
