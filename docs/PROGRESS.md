@@ -1036,29 +1036,34 @@ rebased (spec section 6).
 | PR8 research and vision prompts | #392 | `claude/ranch-28-migrate-research` | PR7 |
 | PR1b model purpose | #385 | `claude/ranch-40-model-purpose` | PR0 |
 | E0 evals wiring | #391 | `claude/ranch-41-evals-wiring` | PR1b |
+| PR12 evals core and module [B] | #395 | `claude/ranch-42-evals-core` | E0 |
 
 **Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
 #390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
 bundle them: the new policies are ordered after #393's shrinks.
 
-**Being built now:** Q2 (`claude/ranch-12-queue-cutover`, from Q1), PR9
-(`claude/ranch-29-migrate-rewrite`, from PR8) and PR12 (`claude/ranch-42-evals-core`, from E0;
-[B]: it merges only after the owner says "bootstrap applied"). A branch that is not on `origin`
-lived only in the old session's container: start it again from its parent with the per-PR
-workflow.
+**Being built now:** Q2 (`claude/ranch-12-queue-cutover`, from Q1) and PR9
+(`claude/ranch-29-migrate-rewrite`, from PR8) are in review; PR13 (`claude/ranch-43-evals-rollup`,
+from PR12) and PR17 (`claude/ranch-48-review-steering`, from PR7) are being implemented. PR12
+(#395) merges only after the owner says "bootstrap applied", and after #393. A branch that is not
+on `origin` lived only in the old session's container: start it again from its parent with the
+per-PR workflow.
 
-**Then:** PR10 (the small prompts) from PR9; PR13 (rollup, settings, status) from PR12; PR13b,
-PR11b, PR14 to PR20 in the order section 7's table gives; PR21 bug sweep; PR22 docs sweep.
+**Then:** PR10 (the small prompts) from PR9; PR13b and PR11b from PR13; PR14 to PR20 in the order
+section 7's table gives; PR21 bug sweep; PR22 docs sweep.
 
 **Owner actions waiting.**
 
 - Review and merge the open PRs in the order above.
 - After PR2 (#386) merges: apply `infra/bootstrap` by hand; create the `production-prompts`
   environment (required reviewer: you; deployment branch `dev`); set the two
-  `AWS_*_PROMPTS_ROLE_ARN` secrets at repository level; tell the agent "bootstrap applied".
+  `AWS_*_PROMPTS_ROLE_ARN` secrets at repository level; tell the agent "bootstrap applied"
+  (PR12, #395, waits on it).
 - To start publishing prompts: `PROMPT_AS_ASSET_ENABLED=true` as a repository variable, and the
   `production` environment's own value `false` until production should read assets.
 - Once PR1b (#385) is deployed, run `admin_cli models classify` once.
+- Leave `EVALS_ENABLED` off until PR13 is deployed: before it, nothing writes the rollup's
+  heartbeat line and its alarm fires.
 
 **Practical notes for a cloud session.**
 
