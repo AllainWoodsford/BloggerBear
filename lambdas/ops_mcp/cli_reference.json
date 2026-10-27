@@ -1,7 +1,7 @@
 {
   "about": "Generated from scripts/admin_cli.py by `python scripts/generate_cli_reference.py`. Do not edit by hand.",
   "program": "python scripts/admin_cli.py",
-  "help_python": "3.11",
+  "help_python": "3.13",
   "help_columns": 100,
   "destructive_verbs": [
     "clear",
@@ -53,7 +53,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment}\n                    ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    model-rotation      The shared rotation pool: the models the daily cycle moves a topic's\n                        model_id to\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,evals} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,evals}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    model-rotation      The shared rotation pool: the models the daily cycle moves a topic's\n                        model_id to\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n    evals               Continuous evals and the Model Ranch: settings, the rollup, status and a\n                        digest\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -72,7 +72,7 @@
         "pause",
         "resume"
       ],
-      "help_text": "usage: admin_cli.py topics [-h] <action> ...\n\npositional arguments:\n  <action>\n    list      List all topics\n    get       Get one topic\n    create    Create a topic\n    update    Update a topic\n    delete    Delete a topic\n    trigger   Manually trigger a pipeline run\n    candidates\n              List candidate ideas considered for a topic\n    findings  Show the most recent research Finding for a topic\n    schedule  Show every topic's slot, state and the two schedules written for it, in plain words\n              and as written (the stagger: docs/project-plan.md, Staggered schedules)\n    reschedule\n              Rewrite every topic's two schedules with the stagger as it is now: after changing\n              --stagger-minutes, after adding or deleting a topic (the daily delay is the number\n              of topics), or to give older topics their slots\n    pause     Pause a topic: no research tick, no candidate ideas, no daily article until it is\n              resumed. Its schedules are disabled, the topic page says Paused, and the bear muses\n              about it\n    resume    Resume a paused topic: its schedules are enabled again from the next heartbeat\n\noptions:\n  -h, --help  show this help message and exit\n"
+      "help_text": "usage: admin_cli.py topics [-h] <action> ...\n\npositional arguments:\n  <action>\n    list        List all topics\n    get         Get one topic\n    create      Create a topic\n    update      Update a topic\n    delete      Delete a topic\n    trigger     Manually trigger a pipeline run\n    candidates  List candidate ideas considered for a topic\n    findings    Show the most recent research Finding for a topic\n    schedule    Show every topic's slot, state and the two schedules written for it, in plain\n                words and as written (the stagger: docs/project-plan.md, Staggered schedules)\n    reschedule  Rewrite every topic's two schedules with the stagger as it is now: after changing\n                --stagger-minutes, after adding or deleting a topic (the daily delay is the number\n                of topics), or to give older topics their slots\n    pause       Pause a topic: no research tick, no candidate ideas, no daily article until it is\n                resumed. Its schedules are disabled, the topic page says Paused, and the bear\n                muses about it\n    resume      Resume a paused topic: its schedules are enabled again from the next heartbeat\n\noptions:\n  -h, --help    show this help message and exit\n"
     },
     "topics list": {
       "help": "List all topics",
@@ -1055,7 +1055,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py findings list [-h] [--limit LIMIT]\n                                  [--days DAYS | --since SINCE | --next-article]\n                                  [--subject SUBJECT]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help         show this help message and exit\n  --limit LIMIT      how many to list, 1 to 20 (default 5)\n  --days DAYS        only the last D days, 1 to 14 (unexpired ones)\n  --since SINCE      only those captured at or after this ISO-8601 timestamp\n  --next-article     what the topic's next article will be written from: every Finding since its\n                     last article within its findings window (--findings-window-hours), at most\n                     48, expired or not; `count` says how many and `more` whether some were not\n                     listed. A topic that rotates through subjects: today's subject's Findings\n                     since that subject's last article (`subject` names it)\n  --subject SUBJECT  with --next-article, for a topic that rotates through subjects: what its next\n                     article on this subject reads (from that subject's last article, its Findings\n                     only); without it, today's subject\n"
+      "help_text": "usage: admin_cli.py findings list [-h] [--limit LIMIT] [--days DAYS | --since SINCE |\n                                  --next-article] [--subject SUBJECT]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help         show this help message and exit\n  --limit LIMIT      how many to list, 1 to 20 (default 5)\n  --days DAYS        only the last D days, 1 to 14 (unexpired ones)\n  --since SINCE      only those captured at or after this ISO-8601 timestamp\n  --next-article     what the topic's next article will be written from: every Finding since its\n                     last article within its findings window (--findings-window-hours), at most\n                     48, expired or not; `count` says how many and `more` whether some were not\n                     listed. A topic that rotates through subjects: today's subject's Findings\n                     since that subject's last article (`subject` names it)\n  --subject SUBJECT  with --next-article, for a topic that rotates through subjects: what its next\n                     article on this subject reads (from that subject's last article, its Findings\n                     only); without it, today's subject\n"
     },
     "articles": {
       "help": "Manage articles",
@@ -1069,7 +1069,7 @@
         "feedback-lock",
         "feedback-unlock"
       ],
-      "help_text": "usage: admin_cli.py articles [-h] <action> ...\n\npositional arguments:\n  <action>\n    get            Show one article in any status: its title, topic, status, who published it,\n                   what it cost, its sources and its full text. Nothing changes\n    checked        Mark a financial article the reviewer bear approved as checked by you: clears\n                   his flag, so he stops watching it for downvotes and the assistant stops\n                   reporting it\n    publish        Force-publish an article regardless of its current status\n    unpublish      Take a published article down: delete its page, mark it rejected, remove its\n                   musings and clear the CDN cache\n    rewrite        Rewrite an article to fix what you say is wrong with it. A published article\n                   stays up until its rewrite is ready, then comes down; the rewrite goes through\n                   the reviews again and waits in the inbox\n    feedback-lock  Stop taking feedback on one article (its feedback_locked flag, set to true)\n    feedback-unlock\n                   Take feedback on one article again (feedback_locked false). An article locked\n                   because it reached its limit also needs --reset-count, or it stays at the limit\n\noptions:\n  -h, --help       show this help message and exit\n"
+      "help_text": "usage: admin_cli.py articles [-h] <action> ...\n\npositional arguments:\n  <action>\n    get              Show one article in any status: its title, topic, status, who published it,\n                     what it cost, its sources and its full text. Nothing changes\n    checked          Mark a financial article the reviewer bear approved as checked by you: clears\n                     his flag, so he stops watching it for downvotes and the assistant stops\n                     reporting it\n    publish          Force-publish an article regardless of its current status\n    unpublish        Take a published article down: delete its page, mark it rejected, remove its\n                     musings and clear the CDN cache\n    rewrite          Rewrite an article to fix what you say is wrong with it. A published article\n                     stays up until its rewrite is ready, then comes down; the rewrite goes\n                     through the reviews again and waits in the inbox\n    feedback-lock    Stop taking feedback on one article (its feedback_locked flag, set to true)\n    feedback-unlock  Take feedback on one article again (feedback_locked false). An article locked\n                     because it reached its limit also needs --reset-count, or it stays at the\n                     limit\n\noptions:\n  -h, --help         show this help message and exit\n"
     },
     "articles get": {
       "help": "Show one article in any status: its title, topic, status, who published it, what it cost, its sources and its full text. Nothing changes",
@@ -1229,7 +1229,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py articles rewrite [-h] --instructions INSTRUCTIONS [--model MODEL_ID] [--force]\n                                     article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help            show this help message and exit\n  --instructions INSTRUCTIONS, -i INSTRUCTIONS\n                        What is wrong with the article, e.g. \"the second section confuses staking\n                        with lending\"\n  --model MODEL_ID      A registered model to rewrite with (admin_cli models list). Default: the\n                        topic's model\n  --force               Published articles only: take it down now, before rewriting, instead of\n                        leaving it up until the rewrite is ready. If the rewrite then fails, it\n                        waits in the inbox, down\n"
+      "help_text": "usage: admin_cli.py articles rewrite [-h] --instructions INSTRUCTIONS [--model MODEL_ID] [--force]\n                                     article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help            show this help message and exit\n  --instructions, -i INSTRUCTIONS\n                        What is wrong with the article, e.g. \"the second section confuses staking\n                        with lending\"\n  --model MODEL_ID      A registered model to rewrite with (admin_cli models list). Default: the\n                        topic's model\n  --force               Published articles only: take it down now, before rewriting, instead of\n                        leaving it up until the rewrite is ready. If the rewrite then fails, it\n                        waits in the inbox, down\n"
     },
     "articles feedback-lock": {
       "help": "Stop taking feedback on one article (its feedback_locked flag, set to true)",
@@ -2795,7 +2795,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py models add [-h] --model-id MODEL_ID --display-name DISPLAY_NAME --provider\n                               PROVIDER --input-price INPUT_PRICE --output-price OUTPUT_PRICE\n                               [--disabled] [--lock-price | --no-lock-price] [--yes]\n\noptions:\n  -h, --help            show this help message and exit\n  --model-id MODEL_ID\n  --display-name DISPLAY_NAME\n  --provider PROVIDER\n  --input-price INPUT_PRICE\n                        USD per 1k input tokens\n  --output-price OUTPUT_PRICE\n                        USD per 1k output tokens\n  --disabled            Register the model as disabled (default: enabled)\n  --lock-price, --no-lock-price\n                        --lock-price keeps the model catalog's reprice from ever changing this\n                        price (e.g. a geo-profile premium you set on purpose); --no-lock-price\n                        lets it again\n  --yes                 With --disabled: do not ask before disabling the application's default or\n                        fallback model\n"
+      "help_text": "usage: admin_cli.py models add [-h] --model-id MODEL_ID --display-name DISPLAY_NAME\n                               --provider PROVIDER --input-price INPUT_PRICE\n                               --output-price OUTPUT_PRICE [--disabled]\n                               [--lock-price | --no-lock-price] [--yes]\n\noptions:\n  -h, --help            show this help message and exit\n  --model-id MODEL_ID\n  --display-name DISPLAY_NAME\n  --provider PROVIDER\n  --input-price INPUT_PRICE\n                        USD per 1k input tokens\n  --output-price OUTPUT_PRICE\n                        USD per 1k output tokens\n  --disabled            Register the model as disabled (default: enabled)\n  --lock-price, --no-lock-price\n                        --lock-price keeps the model catalog's reprice from ever changing this\n                        price (e.g. a geo-profile premium you set on purpose); --no-lock-price\n                        lets it again\n  --yes                 With --disabled: do not ask before disabling the application's default or\n                        fallback model\n"
     },
     "models disable": {
       "help": "Disable a model: every topic's rotation, model and fallback, and the shared rotation pool, stop using it (asks first if it is the application's default or fallback)",
@@ -4286,6 +4286,292 @@
       ],
       "destructive": false,
       "help_text": "usage: admin_cli.py equipment unequip [-h] topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "evals": {
+      "help": "Continuous evals and the Model Ranch: settings, the rollup, status and a digest",
+      "group": true,
+      "subcommands": [
+        "get",
+        "set",
+        "rollup",
+        "status",
+        "digest"
+      ],
+      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest} ...\n\npositional arguments:\n  {get,set,rollup,status,digest}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the rollup, late events, the judge, gated models, the eval-work\n                        queue and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "evals get": {
+      "help": "Show the evals settings, the values in effect and the judge's model",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals get [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "evals set": {
+      "help": "Change evals settings (a setting not sent is unchanged; '' clears one); the gates are edited in DynamoDB only",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--cull",
+          "dest": "cull_enabled",
+          "kind": "option",
+          "flags": [
+            "--cull"
+          ],
+          "help": "Turn culling on or off (default off; nothing is deleted until `evals cull --apply`)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--cull-max-per-run",
+          "dest": "cull_max_per_run",
+          "kind": "option",
+          "flags": [
+            "--cull-max-per-run"
+          ],
+          "help": "Models one cull may delete, 1 to 50 (default 3)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "N",
+          "destructive": false
+        },
+        {
+          "name": "--judge",
+          "dest": "judge_enabled",
+          "kind": "option",
+          "flags": [
+            "--judge"
+          ],
+          "help": "Run the LLM judge on new Findings and articles (default on)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--judge-interval-hours",
+          "dest": "judge_interval_hours",
+          "kind": "option",
+          "flags": [
+            "--judge-interval-hours"
+          ],
+          "help": "Hours between judge runs, 1 to 24 (default 4)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "N",
+          "destructive": false
+        },
+        {
+          "name": "--judge-max-items",
+          "dest": "judge_max_items",
+          "kind": "option",
+          "flags": [
+            "--judge-max-items"
+          ],
+          "help": "Items one judge run may review, 1 to 50 (default 10)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "N",
+          "destructive": false
+        },
+        {
+          "name": "--judge-model-id",
+          "dest": "judge_model_id",
+          "kind": "option",
+          "flags": [
+            "--judge-model-id"
+          ],
+          "help": "The judge's model (default: model-config's fallback, else the deployment's default model)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "MODEL_ID",
+          "destructive": false
+        },
+        {
+          "name": "--score-max-cost",
+          "dest": "score_max_cost_aud",
+          "kind": "option",
+          "flags": [
+            "--score-max-cost"
+          ],
+          "help": "A-dollars an offline scoring run may cost before it needs --yes, 0 to 100 (default 5)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "AUD",
+          "destructive": false
+        },
+        {
+          "name": "--daily-spend-cap",
+          "dest": "evals_daily_spend_cap_aud",
+          "kind": "option",
+          "flags": [
+            "--daily-spend-cap"
+          ],
+          "help": "A-dollars the judge and scoring runs may spend a day, 0 to 100 (default 2)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "AUD",
+          "destructive": false
+        },
+        {
+          "name": "--trace-calls",
+          "dest": "trace_calls",
+          "kind": "option",
+          "flags": [
+            "--trace-calls"
+          ],
+          "help": "Store each model call's prompt and reply for review (default off)",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--timezone",
+          "dest": "timezone",
+          "kind": "option",
+          "flags": [
+            "--timezone"
+          ],
+          "help": "The IANA time zone whose days the rollup counts (default Australia/Sydney)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "ZONE",
+          "destructive": false
+        },
+        {
+          "name": "--excluded-sources",
+          "dest": "excluded_sources",
+          "kind": "option",
+          "flags": [
+            "--excluded-sources"
+          ],
+          "help": "Comma-separated sources the rollup leaves out: human, judge, system, run:<id>, or a Lambda's code",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "SOURCES",
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals set [-h] [--cull {on,off,}] [--cull-max-per-run N] [--judge {on,off,}]\n                              [--judge-interval-hours N] [--judge-max-items N]\n                              [--judge-model-id MODEL_ID] [--score-max-cost AUD]\n                              [--daily-spend-cap AUD] [--trace-calls {on,off,}] [--timezone ZONE]\n                              [--excluded-sources SOURCES]\n\noptions:\n  -h, --help            show this help message and exit\n  --cull {on,off,}      Turn culling on or off (default off; nothing is deleted until `evals cull\n                        --apply`)\n  --cull-max-per-run N  Models one cull may delete, 1 to 50 (default 3)\n  --judge {on,off,}     Run the LLM judge on new Findings and articles (default on)\n  --judge-interval-hours N\n                        Hours between judge runs, 1 to 24 (default 4)\n  --judge-max-items N   Items one judge run may review, 1 to 50 (default 10)\n  --judge-model-id MODEL_ID\n                        The judge's model (default: model-config's fallback, else the deployment's\n                        default model)\n  --score-max-cost AUD  A-dollars an offline scoring run may cost before it needs --yes, 0 to 100\n                        (default 5)\n  --daily-spend-cap AUD\n                        A-dollars the judge and scoring runs may spend a day, 0 to 100 (default 2)\n  --trace-calls {on,off,}\n                        Store each model call's prompt and reply for review (default off)\n  --timezone ZONE       The IANA time zone whose days the rollup counts (default Australia/Sydney)\n  --excluded-sources SOURCES\n                        Comma-separated sources the rollup leaves out: human, judge, system,\n                        run:<id>, or a Lambda's code\n"
+    },
+    "evals rollup": {
+      "help": "Run the hourly rollup now: from its watermark, or for the days --from to --to again",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--from",
+          "dest": "day_from",
+          "kind": "option",
+          "flags": [
+            "--from"
+          ],
+          "help": "First day to add up again, YYYY-MM-DD (118 days back at most)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "DAY",
+          "destructive": false
+        },
+        {
+          "name": "--to",
+          "dest": "day_to",
+          "kind": "option",
+          "flags": [
+            "--to"
+          ],
+          "help": "Last day to add up again, YYYY-MM-DD (default today)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "DAY",
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals rollup [-h] [--from DAY] [--to DAY]\n\noptions:\n  -h, --help  show this help message and exit\n  --from DAY  First day to add up again, YYYY-MM-DD (118 days back at most)\n  --to DAY    Last day to add up again, YYYY-MM-DD (default today)\n"
+    },
+    "evals status": {
+      "help": "Switches, the rollup, late events, the judge, gated models, the eval-work queue and topics by dispatch mode",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals status [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "evals digest": {
+      "help": "Each model's and prompt version's day totals since a day (default: the last 7 days)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--since",
+          "dest": "since",
+          "kind": "option",
+          "flags": [
+            "--since"
+          ],
+          "help": "The first day, YYYY-MM-DD, or an ISO time (120 days back at most)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "DAY",
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals digest [-h] [--since DAY]\n\noptions:\n  -h, --help   show this help message and exit\n  --since DAY  The first day, YYYY-MM-DD, or an ISO time (120 days back at most)\n"
     }
   }
 }

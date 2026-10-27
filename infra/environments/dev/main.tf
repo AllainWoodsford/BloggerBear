@@ -1144,6 +1144,14 @@ module "admin_api" {
     "POST /models/classify",
     "GET /model-catalog-config",
     "PUT /model-catalog-config",
+    # Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md): the evals settings row,
+    # starting a rollup now, what evals are doing, and a digest of the day totals. See
+    # admin_api_handler.py's evals routes and `admin_cli evals get|set|rollup|status|digest`.
+    "GET /evals-config",
+    "PUT /evals-config",
+    "POST /evals/rollup",
+    "GET /evals/status",
+    "GET /evals/digest",
     "GET /reviewer-config",
     "PUT /reviewer-config",
     # Pipeline-wide settings (today: the default research interval). See

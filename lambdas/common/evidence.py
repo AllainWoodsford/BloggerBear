@@ -286,6 +286,39 @@ EVENTS: dict[str, dict[str, str]] = {
         "unknown": "int",
         "unchanged": "int",
     },
+    # The evals rollup (common/evals_rollup.py): one line at the end of every run that finished, which
+    # the evals module's heartbeat filter counts (`{ $.event = "rollup_done" }`, so its alarm fires
+    # when runs stop finishing). `trigger` is schedule or admin; `from_day` and `to_day` the days it
+    # added up; `last_rolled_day` the newest day final after it; `classify` done, none (nothing
+    # unclassified) or failed. The rest are counts, the judge's agreement with people a share. Never
+    # a model's id, a prompt's or a subject's.
+    "rollup_done": {
+        "trigger": "code",
+        "status": "code",
+        "from_day": "iso",
+        "to_day": "iso",
+        "last_rolled_day": "iso",
+        "rows": "int",
+        "events": "int",
+        "duplicates": "int",
+        "unreadable": "int",
+        "excluded": "int",
+        "late": "int",
+        "late_dropped": "int",
+        "adjustments": "int",
+        "day_rows": "int",
+        "stale_rows": "int",
+        "models": "int",
+        "not_in_registry": "int",
+        "classify": "code",
+        "classified": "int",
+        "unknown": "int",
+        "judge_pairs": "int",
+        "judge_agreement": "num",
+        "calibrated": "bool",
+        "splits": "int",
+        "ms": "int",
+    },
 }
 
 # The invocation this process is in: {"fields": {...}, "counts": {event: n}}, or None outside one.

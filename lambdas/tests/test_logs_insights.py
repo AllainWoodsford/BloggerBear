@@ -11,9 +11,14 @@ must be using this one rather than a copy.
 from __future__ import annotations
 
 import ast
+import inspect
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
+from botocore.exceptions import ClientError
 
 from common import logs_insights
 from ops_mcp import logs
@@ -57,3 +62,74 @@ def test_the_assistant_runs_its_queries_with_the_runner_in_common():
         assert getattr(logs, name) is getattr(logs_insights, name), name
     source = (LAMBDAS / "ops_mcp" / "logs.py").read_text(encoding="utf-8")
     assert "def run_queries(" not in source and "boto3.client(" not in source
+
+
+# --- the row limit (docs/enhancements/model-ranch-prompt-assets-evals.md, section 7.1, PR13) ------
+
+
+class RecordingLogs:
+    """A Logs client that answers every query at once with one row, and keeps what each StartQuery
+    asked for."""
+
+    def __init__(self):
+        self.asked: list[dict] = []
+
+    def start_query(self, **kwargs):
+        self.asked.append(kwargs)
+        return {"queryId": f"q{len(self.asked)}"}
+
+    def get_query_results(self, queryId):  # noqa: N803
+        return {"status": "Complete", "results": [[{"field": "n", "value": "1"}]]}
+
+    def stop_query(self, queryId):  # noqa: N803
+        raise AssertionError("nothing is left running")
+
+
+NOW = datetime(2026, 10, 27, 3, 0, tzinfo=UTC)
+JOB = (("evals", "q"), "ap-southeast-2", "the-group", "fields @message", NOW, NOW)
+
+
+def test_a_query_asks_for_the_assistants_thousand_rows_when_no_limit_is_given():
+    fake = RecordingLogs()
+
+    results = logs_insights.run_queries([JOB], client=lambda region: fake, sleep=lambda s: None)
+
+    assert results == {("evals", "q"): [{"n": "1"}]}
+    assert [asked["limit"] for asked in fake.asked] == [logs_insights.QUERY_LIMIT] == [1000]
+
+
+def test_a_caller_may_ask_for_up_to_ten_thousand_rows_a_query():
+    fake = RecordingLogs()
+
+    logs_insights.run_queries([JOB, (("b", "q"), *JOB[1:])], client=lambda region: fake, limit=10_000)
+
+    assert [asked["limit"] for asked in fake.asked] == [10_000, 10_000]
+    assert logs_insights.MAX_QUERY_LIMIT == 10_000
+
+
+def test_a_throttled_start_tried_again_asks_for_the_same_limit():
+    class ThrottledOnce(RecordingLogs):
+        def start_query(self, **kwargs):
+            if not self.asked:
+                self.asked.append(kwargs)
+                raise ClientError({"Error": {"Code": "ThrottlingException", "Message": "x"}}, "StartQuery")
+            return super().start_query(**kwargs)
+
+    fake = ThrottledOnce()
+
+    results = logs_insights.run_queries(
+        [JOB], client=lambda region: fake, sleep=lambda s: None, recover_throttles=True, limit=5000
+    )
+
+    assert results == {("evals", "q"): [{"n": "1"}]}
+    assert [asked["limit"] for asked in fake.asked] == [5000, 5000]
+
+
+def test_the_limit_is_keyword_only_and_within_logs_insights_ceiling():
+    """Positional, it would land in whatever parameter came first; and Logs Insights refuses more
+    than 10,000 rows, so asking for more is a mistake to say at once rather than a query that fails."""
+    parameter = inspect.signature(logs_insights.run_queries).parameters["limit"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default == 1000
+    for wrong in (0, 10_001, 2.5, True, "100"):
+        with pytest.raises(ValueError):
+            logs_insights.run_queries([JOB], client=lambda region: RecordingLogs(), limit=wrong)

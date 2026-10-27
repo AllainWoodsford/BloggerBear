@@ -77,6 +77,13 @@ SAMPLES = {
         "job": "discover", "trigger": "schedule", "status": "done", "models": 31,
         "discovered": 2, "not_added": 4, "denied": 1, "access_checked": 7,
     },
+    "rollup_done": {
+        "trigger": "schedule", "status": "done", "from_day": "2026-10-26", "to_day": "2026-10-27",
+        "last_rolled_day": "2026-10-26", "rows": 412, "events": 398, "duplicates": 3, "unreadable": 0,
+        "excluded": 11, "late": 1, "late_dropped": 4, "adjustments": 0, "day_rows": 57, "stale_rows": 0,
+        "models": 18, "not_in_registry": 1, "classify": "done", "classified": 2, "unknown": 0,
+        "judge_pairs": 24, "judge_agreement": 0.7917, "calibrated": True, "splits": 0, "ms": 5310,
+    },
 }  # fmt: skip
 
 

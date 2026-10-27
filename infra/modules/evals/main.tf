@@ -23,9 +23,10 @@
 # Rights. Every pipeline Lambda runs as lambda_exec, so the grants are on that role, in one inline
 # policy, given here as var.lambda_exec_role_name: writing events and querying the log group, the
 # table (read, write, and what a backup snapshot and restore need: Scan, DescribeTable,
-# BatchWriteItem, common/backup.py), sending to and consuming eval-work, and publishing to the
-# alerts topic (the evals digest; the grant E0 put in the roots, moved here). eval-work's grant is
-# on the queue's ARN as its name makes it, so it holds whether or not the queue exists. Every Lambda
+# BatchWriteItem, common/backup.py), sending to and consuming eval-work, publishing to the alerts
+# topic (the evals digest; the grant E0 put in the roots, moved here), invoking eval-jobs (the admin
+# API's rollup now) and reading eval-work's age metric (evals status). eval-work's and eval-jobs'
+# grants are on the ARNs their names make, so they hold whether or not the two exist. Every Lambda
 # that runs as lambda_exec, the admin API included (offline runs, PR18b), then holds these rights;
 # accepted.
 #
@@ -36,8 +37,9 @@
 # The log group's name is outside the deploy role's /aws/lambda/<prefix>-* grant; infra/bootstrap's
 # evals statement (PR2) covers it, and has to be applied by hand before this module's first apply.
 #
-# eval-jobs is a skeleton until PR13 (lambdas/eval_jobs_handler.py): it logs and does nothing, and
-# writes no rollup_done line, so with evals switched on before then the heartbeat alarm fires.
+# eval-jobs (lambdas/eval_jobs_handler.py) runs the rollup (common/evals_rollup.py), which prints the
+# rollup_done line the heartbeat counts; its judge's selector and queue consumer are PR18's, and
+# until then only log that they arrived.
 # -----------------------------------------------------------------------
 
 terraform {
@@ -53,8 +55,10 @@ data "aws_caller_identity" "current" {}
 
 locals {
   eval_jobs_name = "${var.unique_name_prefix}-${var.environment_name}-eval-jobs"
-  # eval-work's ARN as its name makes it, for the grant that holds whether or not the queue exists.
+  # eval-work's and eval-jobs' ARNs as their names make them, for grants that hold whether or not
+  # the queue and the function exist.
   eval_work_arn    = "arn:aws:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${var.unique_name_prefix}-${var.environment_name}-eval-work"
+  eval_jobs_arn    = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${local.eval_jobs_name}"
   metric_namespace = "BloggerBear/${var.environment_name}"
 }
 
@@ -101,7 +105,7 @@ resource "aws_cloudwatch_log_group" "evals" {
 # -----------------------------------------------------------------------
 
 data "aws_iam_policy_document" "evals" {
-  # checkov:skip=CKV_AWS_356:GetQueryResults and StopQuery take no resource (they act on a query id); StartQuery is on the evals group only
+  # checkov:skip=CKV_AWS_356:GetQueryResults and StopQuery take no resource (they act on a query id), nor does GetMetricStatistics; StartQuery is on the evals group only
 
   # emit(): a stream of its own per container a day, and the events.
   statement {
@@ -167,6 +171,26 @@ data "aws_iam_policy_document" "evals" {
     effect    = "Allow"
     actions   = ["sns:Publish"]
     resources = [var.alerts_topic_arn]
+  }
+
+  # The admin API's POST /evals/rollup (`admin_cli evals rollup`) starts a rollup in eval-jobs, by
+  # the ARN its name makes, so the grant holds whether or not the function exists (it answers 409
+  # while evals are off).
+  statement {
+    sid       = "InvokeEvalJobs"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [local.eval_jobs_arn]
+  }
+
+  # GET /evals/status shows how long eval-work's oldest job has waited: SQS's
+  # ApproximateAgeOfOldestMessage metric, which GetQueueAttributes does not give. Reading a metric
+  # takes no resource; it reads numbers only.
+  statement {
+    sid       = "EvalWorkAge"
+    effect    = "Allow"
+    actions   = ["cloudwatch:GetMetricStatistics"]
+    resources = ["*"]
   }
 }
 

@@ -8,9 +8,9 @@ evidence export call it as before. The defaults (the wait, the shared client's t
 are still the assistant's; another caller passes its own.
 
 The runner is handed every query whole, a constant of the module that runs it; it never builds
-one. It asks Logs Insights for at most QUERY_LIMIT rows a query, and stops any query still running
-when the wait ends, so an unfinished query costs no more. Read-only: StartQuery, GetQueryResults and
-StopQuery.
+one. It asks Logs Insights for at most QUERY_LIMIT rows a query unless its caller asks for another
+limit, and stops any query still running when the wait ends, so an unfinished query costs no more.
+Read-only: StartQuery, GetQueryResults and StopQuery.
 """
 
 from __future__ import annotations
@@ -23,10 +23,13 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-# The rows StartQuery is asked for, for every query; no caller can ask for more yet. One that needs
-# more (the evals rollup splits a window at 10k rows) adds a keyword-only `limit` defaulting to this,
-# so the assistant's tools are unchanged, and splits at the limit it asked for, not at a fixed count.
+# The rows StartQuery is asked for, unless the caller passes `limit` (keyword-only, so the assistant's
+# tools, which never do, are unchanged). Logs Insights returns at most 10,000. A caller that asks for
+# more rows than this (the evals rollup, common/evals_rollup.py) takes a result of exactly the
+# limit it asked for as possibly cut short, and splits the window: rows past the limit are dropped
+# without a word.
 QUERY_LIMIT = 1000
+MAX_QUERY_LIMIT = 10_000
 # Logs Insights runs a query in the background; an assistant tool waits this long for all of them,
 # then answers with what has finished. Well inside its function's 30 seconds and API Gateway's 29.
 WAIT_SECONDS = 15
@@ -54,7 +57,9 @@ def _throttled(exc: Exception) -> bool:
     return isinstance(exc, ClientError) and exc.response.get("Error", {}).get("Code") in THROTTLES
 
 
-def _start_query(client, region: str, group, query: str, start: datetime, end: datetime) -> str:
+def _start_query(
+    client, region: str, group, query: str, start: datetime, end: datetime, limit: int = QUERY_LIMIT
+) -> str:
     several = isinstance(group, list | tuple)
     where = {"logGroupNames": list(group)} if several else {"logGroupName": group}
     response = client(region).start_query(
@@ -62,7 +67,7 @@ def _start_query(client, region: str, group, query: str, start: datetime, end: d
         startTime=int(start.timestamp()),
         endTime=int(end.timestamp()),
         queryString=query,
-        limit=QUERY_LIMIT,
+        limit=limit,
     )
     return response["queryId"]
 
@@ -75,6 +80,7 @@ def run_queries(
     sleep: Callable[[float], None] = time.sleep,
     label: str = "ops_logs",
     recover_throttles: bool = False,
+    limit: int = QUERY_LIMIT,
 ) -> dict[tuple[str, str], list[dict] | None]:
     """Start every (key, region, group, query, start, end) query at once, then wait for them. `group`
     is one log group's name, or a tuple of names for one query over several (Logs Insights takes up
@@ -87,13 +93,19 @@ def run_queries(
     request that stalls cannot run twice): a request Logs throttles (THROTTLES) is then not a
     failure. A start is tried once more, after one pause, through a new `client`; a poll counts as
     still running and is asked again next round, within the wait. The other tools leave it off and
-    are answered as before: the shared client's own retry rides out a throttle for them."""
+    are answered as before: the shared client's own retry rides out a throttle for them.
+
+    `limit` is the rows each query is asked for (QUERY_LIMIT unless given; at most MAX_QUERY_LIMIT,
+    Logs Insights' own ceiling). A result of exactly `limit` rows may have been cut short: a caller
+    that must see every row splits its window and asks again."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_QUERY_LIMIT:
+        raise ValueError(f"limit must be a whole number from 1 to {MAX_QUERY_LIMIT}")
     started: dict[tuple[str, str], tuple[str, str]] = {}
     results: dict[tuple[str, str], list[dict] | None] = {}
     again = []
     for key, region, group, query, start, end in jobs:
         try:
-            started[key] = (region, _start_query(client, region, group, query, start, end))
+            started[key] = (region, _start_query(client, region, group, query, start, end, limit))
         except Exception as exc:  # noqa: BLE001 - one group that cannot be read is reported as such
             if recover_throttles and _throttled(exc):
                 print(f"{label}: start throttled, tried once more")
@@ -105,7 +117,7 @@ def run_queries(
         sleep(POLL_SECONDS)  # one pause, as between polls
         for key, region, group, query, start, end in again:
             try:
-                started[key] = (region, _start_query(client, region, group, query, start, end))
+                started[key] = (region, _start_query(client, region, group, query, start, end, limit))
             except Exception as exc:  # noqa: BLE001 - the one more try failed too: as any failure
                 print(f"{label}: start failed error={type(exc).__name__}")
                 results[key] = None

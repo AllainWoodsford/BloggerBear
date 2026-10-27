@@ -379,9 +379,10 @@ CATALOGUE: tuple[Component, ...] = (
                 "model#<id>, prompt#<prompt_id>#<version> and cell#<model>#<prompt_id>#<version> rows "
                 "by day#<date> (perf, events, good, bad, by_reason, rolled_up_at); adjust#... rows by "
                 "ts#<time>; run#<run_id> (an offline run and its items); pair#<subject> (a judge's and "
-                "a person's verdicts on one subject); the index row (the rollup's watermark)",
+                "a person's verdicts on one subject); the index row (the rollup's watermark, late "
+                "events, the judge's agreement) and its day#<date> rows (the entities each day has)",
             ),
-            ("Written by", "eval-jobs' hourly rollup, from the evals log group (once the rollup lands)"),
+            ("Written by", "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now)"),
             ("Expires", "never: no TTL"),
         ),
         aliases=("evals-table", "eval-totals", "model-ranch"),
@@ -578,8 +579,9 @@ CATALOGUE: tuple[Component, ...] = (
     _lambda(
         "eval-jobs",
         "Continuous evals' jobs: the hourly rollup of the evals log group into the evals table, the "
-        "judge's selector, and the judge and offline scoring jobs from the eval-work queue. For now "
-        "a skeleton that logs what it was asked and does nothing.",
+        "judge's selector, and the judge and offline scoring jobs from the eval-work queue. The "
+        "rollup runs; the judge's selector and the queue's jobs only log that they arrived until the "
+        "judge lands.",
         "hourly at five past (the rollup) and hourly (the judge's selector), EventBridge Scheduler; "
         f"on each job on {PREFIX}{ENV}-eval-work, two at most at once",
         details=(("Exists", "only while evals are switched on (evals_enabled)"),),

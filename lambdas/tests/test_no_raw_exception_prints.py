@@ -26,6 +26,10 @@ GUARDED = sorted(
         "eval_jobs_handler.py",
         # Imported by every pipeline Lambda, and prints when Logs refuses an event.
         "common/evals.py",
+        # eval-jobs' rollup and the admin API's evals routes, which print what they could not read.
+        "common/evals_rollup.py",
+        "common/evals_settings.py",
+        "common/evals_status.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
     ]
 )

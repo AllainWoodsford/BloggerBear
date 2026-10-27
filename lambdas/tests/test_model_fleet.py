@@ -689,6 +689,31 @@ def test_protection_names_each_models_role_and_the_evals_judge_when_that_row_exi
     assert model_fleet.judge_model({"judge_model_id": ""}) is None
 
 
+def test_model_roles_lists_every_role_a_model_plays_in_order_and_price_locked_rows(aws):
+    """protected_models names the first role; the models row's model_roles (written by the evals
+    rollup) lists all of them, in model_fleet.ROLES' order, and a locked price as one too."""
+    config = {"model_id": "main", "fallback_model_id": "spare"}
+    topics = [
+        {"topic_id": "t1", "model_id": "spare", "model_id_candidates": ["rot", "main"]},
+        {"topic_id": "t2", "fallback_model_id": "rot"},
+    ]
+    models = [{"model_id": "locked", "price_locked": True}, {"model_id": "main", "price_locked": False}]
+
+    roles = model_fleet.model_roles(topics, config, ["rot"], {"judge_model_id": "rot"}, models)
+
+    assert roles == {
+        "main": ["default", "rotation"],
+        "env-default": ["default"],
+        "spare": ["fallback", "topic_model"],
+        "rot": ["topic_fallback", "rotation", "pool", "judge"],
+        "locked": ["price_locked"],
+    }
+    assert model_fleet.ROLES == (
+        "default", "fallback", "topic_model", "topic_fallback", "rotation", "pool", "price_locked", "judge",
+    )  # fmt: skip
+    assert model_fleet.model_roles([], None, [], {}, []) == {"env-default": ["default"]}
+
+
 def test_pruning_never_removes_the_evals_judge(aws, capsys):
     aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "judge_model_id": "judge-m"})
     put_model(aws, "judge-m", 0.09, enabled=False)

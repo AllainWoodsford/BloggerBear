@@ -1346,6 +1346,16 @@ def discover(trigger: str, settings: dict, now: datetime, *, bedrock=None, probe
     return result
 
 
+def purpose_fields(model_id: str, listed: dict[str, dict]) -> dict:
+    """What classifying one registry model writes, from a listing (listed_models): its purpose and
+    inputs when Bedrock lists it, else the purpose `unknown` (its inputs left as they are). Shared
+    by classify and the evals rollup, which classifies the models no one has yet."""
+    found = listed.get(canonical_model_id(model_id))
+    if found is None:
+        return {"model_purpose": UNKNOWN_PURPOSE}
+    return {"model_purpose": found["model_purpose"], "model_inputs": found["model_inputs"]}
+
+
 def classify(trigger: str, now: datetime, *, bedrock=None) -> dict:
     """The classify job: record every registry model's purpose and inputs from what Bedrock lists
     now (listed_models), as discover records them for the models it adds, so a row from before
@@ -1360,16 +1370,11 @@ def classify(trigger: str, now: datetime, *, bedrock=None) -> dict:
     models = dynamo.list_models()
     classified, unknown, unchanged = [], [], 0
     for model in models:
-        found = listed.get(canonical_model_id(model["model_id"]))
-        updates = (
-            {"model_purpose": found["model_purpose"], "model_inputs": found["model_inputs"]}
-            if found
-            else {"model_purpose": UNKNOWN_PURPOSE}
-        )
+        updates = purpose_fields(model["model_id"], listed)
         if all(model.get(field) == value for field, value in updates.items()):
             unchanged += 1
         elif dynamo.set_model_fields(model["model_id"], updates, expected={}):
-            (classified if found else unknown).append(model["model_id"])
+            (unknown if updates["model_purpose"] == UNKNOWN_PURPOSE else classified).append(model["model_id"])
     result = {
         "status": "done",
         "models": len(models),
