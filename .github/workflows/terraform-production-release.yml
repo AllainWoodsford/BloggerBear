@@ -68,6 +68,9 @@ jobs:
     # TF_VAR_web_search_region: where the AgentCore web search gateway runs, as in terraform.yml
     # (see the comment there): WEB_SEARCH_REGION_PROD if set, else WEB_SEARCH_REGION (the
     # `production` environment's, else the repository's), else 'ap-northeast-1'.
+    # TF_VAR_worker_concurrency: how many queue jobs the pipeline's workers may run at once, as in
+    # terraform.yml: the WORKER_CONCURRENCY variable (the `production` environment's, else the
+    # repository's), else '2'.
     env:
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_PROD || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_PROD || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
@@ -83,6 +86,7 @@ jobs:
       TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}
       TF_VAR_reviewer_enabled: ${{ vars.REVIEWER_ENABLED == 'false' && 'false' || 'true' }}
       TF_VAR_web_search_region: ${{ vars.WEB_SEARCH_REGION_PROD || vars.WEB_SEARCH_REGION || 'ap-northeast-1' }}
+      TF_VAR_worker_concurrency: ${{ vars.WORKER_CONCURRENCY || '2' }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

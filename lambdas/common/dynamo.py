@@ -1843,7 +1843,7 @@ def get_pipeline_config() -> dict | None:
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])
     item = table.get_item(Key={"config_id": _PIPELINE_CONFIG_ID}).get("Item")
     if item is not None:
-        for number in ("research_interval_hours", "stagger_minutes"):
+        for number in ("research_interval_hours", "stagger_minutes", "daily_starts_per_tick"):
             if item.get(number) is not None:
                 item[number] = int(item[number])
     return item
@@ -1859,12 +1859,16 @@ def put_pipeline_config(
     review_on_unavailable=_UNSET,
     assistant_access=_UNSET,
     stagger_minutes=_UNSET,
+    dispatch_shadow=_UNSET,
+    daily_starts_per_tick=_UNSET,
 ) -> dict:
     """Update pipeline-wide settings and return the row.
 
     Only the settings passed are touched (a value sets it, None clears it), so
     editing one never wipes another or one added later. `stagger_minutes` is the
-    gap between one topic's schedules and the next (common/stagger.py).
+    gap between one topic's schedules and the next (common/stagger.py);
+    `dispatch_shadow` and `daily_starts_per_tick` are the dispatcher's
+    (common/dispatch.py).
     """
     updates = {
         "research_interval_hours": research_interval_hours,
@@ -1872,6 +1876,8 @@ def put_pipeline_config(
         "review_on_unavailable": review_on_unavailable,
         "assistant_access": assistant_access,
         "stagger_minutes": stagger_minutes,
+        "dispatch_shadow": dispatch_shadow,
+        "daily_starts_per_tick": daily_starts_per_tick,
     }
     sets, removes, values = [], [], {}
     for index, (name, value) in enumerate(updates.items()):

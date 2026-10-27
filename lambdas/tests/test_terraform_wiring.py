@@ -2187,6 +2187,37 @@ def test_dev_reads_its_own_firewall_logs_only_when_switched_on_and_never_the_sha
     assert "OPS_FIREWALL_REVIEW_DEV" not in release and "ops_firewall_review" not in release
 
 
+def test_worker_concurrency_is_a_number_from_the_github_variable_with_two_as_the_floor():
+    """The queue platform's one knob (docs/enhancements/model-ranch-prompt-assets-evals.md, Q0): a
+    number variable in both roots, 2 by default and never less (the smallest maximum_concurrency an
+    SQS event source mapping accepts), fed by both deploy workflows from WORKER_CONCURRENCY with '2'
+    as the fallback, and in the settings table. Nothing reads it until the work-queue module (Q1)."""
+    for env in ("dev", "production"):
+        variables = _read("environments", env, "variables.tf")
+        block = re.search(r'^variable "worker_concurrency" \{\n(.*?)^\}', variables, re.S | re.M)
+        assert block, env
+        assert re.search(r"^\s*type\s*=\s*number$", block.group(1), re.M), env
+        assert re.search(r"^\s*default\s*=\s*2$", block.group(1), re.M), env
+        assert re.search(r"^\s*condition\s*=\s*var\.worker_concurrency >= 2$", block.group(1), re.M), env
+        main = _uncommented(_read("environments", env, "main.tf"))
+        assert "var.worker_concurrency" not in main, f"{env}: the module that reads it is Q1's"
+    for name in ("terraform.yml", "terraform-production-release.yml"):
+        workflow = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert "      TF_VAR_worker_concurrency: ${{ vars.WORKER_CONCURRENCY || '2' }}\n" in workflow, name
+    table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    assert re.search(r"^\| `WORKER_CONCURRENCY` \| variable \| repo or `production` \|", table, re.M)
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_lambda_has_the_work_queue_url_key_empty_until_the_queue_exists(env):
+    """WORK_QUEUE_URL is in the shared environment of every pipeline Lambda from Q0, as the empty
+    string, so the dispatcher's module (Q1) only changes its value. Nothing reads it before then."""
+    main = _uncommented(_read("environments", env, "main.tf"))
+    shared = main.split("  lambda_env_variables = {")[1].split("\n}\n")[0]
+    assert re.search(r'^\s*WORK_QUEUE_URL\s*=\s*""$', shared, re.M), env
+    assert "module.work_queue" not in main, f"{env}: the module is Q1's"
+
+
 def test_the_logs_policy_queries_readable_environments_logs_by_tag_and_nothing_else():
     """log_review and api_errors (logs.tf). StartQuery and ListTagsForResource on the Lambda and
     access log groups named for a readable environment, only with the project's default tags and
