@@ -1070,31 +1070,19 @@ def test_the_workflow_gates_pull_requests_and_publishes_merges_on_the_same_paths
     assert workflow()["permissions"] == {"contents": "read"}
 
 
-def test_the_gates_run_only_for_a_pull_request_and_read_no_secret_but_the_denylist():
+def test_the_gates_run_only_for_a_pull_request_and_never_with_a_secret():
+    """Every step of the gates job runs code from the pull request, so no secret may be in reach of
+    the job: pr-checks.yml's pii-denylist job checks the list on every pull request, and the
+    publish jobs check it again over what they publish."""
     gates = jobs()["gates"]
     assert gates["if"] == "github.event_name == 'pull_request'"
     assert gates["permissions"] == {"contents": "read", "pull-requests": "read"}
     text = yaml.safe_dump(gates, width=10**6)
-    assert "id-token" not in text and "configure-aws-credentials" not in text
+    assert "secrets." not in text and "id-token" not in text and "configure-aws-credentials" not in text
     assert "environment" not in gates
-    assert set(re.findall(r"\bsecrets\.([A-Za-z0-9_]+)", text)) == {"PII_DENYLIST"}
-    # On the denylist's own step only, which is pr-checks.yml's pii-denylist step exactly.
     denylist = step("gates", "Personal-data denylist")
-    others = [s for s in steps("gates") if s.get("name") != "Personal-data denylist"]
-    assert all("secrets." not in yaml.safe_dump(s, width=10**6) for s in others)
-    assert denylist["env"] == {
-        "PII_DENYLIST": "${{ secrets.PII_DENYLIST }}",
-        "BASE": "${{ github.event.pull_request.base.sha }}",
-        "HEAD": "${{ github.event.pull_request.head.sha }}",
-    }
-    pr_checks = yaml.safe_load((WORKFLOWS / "pr-checks.yml").read_text(encoding="utf-8"))
-    theirs = next(s for s in pr_checks["jobs"]["pii-denylist"]["steps"] if s.get("name") == denylist["name"])
-    assert (denylist["env"], denylist["run"]) == (theirs["env"], theirs["run"])
+    assert "PII_DENYLIST" not in denylist.get("env", {})
     assert denylist["run"] == 'python3 scripts/pii_denylist_check.py --range "$BASE" "$HEAD"'
-    # Straight after the checkout, on the runner's own python3, before anything is installed.
-    names = [s["name"] for s in steps("gates")]
-    assert names[:4] == ["Checkout", "Personal-data denylist", "Set up Python", "Install dependencies"]
-
 
 def test_no_publish_job_runs_for_a_pull_request_and_each_waits_for_the_switch():
     # Each folds to one line (no line more indented than the first, which YAML would keep).
@@ -1168,9 +1156,8 @@ def test_the_gates_pin_the_same_tools_as_the_other_workflows():
     # Trivy runs exactly as security.yml runs it: the report, then the gate.
     assert re.findall(r"trivy fs (.*?)\n\n", text, re.S) == re.findall(r"trivy fs (.*?)\n\n", security, re.S)
     gates = jobs()["gates"]
-    first = ["Personal-data denylist", "Set up Python", "Install dependencies", "Prompt lint",
-             "Trufflehog secret scan"]  # fmt: skip
-    assert [s["name"] for s in gates["steps"]][1:6] == first
+    first = ["Prompt lint", "Personal-data denylist", "Trufflehog secret scan"]
+    assert [s["name"] for s in gates["steps"]][3:6] == first
     assert step("gates", "Lint and publisher tests")["run"] == (
         "python -m pytest -q scripts/tests/test_prompt_lint.py scripts/tests/test_publish_prompts.py"
     )

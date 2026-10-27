@@ -72,9 +72,8 @@ permissions:
 jobs:
   # The workflow's own gates (section 2 of the spec): the prompt lint, the personal-data denylist,
   # gitleaks and trufflehog, the publisher's and the lint's tests, trivy and checkov. On pull
-  # requests only, with no AWS sign-in, no id-token and no environment: nothing a pull request runs
-  # here can sign in to AWS. It reads one secret, the denylist, on that check's own step, as
-  # pr-checks.yml's pii-denylist job does (GITHUB_TOKEN is the run's own read-only token, from the
+  # requests only, and with no secret of any kind: nothing a pull request runs here can sign in to
+  # AWS or read a repository secret (GITHUB_TOKEN is the run's own read-only token, from the
   # `github` context). A merge is gated by these, and the publish jobs run the lint again on what
   # they publish.
   gates:
@@ -91,20 +90,6 @@ jobs:
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
         with:
           fetch-depth: 0
-
-      # The operator's exact personal strings, from the PII_DENYLIST repository secret, exactly as
-      # pr-checks.yml's pii-denylist job reads them: only what the pull request adds is checked, a
-      # finding names the file, line and entry number (never the entry), and with the secret unset
-      # (a fork's pull request is given none) it passes with a notice. It needs only the standard
-      # library and git, so it runs first, on the runner's own python3, before anything the pull
-      # request's requirements name is installed. Each publish job below runs it again, over the
-      # tree it publishes.
-      - name: Personal-data denylist
-        env:
-          PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/pii_denylist_check.py --range "$BASE" "$HEAD"
 
       # The same commit and Python as python-ci.yml.
       - name: Set up Python
@@ -145,6 +130,17 @@ jobs:
             exit 1
           fi
           python scripts/prompt_lint.py "${args[@]}"
+
+      # The operator's exact personal strings are a repository secret, which this job is never
+      # given: everything here runs code from the pull request, so a secret in reach of this job is
+      # in reach of that code. Here the check reads only a local list (none in CI) and passes with
+      # a notice. pr-checks.yml's pii-denylist job runs the same check with the list on every pull
+      # request, and each publish job below runs it again, with the list, over the tree it publishes.
+      - name: Personal-data denylist
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/pii_denylist_check.py --range "$BASE" "$HEAD"
 
       # Pinned to the same commits and versions as pr-checks.yml (see the comments there).
       - name: Trufflehog secret scan
