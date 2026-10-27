@@ -73,6 +73,10 @@ SAMPLES = {
         "config_keys": ["max_cloud_cover", "triage"], "config_numbers": {"max_cloud_cover": 40},
         "config_off": ["triage"], "force_manual_review": True,
     },
+    "prompt_fallback": {
+        "topic_id": "rail-sydney", "lambda_id": "daily_cycle", "prompt_name": "draft", "version": "v2",
+        "code": "locked_order",
+    },
 }  # fmt: skip
 
 

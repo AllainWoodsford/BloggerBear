@@ -225,6 +225,16 @@ NOT_ASKED = {
     # Whether dev's assistant may read dev's own firewall logs (docs/configuration.md). Off unless
     # someone sets it to "true" by hand; a first deploy never needs it, so this script does not ask.
     "OPS_FIREWALL_REVIEW_DEV",
+    # Whether the Lambdas read their prompts from the prompts bucket (docs/configuration.md). Off
+    # unless someone sets it to "true" by hand, once the prompts stack is deployed; a first deploy
+    # never wants it, so this script does not ask.
+    "PROMPT_AS_ASSET_ENABLED",
+    # The prompts publisher roles' ARNs (docs/configuration.md). The bootstrap does not make those
+    # roles yet; the change that adds them moves these two into SETTINGS, paired with the roles'
+    # outputs like the deploy roles are. Until then an unset secret reaches Terraform as an empty
+    # string, which it reads as "no publisher yet".
+    "AWS_DEV_PROMPTS_ROLE_ARN",
+    "AWS_PROD_PROMPTS_ROLE_ARN",
 }
 
 # Secrets the workflows still read as `secrets.X || vars.X`, left over from when they were
