@@ -2393,7 +2393,11 @@ def test_both_roots_always_call_the_evals_module_with_their_own_names_and_role(e
     backup = _resource_block(main, "aws_iam_role_policy", "lambda_backup")
     assert re.search(r"role\s*=\s*aws_iam_role\.lambda_exec\.id$", backup, re.M)
     names = main.split("pipeline_lambda_function_names = concat([", 1)[1].split("\n}\n", 1)[0]
-    assert names.endswith("], aws_lambda_function.reviewer[*].function_name, module.evals.function_names)")
+    # Beside the work queue's dispatcher, which the pipeline's functions also hold.
+    assert names.endswith(
+        "], aws_lambda_function.reviewer[*].function_name, module.evals.function_names,"
+        " module.work_queue.function_names)"
+    )
 
 
 def test_every_policy_the_evals_module_puts_on_lambda_exec_names_the_role_by_its_input():
@@ -2440,9 +2444,10 @@ def test_the_alerts_topic_grant_moved_from_the_roots_into_the_evals_module(env):
 
 def test_a_backup_may_scan_and_restore_the_evals_table_through_the_modules_policy():
     """backup.TABLES includes the evals table: a snapshot scans it and reads its size, a restore
-    batch-writes it (common/backup.py). The roots' BackupTables statement is over the app tables
+    batch-writes it (common/backup.py). The roots grant a backup's DescribeTable and BatchWriteItem
+    in DynamoDBAppTables (#393 folded their BackupTables statement into it), over the app tables
     (module.app_data.table_arns), which never hold this table, so the module's own table statement
-    grants those three actions on it, and the roots' backup statement is left as it was."""
+    grants those three actions on it, and the roots' statement is left as it was."""
     from common import backup
 
     assert backup.TABLES["evals"] == "EVALS_TABLE"
@@ -2457,8 +2462,12 @@ def test_a_backup_may_scan_and_restore_the_evals_table_through_the_modules_polic
     ]
     for env in ("dev", "production"):
         main = _uncommented(_read("environments", env, "main.tf"))
-        backup_tables = _statement(main, "BackupTables")
-        assert re.findall(r"resources\s*=\s*(.*)", backup_tables) == ["module.app_data.table_arns"], env
+        assert '"BackupTables"' not in main, env
+        app_tables = _statement(main, "DynamoDBAppTables")
+        assert {"dynamodb:DescribeTable", "dynamodb:BatchWriteItem"} <= set(
+            re.findall(r'"(dynamodb:\w+)"', app_tables)
+        ), env
+        assert re.findall(r"resources\s*=\s*(.*)", app_tables) == ["module.app_data.table_arns"], env
 
 
 def test_the_evals_table_fixture_is_keyed_as_terraform_keys_the_table():
@@ -2931,8 +2940,10 @@ def test_each_root_calls_the_work_queue_module_once_with_its_own_lambdas_and_the
     # The dispatcher joins the pipeline's functions: observability's errors and throttles alarms
     # and dashboards. Root functions only in the literal log-group list (the module owns its own).
     names = main.split("pipeline_lambda_function_names = concat([", 1)[1].split("\n}\n", 1)[0]
+    # Beside the evals module's eval-jobs, which the pipeline's functions also hold.
     assert names.rstrip().endswith(
-        "], aws_lambda_function.reviewer[*].function_name, module.work_queue.function_names)"
+        "], aws_lambda_function.reviewer[*].function_name, module.evals.function_names,"
+        " module.work_queue.function_names)"
     ), env
     groups = main.split("lambda_log_group_function_names = [", 1)[1].split("]", 1)[0]
     assert "dispatcher" not in groups, env

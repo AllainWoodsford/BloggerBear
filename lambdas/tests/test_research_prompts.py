@@ -771,7 +771,7 @@ def test_the_research_lineage_carries_each_findings_prompt_and_an_older_finding_
 def test_a_tick_binds_its_request_id_for_the_draw_and_lets_go_after(context, expected):
     seen = []
 
-    def run(topic_id, force=False):
+    def run(topic_id, force=False, due_checked_at=None):
         seen.append(prompts.bound_run())
         return {"status": "no_change"}
 
