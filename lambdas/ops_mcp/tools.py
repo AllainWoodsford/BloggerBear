@@ -182,10 +182,15 @@ def _article_state(topic_id: str, failures: list[dict], now: datetime, detail: b
         )
         return {"state": state, "article_id": newest.get("article_id"), "created_at": created.isoformat()}
 
+    # Only a record with no kind is a daily run (common/dynamo.put_failed_execution). A queue job's
+    # (`research_job`) is not: research that keeps failing shows as research_overdue instead, and a
+    # price the catalog put back (model_pricing) is reported on its own.
     recent = [
         f
         for f in failures
-        if f.get("topic_id") == topic_id and (_parse(f.get("created_at")) or since) >= since
+        if f.get("topic_id") == topic_id
+        and f.get("kind") is None
+        and (_parse(f.get("created_at")) or since) >= since
     ]
     if not recent:
         return {"state": "none"}

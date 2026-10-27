@@ -2191,7 +2191,7 @@ def test_worker_concurrency_is_a_number_from_the_github_variable_with_two_as_the
     """The queue platform's one knob (docs/enhancements/model-ranch-prompt-assets-evals.md, Q0): a
     number variable in both roots, 2 by default and never less (the smallest maximum_concurrency an
     SQS event source mapping accepts), fed by both deploy workflows from WORKER_CONCURRENCY with '2'
-    as the fallback, and in the settings table. Nothing reads it until the work-queue module (Q1)."""
+    as the fallback, and in the settings table. Read once, by the work-queue module (Q1)."""
     for env in ("dev", "production"):
         variables = _read("environments", env, "variables.tf")
         block = re.search(r'^variable "worker_concurrency" \{\n(.*?)^\}', variables, re.S | re.M)
@@ -2200,7 +2200,9 @@ def test_worker_concurrency_is_a_number_from_the_github_variable_with_two_as_the
         assert re.search(r"^\s*default\s*=\s*2$", block.group(1), re.M), env
         assert re.search(r"^\s*condition\s*=\s*var\.worker_concurrency >= 2$", block.group(1), re.M), env
         main = _uncommented(_read("environments", env, "main.tf"))
-        assert "var.worker_concurrency" not in main, f"{env}: the module that reads it is Q1's"
+        assert main.count("var.worker_concurrency") == 1, env
+        (call,) = _module_blocks(main, "modules/work-queue")
+        assert re.search(r"^\s*worker_concurrency\s*=\s*var\.worker_concurrency$", call, re.M), env
     for name in ("terraform.yml", "terraform-production-release.yml"):
         workflow = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
         assert "      TF_VAR_worker_concurrency: ${{ vars.WORKER_CONCURRENCY || '2' }}\n" in workflow, name
@@ -2209,13 +2211,164 @@ def test_worker_concurrency_is_a_number_from_the_github_variable_with_two_as_the
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
-def test_every_lambda_has_the_work_queue_url_key_empty_until_the_queue_exists(env):
-    """WORK_QUEUE_URL is in the shared environment of every pipeline Lambda from Q0, as the empty
-    string, so the dispatcher's module (Q1) only changes its value. Nothing reads it before then."""
+def test_every_lambda_is_told_the_work_queue_url_the_module_made(env):
+    """WORK_QUEUE_URL has been in the shared environment of every pipeline Lambda since Q0; from Q1
+    it is the work-queue module's queue, which the dispatcher sends to (and, from Q2, the admin API's
+    manual triggers)."""
     main = _uncommented(_read("environments", env, "main.tf"))
     shared = main.split("  lambda_env_variables = {")[1].split("\n}\n")[0]
-    assert re.search(r'^\s*WORK_QUEUE_URL\s*=\s*""$', shared, re.M), env
-    assert "module.work_queue" not in main, f"{env}: the module is Q1's"
+    assert re.search(r"^\s*WORK_QUEUE_URL\s*=\s*module\.work_queue\.work_queue_url$", shared, re.M), env
+
+
+# --- The queue platform (infra/modules/work-queue, Q1) ------------------------------------------------
+
+
+def _work_queue_module() -> str:
+    """The module's main.tf, as written (the prefix still the variable), without its comments."""
+    return _uncommented((INFRA / "modules" / "work-queue" / "main.tf").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_each_root_calls_the_work_queue_module_once_with_its_own_lambdas_and_the_knob(env):
+    main = _uncommented(_read_raw("environments", env, "main.tf"))
+    (call,) = _module_blocks(main, "modules/work-queue")
+    expected = {
+        "unique_name_prefix": "var.unique_name_prefix",
+        "environment_name": f'"{env}"',
+        "lambda_exec_role_arn": "aws_iam_role.lambda_exec.arn",
+        "lambda_exec_role_name": "aws_iam_role_policy.lambda_backup.role",
+        "lambda_package_path": "data.archive_file.lambdas.output_path",
+        "lambda_package_hash": "data.archive_file.lambdas.output_base64sha256",
+        "lambda_environment": "local.lambda_env_variables",
+        "research_tick_arn": "aws_lambda_function.research_tick.arn",
+        "dlq_handler_arn": "aws_lambda_function.dlq_handler.arn",
+        "state_machine_arn": "aws_sfn_state_machine.daily_cycle.arn",
+        "worker_concurrency": "var.worker_concurrency",
+        "alerts_topic_arn": "module.observability.sns_topic_arn",
+    }
+    passed = dict(re.findall(r"^  ([a-z_]+)\s*=\s*(.+)$", call, re.M))
+    assert passed == {"source": '"../../modules/work-queue"', **expected}, env
+    # The dispatcher joins the pipeline's functions: observability's errors and throttles alarms
+    # and dashboards. Root functions only in the literal log-group list (the module owns its own).
+    names = main.split("pipeline_lambda_function_names = concat([", 1)[1].split("\n}\n", 1)[0]
+    assert names.rstrip().endswith(
+        "], aws_lambda_function.reviewer[*].function_name, module.work_queue.function_names)"
+    ), env
+    groups = main.split("lambda_log_group_function_names = [", 1)[1].split("]", 1)[0]
+    assert "dispatcher" not in groups, env
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_work_queue_policies_are_written_after_lambda_backup_through_the_role_name(env):
+    """IAM caps lambda_exec's inline policies at 10,240 characters, so a release that shrinks
+    lambda_backup and adds the module's two policies must apply the shrink first: the name is read
+    through that policy, whose role is lambda_exec's id (the same name), for the ordering edge."""
+    main = _uncommented(_read_raw("environments", env, "main.tf"))
+    (call,) = _module_blocks(main, "modules/work-queue")
+    name = r"^\s*lambda_exec_role_name\s*=\s*aws_iam_role_policy\.lambda_backup\.role$"
+    assert re.search(name, call, re.M), env
+    backup = _resource_block(main, "aws_iam_role_policy", "lambda_backup")
+    assert re.search(r"^\s*role\s*=\s*aws_iam_role\.lambda_exec\.id$", backup, re.M), env
+
+
+def test_the_work_queue_is_fifo_without_content_dedup_and_redrives_three_times_to_a_fifo_dlq():
+    module = _work_queue_module()
+    raw = (INFRA / "modules" / "work-queue" / "main.tf").read_text(encoding="utf-8")
+    work = _resource_block(module, "aws_sqs_queue", "work")
+    dlq = _resource_block(module, "aws_sqs_queue", "work_dlq")
+    named = "${var.unique_name_prefix}-${var.environment_name}"
+    assert re.search(rf'^\s*name\s*=\s*"{re.escape(named)}-work\.fifo"$', work, re.M)
+    assert re.search(rf'^\s*name\s*=\s*"{re.escape(named)}-work-dlq\.fifo"$', dlq, re.M)
+    for block in (work, dlq):
+        assert re.search(r"^\s*fifo_queue\s*=\s*true$", block, re.M)
+        assert re.search(r"^\s*content_based_deduplication\s*=\s*false$", block, re.M)
+    assert re.search(r"^\s*visibility_timeout_seconds\s*=\s*720$", work, re.M)
+    assert re.search(r"^\s*deadLetterTargetArn\s*=\s*aws_sqs_queue\.work_dlq\.arn$", work, re.M)
+    assert re.search(r"^\s*maxReceiveCount\s*=\s*3$", work, re.M)
+    assert "redrive_policy" not in dlq  # the end of the line
+    # Both queues carry the AWS-managed-encryption exception, and no resource sets its own tags.
+    for label in ("work", "work_dlq"):
+        assert f'# trivy:ignore:AVD-AWS-0096\nresource "aws_sqs_queue" "{label}"' in raw
+    assert not re.search(r"^\s*tags\s*=", module, re.M)
+
+
+def test_the_research_tick_takes_its_jobs_one_at_a_time_up_to_worker_concurrency():
+    module = _work_queue_module()
+    research = _resource_block(module, "aws_lambda_event_source_mapping", "research_tick")
+    assert re.search(r"^\s*event_source_arn\s*=\s*aws_sqs_queue\.work\.arn$", research, re.M)
+    assert re.search(r"^\s*function_name\s*=\s*var\.research_tick_arn$", research, re.M)
+    assert re.search(r"^\s*batch_size\s*=\s*1$", research, re.M)
+    assert re.search(r"^\s*maximum_concurrency\s*=\s*var\.worker_concurrency$", research, re.M)
+    dlq = _resource_block(module, "aws_lambda_event_source_mapping", "work_dlq")
+    assert re.search(r"^\s*event_source_arn\s*=\s*aws_sqs_queue\.work_dlq\.arn$", dlq, re.M)
+    assert re.search(r"^\s*function_name\s*=\s*var\.dlq_handler_arn$", dlq, re.M)
+
+
+def test_the_dispatchers_log_group_and_rights_and_the_consumers_rights_come_before_them():
+    """The schedule invokes the dispatcher the minute it exists. A function invoked before its log
+    group is made makes its own, with no retention, and the next apply fails with
+    ResourceAlreadyExistsException (dev hit it after a destroy). Lambda checks a mapping's rights
+    when it makes the mapping, so each waits for the consume policy."""
+    module = _work_queue_module()
+    assert 'name              = "/aws/lambda/${local.name}"' in module
+    function = _resource_block(module, "aws_lambda_function", "dispatcher")
+    # The working rules' form: depends_on on the line right after function_name.
+    depends_on = re.search(r"^  function_name = local\.name\n  depends_on\s*=\s*\[(.*?)\]", function, re.M)
+    assert depends_on
+    assert "aws_cloudwatch_log_group.dispatcher" in depends_on.group(1)
+    assert "aws_iam_role_policy.dispatcher" in depends_on.group(1)
+    for label in ("research_tick", "work_dlq"):
+        mapping = _resource_block(module, "aws_lambda_event_source_mapping", label)
+        assert re.search(r"^\s*depends_on\s*=\s*\[aws_iam_role_policy\.consume\]$", mapping, re.M), label
+
+
+def test_a_failed_dispatcher_tick_is_retried_neither_by_its_schedule_nor_by_lambda():
+    """Scheduler invokes the dispatcher asynchronously: its retry_policy covers only its own
+    delivery, and Lambda retries a failed async invoke twice by default. The dispatcher raises on
+    purpose, and a replay would run beside the next tick from the same last_tick, counting the same
+    shadow turns twice. The schedule waits for the invoke config, so even the first tick has it."""
+    module = _work_queue_module()
+    config = _resource_block(module, "aws_lambda_function_event_invoke_config", "dispatcher")
+    function = r"^\s*function_name\s*=\s*aws_lambda_function\.dispatcher\.function_name$"
+    assert re.search(function, config, re.M)
+    assert re.search(r"^\s*maximum_retry_attempts\s*=\s*0$", config, re.M)
+    assert re.search(r"^\s*maximum_event_age_in_seconds\s*=\s*60$", config, re.M)
+    schedule = _resource_block(module, "aws_scheduler_schedule", "dispatcher")
+    assert re.search(r"^\s*maximum_retry_attempts\s*=\s*0$", schedule, re.M)
+    depends_on = re.search(r"^\s*depends_on\s*=\s*\[(.*?)\]", schedule, re.M).group(1)
+    assert "aws_lambda_function_event_invoke_config.dispatcher" in depends_on
+
+
+def test_no_schedule_is_added_per_topic_and_the_dispatchers_is_the_modules_only_one():
+    """The per-topic schedules stay runtime data (common/scheduler.py, made by the admin API), and
+    stay the way every topic runs until its cutover: the queue platform adds one fixed schedule, the
+    dispatcher's, and no schedule anywhere is made per topic by Terraform."""
+    module = _work_queue_module()
+    schedules = re.findall(r'^resource "aws_scheduler_schedule" "(\w+)" \{\n(.*?)^\}', module, re.S | re.M)
+    assert [label for label, _ in schedules] == ["dispatcher"]
+    body = schedules[0][1]
+    assert 'schedule_expression = "rate(1 minute)"' in body
+    assert not re.search(r"^\s*(for_each|count)\s*=", body, re.M)
+    pattern = re.compile(r'^resource "aws_scheduler_schedule" "(\w+)" \{\n(.*?)^\}', re.S | re.M)
+    for path in terraform_files():
+        for label, block in pattern.findall(_uncommented(path.read_text(encoding="utf-8"))):
+            assert "for_each" not in block and "topic" not in label, (path.name, label)
+    scheduler = (ROOT / "lambdas" / "common" / "scheduler.py").read_text(encoding="utf-8")
+    assert "def upsert_topic_schedules(" in scheduler
+
+
+def test_every_lambda_exec_function_holds_the_dispatchers_rights_and_the_module_says_so():
+    """The policy's exact resources are pinned in tests/work_queue.tftest.hcl; here, that it is on the
+    shared role every pipeline Lambda runs as, and that the module says what that means."""
+    raw = (INFRA / "modules" / "work-queue" / "main.tf").read_text(encoding="utf-8")
+    module = _uncommented(raw)
+    for label in ("dispatcher", "consume"):
+        policy = _resource_block(module, "aws_iam_role_policy", label)
+        assert re.search(r"^\s*role\s*=\s*var\.lambda_exec_role_name$", policy, re.M), label
+    prose = " ".join(line.lstrip("# ").strip() for line in raw.splitlines() if line.startswith("#"))
+    assert "Every Lambda that runs as lambda_exec, the admin API included, then holds these rights" in prose
+    # DescribeExecution's resource: the state machine's own executions, made from its ARN.
+    assert 'executions_arn = "${replace(var.state_machine_arn, ":stateMachine:", ":execution:")}:*"' in module
 
 
 def test_the_logs_policy_queries_readable_environments_logs_by_tag_and_nothing_else():
@@ -3556,7 +3709,9 @@ def test_every_module_that_names_resources_is_passed_the_prefix_by_both_environm
             block = variables.split('variable "unique_name_prefix" {')[1].split("\n}\n")[0]
             assert "default" not in re.sub(r"description\s*=.*", "", block), module
             naming.append(module)
-    assert naming == ["api-cdn", "app-data", "observability", "ops-assistant", "static-site", "vision-worker"]
+    assert naming == [
+        "api-cdn", "app-data", "observability", "ops-assistant", "static-site", "vision-worker", "work-queue",
+    ]  # fmt: skip
     for env in ("dev", "production"):
         main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
         for module in naming:

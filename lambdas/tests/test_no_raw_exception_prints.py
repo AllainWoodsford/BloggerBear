@@ -23,6 +23,7 @@ GUARDED = sorted(
         "daily_cycle_handler.py",
         "admin_api_handler.py",
         "vision_worker_handler.py",
+        "dispatcher_handler.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
     ]
 )

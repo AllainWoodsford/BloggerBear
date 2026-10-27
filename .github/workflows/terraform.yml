@@ -140,7 +140,8 @@ jobs:
     # TF_VAR_worker_concurrency: how many queue jobs the pipeline's workers may run at once, from
     # the WORKER_CONCURRENCY variable, else '2' (the variable's own default, and the smallest value
     # an SQS event source mapping accepts; the plan refuses less). A plain variable: a number is not
-    # a secret. Nothing reads it until the work-queue module lands (docs/configuration.md).
+    # a secret. The work-queue module (infra/modules/work-queue) makes it the maximum_concurrency of
+    # the research tick's event source mapping (docs/configuration.md).
     env:
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_DEV || vars.WAF_ADMIN_ALLOWLIST || 'true' }}

@@ -736,7 +736,9 @@ def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> d
 
 def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
     """One topic's schedules as `topics schedule` shows them: the slot, whether it is paused, the
-    expressions written to EventBridge Scheduler and the same in plain words."""
+    expressions written to EventBridge Scheduler and the same in plain words, and the dispatcher's
+    shadow record (common/dispatch.py): the last turns it would have dispatched, how many differed
+    from what the schedules did, and how many days its check could not answer."""
     effective = effective or {}
     research = effective.get("research") or topic.get("research_schedule") or topic.get("research_cadence")
     daily = effective.get("daily") or topic.get("daily_schedule") or topic.get("daily_cadence")
@@ -753,6 +755,10 @@ def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
         "research_interval_hours": topic.get("research_interval_hours"),
         "last_research_at": topic.get("last_research_at"),
         "last_article_at": topic.get("last_article_at"),
+        "shadow_last_research_dispatch_at": topic.get("shadow_last_research_dispatch_at"),
+        "shadow_last_daily_dispatch_at": topic.get("shadow_last_daily_dispatch_at"),
+        "shadow_mismatches": topic.get("shadow_mismatches"),
+        "shadow_unchecked": topic.get("shadow_unchecked"),
     }
 
 
