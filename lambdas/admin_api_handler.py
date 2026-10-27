@@ -38,6 +38,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import boto3
+from botocore.exceptions import ClientError
 
 from common import (
     backup,
@@ -161,7 +162,9 @@ from common.scheduler import (
     DEFAULT_TIMEZONE,
     _validate_schedule_expression,
     delete_topic_schedules,
+    schedule_name_problem,
     set_topic_schedules_state,
+    topic_schedule_names,
     upsert_topic_schedules,
     validate_timezone,
 )
@@ -201,6 +204,10 @@ _DEFAULT_DAILY_TIMEZONE = "Australia/Sydney"
 _LEGACY_DAILY_TIMEZONE = DEFAULT_TIMEZONE
 
 _lambda_client = None
+# The work queue and the daily-cycle state machine, for a manual run of a topic on the queue
+# (_trigger_topic): the rights are the dispatcher's, which lambda_exec holds (infra/modules/work-queue).
+_sqs_client = None
+_sfn_client = None
 
 
 def _get_lambda_client():
@@ -208,6 +215,20 @@ def _get_lambda_client():
     if _lambda_client is None:
         _lambda_client = boto3.client("lambda")
     return _lambda_client
+
+
+def _get_sqs_client():
+    global _sqs_client
+    if _sqs_client is None:
+        _sqs_client = boto3.client("sqs")
+    return _sqs_client
+
+
+def _get_sfn_client():
+    global _sfn_client
+    if _sfn_client is None:
+        _sfn_client = boto3.client("stepfunctions")
+    return _sfn_client
 
 
 def _json_number(value):
@@ -335,6 +356,24 @@ def _query_param(event: dict, name: str) -> str | None:
 
 def _list_topics(event: dict) -> dict:
     return _response(200, {"topics": list_topics()})
+
+
+_DISPATCH_MODES = (dispatch.SCHEDULE_MODE, dispatch.QUEUE_MODE)
+
+
+def _dispatch_mode_error(value) -> str | None:
+    """A topic's `dispatch_mode` (common/dispatch.py): `schedule`, its two EventBridge schedules
+    (the default, and the permanent undo), or `queue`, the dispatcher's."""
+    if isinstance(value, str) and value in _DISPATCH_MODES:
+        return None
+    return f"'dispatch_mode' must be '{dispatch.SCHEDULE_MODE}' or '{dispatch.QUEUE_MODE}'"
+
+
+def _queue_refused(topic_id: str, reasons: list[str], *, action: str = "move to the queue") -> dict:
+    """The 400 a topic gets when it may not be on the queue: every reason, in plain words."""
+    return _response(
+        400, {"error": f"topic '{topic_id}' cannot {action}: {'; '.join(reasons)}", "reasons": reasons}
+    )
 
 
 def _model_candidates_error(value) -> str | None:
@@ -470,6 +509,15 @@ def _create_topic(event: dict) -> dict:
     if slot_problem:
         return _error(400, f"'stagger_slot' {slot_problem}")
 
+    # Where it is dispatched from (common/dispatch.py). A new topic may start on the queue: it has
+    # no schedules to delete and no shadow record to judge, so what the dispatcher must be able to
+    # read is checked, below, once its slot is known, and that its id could still have schedules,
+    # since `--dispatch-mode schedule` is its way back.
+    dispatch_mode = body.get("dispatch_mode", dispatch.SCHEDULE_MODE)
+    dispatch_mode_problem = _dispatch_mode_error(dispatch_mode)
+    if dispatch_mode_problem:
+        return _error(400, dispatch_mode_problem)
+
     if get_topic(topic_id) is not None:
         return _error(409, f"topic '{topic_id}' already exists")
 
@@ -512,10 +560,32 @@ def _create_topic(event: dict) -> dict:
         item["findings_window_hours"] = findings_window_hours
     if review_mode is not None:
         item["review_mode"] = review_mode
+    config = None
+    if dispatch_mode == dispatch.QUEUE_MODE:
+        config = _read_pipeline_config_quietly()
+        topic_count = len(topics) + 1
+        problems = [
+            problem
+            for problem in (
+                dispatch.cadence_problem(item, config=config, topic_count=topic_count),
+                dispatch.slug_problem(topic_id, topics),
+                dispatch.queue_id_problem(topic_id),
+                schedule_name_problem(topic_id),
+            )
+            if problem
+        ]
+        if problems:
+            return _queue_refused(topic_id, problems, action="start on the queue")
+        # Stored only when set, like force_manual_review: every topic on its schedules keeps the
+        # shape it had. A topic made after today's daily turn starts tomorrow, as a schedule would.
+        item["dispatch_mode"] = dispatch.QUEUE_MODE
+        today = dispatch.cutover_day(item, config=config, topic_count=topic_count, now=datetime.now(UTC))
+        if today:
+            item["last_daily_dispatched_on"] = today
     put_topic(item)
     _topic_changed("created", None, item)
     try:
-        _apply_topic_schedules(item, topics=[*topics, item])
+        _apply_topic_schedules(item, topics=[*topics, item], config=config)
     except ValueError as exc:
         return _error(400, str(exc))
     return _response(201, item)
@@ -559,9 +629,19 @@ def _update_topic(event: dict) -> dict:
         "model_id",
         "fallback_model_id",
         "model_id_candidates",
+        "dispatch_mode",
     ):
         if field in body:
             updated[field] = body[field]
+
+    if "dispatch_mode" in body:
+        dispatch_mode_problem = _dispatch_mode_error(updated["dispatch_mode"])
+        if dispatch_mode_problem:
+            return _error(400, dispatch_mode_problem)
+    # Moving a topic to the queue deletes its two schedules: refused (409) until confirmed.
+    confirm = body.get("confirm", False)
+    if not isinstance(confirm, bool):
+        return _error(400, "'confirm' must be a boolean if provided")
 
     if "name" in body and (not isinstance(updated["name"], str) or not updated["name"]):
         return _error(400, "'name' must be a non-empty string")
@@ -674,13 +754,95 @@ def _update_topic(event: dict) -> dict:
     except ValueError as exc:
         return _error(400, str(exc))
 
+    # A topic on the queue (or moving to it) must have cadences the dispatcher reads, judged as it
+    # will read them (common/dispatch.py); a topic on its schedules keeps the Scheduler's check above.
+    config = _read_pipeline_config_quietly()
+    on_queue = dispatch.dispatch_mode(updated) == dispatch.QUEUE_MODE
+    was_on_queue = dispatch.dispatch_mode(topic) == dispatch.QUEUE_MODE
+    to_queue = on_queue and not was_on_queue
+    from_queue = was_on_queue and not on_queue
+    if on_queue and not to_queue:
+        cadence_problem = dispatch.cadence_problem(updated, config=config, topic_count=len(topics))
+        if cadence_problem:
+            return _error(400, cadence_problem)
+    if to_queue:
+        refused = _move_to_queue(topic_id, updated, topics=topics, config=config, confirm=confirm)
+        if refused is not None:
+            return refused
+    if from_queue:
+        # Its shadow daily record dates from before the cutover. Kept, the first shadow daily turn
+        # would ask about that day, which after a long spell on the queue lies past the pages
+        # _daily_ran reads: an unchecked day that refuses the next cutover for good. Without it,
+        # that turn compares nothing, as a topic's first shadow day does. The put below writes the
+        # whole row, so the field goes with the same write that says schedule.
+        updated.pop("shadow_last_daily_dispatch_at", None)
+
     put_topic(updated)
     _topic_changed("updated", topic, updated)
     try:
-        _apply_topic_schedules(updated, topics=topics)
-    except ValueError as exc:
-        return _error(400, str(exc))
+        _apply_topic_schedules(updated, topics=topics, config=config)
+    except Exception as exc:  # noqa: BLE001 - raised again unless the topic has just left the queue
+        if not from_queue:
+            if isinstance(exc, ValueError):
+                return _error(400, str(exc))
+            raise
+        # The row already says schedule (written first, so the dispatcher lets go of the topic
+        # before its schedules exist), so a failure here may leave it running nowhere.
+        print(f"admin_api_handler: {topic_id} left the queue but its schedules failed: {exc!r}")
+        return _error(
+            502,
+            f"'{topic_id}' is off the queue (its row says schedule), but writing its two schedules "
+            "failed, so they may not exist and nothing may be running it: run "
+            f"`topics update {topic_id} --dispatch-mode schedule` again, or `topics reschedule`, "
+            "to write them",
+        )
     return _response(200, updated)
+
+
+def _move_to_queue(topic_id: str, updated: dict, *, topics: list[dict], config, confirm: bool) -> dict | None:
+    """The cutover of one topic from its schedules to the queue (docs/enhancements/
+    model-ranch-prompt-assets-evals.md, Q2), up to the row write the caller makes; returns the
+    refusal to answer with, or None to go on.
+
+    The pre-flight first (dispatch.cutover_refusals: not paused, cadences the dispatcher reads, a
+    usable slug and queue id, a clean full day of shadow mode): 400 with every reason. Then 409
+    `confirm_required` until the caller confirms, since the schedules are deleted. They are deleted
+    before the row says queue, so a failure in between leaves the topic running nowhere and said
+    so, never on both paths at once (two articles in a day); the caller's _apply_topic_schedules
+    deletes them once more after the write, and finds none. Last, `updated` gains the cutover-day
+    claim: when today's daily turn has passed, `last_daily_dispatched_on` is today in the topic's
+    zone, written by the same put that sets `dispatch_mode`, so the dispatcher does not start a
+    second run today; `daily_claim_n` is left as it is."""
+    reasons = dispatch.cutover_refusals(updated, topics=topics, config=config)
+    if reasons:
+        return _queue_refused(topic_id, reasons)
+    names = topic_schedule_names(topic_id)
+    if not confirm:
+        return _response(
+            409,
+            {
+                "error": (
+                    f"moving '{topic_id}' to the queue deletes its two EventBridge schedules "
+                    f"({', '.join(names)}), and the dispatcher runs it from the next minute; "
+                    "send confirm: true to go ahead"
+                ),
+                "confirm_required": True,
+                "schedules": names,
+            },
+        )
+    try:
+        delete_topic_schedules(topic_id)
+    except Exception as exc:  # noqa: BLE001 - said to the operator; the row still says schedule
+        print(f"admin_api_handler: could not delete the schedules of {topic_id}: {exc!r}")
+        return _error(
+            502,
+            f"could not delete the schedules of '{topic_id}', so it stays on them; one may be gone "
+            "already: run the same update again (or `topics reschedule` to restore both)",
+        )
+    today = dispatch.cutover_day(updated, config=config, topic_count=len(topics), now=datetime.now(UTC))
+    if today:
+        updated["last_daily_dispatched_on"] = today
+    return None
 
 
 def _delete_topic(event: dict) -> dict:
@@ -711,6 +873,14 @@ def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> d
 
     Raises ValueError for a cadence or zone EventBridge Scheduler would refuse, before any AWS
     call, as upsert_topic_schedules does. Returns the effective schedules.
+
+    A topic on the queue (`dispatch_mode` queue, common/dispatch.py) has no schedules: nothing is
+    written to the Scheduler, and any it still has are deleted (none is no error), or a topic would
+    run on both paths. A restore of a snapshot taken while it was on the queue, made after it went
+    back to its schedules, is one way it can still have them. Its row still records the same
+    expressions, which are what the dispatcher reads, and ValueError is raised for one the
+    dispatcher could not read, so `topics reschedule` names it; its schedules are then left as they
+    are, since the dispatcher skips such a topic and they are all that runs it.
     """
     if config is None:
         config = _read_pipeline_config_quietly()
@@ -721,13 +891,19 @@ def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> d
         stagger_minutes=resolve_stagger_minutes(config),
         topic_count=len(topics),
     )
-    upsert_topic_schedules(
-        topic["topic_id"],
-        effective["research"],
-        effective["daily"],
-        topic.get("daily_timezone", _LEGACY_DAILY_TIMEZONE),
-        enabled=topic.get("paused") is not True,
-    )
+    if dispatch.dispatch_mode(topic) == dispatch.QUEUE_MODE:
+        problem = dispatch.cadence_problem(topic, config=config, topic_count=len(topics))
+        if problem:
+            raise ValueError(problem)
+        delete_topic_schedules(topic["topic_id"])
+    else:
+        upsert_topic_schedules(
+            topic["topic_id"],
+            effective["research"],
+            effective["daily"],
+            topic.get("daily_timezone", _LEGACY_DAILY_TIMEZONE),
+            enabled=topic.get("paused") is not True,
+        )
     written = {"research_schedule": effective["research"], "daily_schedule": effective["daily"]}
     set_topic_fields(topic["topic_id"], written)
     topic.update(written)
@@ -735,10 +911,12 @@ def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> d
 
 
 def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
-    """One topic's schedules as `topics schedule` shows them: the slot, whether it is paused, the
-    expressions written to EventBridge Scheduler and the same in plain words, and the dispatcher's
-    shadow record (common/dispatch.py): the last turns it would have dispatched, how many differed
-    from what the schedules did, and how many days its check could not answer."""
+    """One topic's schedules as `topics schedule` shows them: the slot, whether it is paused, where
+    it is dispatched from (`dispatch_mode`: its schedules, or the queue), the expressions written to
+    EventBridge Scheduler (the ones the dispatcher reads, for a topic on the queue) and the same in
+    plain words, and the dispatcher's shadow record (common/dispatch.py): the last turns it would
+    have dispatched, how many differed from what the schedules did, how many days its check could
+    not answer and how many it did."""
     effective = effective or {}
     research = effective.get("research") or topic.get("research_schedule") or topic.get("research_cadence")
     daily = effective.get("daily") or topic.get("daily_schedule") or topic.get("daily_cadence")
@@ -747,6 +925,7 @@ def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
         "name": topic.get("name"),
         "stagger_slot": topic_slot(topic),
         "paused": topic.get("paused") is True,
+        "dispatch_mode": dispatch.dispatch_mode(topic),
         "research_schedule": research,
         "research_schedule_text": describe_expression(research or ""),
         "daily_schedule": daily,
@@ -759,6 +938,7 @@ def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
         "shadow_last_daily_dispatch_at": topic.get("shadow_last_daily_dispatch_at"),
         "shadow_mismatches": topic.get("shadow_mismatches"),
         "shadow_unchecked": topic.get("shadow_unchecked"),
+        "shadow_checked_days": topic.get(dispatch.SHADOW_CHECKED_DAYS),
     }
 
 
@@ -791,6 +971,17 @@ def _reschedule_topics(event: dict) -> dict:
     also holds is given the next free slot, in topic-id order. `{"dry_run": true}` computes and
     reports without writing anything. A topic whose stored cadence EventBridge Scheduler would
     refuse is reported with its error and skipped, so one bad topic never stops the rest.
+
+    A topic on the queue keeps no schedules (_apply_topic_schedules deletes any it has), unless the
+    body says `{"dispatch_mode": "schedule"}`: the bulk undo of the cutover, which moves every topic
+    on the queue back to its schedules and writes them (`moved_to_schedule` names the topics whose
+    row was moved, or would be in a dry run). Each one's row says schedule before its schedules are
+    written, so the dispatcher has let go of it first and it never runs on both paths; one whose
+    schedules then fail is reported with its error and is put right by running this again. One
+    whose row could not be written is still on the queue: it is reported with its error, as the
+    row stands, and is not named as moved. The same write drops its shadow daily record from before
+    the cutover (_update_topic says why). Moving to the queue is never done in bulk: each topic has
+    its own pre-flight and confirmation (`topics update <id> --dispatch-mode queue`).
     """
     try:
         body = _parse_body(event)
@@ -799,10 +990,28 @@ def _reschedule_topics(event: dict) -> dict:
     dry_run = body.get("dry_run", False)
     if not isinstance(dry_run, bool):
         return _error(400, "'dry_run' must be a boolean if provided")
+    undo = body.get("dispatch_mode")
+    if undo is not None and undo != dispatch.SCHEDULE_MODE:
+        return _error(
+            400,
+            f"'dispatch_mode' may only be '{dispatch.SCHEDULE_MODE}' here (every topic on the queue back "
+            "to its schedules); a topic moves to the queue on its own, with `topics update`",
+        )
 
     config = _read_pipeline_config_quietly()
     stagger_minutes = resolve_stagger_minutes(config)
     topics = sorted(list_topics(), key=lambda item: item.get("topic_id") or "")
+    before = {topic["topic_id"]: dict(topic) for topic in topics}
+    # The topics the undo is to move (planned here, so the schedules below are worked out for a
+    # topic on its schedules), and the ones it has moved: a topic joins `moved` once its row write
+    # has landed, or at once in a dry run, which writes nothing.
+    to_move = set()
+    if undo is not None:
+        for topic in topics:
+            if dispatch.dispatch_mode(topic) == dispatch.QUEUE_MODE:
+                topic["dispatch_mode"] = dispatch.SCHEDULE_MODE
+                to_move.add(topic["topic_id"])
+    moved = [topic["topic_id"] for topic in topics if topic["topic_id"] in to_move] if dry_run else []
 
     taken: dict[int, str] = {}
     for topic in topics:
@@ -817,8 +1026,10 @@ def _reschedule_topics(event: dict) -> dict:
 
     rows = []
     for topic in topics:
+        topic_id = topic["topic_id"]
         topic.setdefault("research_cadence", _DEFAULT_RESEARCH_CADENCE)
         topic.setdefault("daily_cadence", _DEFAULT_DAILY_CADENCE)
+        written = False
         try:
             if dry_run:
                 effective = effective_schedules(
@@ -829,23 +1040,43 @@ def _reschedule_topics(event: dict) -> dict:
                     topic_count=len(topics),
                 )
             else:
-                set_topic_fields(topic["topic_id"], {"stagger_slot": topic["stagger_slot"]})
+                fields, remove = {"stagger_slot": topic["stagger_slot"]}, ()
+                if topic_id in to_move:
+                    # One write, so no tick reads a row that says schedule and still holds the
+                    # stale shadow daily record.
+                    fields["dispatch_mode"] = dispatch.SCHEDULE_MODE
+                    remove = ("shadow_last_daily_dispatch_at",)
+                set_topic_fields(topic_id, fields, remove=remove)
+                written = True
+                if topic_id in to_move:
+                    topic.pop("shadow_last_daily_dispatch_at", None)
+                    moved.append(topic_id)
+                    _topic_changed("updated", before[topic_id], topic)
                 effective = _apply_topic_schedules(topic, topics=topics, config=config)
             rows.append(_schedule_view(topic, effective))
         except Exception as exc:  # noqa: BLE001 - one topic's bad cadence must not stop the rest
-            print(f"admin_api_handler: could not reschedule {topic['topic_id']}: {exc!r}")
-            rows.append({**_schedule_view(topic), "error": str(exc)})
+            print(f"admin_api_handler: could not reschedule {topic_id}: {exc!r}")
+            error = str(exc)
+            if topic_id in moved and not dry_run:
+                error = (
+                    "it is off the queue, but its schedules may not have been written, so nothing may "
+                    f"be running it: run `topics reschedule` again to write them ({error})"
+                )
+            # A row that was never written is shown as it is stored (still on the queue, its slot
+            # unchanged), not as it was planned.
+            shown = topic if dry_run or written else before[topic_id]
+            rows.append({**_schedule_view(shown), "error": error})
 
-    return _response(
-        200,
-        {
-            "dry_run": dry_run,
-            "stagger_minutes": stagger_minutes,
-            "topic_count": len(topics),
-            "daily_delay_minutes": (len(topics) + 1) * stagger_minutes,
-            "topics": rows,
-        },
-    )
+    answer = {
+        "dry_run": dry_run,
+        "stagger_minutes": stagger_minutes,
+        "topic_count": len(topics),
+        "daily_delay_minutes": (len(topics) + 1) * stagger_minutes,
+        "topics": rows,
+    }
+    if undo is not None:
+        answer["moved_to_schedule"] = moved
+    return _response(200, answer)
 
 
 def _post_pause_musing(topic_id: str, *, paused: bool) -> None:
@@ -958,6 +1189,9 @@ def _trigger_topic(event: dict) -> dict:
             )
         payload["force"] = True
 
+    if pipeline != "network_prefetch" and dispatch.dispatch_mode(topic) == dispatch.QUEUE_MODE:
+        return _trigger_on_the_queue(topic, pipeline, force=force)
+
     function_name = os.environ[_PIPELINE_FUNCTION_ENV_VARS[pipeline]]
     client = _get_lambda_client()
     client.invoke(
@@ -966,6 +1200,68 @@ def _trigger_topic(event: dict) -> dict:
         Payload=json.dumps(payload).encode("utf-8"),
     )
     return _response(202, {"triggered": pipeline, "topic_id": topic_id})
+
+
+def _trigger_on_the_queue(topic: dict, pipeline: str, *, force: bool) -> dict:
+    """A manual run of a topic on the queue, the way the dispatcher's own would go (spec 4.7), so
+    it waits its turn behind the topic's other work rather than racing it:
+
+    - research_tick: a research job on the work queue, `force` true ("check now", as a direct run
+      always was), in the topic's message group, with a deduplication id of its own so SQS never
+      drops it as the dispatcher's job of the same minute or the last manual one;
+    - daily_cycle: the daily-cycle state machine started with the manual execution name
+      `<slug>-<local date>-manual-<HHMMSS>` (the topic's zone), `force` passed on when asked for.
+      Two in the same second share a name: Step Functions takes the second as the first run when
+      its input is the same, and refuses it otherwise (409).
+
+    Neither touches the dispatcher's claims: like a manual run beside a schedule, the topic's own
+    turn still comes (and the daily cycle's already-written check holds)."""
+    topic_id = topic["topic_id"]
+    now = datetime.now(UTC)
+    if pipeline == "research_tick":
+        queue_url = os.environ.get("WORK_QUEUE_URL") or ""
+        if not queue_url:
+            return _error(500, "this deployment has no work queue (WORK_QUEUE_URL is empty)")
+        deduplication_id = dispatch.manual_research_dedup_id(topic_id, uuid.uuid4().hex)
+        _get_sqs_client().send_message(
+            QueueUrl=queue_url,
+            MessageBody=json.dumps(dispatch.research_message(topic_id, now=now, force=True)),
+            MessageGroupId=topic_id,
+            MessageDeduplicationId=deduplication_id,
+        )
+        return _response(
+            202,
+            {
+                "triggered": pipeline,
+                "topic_id": topic_id,
+                "dispatch_mode": dispatch.QUEUE_MODE,
+                "deduplication_id": deduplication_id,
+            },
+        )
+
+    try:
+        local = now.astimezone(dispatch.topic_zone(topic))
+    except ValueError as exc:
+        return _error(400, f"topic '{topic_id}': {exc}")
+    name = dispatch.manual_execution_name(topic_id, local.date().isoformat(), local)
+    execution_input = {"topic_id": topic_id, **({"force": True} if force else {})}
+    try:
+        _get_sfn_client().start_execution(
+            stateMachineArn=os.environ["STATE_MACHINE_ARN"], name=name, input=json.dumps(execution_input)
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ExecutionAlreadyExists":
+            raise
+        return _error(409, f"a manual run named {name} has already started; try again in a second")
+    return _response(
+        202,
+        {
+            "triggered": pipeline,
+            "topic_id": topic_id,
+            "dispatch_mode": dispatch.QUEUE_MODE,
+            "execution_name": name,
+        },
+    )
 
 
 def _list_candidates(event: dict) -> dict:
@@ -3118,7 +3414,12 @@ def _feedback_lock_article(event: dict) -> dict:
 def _restore_schedules(topics: list[dict]) -> dict:
     """A restore's schedules phase: every topic's two schedules written as `topics create` and
     `topics reschedule` write them (_apply_topic_schedules), against the restored pipeline config.
-    A topic that fails is named and the rest still get theirs."""
+    A topic that fails is named and the rest still get theirs.
+
+    For a topic whose restored row says queue, "written" means its schedules were removed: it may
+    have gone back to them after the snapshot was taken, and must not run on both paths. The load
+    phase writes the row before this phase runs, so such a topic is on both paths in between, and
+    stays so after a restore run without its schedules phase."""
     config = _read_pipeline_config_quietly()
     written, failed = 0, []
     for topic in topics:

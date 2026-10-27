@@ -49,6 +49,18 @@ def test_the_catalogue_names_the_fields_a_rotating_topic_stores():
     assert "topics.last_article_by_subject" in dict(_of_kind("function")["daily-cycle"].details)["Writes"]
 
 
+def test_the_catalogue_names_what_the_cutover_writes_and_sends():
+    """The per-topic cutover (Q2): the dispatcher's count of checked shadow days, the Admin API's
+    manual research job on the work queue and its manual daily runs, and a topic on the queue
+    having no schedules."""
+    functions, queues = _of_kind("function"), _of_kind("queue")
+    assert "shadow_checked_days" in dict(functions["dispatcher"].details)["Writes"]
+    assert "<topic>-<date>-manual-<HHMMSS>" in dict(functions["admin-api"].details)["Sends"]
+    assert "<topic_id>:research:manual:<hex>" in dict(queues["work"].details)["Deduplicated by"]
+    assert f"/aws/lambda/{PREFIX}{ENV}-admin-api" in queues["work"].log_groups
+    assert "A topic on the queue has none." in _of_kind("schedule")["topic-schedules"].purpose
+
+
 # The functions modules make: the ops-assistant module's two, the vision-worker module's (in the
 # vision Region, so observability's alarms in the home Region can't watch it), and the work-queue
 # module's dispatcher. Every other function is made by an environment root and handed to

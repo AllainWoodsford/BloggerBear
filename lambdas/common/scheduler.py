@@ -37,6 +37,10 @@ _VALID_EXPRESSION_PREFIXES = ("rate(", "cron(", "at(")
 
 _SCHEDULE_GROUP_NAME = "default"
 
+# What EventBridge Scheduler takes as a schedule name (schedule_name_problem).
+_SCHEDULE_NAME = re.compile(r"[0-9A-Za-z_.-]+")
+_SCHEDULE_NAME_MAX = 64
+
 # An IANA zone name ("UTC", "Australia/Sydney", "America/Argentina/Buenos_Aires").
 # EventBridge Scheduler does the real check; this only rejects obvious junk so
 # a typo fails the admin request rather than the AWS call.
@@ -76,6 +80,27 @@ def _schedule_name(topic_id: str, suffix: str) -> str:
     prefix is this deployment's (common/naming.py). EventBridge Scheduler allows 64 characters,
     which is what bounds how long a prefix Terraform accepts (var.unique_name_prefix)."""
     return f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}{topic_id}-{suffix}"
+
+
+def topic_schedule_names(topic_id: str) -> list[str]:
+    """The names of a topic's two schedules, research tick first: what delete_topic_schedules
+    deletes (it reads them from here), for an operator to be told before it happens."""
+    return [_schedule_name(topic_id, suffix) for suffix in ("research-tick", "daily-cycle")]
+
+
+def schedule_name_problem(topic_id: str) -> str | None:
+    """Why EventBridge Scheduler would refuse the names of this topic's two schedules, or None. A
+    topic that starts on the queue writes none, so this is the only check its id gets before it
+    may need them: without it, `--dispatch-mode schedule` could never take it back to them."""
+    names = topic_schedule_names(topic_id)
+    if all(_SCHEDULE_NAME.fullmatch(name) and len(name) <= _SCHEDULE_NAME_MAX for name in names):
+        return None
+    # The room this deployment's prefix and the longer suffix leave for the id.
+    room = _SCHEDULE_NAME_MAX - max(len(name) for name in topic_schedule_names(""))
+    return (
+        "its topic id could never go back to its schedules: EventBridge Scheduler names take only "
+        f"letters, digits, '-', '_' and '.', and leave the id at most {room} characters here"
+    )
 
 
 def _schedule_state(enabled: bool) -> str:
@@ -168,8 +193,7 @@ def set_topic_schedules_state(topic_id: str, *, enabled: bool) -> list[str]:
     """
     client = _get_scheduler_client()
     changed = []
-    for suffix in ("research-tick", "daily-cycle"):
-        name = _schedule_name(topic_id, suffix)
+    for name in topic_schedule_names(topic_id):
         try:
             current = client.get_schedule(Name=name, GroupName=_SCHEDULE_GROUP_NAME)
         except client.exceptions.ResourceNotFoundException:
@@ -202,8 +226,7 @@ def delete_topic_schedules(topic_id: str) -> None:
     should not error.
     """
     client = _get_scheduler_client()
-    for suffix in ("research-tick", "daily-cycle"):
-        name = _schedule_name(topic_id, suffix)
+    for name in topic_schedule_names(topic_id):
         try:
             client.delete_schedule(Name=name, GroupName=_SCHEDULE_GROUP_NAME)
         except client.exceptions.ResourceNotFoundException:

@@ -487,7 +487,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "Writes",
                 "topics.research_claimed_at, last_daily_dispatched_on and daily_claim_n; in shadow mode "
                 "topics.shadow_last_research_dispatch_at, shadow_last_daily_dispatch_at, "
-                "shadow_mismatches and shadow_unchecked; last_tick on the model-config pipeline row",
+                "shadow_mismatches, shadow_unchecked and shadow_checked_days; last_tick on the "
+                "model-config pipeline row",
             ),
             (
                 "Sends",
@@ -529,6 +530,14 @@ CATALOGUE: tuple[Component, ...] = (
         "admin-api",
         "The Admin API behind admin_cli: topics, review, models, settings, rewrites.",
         "on each request to the Admin API (IAM-signed, behind an address allowlist)",
+        details=(
+            (
+                "Sends",
+                f"for a topic on the queue, topics trigger sends a research job to {PREFIX}{ENV}-work.fifo "
+                f"or starts {PREFIX}{ENV}-daily-cycle with an execution named "
+                "<topic>-<date>-manual-<HHMMSS>",
+            ),
+        ),
         dashboards=(_EDGE_DASHBOARD,),
     ),
     _lambda(
@@ -732,15 +741,28 @@ CATALOGUE: tuple[Component, ...] = (
         kind="queue",
         key="work",
         name=f"{PREFIX}{ENV}-work.fifo",
-        purpose="The FIFO work queue: the dispatcher's research jobs, one topic at a time, which the "
+        purpose="The FIFO work queue: the dispatcher's research jobs, and an operator's manual "
+        "research runs of a topic on the queue (from the Admin API), one topic at a time, which the "
         "research tick takes one by one, at most worker_concurrency at once.",
         details=(
-            ("Message", "topic_id, job, force, due_checked_at, dispatched_at; grouped by topic_id"),
-            ("Deduplicated by", "<topic_id>:research:<minute>"),
+            (
+                "Message",
+                "topic_id, job, force (true only for a manual run), due_checked_at, dispatched_at; "
+                "grouped by topic_id",
+            ),
+            (
+                "Deduplicated by",
+                "<topic_id>:research:<minute> (the dispatcher's); <topic_id>:research:manual:<hex> "
+                "(a manual run, new each time)",
+            ),
             ("Empty until", "a topic's dispatch_mode is queue; shadow mode sends nothing"),
             ("After three receives", f"the job goes to {PREFIX}{ENV}-work-dlq.fifo"),
         ),
-        log_groups=(f"/aws/lambda/{PREFIX}{ENV}-dispatcher", f"/aws/lambda/{PREFIX}{ENV}-research-tick"),
+        log_groups=(
+            f"/aws/lambda/{PREFIX}{ENV}-dispatcher",
+            f"/aws/lambda/{PREFIX}{ENV}-research-tick",
+            f"/aws/lambda/{PREFIX}{ENV}-admin-api",
+        ),
         alarms=(f"{PREFIX}{ENV}-work-queue-age",),
         aliases=("work-queue", "fifo"),
     ),
@@ -856,11 +878,18 @@ CATALOGUE: tuple[Component, ...] = (
         kind="schedule",
         key="topic-schedules",
         name=f"{PREFIX}{ENV}-<topic_id>-research-tick / -daily-cycle",
-        purpose="Two schedules per topic, made by the Admin API when a topic is created or "
-        "changed (not by Terraform): research-tick at the topic's interval, daily-cycle at its "
-        "daily cadence and timezone.",
+        purpose="Two schedules per topic on its schedules (dispatch_mode schedule), made by the "
+        "Admin API when a topic is created or changed (not by Terraform): research-tick at the "
+        "topic's interval, daily-cycle at its daily cadence and timezone. A topic on the queue has "
+        "none.",
         details=(
             ("Where", 'EventBridge Scheduler, schedule group "default"'),
+            (
+                "On the queue",
+                "topics update <id> --dispatch-mode queue deletes both once the operator confirms; "
+                "--dispatch-mode schedule, or topics reschedule --dispatch-mode schedule for every "
+                "topic, writes them again",
+            ),
             (
                 "A dropped run",
                 "the alarm is for the whole group, the fixed schedules (the weekly rollover, the "

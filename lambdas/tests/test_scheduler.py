@@ -7,6 +7,7 @@ import pytest
 from moto import mock_aws
 
 import common.scheduler as scheduler
+from common.naming import environment_prefix
 
 REGION = "ap-southeast-2"
 
@@ -193,6 +194,39 @@ def test_delete_topic_schedules_removes_existing(scheduler_client):
         _schedule(scheduler_client, "bloggerbear-dev-topic-d-research-tick")
     with pytest.raises(scheduler_client.exceptions.ResourceNotFoundException):
         _schedule(scheduler_client, "bloggerbear-dev-topic-d-daily-cycle")
+
+
+def test_the_names_an_operator_is_told_are_the_schedules_a_topic_has_and_what_delete_removes(
+    scheduler_client,
+):
+    scheduler.upsert_topic_schedules("topic-n", "rate(1 hour)", "cron(0 6 * * ? *)")
+
+    names = scheduler.topic_schedule_names("topic-n")
+
+    prefix = environment_prefix("dev")
+    assert names == [f"{prefix}topic-n-research-tick", f"{prefix}topic-n-daily-cycle"]
+    assert sorted(s["Name"] for s in scheduler_client.list_schedules()["Schedules"]) == sorted(names)
+    scheduler.delete_topic_schedules("topic-n")
+    assert scheduler_client.list_schedules()["Schedules"] == []
+
+
+@pytest.mark.parametrize(
+    ("topic_id", "refused"),
+    [("hacker-news", False), ("rail_sea.2", False), ("rail:sea", True), ("rail sea", True)],
+)
+def test_a_topic_id_eventbridge_scheduler_could_not_name_schedules_by_is_named(topic_id, refused):
+    problem = scheduler.schedule_name_problem(topic_id)
+
+    assert (problem is not None) is refused
+    if refused:
+        assert "letters, digits, '-', '_' and '.'" in problem
+
+
+def test_a_topic_id_is_refused_once_its_longer_schedule_name_passes_64_characters():
+    room = 64 - len(f"{environment_prefix('dev')}-research-tick")
+
+    assert scheduler.schedule_name_problem("a" * room) is None
+    assert f"at most {room} characters here" in scheduler.schedule_name_problem("a" * (room + 1))
 
 
 def test_delete_topic_schedules_ignores_missing_schedules(scheduler_client):

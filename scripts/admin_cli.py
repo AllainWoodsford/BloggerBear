@@ -301,12 +301,51 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
         body["daily_timezone"] = args.daily_timezone
     if args.stagger_slot is not None:
         body["stagger_slot"] = _parse_slot(args.stagger_slot)
+    if args.dispatch_mode is not None:
+        body["dispatch_mode"] = args.dispatch_mode
     _apply_model_flags(body, args)
 
     if not body:
         raise CliError("topics update requires at least one field to change")
 
-    _do_request(args, "PUT", f"/topics/{args.topic_id}", body=body)
+    # Only a move to the queue can be refused with 409 confirm_required (the Admin API's
+    # _move_to_queue); every other update stays on the shared request path.
+    if body.get("dispatch_mode") == "queue":
+        _put_topic(args, body, assume_yes=args.yes)
+    else:
+        _do_request(args, "PUT", f"/topics/{args.topic_id}", body=body)
+
+
+def _put_topic(args: argparse.Namespace, body: dict, *, assume_yes: bool) -> None:
+    """PUT /topics/<id>. Moving a topic to the queue deletes its two schedules, so the Admin API
+    refuses it (409, `confirm_required`) until confirmed: this asks "are you sure?" (or takes
+    --yes) and resends with `confirm: true`. Any other refusal (the pre-flight's 400, with every
+    reason) is printed as it is."""
+    api_url = _resolve_api_url(args)
+    region = _resolve_region(args)
+    path = f"/topics/{args.topic_id}"
+    response = signed_request("PUT", api_url, path, region, body=body)
+    if response.status_code == 409:
+        try:
+            refusal = response.json()
+        except ValueError:
+            refusal = {}
+        if refusal.get("confirm_required"):
+            schedules = ", ".join(refusal.get("schedules") or []) or "its two EventBridge schedules"
+            question = (
+                f"Moving {args.topic_id} to the queue deletes {schedules}; the dispatcher runs it "
+                "from the next minute (`topics update <id> --dispatch-mode schedule` puts them back). "
+                "Are you sure? [y/N] "
+            )
+            try:
+                sure = assume_yes or input(question).strip().lower() in ("y", "yes")
+            except EOFError:
+                sure = False
+            if not sure:
+                print("Not moved: the topic stays on its schedules.", file=sys.stderr)
+                raise SystemExit(1)
+            response = signed_request("PUT", api_url, path, region, body={**body, "confirm": True})
+    _print_response_and_exit_on_error(response)
 
 
 def _cmd_topics_delete(args: argparse.Namespace) -> None:
@@ -504,11 +543,17 @@ def _print_schedule_table(data: dict) -> None:
         "Change the gap with `pipeline-config set --stagger-minutes N`, a topic's slot with "
         "`topics update <id> --stagger-slot N`, then `topics reschedule` to rewrite every schedule."
     )
+    moved = data.get("moved_to_schedule")
+    if moved is not None:
+        verb = "Would move" if data.get("dry_run") else "Moved"
+        names = ", ".join(moved) if moved else "none (no topic is on the queue)"
+        print(f"{verb} back from the queue to their schedules: {names}")
     for topic in data.get("topics") or []:
         slot = topic.get("stagger_slot")
         state = "PAUSED" if topic.get("paused") else "running"
         print()
         print(f"{topic.get('topic_id')}  (slot {slot if slot is not None else 'none'}, {state})")
+        print(f"  dispatch: {_dispatch_line(topic)}")
         print(f"  research: {topic.get('research_schedule_text') or ''}")
         print(f"            {topic.get('research_schedule') or ''}  UTC")
         print(f"  daily:    {topic.get('daily_schedule_text') or ''}  {topic.get('daily_timezone') or ''}")
@@ -529,19 +574,30 @@ def _print_schedule_table(data: dict) -> None:
             print(f"  ERROR: {topic['error']}")
 
 
+def _dispatch_line(topic: dict) -> str:
+    """Where a topic is dispatched from, in words: its two schedules (the default, and what an
+    answer from before the field existed means), or the queue."""
+    if topic.get("dispatch_mode") == "queue":
+        return "queue (the dispatcher runs it; it has no EventBridge schedules)"
+    return "schedule (its two EventBridge schedules run it)"
+
+
 def _shadow_line(topic: dict) -> str:
     """The dispatcher's shadow record for one topic, in words, or "" before its first shadow turn:
     the mismatches with what the schedules did, the days the check could not answer (neither counts
-    as a match), and the last turns it would have dispatched."""
+    as a match), the days it did (moving to the queue needs at least one), and the last turns it
+    would have dispatched."""
     research = topic.get("shadow_last_research_dispatch_at")
     daily = topic.get("shadow_last_daily_dispatch_at")
     if not research and not daily:
         return ""
     mismatches = int(topic.get("shadow_mismatches") or 0)
     unchecked = int(topic.get("shadow_unchecked") or 0)
+    checked = int(topic.get("shadow_checked_days") or 0)
     parts = [
         f"{mismatches} mismatch{'es' if mismatches != 1 else ''}",
         f"{unchecked} unchecked day{'s' if unchecked != 1 else ''}",
+        f"{checked} checked day{'s' if checked != 1 else ''}",
     ]
     if research:
         parts.append(f"last research turn {research}")
@@ -560,6 +616,8 @@ def _cmd_topics_schedule(args: argparse.Namespace) -> None:
 
 def _cmd_topics_reschedule(args: argparse.Namespace) -> None:
     body = {"dry_run": True} if args.dry_run else {}
+    if args.dispatch_mode is not None:
+        body["dispatch_mode"] = args.dispatch_mode
     data = _fetch_json(args, "POST", "/topics/reschedule", body=body)
     if args.as_json:
         print(json.dumps(data, indent=2))
@@ -1524,7 +1582,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--editorial-goals-json",
         dest="editorial_goals_json",
         default=None,
-        help="Replaces the topic's whole editorial_goals block; '{}' clears it (back to the default)",
+        help="Replaces the whole editorial_goals block; '{}' clears it (the default)",
     )
     update_parser.add_argument(
         "--goal-rotation-json",
@@ -1558,9 +1616,8 @@ def build_parser() -> argparse.ArgumentParser:
         dest="findings_window_hours",
         default=None,
         help=(
-            "How many hours back the daily article reads findings, never past the topic's last "
-            "article: whole hours, 1 to 336, for a topic that does not write every day; '' "
-            "clears it (back to 24)"
+            "Hours back the daily article reads findings (1 to 336, never past its last article); "
+            "'' clears it (24)"
         ),
     )
     update_parser.add_argument(
@@ -1569,8 +1626,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["off", "shadow", "enforce", ""],
         help=(
-            "This topic's fresh-data review mode, overriding the pipeline-wide one: 'off', "
-            "'shadow' (record only) or 'enforce' (act on it); '' clears it (inherit)"
+            "This topic's fresh-data review mode: 'off', 'shadow' (record only) or 'enforce' "
+            "(act on it); '' inherits the pipeline-wide one"
         ),
     )
     update_parser.add_argument(
@@ -1592,10 +1649,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--stagger-slot",
         dest="stagger_slot",
         default=None,
-        help=(
-            "Move this topic to another turn in the stagger (a whole number no other topic "
-            "holds); '' gives it the next free slot. Its two schedules are rewritten at once"
-        ),
+        help="Its turn in the stagger (a free whole number); '' gives the next free one",
     )
     _add_model_flags(update_parser)
     update_parser.add_argument(
@@ -1603,7 +1657,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="reviewer_may_approve",
         choices=["on", "off", ""],
         default=None,
-        help="May the reviewer bear approve this topic's held articles; '' = `reviewer` setting",
+        help="May the reviewer bear approve its held articles; '' = `reviewer` setting",
+    )
+    update_parser.add_argument(
+        "--dispatch-mode",
+        dest="dispatch_mode",
+        choices=["queue", "schedule"],
+        default=None,
+        help="'queue' (asks first; deletes its two schedules) or 'schedule' to undo it",
+    )
+    update_parser.add_argument(
+        "--yes", action="store_true", default=False, help="Do not ask before --dispatch-mode queue"
     )
     update_parser.set_defaults(func=_cmd_topics_update)
 
@@ -1662,8 +1726,9 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_parser = topics_sub.add_parser(
         "schedule",
         help=(
-            "Show every topic's slot, state and the two schedules written for it, in plain "
-            "words and as written (the stagger: docs/project-plan.md, Staggered schedules)"
+            "Show every topic's slot, state, dispatch mode (its schedules or the queue) and the "
+            "two schedules written for it, in plain words and as written (the stagger: "
+            "docs/project-plan.md, Staggered schedules), and the dispatcher's shadow record"
         ),
     )
     schedule_parser.add_argument(
@@ -1676,7 +1741,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Rewrite every topic's two schedules with the stagger as it is now: after changing "
             "--stagger-minutes, after adding or deleting a topic (the daily delay is the number "
-            "of topics), or to give older topics their slots"
+            "of topics), or to give older topics their slots. A topic on the queue has none"
         ),
     )
     reschedule_parser.add_argument(
@@ -1685,6 +1750,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Show what would be written without changing anything",
+    )
+    reschedule_parser.add_argument(
+        "--dispatch-mode",
+        dest="dispatch_mode",
+        choices=["schedule"],
+        default=None,
+        help=(
+            "Move every topic on the queue back to its two schedules first (the undo of "
+            "`topics update <id> --dispatch-mode queue`). Without it a topic on the queue keeps none"
+        ),
     )
     reschedule_parser.add_argument(
         "--json", dest="as_json", action="store_true", default=False, help="Print the raw answer as JSON"
