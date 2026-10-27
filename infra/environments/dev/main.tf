@@ -356,18 +356,33 @@ data "aws_iam_policy_document" "lambda_exec" {
       # Scaling PR B: the sharded counters (the week's Stats row, article view counts) are
       # summed from several items, fetched in one BatchGetItem rather than one GetItem each.
       "dynamodb:BatchGetItem",
+      # Backups (lambdas/common/backup.py): a snapshot reads each table's size for its progress
+      # line, and a restore writes rows back in batches of 25. These two were a statement of
+      # their own in lambda_backup below, over the same tables; every inline policy on this role
+      # counts toward the 10,240 characters IAM allows the role's inline policies in all, and the
+      # table list written out a second time cost about 1,500 of them.
+      "dynamodb:DescribeTable",
+      "dynamodb:BatchWriteItem",
     ]
     resources = module.app_data.table_arns
   }
 
-  # Scaling PR A: common/dynamo.py Queries the Articles and ModerationQueue tables' global
-  # secondary indexes instead of Scanning them. An index has its own ARN (<table>/index/<name>),
-  # which the table ARNs above do not cover, and nothing but Query is ever run against one.
+  # Scaling PR A: common/dynamo.py Queries the Articles, ModerationQueue and SecurityEvents
+  # tables' global secondary indexes instead of Scanning them (and common/backup.py the Articles
+  # status index). An index has its own ARN (<table>/index/<name>), which the table ARNs above do
+  # not cover, and nothing but Query is ever run against one. Only the tables that have an index
+  # are listed: a table without one has no index ARN to grant, and each line costs about 90 of the
+  # 10,240 characters IAM allows the role's inline policies in all. A table given an index needs
+  # its line here; test_terraform_wiring.py fails until it has one.
   statement {
-    sid       = "DynamoDBAppIndexes"
-    effect    = "Allow"
-    actions   = ["dynamodb:Query"]
-    resources = [for arn in module.app_data.table_arns : "${arn}/index/*"]
+    sid     = "DynamoDBAppIndexes"
+    effect  = "Allow"
+    actions = ["dynamodb:Query"]
+    resources = [
+      "${module.app_data.articles_table_arn}/index/*",
+      "${module.app_data.moderation_queue_table_arn}/index/*",
+      "${module.app_data.security_events_table_arn}/index/*",
+    ]
   }
 
   statement {
@@ -516,14 +531,9 @@ data "aws_iam_policy_document" "lambda_backup" {
     }
   }
 
-  # A snapshot reads each table's size for its progress line, and a restore writes rows back in
-  # batches of 25. The same tables as the DynamoDBAppTables statement.
-  statement {
-    sid       = "BackupTables"
-    effect    = "Allow"
-    actions   = ["dynamodb:DescribeTable", "dynamodb:BatchWriteItem"]
-    resources = module.app_data.table_arns
-  }
+  # What a snapshot reads and a restore writes in the tables (DescribeTable, BatchWriteItem) is
+  # granted in lambda_exec's DynamoDBAppTables statement above, over the same tables, so that the
+  # role's inline policies do not list every table twice.
 
   # Other buckets an export may copy articles into (and a restore may read a snapshot from).
   # Empty by default: the statement is only written when there is a bucket to name.
@@ -538,10 +548,22 @@ data "aws_iam_policy_document" "lambda_backup" {
   }
 }
 
+# Updated only after lambda_exec's policy. The backups' DescribeTable and BatchWriteItem moved from
+# this policy into lambda_exec's DynamoDBAppTables, and without the edge Terraform usually updates
+# this one first: it is ready at the start of an apply, while lambda_exec's waits on everything its
+# document names (a CloudFront distribution among them), so a backup or restore could be refused
+# for minutes. With it, lambda_exec gains the two actions before this policy drops them.
+#
+# A policy added to the lambda_exec role takes its role as aws_iam_role_policy.lambda_backup.role
+# (a module's role input, or the root's own `role`): the same value as aws_iam_role.lambda_exec.id,
+# but its create then waits for this policy's update, and so for lambda_exec's. An apply that
+# shrinks these two and adds a policy never holds the old documents and the new one at once, which
+# could pass the 10,240 characters IAM allows the role's inline policies (test_terraform_wiring.py).
 resource "aws_iam_role_policy" "lambda_backup" {
-  name   = "${var.unique_name_prefix}-dev-lambda-backup"
-  role   = aws_iam_role.lambda_exec.id
-  policy = data.aws_iam_policy_document.lambda_backup.json
+  name       = "${var.unique_name_prefix}-dev-lambda-backup"
+  role       = aws_iam_role.lambda_exec.id
+  policy     = data.aws_iam_policy_document.lambda_backup.json
+  depends_on = [aws_iam_role_policy.lambda_exec]
 }
 
 resource "aws_iam_role_policy" "lambda_exec" {
