@@ -5,12 +5,13 @@ POST /evals/adjust, POST /evals/ungate and POST /evals/revoke call these; `admin
 `punish`, `ungate` and `revoke` send them.
 
 **adjust** (Admin Forgive, Admin Punish) moves one model's or one prompt version's total by a whole
-number, and no window. The gates read the windows (section 4.5), so a forgive cannot hide a bad week
-and a punish cannot gate a model today; only the total, which culling reads (PR16), moves. It writes
-the `adjust#model#<id>` or `adjust#prompt#<prompt_id>#<version>` row of the evals table itself
-(`ts#<time>`: `delta`, `reason`, `by`), then emits the event, whose id is `adjust:<time>:<target>`
-with the same time and the row's entity (less `adjust#`) as the target. The rollup scores nothing for
-the event; it adds a model's adjust# rows to `total_perf` at its next run (common/evals_rollup.py).
+number, and no window (section 4.3's "total only"): a forgive cannot hide a bad day or week from the
+daily and weekly gates, nor a punish put a model under them; the total moves, which the total gate
+and culling (PR16) read. It writes the `adjust#model#<id>` or `adjust#prompt#<prompt_id>#<version>`
+row of the evals table itself (`ts#<time>`: `delta`, `reason`, `by`), then emits the event, whose id
+is `adjust:<time>:<target>` with the same time and the row's entity (less `adjust#`) as the target.
+The rollup scores nothing for the event; it adds a model's adjust# rows to `total_perf` at its next
+run (common/evals_rollup.py).
 
 The amount is at most 100 either way (section 4.3) unless `allow_cull` is sent; and a punish that
 would take a model's total from at or above `total_gate` to below it, where the gates hold the model
@@ -62,7 +63,7 @@ _FIELD_ERRORS = {
 }
 APPLIED = {
     "model": "total_perf on the models row moves at the next hourly rollup (`evals rollup` runs it now); "
-    "no window moves, so no gate does",
+    "the daily, weekly and monthly windows never do",
     "prompt": "kept as this prompt version's adjustment: it counts in the version's total and in no window",
 }
 REVOKED = (

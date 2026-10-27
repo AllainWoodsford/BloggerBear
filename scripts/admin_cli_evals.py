@@ -215,8 +215,8 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
     ):
         adjust_parser = evals_sub.add_parser(
             direction,
-            help=f"{what} (an Admin {direction.capitalize()} event): the gates read the windows, culling "
-            "the total, which moves at the next hourly rollup",
+            help=f"{what} (an Admin {direction.capitalize()} event): the total, which the total gate and "
+            "culling read, moves at the next hourly rollup",
         )
         adjust_parser.add_argument("--model", default=None, metavar="MODEL_ID", help="The model to adjust")
         adjust_parser.add_argument(
