@@ -1007,7 +1007,7 @@ owner decisions say (an agreed override of "check off in the same PR" for this f
 - [ ] **PR21** — bug sweep
 - [ ] **PR22** — documentation sweep: configuration, models, observability, runsheets, two architecture pages, README, this checklist ticked; the spec archived
 
-#### Where it is up to (updated 2026-10-26)
+#### Where it is up to (updated 2026-10-27)
 
 A hand-off note for the next agent session: read this, then the spec. The spec is the brief: its
 section 6 holds the working rules (tools, tests, Terraform offline, attribution), section 7 the PR
@@ -1015,60 +1015,63 @@ sequence and each PR's contents, and section 7.1 the obligations earlier reviews
 PRs. The open PRs on GitHub are the live truth; this note was right when written. PR22 deletes
 this block.
 
-**Every branch started so far.** "Base" is the commit the branch was cut from, its parent's head,
-so `git diff <base>..<branch>` is the PR's own change. Each PR's base branch is its parent's
-branch until that parent merges; then it is retargeted to `dev` and rebased (spec section 6).
+**Open PRs, all reviewed (three lenses, three skeptics per finding), fixed and green.** Each is
+stacked on its parent's branch until the parent merges; then it is retargeted to `dev` and
+rebased (spec section 6).
 
-| PR | branch | base | GitHub PR | state |
-|---|---|---|---|---|
-| PR0 | `claude/jolly-lovelace-1ty0ba` | dev | #380 | green, waits on the owner |
-| Q0 | `claude/ranch-10-queue-wiring` | 2316d97 | #383 | reviewed and fixed; waits on the owner |
-| P0 | `claude/ranch-20-prompts-wiring` | 2316d97 | #382 | green, waits on the owner |
-| PR1 | `claude/ranch-21-delimiter-tag` | d95d0de | #381 | green, waits on the owner |
-| PR2 | `claude/ranch-22-bootstrap-roles` | d95d0de | none yet | reviewed and fixed; open after its full suite, base `claude/ranch-20-prompts-wiring` |
-| PR3 | `claude/ranch-23-prompts-core` | 986966c | #384 | reviewed and fixed; waits on the owner |
-| PR6 | `claude/ranch-26-migrate-drafting` | fe122f6 | none yet | reviewed, fixed and rebased on PR3; open after its full suite, base `claude/ranch-23-prompts-core` |
-| PR1b | `claude/ranch-40-model-purpose` | 2316d97 | #385 | reviewed and fixed; waits on the owner |
-| Q1 | `claude/ranch-11-work-queue` | 9d569a7 | none yet | being built |
-| PR4 | `claude/ranch-24-prompts-infra` | fe122f6 | none yet | being built |
-| E0 | `claude/ranch-41-evals-wiring` | 83863b7 | none yet | being built |
+| PR | GitHub | branch | parent |
+|---|---|---|---|
+| PR0 spec | #380 | `claude/jolly-lovelace-1ty0ba` | dev |
+| `lambda_exec` budget (not in the spec) | #393 | `claude/ranch-05-exec-role-budget` | dev |
+| Q0 queue wiring | #383 | `claude/ranch-10-queue-wiring` | PR0 |
+| Q1 work queue, shadow mode | #389 | `claude/ranch-11-work-queue` | Q0 |
+| P0 prompts wiring | #382 | `claude/ranch-20-prompts-wiring` | PR0 |
+| PR1 delimiter fix | #381 | `claude/ranch-21-delimiter-tag` | P0 |
+| PR2 bootstrap roles [B] | #386 | `claude/ranch-22-bootstrap-roles` | P0 |
+| PR3 prompts core | #384 | `claude/ranch-23-prompts-core` | PR1 |
+| PR4 prompts bucket and routes | #390 | `claude/ranch-24-prompts-infra` | PR3 |
+| PR5 publisher workflow | #394 | `claude/ranch-25-prompts-publisher` | PR4 |
+| PR6 drafting prompts | #387 | `claude/ranch-26-migrate-drafting` | PR3 |
+| PR7 review prompts | #388 | `claude/ranch-27-migrate-reviews` | PR6 |
+| PR8 research and vision prompts | #392 | `claude/ranch-28-migrate-research` | PR7 |
+| PR1b model purpose | #385 | `claude/ranch-40-model-purpose` | PR0 |
+| E0 evals wiring | #391 | `claude/ranch-41-evals-wiring` | PR1b |
 
-A branch marked "being built" may exist only in the old session's container. If it is not on
-`origin`, start it again from its base with the per-PR workflow.
+**Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
+#390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
+bundle them: the new policies are ordered after #393's shrinks.
 
-**Next, in order.**
+**Being built now:** Q2 (`claude/ranch-12-queue-cutover`, from Q1), PR9
+(`claude/ranch-29-migrate-rewrite`, from PR8) and PR12 (`claude/ranch-42-evals-core`, from E0;
+[B]: it merges only after the owner says "bootstrap applied"). A branch that is not on `origin`
+lived only in the old session's container: start it again from its parent with the per-PR
+workflow.
 
-1. Open PR2 and PR6 once their full suites pass, with milestone "Prompt as Asset" and the Done /
-   Next / Blocked block.
-2. Ship Q1, PR4 and E0 as each finishes its review: full checks, push, PR, milestone, subscribe.
-   Bases: Q1 on `claude/ranch-10-queue-wiring`, PR4 on `claude/ranch-23-prompts-core`, E0 on
-   `claude/ranch-40-model-purpose`. Milestones: "Model Evals" for Q1 and E0, "Prompt as Asset" for
-   PR4.
-3. Then the next round, each from its stack's tip:
-   - Q2 from Q1.
-   - PR5 from PR4. Its first publish needs the bootstrap applied, but it can be built and reviewed before.
-   - PR7 from PR6.
-   - PR12 from E0. It is [B]: it merges only after the owner says "bootstrap applied".
-4. After each PR opens, check the previous PRs' CI and reviews and fix what they raise.
+**Then:** PR10 (the small prompts) from PR9; PR13 (rollup, settings, status) from PR12; PR13b,
+PR11b, PR14 to PR20 in the order section 7's table gives; PR21 bug sweep; PR22 docs sweep.
 
 **Owner actions waiting.**
 
-- Review and merge the open PRs, parents first: #380, then #382 and #383 and #385, then #381, then #384.
-- After PR2 merges: apply `infra/bootstrap` by hand.
-- Create the `production-prompts` environment, with you as required reviewer and deployment branch `dev`.
-- Set the two `AWS_*_PROMPTS_ROLE_ARN` secrets. Both are repository-level, see spec section 7.1.
-- Tell the agent "bootstrap applied", so PR12 may merge.
-- Once PR1b is deployed, run `admin_cli models classify` once to backfill model purposes.
+- Review and merge the open PRs in the order above.
+- After PR2 (#386) merges: apply `infra/bootstrap` by hand; create the `production-prompts`
+  environment (required reviewer: you; deployment branch `dev`); set the two
+  `AWS_*_PROMPTS_ROLE_ARN` secrets at repository level; tell the agent "bootstrap applied".
+- To start publishing prompts: `PROMPT_AS_ASSET_ENABLED=true` as a repository variable, and the
+  `production` environment's own value `false` until production should read assets.
+- Once PR1b (#385) is deployed, run `admin_cli models classify` once.
 
 **Practical notes for a cloud session.**
 
 - The container has 4 CPUs, so a workflow runs two agents at a time. The full suite takes 11 to 13
   minutes: run it in the background and read its log. `pytest-xdist` is not installed.
+- The container has restarted twice mid-work. Agents commit as soon as the touched suites pass;
+  push finished branches (a push to a `claude/ranch-*` branch starts no workflow).
 - The Terraform registry is blocked. Module tests and `validate` need the offline provider mirror
-  described in spec section 6.
-- Pushing a `claude/ranch-*` branch starts no workflow. Only opening a PR runs the checks.
-- An implementer whose full suite cannot finish must still commit once the touched suites pass, so
-  reviewers have a commit to read. The fix stage re-runs the suite.
+  in spec section 6. Do not add a `plugin_cache_dir`: its providers fail the committed lock files'
+  checksums and every root `validate` breaks.
+- The session has a fixed disk allowance, which filled once. Delete Terraform data directories and
+  throwaway worktree copies as soon as they are done.
+- No secret in a job a pull request triggers: such jobs run the PR's own code.
 
 ## Backlog / not yet scheduled
 
