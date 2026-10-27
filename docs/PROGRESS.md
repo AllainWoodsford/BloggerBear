@@ -1036,22 +1036,29 @@ rebased (spec section 6).
 | PR7 review prompts | #388 | `claude/ranch-27-migrate-reviews` | PR6 |
 | PR8 research and vision prompts | #392 | `claude/ranch-28-migrate-research` | PR7 |
 | PR9 rewrite and reviewer-bear prompts | #397 | `claude/ranch-29-migrate-rewrite` | PR8 |
+| PR10 the remaining prompts | #398 | `claude/ranch-30-migrate-small-prompts` | PR9 |
+| PR17 topic review steering | #399 | `claude/ranch-48-review-steering` | PR7 |
 | PR1b model purpose | #385 | `claude/ranch-40-model-purpose` | PR0 |
 | E0 evals wiring | #391 | `claude/ranch-41-evals-wiring` | PR1b |
 | PR12 evals core and module [B] | #395 | `claude/ranch-42-evals-core` | E0 |
+| PR13 rollup, settings, status | #400 | `claude/ranch-43-evals-rollup` | PR12 |
 
 **Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
 #390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
 bundle them: the new policies are ordered after #393's shrinks.
 
-**Being built now:** PR13 (`claude/ranch-43-evals-rollup`, from PR12), PR17
-(`claude/ranch-48-review-steering`, from PR7) and PR10 (`claude/ranch-30-migrate-small-prompts`,
-from PR9). PR12 (#395) merges only after the owner says "bootstrap applied", and after #393. A
-branch that is not on `origin` lived only in the old session's container: start it again from its
-parent with the per-PR workflow.
+**Being built now:** PR13b (`claude/ranch-44-evals-adjust`) and PR15
+(`claude/ranch-46-rotation-guard`), both from PR13: they need only the evals stack. And
+`claude/ranch-55-stacks-meet`, the branch where the stacks meet: PR13's tip with #393, Q2, PR10
+and PR17 merged in and their conflicts resolved. It gets no PR of its own. PR14, PR11b and PR18
+need the evals and prompts stacks together, so they are built on it, and their PRs take it as
+their base. Once the stacks reach `dev`, those PRs are retargeted to `dev` and rebased like any
+other. PR12 (#395) merges only after the owner says "bootstrap applied", and after #393. A branch
+that is not on `origin` lived only in the old session's container: start it again from its parent
+with the per-PR workflow.
 
-**Then:** PR13b and PR11b from PR13; PR14 to PR20 in the order section 7's table gives (PR14 is
-built on a branch where the E and P stacks meet); PR21 bug sweep; PR22 docs sweep.
+**Then:** PR16 from PR15; PR14, PR11b and PR18 from the meeting branch, then PR18b, PR18c, PR19
+and PR20 after them; PR21 bug sweep; PR22 docs sweep.
 
 **Owner actions waiting.**
 
