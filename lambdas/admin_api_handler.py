@@ -126,10 +126,12 @@ from common.findings_window import (
     window_start,
 )
 from common.fresh_review import (
+    REVIEW_STEERING_FIELD,
     on_unavailable_error,
     resolve_on_unavailable,
     resolve_review_mode,
     review_mode_error,
+    review_steering_error,
 )
 from common.goal_rotation import FIELD as GOAL_ROTATION_FIELD
 from common.goal_rotation import normalize_goal_rotation, validate_goal_rotation
@@ -441,6 +443,12 @@ def _create_topic(event: dict) -> dict:
     mode_problem = review_mode_error(review_mode)
     if mode_problem:
         return _error(400, f"'review_mode' {mode_problem}")
+    # The operator's note on what that review should scrutinise (common/fresh_review.py). The
+    # compliance review never reads it.
+    review_steering = body.get(REVIEW_STEERING_FIELD)
+    steering_problem = review_steering_error(review_steering)
+    if steering_problem:
+        return _error(400, f"'{REVIEW_STEERING_FIELD}' {steering_problem}")
 
     # AI lineage/cost-tracking enhancement (docs/project-plan.md §11, PR 1
     # of 5): optional per-topic model overrides, read by
@@ -511,6 +519,8 @@ def _create_topic(event: dict) -> dict:
         item["findings_window_hours"] = findings_window_hours
     if review_mode is not None:
         item["review_mode"] = review_mode
+    if review_steering is not None:
+        item[REVIEW_STEERING_FIELD] = review_steering
     put_topic(item)
     _topic_changed("created", None, item)
     try:
@@ -553,6 +563,7 @@ def _update_topic(event: dict) -> dict:
         "research_interval_hours",
         "findings_window_hours",
         "review_mode",
+        REVIEW_STEERING_FIELD,
         "daily_cadence",
         "daily_timezone",
         "model_id",
@@ -630,6 +641,12 @@ def _update_topic(event: dict) -> dict:
             return _error(400, f"'review_mode' {mode_problem}")
         if updated["review_mode"] is None:
             del updated["review_mode"]  # cleared: inherit the pipeline-wide mode
+    if REVIEW_STEERING_FIELD in body:
+        steering_problem = review_steering_error(updated[REVIEW_STEERING_FIELD])
+        if steering_problem:
+            return _error(400, f"'{REVIEW_STEERING_FIELD}' {steering_problem}")
+        if updated[REVIEW_STEERING_FIELD] is None:
+            del updated[REVIEW_STEERING_FIELD]  # cleared: the review runs without a note
     if "model_id" in body and updated["model_id"] is not None and (
         not isinstance(updated["model_id"], str) or not updated["model_id"]
     ):

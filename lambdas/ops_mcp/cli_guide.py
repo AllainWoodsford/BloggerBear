@@ -82,6 +82,10 @@ WHAT_IT_DOES_MAX_CHARS = 700
 
 REVIEW_MODES = ("off", "shadow", "enforce")
 DEFAULT_REVIEW_MODE = "shadow"
+# A topic's note to its fresh-data reviewer (common/fresh_review.REVIEW_STEERING_FIELD and
+# REVIEW_STEERING_MAX_CHARS, restated for the reason _review gives; a test holds them equal).
+REVIEW_STEERING_FIELD = "topic_review_steering"
+REVIEW_STEERING_MAX_CHARS = 500
 
 OVERVIEW_DEFAULT_LIMIT = 5
 OVERVIEW_MAX_LIMIT = 50
@@ -1746,6 +1750,14 @@ def _as_json(value) -> str:
     return _cell(json.dumps(value, default=str, ensure_ascii=False), DETAIL_MAX_CHARS) if value else ""
 
 
+def _steering(topic: dict) -> str:
+    """The topic's note to its fresh-data reviewer as one cleaned line, or "" when it has none. It is
+    text a person typed for a model to read, so it goes under `untrusted`, never into a table cell or
+    `spoken`: a note written to steer a model could as well try to steer the assistant."""
+    value = topic.get(REVIEW_STEERING_FIELD)
+    return untrusted_text(value, REVIEW_STEERING_MAX_CHARS) if isinstance(value, str) else ""
+
+
 def _last_article_by_subject(topic: dict) -> str:
     """A rotating topic's last article per subject (common/day_subject.py, the daily cycle's
     `last_article_by_subject`), as one cell: "<subject> <when>; ...", by subject. Empty for every
@@ -1767,11 +1779,14 @@ def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = Non
         if one is None:
             return {"spoken": refusal, "findings": [], "matched_topic": matched}
         rows = [[column, value] for column, value in zip(OVERVIEW_COLUMNS, _overview_row(one, config))]
+        steering = _steering(one)
         rows.extend(
             [
                 ["Fallback model", _cell(one.get("fallback_model_id")) or "pipeline default"],
                 ["Editorial goals", _as_json(one.get("editorial_goals")) or "the adapter's default"],
                 ["Adapter config", _as_json(one.get("adapter_config")) or "none"],
+                # The note itself is under `untrusted` (_steering); the cell only says there is one.
+                ["Review steering", "set (topics get shows it)" if steering else "none"],
             ]
         )
         by_subject = _last_article_by_subject(one)
@@ -1781,7 +1796,7 @@ def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = Non
         paused = " It is paused, so it isn't researched or written until it is resumed." if one.get(
             "paused"
         ) is True else ""
-        return {
+        result = {
             "spoken": f"{topic_match.took(matched)}{name}'s settings are on screen.{paused}",
             "matched_topic": matched,
             "findings": [],
@@ -1790,6 +1805,9 @@ def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = Non
             "shown": 1,
             "more": 0,
         }
+        if steering:
+            result["untrusted"] = {"review_steering": steering}
+        return result
 
     limit = min(max(int(limit), 1), OVERVIEW_MAX_LIMIT)
     topics = sorted(list_topics(), key=lambda item: item.get("topic_id") or "")
