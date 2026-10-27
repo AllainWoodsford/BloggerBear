@@ -14,9 +14,16 @@ which admin_cli.build_parser calls. Today's commands:
   own (GET /evals/status).
 - `evals digest [--since DAY]`: the day totals per model and prompt version since a day, a week by
   default (GET /evals/digest).
+- `evals forgive|punish --model ID | --prompt ID --version V --amount N [--allow-cull]`: move one
+  model's or prompt version's total, and no window, by N (POST /evals/adjust). N is at most 100
+  without --allow-cull, and a punish that takes a model's total below the total gate needs it too.
+- `evals ungate --model ID --hours N`: hold a model's gates open for N hours, 0 to end that now
+  (POST /evals/ungate).
+- `evals revoke --source SOURCE [--since TIME]`: leave a source's events out of the rollup from a
+  time on, or all of them (POST /evals/revoke).
 
-forgive, punish, ungate, revoke, cull, score and runs follow with their routes. After any change to
-these commands run `python scripts/generate_cli_reference.py`, so the assistant's CLI reference
+cull, score and runs follow with their routes. After any change to these commands run
+`python scripts/generate_cli_reference.py`, so the assistant's CLI reference
 (lambdas/ops_mcp/cli_reference.json) matches.
 """
 
@@ -115,8 +122,36 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
         path = "/evals/digest" if args.since is None else f"/evals/digest?since={quote(args.since, safe='')}"
         do_request(args, "GET", path)
 
+    def adjuster(direction: str):
+        def cmd_adjust(args: argparse.Namespace) -> None:
+            if (args.model is None) == (args.prompt is None):
+                raise cli_error(f"evals {direction} needs --model ID, or --prompt ID with --version V")
+            if args.prompt is not None and args.version is None:
+                raise cli_error("--prompt needs --version")
+            if args.model is not None and args.version is not None:
+                raise cli_error("--version goes with --prompt, not --model")
+            if args.model is not None:
+                body = {"target": "model", "model_id": args.model}
+            else:
+                body = {"target": "prompt", "prompt_id": args.prompt, "version": args.version}
+            body.update(direction=direction, amount=args.amount, allow_cull=args.allow_cull)
+            do_request(args, "POST", "/evals/adjust", body=body)
+
+        return cmd_adjust
+
+    def cmd_ungate(args: argparse.Namespace) -> None:
+        do_request(args, "POST", "/evals/ungate", body={"model_id": args.model, "hours": args.hours})
+
+    def cmd_revoke(args: argparse.Namespace) -> None:
+        body = {"source": args.source}
+        if args.since is not None:
+            body["since"] = args.since
+        do_request(args, "POST", "/evals/revoke", body=body)
+
     evals_parser = subparsers.add_parser(
-        "evals", help="Continuous evals and the Model Ranch: settings, the rollup, status and a digest"
+        "evals",
+        help="Continuous evals and the Model Ranch: settings, the rollup, status, a digest, and an "
+        "operator's forgive, punish, gate override and revoked source",
     )
     evals_sub = evals_parser.add_subparsers(dest="action", required=True)
 
@@ -173,3 +208,70 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
         help="The first day, YYYY-MM-DD, or an ISO time (120 days back at most)",
     )
     digest_parser.set_defaults(func=cmd_digest)
+
+    for direction, what in (
+        ("forgive", "Raise a model's or a prompt version's total by N, and no window"),
+        ("punish", "Lower a model's or a prompt version's total by N, and no window"),
+    ):
+        adjust_parser = evals_sub.add_parser(
+            direction,
+            help=f"{what} (an Admin {direction.capitalize()} event): the gates read the windows, culling "
+            "the total, which moves at the next hourly rollup",
+        )
+        adjust_parser.add_argument("--model", default=None, metavar="MODEL_ID", help="The model to adjust")
+        adjust_parser.add_argument(
+            "--prompt",
+            default=None,
+            metavar="PROMPT_ID",
+            help="The prompt to adjust instead, <lambda_id>/<prompt_name>; needs --version",
+        )
+        adjust_parser.add_argument(
+            "--version", default=None, metavar="VERSION", help="The prompt's version: v<N>, or vanilla:v<N>"
+        )
+        adjust_parser.add_argument(
+            "--amount",
+            type=int,
+            required=True,
+            metavar="N",
+            help="How far, 1 to 100 (more with --allow-cull)",
+        )
+        adjust_parser.add_argument(
+            "--allow-cull",
+            action="store_true",
+            default=False,
+            help="Allow more than 100, or a punish that takes a model's total below the total gate, "
+            "where it is gated and may be culled",
+        )
+        adjust_parser.set_defaults(func=adjuster(direction))
+
+    ungate_parser = evals_sub.add_parser(
+        "ungate", help="Hold a model's gates open for some hours, whatever its scores (ungated_until)"
+    )
+    ungate_parser.add_argument("--model", required=True, metavar="MODEL_ID", help="The model")
+    ungate_parser.add_argument(
+        "--hours",
+        type=int,
+        required=True,
+        metavar="N",
+        help="How long, 1 to 720 hours from now; 0 ends an override now",
+    )
+    ungate_parser.set_defaults(func=cmd_ungate)
+
+    revoke_parser = evals_sub.add_parser(
+        "revoke",
+        help="Leave a source's events out of the rollup (added to excluded_sources); days already final "
+        "keep them until `evals rollup --from` adds them up again",
+    )
+    revoke_parser.add_argument(
+        "--source",
+        required=True,
+        metavar="SOURCE",
+        help="human, judge or system (who decided), run:<run id> (an offline run), or a Lambda's code",
+    )
+    revoke_parser.add_argument(
+        "--since",
+        default=None,
+        metavar="TIME",
+        help="Only its events from this ISO time on, e.g. 2026-10-27T00:00:00Z (default: all of them)",
+    )
+    revoke_parser.set_defaults(func=cmd_revoke)

@@ -50,13 +50,13 @@ REGENERATE = "python scripts/generate_cli_reference.py"
 HELP_COLUMNS = 100
 
 # A command whose last word is one of these deletes something or takes it down. Wider than the
-# commands that exist today (delete, unpublish, reject, and restore, which writes over what is
-# there), so one added later under another of
-# these names is covered without anyone remembering this list.
+# commands that exist today (delete, unpublish, reject, restore, which writes over what is there,
+# and punish, which can take a model's total below the gate culling reads), so one added later
+# under another of these names is covered without anyone remembering this list.
 DESTRUCTIVE_VERBS = frozenset(
     {
         "delete", "unpublish", "reject", "remove", "purge", "destroy", "drop", "wipe", "clear",
-        "restore",
+        "restore", "punish",
     }
 )  # fmt: skip
 # A flag that makes any command skip a safeguard.

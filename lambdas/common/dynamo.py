@@ -2006,6 +2006,31 @@ def update_config_row(config_id: str, updates: dict) -> dict:
     return get_config_row(config_id) or {"config_id": config_id}
 
 
+def replace_config_field(config_id: str, name: str, value, *, expected) -> bool:
+    """Set one attribute of a config row to `value`, but only while it still holds `expected`, the
+    value it was read with (None: not set). False, and nothing written, when it has changed since:
+    two edits of one list at once must not lose either."""
+    names = {"#f": name}
+    values = {":v": _floats_to_decimal(value)}
+    if expected is None:
+        condition = "attribute_not_exists(#f)"
+    else:
+        condition = "#f = :e"
+        values[":e"] = _floats_to_decimal(expected)
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.update_item(
+            Key={"config_id": config_id},
+            UpdateExpression="SET #f = :v",
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
 def put_config_row(item: dict) -> None:
     """Write (create or overwrite) one config row."""
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])

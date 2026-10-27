@@ -479,7 +479,7 @@ DESTRUCTIVE = [
 def test_the_destructive_commands_are_the_ones_the_reference_marks():
     assert DESTRUCTIVE == [
         "topics delete", "articles unpublish", "moderation reject", "backup restore", "refinements reject",
-        "equipment delete",
+        "equipment delete", "evals punish",
     ]  # fmt: skip
 
 
@@ -491,21 +491,27 @@ def test_a_destructive_command_is_a_template_whatever_values_are_given(path, par
         "queue_id": "q-123",
         "version": "2026-10-01T00:00:00",
         "key": "backup/bloggerbear-dev/snapshots/20261019T000000Z-manual.jsonl.gz",
+        "amount": "37",
     }
-    names = [a["dest"] for a in cli_guide.reference()["commands"][path]["arguments"] if not a["flags"]]
+    # Its positionals, and any option it cannot run without (evals punish's --amount).
+    arguments = cli_guide.reference()["commands"][path]["arguments"]
+    wanted = [a for a in arguments if not a["flags"] or a["required"]]
 
-    result = cli_guide.cli_command(path, {name: real[name] for name in names})
+    result = cli_guide.cli_command(path, {a["dest"]: real[a["dest"]] for a in wanted})
 
     (found,) = result["findings"]
     command = found["suggestion"]["command"]
     assert found["destructive"] is True and found["warning"] == cli_guide.DESTRUCTIVE_WARNING
-    assert command == f"{PROGRAM} {path} " + " ".join(f"<{name}>" for name in names)
+    words = [f"{a['flags'][0]} <{a['dest']}>" if a["flags"] else f"<{a['dest']}>" for a in wanted]
+    assert command == f"{PROGRAM} {path} " + " ".join(words)
     for value in real.values():
         assert value not in json.dumps(result)  # no real id anywhere in what goes to the page
     assert "<" in command and result["destructive"] is True
     assert "not filled it in" in result["spoken"]
-    # Still a real command once the placeholders are replaced.
-    parsed(parser, command.replace("<", "").replace(">", ""))
+    # Still a real command once each placeholder is filled in.
+    for argument in wanted:
+        command = command.replace(f"<{argument['dest']}>", real[argument["dest"]])
+    parsed(parser, command)
 
 
 def test_force_turns_any_command_into_a_template(parser):

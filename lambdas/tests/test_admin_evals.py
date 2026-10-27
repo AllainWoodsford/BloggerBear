@@ -1,18 +1,25 @@
 """The admin API's evals routes (admin_api_handler.py; docs/enhancements/model-ranch-prompt-assets-evals.md,
-PR13): GET/PUT /evals-config, POST /evals/rollup, GET /evals/status, GET /evals/digest, the perf
-fields on GET /models, and the routes' place in both environments' Terraform.
+PR13 and PR13b): GET/PUT /evals-config, POST /evals/rollup, GET /evals/status, GET /evals/digest, the
+perf fields on GET /models, POST /evals/adjust, /evals/ungate and /evals/revoke
+(common/evals_adjust.py), and the routes' place in both environments' Terraform.
 
 What is held: the settings route sets and clears what the CLI may, `timezone` (a DynamoDB reserved
 word) included, and refuses the DynamoDB-only settings; a rollup starts in eval-jobs, or is refused
 while evals are off; status answers every part, each queue on its own, and a part that cannot be
 read says "could not check" without hiding the others; the digest adds the day rows up from a day,
-in the settings' time zone; GET /models shows what the rollup put on a row.
+in the settings' time zone; GET /models shows what the rollup put on a row. An operator's forgive
+or punish writes its adjust# row and its event (the right reason, sign, decider and id), and at the
+next rollup moves the total and no window; it is at most 100 without allow_cull, and a punish that
+would take a model's total below total_gate needs allow_cull; it is refused while evals are off, for
+a model not in the registry, and over another of the same moment. An override sets ungated_until
+hours ahead (0 ends it) and never makes a models row; a revoked source is appended to
+excluded_sources once, up to the most it may hold, and the rollup leaves its events out.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -21,10 +28,10 @@ import boto3
 import pytest
 from moto import mock_aws
 from table_schemas import KEYS
-from test_evals_rollup import FakeBedrock, FakeLogs, completion, sydney
+from test_evals_rollup import FakeBedrock, FakeLogs, completion, judged, log, sydney
 
 import admin_api_handler
-from common import dynamo, evals_rollup, evals_settings, evals_status
+from common import dynamo, evals, evals_rollup, evals_settings, evals_status
 from common.naming import environment_prefix
 
 REGION = "ap-southeast-2"
@@ -33,6 +40,7 @@ QUEUE_URL = "https://sqs.ap-southeast-2.amazonaws.com/123456789012/acme-dev-eval
 WORK_QUEUE_URL = "https://sqs.ap-southeast-2.amazonaws.com/123456789012/acme-dev-work.fifo"
 ROUTES = {
     "GET /evals-config", "PUT /evals-config", "POST /evals/rollup", "GET /evals/status", "GET /evals/digest",
+    "POST /evals/adjust", "POST /evals/ungate", "POST /evals/revoke",
 }  # fmt: skip
 
 
@@ -502,6 +510,396 @@ def test_get_models_rows_carry_the_scores_the_rollup_put_on_them(aws):
     assert alpha["perf_updated_at"].startswith("2026-10-27T03:00")
 
 
+# --- forgive and punish (PR13b) -------------------------------------------------------------------
+
+# 14:00 on 27 October 2026 in Sydney (03:00 UTC): when the operator sends what these tests send.
+AT = sydney("2026-10-27T14:00")
+TS = "2026-10-27T03:00:00.000000Z"
+DRAFT = "daily_cycle/draft"
+GONE = "maker.gone-v1:0"
+MODEL_ADJUST = {"target": "model", "model_id": ALPHA, "direction": "forgive", "amount": 5}
+PROMPT_ADJUST = {"target": "prompt", "prompt_id": DRAFT, "version": "v2", "direction": "punish", "amount": 5}
+WINDOW_FIELDS = ("daily_perf", "weekly_perf", "monthly_perf", "total_perf", "perf_events")
+
+
+class Clock(datetime):
+    """A datetime whose now() is `at`, put in place of the admin API's and evals.py's own, so the
+    time of an adjustment, of its event and of Logs taking it are known."""
+
+    at = AT
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.at.astimezone(tz) if tz else cls.at
+
+
+class LogsWriter:
+    """The Logs client evals.emit writes through: each event goes into a FakeLogs, logged when it
+    was put, for the rollup to read back. With `fail`, Logs refuses it."""
+
+    def __init__(self, logs: FakeLogs):
+        self.logs, self.fail = logs, False
+
+    def create_log_stream(self, logGroupName, logStreamName):  # noqa: N803 - boto3's own argument names
+        pass
+
+    def put_log_events(self, logGroupName, logStreamName, logEvents):  # noqa: N803
+        if self.fail:
+            raise RuntimeError("logs down")
+        for event in logEvents:
+            self.logs.put(event["message"], datetime.fromtimestamp(event["timestamp"] / 1000, UTC))
+
+
+@pytest.fixture
+def logs(aws, monkeypatch):
+    """The evals log as the admin API writes it and the rollup reads it, at Clock's time."""
+    found = FakeLogs()
+    found.writer = LogsWriter(found)
+    monkeypatch.setattr(Clock, "at", AT)
+    monkeypatch.setattr(admin_api_handler, "datetime", Clock)
+    monkeypatch.setattr(evals, "datetime", Clock)
+    monkeypatch.setattr(evals, "_client", found.writer)
+    monkeypatch.setattr(evals, "_stream", None)
+    return found
+
+
+def rolled_up(logs: FakeLogs, now=AT + timedelta(hours=1)) -> dict:
+    return evals_rollup.run(now=now, logs_client=lambda region: logs, bedrock=FakeBedrock())
+
+
+def windows_of(aws, model_id=ALPHA) -> dict:
+    row = dynamo._plain_numbers(aws.Table("Models").get_item(Key={"model_id": model_id})["Item"])
+    return {field: row.get(field) for field in WINDOW_FIELDS}
+
+
+def adjust_rows(aws) -> list[dict]:
+    items = [dynamo._plain_numbers(item) for item in aws.Table("Evals").scan()["Items"]]
+    return sorted((item for item in items if item["entity"].startswith("adjust#")), key=lambda i: i["sk"])
+
+
+def events_of(logs: FakeLogs, reason: str | None = None) -> list[dict]:
+    found = [evals.parse(message) for _, message in logs.lines]
+    return [event for event in found if reason is None or event["reason"] == reason]
+
+
+def rolled_day(aws, entity: str, day: str = "2026-10-27") -> dict:
+    item = aws.Table("Evals").get_item(Key={"entity": entity, "sk": f"day#{day}"})["Item"]
+    return dynamo._plain_numbers(item)
+
+
+def test_a_forgive_moves_the_total_at_the_next_rollup_and_never_a_window(logs, aws):
+    completion(logs, "a1", DRAFT, sydney("2026-10-27T09:00"))
+    rolled_up(logs)
+    before = windows_of(aws)
+    assert before["total_perf"] == 2 and before["perf_events"]["total"] == 1
+
+    status, body = call("POST /evals/adjust", {**MODEL_ADJUST, "amount": 30})
+
+    assert status == 201
+    assert (body["delta"], body["total_perf_before"], body["total_perf"]) == (30, 2, 32)
+    assert windows_of(aws) == before  # the models row moves at the next rollup, not now
+    summary = rolled_up(logs)
+    after = windows_of(aws)
+    assert after["total_perf"] == 32
+    assert [after[field] for field in WINDOW_FIELDS[:3]] == [before[field] for field in WINDOW_FIELDS[:3]]
+    assert after["perf_events"] == before["perf_events"]  # an adjustment is not an event
+    # The rollup read the adjustment's event and scored nothing for it: no day row has its reason.
+    assert summary["adjustments"] == 1
+    assert rolled_day(aws, f"model#{ALPHA}")["by_reason"].keys() == {"Article Completion"}
+
+
+@pytest.mark.parametrize(
+    ("direction", "reason", "delta"), [("forgive", "Admin Forgive", 7), ("punish", "Admin Punish", -7)]
+)
+def test_an_adjustment_writes_its_row_then_its_event_with_its_reason_sign_decider_and_id(
+    logs, aws, direction, reason, delta
+):
+    status, body = call("POST /evals/adjust", {**MODEL_ADJUST, "direction": direction, "amount": 7})
+
+    assert status == 201 and (body["ts"], body["reason"], body["event_written"]) == (TS, reason, True)
+    assert adjust_rows(aws) == [
+        {"entity": f"adjust#model#{ALPHA}", "sk": f"ts#{TS}", "delta": delta, "reason": reason, "by": "human"}
+    ]
+    [event] = events_of(logs)
+    assert event == {
+        "schema": "evals/1", "event_id": f"adjust:{TS}:model#{ALPHA}", "timestamp": TS, "model_id": ALPHA,
+        "performance": "good" if delta > 0 else "bad", "rating_delta": delta, "reason": reason,
+        "source": "admin_api", "by": "human",
+    }  # fmt: skip
+    assert body["event_id"] == event["event_id"]
+
+
+def test_a_prompt_versions_adjustment_is_its_own_row_and_moves_no_models_total(logs, aws):
+    completion(logs, "a1", DRAFT, sydney("2026-10-27T09:00"), version="v2")
+
+    status, body = call("POST /evals/adjust", {**PROMPT_ADJUST, "amount": 4})
+
+    assert status == 201 and (body["prompt_id"], body["version"], body["delta"]) == (DRAFT, "v2", -4)
+    assert "total_perf" not in body
+    assert [(row["entity"], row["delta"]) for row in adjust_rows(aws)] == [(f"adjust#prompt#{DRAFT}#v2", -4)]
+    [event] = events_of(logs, "Admin Punish")
+    assert (event["prompt_id"], event["prompt_version"], "model_id" in event) == (DRAFT, "v2", False)
+    assert event["event_id"] == f"adjust:{TS}:prompt#{DRAFT}#v2"
+    rolled_up(logs)
+    assert windows_of(aws)["total_perf"] == 2
+
+
+def test_an_amount_over_100_is_refused_with_a_plain_400_unless_allow_cull_is_sent(logs, aws):
+    status, body = call("POST /evals/adjust", {**MODEL_ADJUST, "amount": 101})
+
+    assert (status, body) == (
+        400, {"error": "'amount' may be at most 100 unless allow_cull is true (admin_cli: --allow-cull)"},
+    )  # fmt: skip
+    assert adjust_rows(aws) == [] and logs.lines == []
+    assert call("POST /evals/adjust", {**MODEL_ADJUST, "amount": 100})[1]["delta"] == 100
+    Clock.at = AT + timedelta(seconds=1)
+    assert call("POST /evals/adjust", {**MODEL_ADJUST, "amount": 250, "allow_cull": True})[1]["delta"] == 250
+    assert [row["delta"] for row in adjust_rows(aws)] == [100, 250]
+
+
+def test_a_punish_that_would_take_a_models_total_below_the_total_gate_needs_allow_cull(logs, aws):
+    aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "total_gate": -50})
+    completion(logs, "a1", DRAFT, sydney("2026-10-27T09:00"))
+    rolled_up(logs)
+    punish = {**MODEL_ADJUST, "direction": "punish"}
+
+    assert call("POST /evals/adjust", {**punish, "amount": 40})[1]["total_perf"] == -38
+    # The first punish's adjust# row counts in the total the next one is judged by: -38 - 20.
+    Clock.at = AT + timedelta(minutes=1)
+    status, body = call("POST /evals/adjust", {**punish, "amount": 20})
+    assert status == 400 and "from -38 to -58, below total_gate (-50)" in body["error"]
+    assert "allow_cull" in body["error"] and len(adjust_rows(aws)) == 1
+    status, body = call("POST /evals/adjust", {**punish, "amount": 20, "allow_cull": True})
+    assert (status, body["total_perf_before"], body["total_perf"], body["total_gate"]) == (201, -38, -58, -50)
+    # Already below the gate, a further punish crosses nothing; a forgive never needs allow_cull.
+    Clock.at = AT + timedelta(minutes=2)
+    assert call("POST /evals/adjust", {**punish, "amount": 5})[0] == 201
+    Clock.at = AT + timedelta(minutes=3)
+    assert call("POST /evals/adjust", {**MODEL_ADJUST, "amount": 100})[1]["total_perf"] == 37
+    rolled_up(logs, now=AT + timedelta(hours=2))
+    assert windows_of(aws)["total_perf"] == 37
+
+
+def test_an_adjustment_is_refused_while_evals_are_off_and_writes_nothing(logs, aws, monkeypatch):
+    monkeypatch.setenv("EVALS_ENABLED", "false")
+
+    status, body = call("POST /evals/adjust", MODEL_ADJUST)
+
+    assert status == 409 and "evals are off" in body["error"]
+    assert adjust_rows(aws) == [] and logs.lines == []
+
+
+def test_an_adjustment_of_a_model_not_in_the_registry_is_refused(logs, aws):
+    status, body = call("POST /evals/adjust", {**MODEL_ADJUST, "model_id": GONE})
+
+    assert status == 404 and GONE in body["error"]
+    assert adjust_rows(aws) == [] and logs.lines == []
+
+
+@pytest.mark.parametrize(
+    ("body", "said"),
+    [
+        ({**MODEL_ADJUST, "target": "topic"}, "'target' must be model or prompt"),
+        ({**MODEL_ADJUST, "direction": "pardon"}, "'direction' must be forgive or punish"),
+        ({**MODEL_ADJUST, "amount": 0}, "'amount' must be a whole number from 1 to 100"),
+        ({**MODEL_ADJUST, "amount": -5}, "'amount' must be a whole number"),
+        ({**MODEL_ADJUST, "amount": "5"}, "'amount' must be a whole number"),
+        ({**MODEL_ADJUST, "amount": 2.5}, "'amount' must be a whole number"),
+        ({**MODEL_ADJUST, "amount": True}, "'amount' must be a whole number"),
+        ({**MODEL_ADJUST, "amount": 1_000_001, "allow_cull": True}, "(1,000,000 with allow_cull)"),
+        ({**MODEL_ADJUST, "allow_cull": "yes"}, "'allow_cull' must be true or false"),
+        ({**MODEL_ADJUST, "model_id": None}, "target model needs 'model_id'"),
+        ({**MODEL_ADJUST, "model_id": "a model id"}, "target model needs 'model_id'"),
+        ({**MODEL_ADJUST, "model_id": ALPHA + "\n"}, "target model needs 'model_id'"),
+        ({**MODEL_ADJUST, "version": "v2"}, "'version' does not go with target model"),
+        ({**PROMPT_ADJUST, "model_id": ALPHA}, "'model_id' does not go with target prompt"),
+        ({**PROMPT_ADJUST, "version": None}, "target prompt needs 'prompt_id' and 'version'"),
+        ({**PROMPT_ADJUST, "prompt_id": "Daily Cycle/draft"}, "'prompt_id' must be a prompt id"),
+        ({**PROMPT_ADJUST, "version": "2"}, "'version' must be a prompt version"),
+        (["not", "an", "object"], "must be a JSON object"),
+    ],
+)
+def test_an_adjustment_that_is_not_one_is_refused_and_writes_nothing(logs, aws, body, said):
+    status, answer = call("POST /evals/adjust", body)
+
+    assert status == 400 and said in answer["error"]
+    assert adjust_rows(aws) == [] and logs.lines == []
+
+
+def test_an_event_logs_cannot_take_leaves_the_adjustment_and_the_answer_says_so(logs, aws, capsys):
+    logs.writer.fail = True
+
+    status, body = call("POST /evals/adjust", MODEL_ADJUST)
+
+    assert status == 201 and body["event_written"] is False
+    assert [row["delta"] for row in adjust_rows(aws)] == [5]
+    assert "evals: could not write an event: RuntimeError('logs down')" in capsys.readouterr().out
+
+
+def test_a_second_adjustment_of_one_target_at_the_same_moment_never_replaces_the_first(logs, aws):
+    assert call("POST /evals/adjust", MODEL_ADJUST)[0] == 201
+
+    status, body = call("POST /evals/adjust", {**MODEL_ADJUST, "direction": "punish", "amount": 9})
+
+    assert status == 409 and "send it again" in body["error"]
+    assert [(row["delta"], row["reason"]) for row in adjust_rows(aws)] == [(5, "Admin Forgive")]
+    assert len(logs.lines) == 1
+
+
+# --- ungate (PR13b) --------------------------------------------------------------------------------
+
+
+def test_ungate_holds_a_models_gates_open_for_the_hours_asked_and_keeps_its_other_fields(logs, aws):
+    aws.Table("Models").update_item(
+        Key={"model_id": ALPHA},
+        UpdateExpression="SET daily_perf = :p, perf_events = :e",
+        ExpressionAttributeValues={":p": -60, ":e": {"daily": 12, "weekly": 12, "monthly": 12, "total": 12}},
+    )
+
+    status, body = call("POST /evals/ungate", {"model_id": ALPHA, "hours": 48})
+
+    until = "2026-10-29T03:00:00+00:00"
+    assert (status, body) == (200, {"model_id": ALPHA, "hours": 48, "ungated_until": until})
+    row = aws.Table("Models").get_item(Key={"model_id": ALPHA})["Item"]
+    assert (row["ungated_until"], row["display_name"], row["daily_perf"]) == (until, "Alpha", -60)
+    # Still under its daily gate; held open for 48 hours, and no longer.
+    assert evals_settings.gated_windows(row, evals_settings.get_settings()) == ["daily"]
+    assert evals_settings.ungated(row, AT + timedelta(hours=47)) is True
+    assert evals_settings.ungated(row, AT + timedelta(hours=49)) is False
+
+
+def test_ungate_never_makes_a_row_for_a_model_that_is_not_there(logs, aws):
+    status, body = call("POST /evals/ungate", {"model_id": GONE, "hours": 48})
+
+    assert status == 404 and GONE in body["error"]
+    assert aws.Table("Models").get_item(Key={"model_id": GONE}).get("Item") is None
+
+
+def test_ungate_for_no_hours_ends_an_override_now(logs, aws):
+    assert call("POST /evals/ungate", {"model_id": ALPHA, "hours": 48})[0] == 200
+
+    assert call("POST /evals/ungate", {"model_id": ALPHA, "hours": 0}) == (
+        200, {"model_id": ALPHA, "hours": 0, "ungated_until": None},
+    )  # fmt: skip
+    assert "ungated_until" not in aws.Table("Models").get_item(Key={"model_id": ALPHA})["Item"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"hours": 48},
+        {"model_id": ALPHA},
+        {"model_id": ALPHA, "hours": -1},
+        {"model_id": ALPHA, "hours": 721},
+        {"model_id": ALPHA, "hours": "48"},
+        {"model_id": ALPHA, "hours": True},
+        {"model_id": "not a model", "hours": 1},
+        ["x"],
+    ],
+)
+def test_ungate_refuses_what_is_not_a_model_and_some_hours(logs, aws, body):
+    assert call("POST /evals/ungate", body)[0] == 400
+    assert "ungated_until" not in aws.Table("Models").get_item(Key={"model_id": ALPHA})["Item"]
+
+
+def test_ungate_and_revoke_answer_while_evals_are_off(logs, aws, monkeypatch):
+    monkeypatch.setenv("EVALS_ENABLED", "false")
+
+    assert call("POST /evals/ungate", {"model_id": ALPHA, "hours": 1})[0] == 200
+    assert call("POST /evals/revoke", {"source": "judge"})[0] == 200
+    assert logs.lines == []
+
+
+# --- revoke (PR13b) --------------------------------------------------------------------------------
+
+
+def offline(logs: FakeLogs, run_id: str, item: str, at: datetime) -> dict:
+    return log(
+        logs, "Offline Review", at, parts={"run_id": run_id, "item": item, "combo": "c1"}, model_id=ALPHA,
+        prompt_id=DRAFT, prompt_version="v2", subject=item, topic_id="topic-a", rating_delta=-2,
+        source="eval_jobs", by="judge",
+    )  # fmt: skip
+
+
+def test_a_revoked_source_is_left_out_by_the_rollup_from_its_time_on(logs, aws):
+    judged(logs, "a1", "r1", 2, sydney("2026-10-27T08:00"))
+    judged(logs, "a2", "r2", -2, sydney("2026-10-27T10:00"))
+    since = "2026-10-26T22:00:00Z"  # 09:00 on the 27th in Sydney
+
+    status, body = call("POST /evals/revoke", {"source": "judge", "since": since})
+
+    assert status == 200 and body["added"] == {"source": "judge", "since": since}
+    assert body["excluded_sources"] == [body["added"]] and "evals rollup --from" in body["applied"]
+    assert call("GET /evals-config")[1]["effective"]["excluded_sources"] == [body["added"]]
+    summary = rolled_up(logs)
+    assert rolled_day(aws, f"model#{ALPHA}")["by_reason"] == {
+        "Research Review": {"perf": 2, "events": 1, "good": 1, "bad": 0}
+    }
+    assert summary["excluded"] == 1
+
+
+def test_a_revoked_offline_run_leaves_out_that_runs_events_and_no_other(logs, aws):
+    offline(logs, "r-7", "a1", sydney("2026-10-27T08:00"))
+    offline(logs, "r-8", "a2", sydney("2026-10-27T08:30"))
+
+    assert call("POST /evals/revoke", {"source": "run:r-7"})[1]["added"] == {"source": "run:r-7"}
+
+    summary = rolled_up(logs)
+    assert summary["excluded"] == 1
+    assert rolled_day(aws, f"cell#{ALPHA}#{DRAFT}#v2")["events"] == 1
+
+
+def test_revoke_adds_an_entry_once_beside_what_is_there_and_up_to_the_most_the_list_holds(logs, aws):
+    assert call("PUT /evals-config", {"excluded_sources": ["human"]})[0] == 200
+
+    status, body = call("POST /evals/revoke", {"source": "judge"})
+
+    assert status == 200 and body["excluded_sources"] == ["human", {"source": "judge"}]
+    # Already there, as an entry or as a plain selector: nothing is added.
+    for again in ({"source": "judge"}, {"source": "human"}):
+        status, body = call("POST /evals/revoke", again)
+        assert (status, body["added"]) == (200, None)
+        assert body["excluded_sources"] == ["human", {"source": "judge"}]
+    for n in range(evals_settings.MAX_EXCLUDED_SOURCES - 2):
+        assert call("POST /evals/revoke", {"source": f"run:r-{n}"})[0] == 200
+    status, body = call("POST /evals/revoke", {"source": "run:one-more"})
+    assert status == 400 and "holds 20 entries already" in body["error"]
+    assert len(evals_settings.get_settings()["excluded_sources"]) == evals_settings.MAX_EXCLUDED_SOURCES
+
+
+@pytest.mark.parametrize(
+    ("body", "said"),
+    [
+        ({}, "'source' is required"),
+        ({"source": "Judge Bot"}, "'source' must be a decider (human, judge, system)"),
+        ({"source": "run:"}, "'source' names no run id"),
+        ({"source": 7}, "'source' must be a string"),
+        ({"source": "judge", "since": "yesterday"}, "'since' must be an ISO time"),
+        ({"source": "judge", "since": 1761526800}, "'since' must be an ISO time"),
+        (["judge"], "must be a JSON object"),
+    ],
+)
+def test_revoke_refuses_what_excluded_sources_cannot_hold(logs, aws, body, said):
+    status, answer = call("POST /evals/revoke", body)
+
+    assert status == 400 and said in answer["error"]
+    assert dynamo.get_config_row("evals") is None
+
+
+def test_revoke_writes_nothing_over_a_list_that_changed_after_it_was_read(logs, aws):
+    unset = evals_settings.get_row()
+    assert call("PUT /evals-config", {"excluded_sources": ["human"]})[0] == 200
+    one = evals_settings.get_row()
+    assert call("PUT /evals-config", {"excluded_sources": ["human", "system"]})[0] == 200
+
+    # Read before the list was set, then before it changed: neither write goes over it.
+    for stale in (unset, one):
+        with patch.object(evals_settings, "get_row", return_value=stale):
+            status, body = call("POST /evals/revoke", {"source": "judge"})
+        assert status == 409 and "send it again" in body["error"]
+    assert evals_settings.get_settings()["excluded_sources"] == ["human", "system"]
+
+
 # --- Terraform ------------------------------------------------------------------------------------
 
 
@@ -514,4 +912,15 @@ def test_every_evals_route_is_in_the_environments_terraform(env):
     routes = {route for route in admin_api_handler._ROUTES if "/evals" in route}
     assert routes == ROUTES
     for route in routes:
+        assert f'"{route}",' in admin_routes, route
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_adjust_ungate_and_revoke_routes_are_in_both_environments_terraform(env):
+    main = (Path(__file__).resolve().parents[2] / "infra" / "environments" / env / "main.tf").read_text(
+        encoding="utf-8"
+    )
+    admin_routes = main[: main.index('"GET /articles/{article_id}/feedback-status"')]
+    for route in ("POST /evals/adjust", "POST /evals/ungate", "POST /evals/revoke"):
+        assert route in admin_api_handler._ROUTES, route
         assert f'"{route}",' in admin_routes, route

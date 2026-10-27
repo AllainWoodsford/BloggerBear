@@ -42,6 +42,7 @@ import boto3
 from common import (
     backup,
     equipment,
+    evals_adjust,
     evals_rollup,
     evals_settings,
     evals_status,
@@ -2868,6 +2869,58 @@ def _evals_digest_route(event: dict) -> dict:
     return _response(200, result)
 
 
+# An operator's forgive or punish, gate override and revoked source (common/evals_adjust.py, PR13b).
+# An adjustment is refused while evals are off, as a rollup is: its event could not be written, so
+# its row would move a total with nothing in the evals log to say why. An override and a revoked
+# source are answered either way: neither writes an event, and like PUT /evals-config they can be
+# set before evals are switched on (or kept while they are off, for when they are on again).
+
+
+def _evals_body(event: dict) -> dict | None:
+    """The request's JSON object, or None when it is not one."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _evals_adjust_route(event: dict) -> dict:
+    """Forgive or punish one model or prompt version: {target: model|prompt, model_id | prompt_id
+    and version, direction: forgive|punish, amount, allow_cull}."""
+    if os.environ.get("EVALS_ENABLED") != "true":
+        return _error(409, "evals are off (EVALS_ENABLED): an adjustment's event could not be written")
+    body = _evals_body(event)
+    if body is None:
+        return _error(400, "request body must be a JSON object")
+    try:
+        return _response(201, evals_adjust.adjust(body, datetime.now(UTC)))
+    except evals_adjust.Refused as exc:
+        return _error(exc.status, str(exc))
+
+
+def _evals_ungate_route(event: dict) -> dict:
+    """Hold a model's gates open: {model_id, hours} sets ungated_until (0 hours ends it)."""
+    body = _evals_body(event)
+    if body is None:
+        return _error(400, "request body must be a JSON object")
+    try:
+        return _response(200, evals_adjust.ungate(body, datetime.now(UTC)))
+    except evals_adjust.Refused as exc:
+        return _error(exc.status, str(exc))
+
+
+def _evals_revoke_route(event: dict) -> dict:
+    """Leave a source's events out of the rollup: {source, since} appended to excluded_sources."""
+    body = _evals_body(event)
+    if body is None:
+        return _error(400, "request body must be a JSON object")
+    try:
+        return _response(200, evals_adjust.revoke(body))
+    except evals_adjust.Refused as exc:
+        return _error(exc.status, str(exc))
+
+
 # --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/archive/reviewer-bear.md) -----
 #
 # The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
@@ -3388,6 +3441,9 @@ _ROUTES = {
     "POST /evals/rollup": _start_evals_rollup_route,
     "GET /evals/status": _evals_status_route,
     "GET /evals/digest": _evals_digest_route,
+    "POST /evals/adjust": _evals_adjust_route,
+    "POST /evals/ungate": _evals_ungate_route,
+    "POST /evals/revoke": _evals_revoke_route,
     "GET /reviewer-config": _get_reviewer_config_route,
     "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /pipeline-config": _get_pipeline_config_route,

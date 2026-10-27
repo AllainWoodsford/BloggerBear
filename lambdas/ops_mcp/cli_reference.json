@@ -8,6 +8,7 @@
     "delete",
     "destroy",
     "drop",
+    "punish",
     "purge",
     "reject",
     "remove",
@@ -53,7 +54,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,evals} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,evals}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    model-rotation      The shared rotation pool: the models the daily cycle moves a topic's\n                        model_id to\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n    evals               Continuous evals and the Model Ranch: settings, the rollup, status and a\n                        digest\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,evals} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,evals}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    model-rotation      The shared rotation pool: the models the daily cycle moves a topic's\n                        model_id to\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n    evals               Continuous evals and the Model Ranch: settings, the rollup, status, a\n                        digest, and an operator's forgive, punish, gate override and revoked\n                        source\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -4288,16 +4289,20 @@
       "help_text": "usage: admin_cli.py equipment unequip [-h] topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "evals": {
-      "help": "Continuous evals and the Model Ranch: settings, the rollup, status and a digest",
+      "help": "Continuous evals and the Model Ranch: settings, the rollup, status, a digest, and an operator's forgive, punish, gate override and revoked source",
       "group": true,
       "subcommands": [
         "get",
         "set",
         "rollup",
         "status",
-        "digest"
+        "digest",
+        "forgive",
+        "punish",
+        "ungate",
+        "revoke"
       ],
-      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest} ...\n\npositional arguments:\n  {get,set,rollup,status,digest}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the rollup, late events, the judge, gated models, the cull\n                        proposal, the eval-work and work.fifo queues and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest,forgive,punish,ungate,revoke} ...\n\npositional arguments:\n  {get,set,rollup,status,digest,forgive,punish,ungate,revoke}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the rollup, late events, the judge, gated models, the cull\n                        proposal, the eval-work and work.fifo queues and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n    forgive             Raise a model's or a prompt version's total by N, and no window (an Admin\n                        Forgive event): the gates read the windows, culling the total, which moves\n                        at the next hourly rollup\n    punish              Lower a model's or a prompt version's total by N, and no window (an Admin\n                        Punish event): the gates read the windows, culling the total, which moves\n                        at the next hourly rollup\n    ungate              Hold a model's gates open for some hours, whatever its scores\n                        (ungated_until)\n    revoke              Leave a source's events out of the rollup (added to excluded_sources);\n                        days already final keep them until `evals rollup --from` adds them up\n                        again\n\noptions:\n  -h, --help            show this help message and exit\n"
     },
     "evals get": {
       "help": "Show the evals settings, the values in effect and the judge's model",
@@ -4572,6 +4577,264 @@
       ],
       "destructive": false,
       "help_text": "usage: admin_cli.py evals digest [-h] [--since DAY]\n\noptions:\n  -h, --help   show this help message and exit\n  --since DAY  The first day, YYYY-MM-DD, or an ISO time (120 days back at most)\n"
+    },
+    "evals forgive": {
+      "help": "Raise a model's or a prompt version's total by N, and no window (an Admin Forgive event): the gates read the windows, culling the total, which moves at the next hourly rollup",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--model",
+          "dest": "model",
+          "kind": "option",
+          "flags": [
+            "--model"
+          ],
+          "help": "The model to adjust",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "MODEL_ID",
+          "destructive": false
+        },
+        {
+          "name": "--prompt",
+          "dest": "prompt",
+          "kind": "option",
+          "flags": [
+            "--prompt"
+          ],
+          "help": "The prompt to adjust instead, <lambda_id>/<prompt_name>; needs --version",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "PROMPT_ID",
+          "destructive": false
+        },
+        {
+          "name": "--version",
+          "dest": "version",
+          "kind": "option",
+          "flags": [
+            "--version"
+          ],
+          "help": "The prompt's version: v<N>, or vanilla:v<N>",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "VERSION",
+          "destructive": false
+        },
+        {
+          "name": "--amount",
+          "dest": "amount",
+          "kind": "option",
+          "flags": [
+            "--amount"
+          ],
+          "help": "How far, 1 to 100 (more with --allow-cull)",
+          "type": "int",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": "N",
+          "destructive": false
+        },
+        {
+          "name": "--allow-cull",
+          "dest": "allow_cull",
+          "kind": "flag",
+          "flags": [
+            "--allow-cull"
+          ],
+          "help": "Allow more than 100, or a punish that takes a model's total below the total gate, where it is gated and may be culled",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals forgive [-h] [--model MODEL_ID] [--prompt PROMPT_ID] [--version VERSION]\n                                  --amount N [--allow-cull]\n\noptions:\n  -h, --help          show this help message and exit\n  --model MODEL_ID    The model to adjust\n  --prompt PROMPT_ID  The prompt to adjust instead, <lambda_id>/<prompt_name>; needs --version\n  --version VERSION   The prompt's version: v<N>, or vanilla:v<N>\n  --amount N          How far, 1 to 100 (more with --allow-cull)\n  --allow-cull        Allow more than 100, or a punish that takes a model's total below the total\n                      gate, where it is gated and may be culled\n"
+    },
+    "evals punish": {
+      "help": "Lower a model's or a prompt version's total by N, and no window (an Admin Punish event): the gates read the windows, culling the total, which moves at the next hourly rollup",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--model",
+          "dest": "model",
+          "kind": "option",
+          "flags": [
+            "--model"
+          ],
+          "help": "The model to adjust",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "MODEL_ID",
+          "destructive": false
+        },
+        {
+          "name": "--prompt",
+          "dest": "prompt",
+          "kind": "option",
+          "flags": [
+            "--prompt"
+          ],
+          "help": "The prompt to adjust instead, <lambda_id>/<prompt_name>; needs --version",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "PROMPT_ID",
+          "destructive": false
+        },
+        {
+          "name": "--version",
+          "dest": "version",
+          "kind": "option",
+          "flags": [
+            "--version"
+          ],
+          "help": "The prompt's version: v<N>, or vanilla:v<N>",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "VERSION",
+          "destructive": false
+        },
+        {
+          "name": "--amount",
+          "dest": "amount",
+          "kind": "option",
+          "flags": [
+            "--amount"
+          ],
+          "help": "How far, 1 to 100 (more with --allow-cull)",
+          "type": "int",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": "N",
+          "destructive": false
+        },
+        {
+          "name": "--allow-cull",
+          "dest": "allow_cull",
+          "kind": "flag",
+          "flags": [
+            "--allow-cull"
+          ],
+          "help": "Allow more than 100, or a punish that takes a model's total below the total gate, where it is gated and may be culled",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py evals punish [-h] [--model MODEL_ID] [--prompt PROMPT_ID] [--version VERSION]\n                                 --amount N [--allow-cull]\n\noptions:\n  -h, --help          show this help message and exit\n  --model MODEL_ID    The model to adjust\n  --prompt PROMPT_ID  The prompt to adjust instead, <lambda_id>/<prompt_name>; needs --version\n  --version VERSION   The prompt's version: v<N>, or vanilla:v<N>\n  --amount N          How far, 1 to 100 (more with --allow-cull)\n  --allow-cull        Allow more than 100, or a punish that takes a model's total below the total\n                      gate, where it is gated and may be culled\n"
+    },
+    "evals ungate": {
+      "help": "Hold a model's gates open for some hours, whatever its scores (ungated_until)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--model",
+          "dest": "model",
+          "kind": "option",
+          "flags": [
+            "--model"
+          ],
+          "help": "The model",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": "MODEL_ID",
+          "destructive": false
+        },
+        {
+          "name": "--hours",
+          "dest": "hours",
+          "kind": "option",
+          "flags": [
+            "--hours"
+          ],
+          "help": "How long, 1 to 720 hours from now; 0 ends an override now",
+          "type": "int",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": "N",
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals ungate [-h] --model MODEL_ID --hours N\n\noptions:\n  -h, --help        show this help message and exit\n  --model MODEL_ID  The model\n  --hours N         How long, 1 to 720 hours from now; 0 ends an override now\n"
+    },
+    "evals revoke": {
+      "help": "Leave a source's events out of the rollup (added to excluded_sources); days already final keep them until `evals rollup --from` adds them up again",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--source",
+          "dest": "source",
+          "kind": "option",
+          "flags": [
+            "--source"
+          ],
+          "help": "human, judge or system (who decided), run:<run id> (an offline run), or a Lambda's code",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": "SOURCE",
+          "destructive": false
+        },
+        {
+          "name": "--since",
+          "dest": "since",
+          "kind": "option",
+          "flags": [
+            "--since"
+          ],
+          "help": "Only its events from this ISO time on, e.g. 2026-10-27T00:00:00Z (default: all of them)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": "TIME",
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals revoke [-h] --source SOURCE [--since TIME]\n\noptions:\n  -h, --help       show this help message and exit\n  --source SOURCE  human, judge or system (who decided), run:<run id> (an offline run), or a\n                   Lambda's code\n  --since TIME     Only its events from this ISO time on, e.g. 2026-10-27T00:00:00Z (default: all\n                   of them)\n"
     }
   }
 }
