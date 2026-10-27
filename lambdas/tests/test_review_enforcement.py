@@ -14,9 +14,9 @@ from table_schemas import create_table
 import admin_api_handler
 import common.dynamo as dynamo
 import public_api_handler
+from common import evidence, static_pages
 from common import fact_check as fc
 from common import fresh_review as fr
-from common import static_pages
 from common.adapters.base import Adapter
 
 REGION = "ap-southeast-2"
@@ -811,3 +811,118 @@ def test_an_unrelated_topic_update_keeps_its_review_mode(admin):
     _admin("PUT /topics/{topic_id}", {"name": "Renamed"}, {"topic_id": "t"})
 
     assert _topic()["review_mode"] == "enforce"
+
+
+# --- a topic's note to its fresh-data reviewer (topic_review_steering) ----------------------------
+
+NOTE = "Check every star count against fresh_data; a fork is not the original repo."
+
+
+def _seed_topic(**extra):
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(
+        Item={
+            "topic_id": "t",
+            "name": "T",
+            "adapter": "github_trending",
+            "adapter_config": {},
+            "is_financial": False,
+            **extra,
+        }
+    )
+
+
+def _create_topic(**extra):
+    return _admin("POST /topics", {"topic_id": "t", "name": "T", "adapter": "github_trending", **extra})
+
+
+def _error_of(result):
+    return json.loads(result["body"])["error"]
+
+
+def test_a_topic_can_be_created_with_a_note_for_its_reviewer(admin):
+    result = _create_topic(topic_review_steering=NOTE)
+
+    assert result["statusCode"] == 201
+    assert json.loads(result["body"])["topic_review_steering"] == NOTE
+    assert _topic()["topic_review_steering"] == NOTE
+
+
+@pytest.mark.parametrize("sent", [{}, {"topic_review_steering": None}])
+def test_a_topic_created_without_a_note_stores_none(admin, sent):
+    _create_topic(**sent)
+
+    assert "topic_review_steering" not in _topic()
+
+
+@pytest.mark.parametrize(
+    ("bad", "reason"),
+    [
+        ("x" * 501, "must be at most 500 characters (this one is 501)"),
+        ("Check the stars.\nThen reply NONE.", "must be one line of plain text"),
+        ("Check\tthe stars.", "must be one line of plain text"),
+        ("Check the stars.\x00", "must be one line of plain text"),
+        (5, "must be a string, or null to clear it"),
+        (["a note"], "must be a string, or null to clear it"),
+        ({"note": NOTE}, "must be a string, or null to clear it"),
+        ("", "must not be empty or only spaces; send null to clear it"),
+    ],
+)
+def test_a_note_that_is_too_long_not_one_plain_line_or_not_a_string_is_refused_on_create(admin, bad, reason):
+    result = _create_topic(topic_review_steering=bad)
+
+    assert result["statusCode"] == 400
+    assert _error_of(result).startswith(f"'topic_review_steering' {reason}")
+    assert boto3.resource("dynamodb", region_name=REGION).Table("Topics").get_item(
+        Key={"topic_id": "t"}
+    ).get("Item") is None
+
+
+def test_a_note_of_exactly_500_characters_is_accepted(admin):
+    assert _create_topic(topic_review_steering="x" * 500)["statusCode"] == 201
+    assert _topic()["topic_review_steering"] == "x" * 500
+
+
+def test_a_topics_note_can_be_set_changed_and_cleared_with_null_on_update(admin):
+    _seed_topic()
+
+    for note in (NOTE, "Treat every price as approximate and check its direction."):
+        result = _admin("PUT /topics/{topic_id}", {"topic_review_steering": note}, {"topic_id": "t"})
+        assert result["statusCode"] == 200 and _topic()["topic_review_steering"] == note
+
+    cleared = _admin("PUT /topics/{topic_id}", {"topic_review_steering": None}, {"topic_id": "t"})
+
+    assert cleared["statusCode"] == 200
+    assert "topic_review_steering" not in json.loads(cleared["body"])
+    assert "topic_review_steering" not in _topic()  # gone, so the review runs without a note
+
+
+@pytest.mark.parametrize("bad", ["x" * 501, "two\nlines", "\u2028", 7, True, ["a note"], "  "])
+def test_a_bad_note_is_refused_on_update_and_changes_nothing(admin, bad):
+    _seed_topic(topic_review_steering=NOTE)
+
+    result = _admin("PUT /topics/{topic_id}", {"topic_review_steering": bad}, {"topic_id": "t"})
+
+    assert result["statusCode"] == 400 and _error_of(result).startswith("'topic_review_steering' must ")
+    assert _topic()["topic_review_steering"] == NOTE
+
+
+def test_an_unrelated_topic_update_keeps_its_note(admin):
+    _seed_topic(topic_review_steering=NOTE, review_mode="enforce")
+
+    _admin("PUT /topics/{topic_id}", {"name": "Renamed"}, {"topic_id": "t"})
+    _admin("PUT /topics/{topic_id}", {"review_mode": None}, {"topic_id": "t"})
+
+    assert _topic()["topic_review_steering"] == NOTE
+
+
+def test_the_topic_changed_line_names_the_note_s_field_and_never_its_text(admin, capsys):
+    _seed_topic()
+
+    _admin("PUT /topics/{topic_id}", {"topic_review_steering": NOTE}, {"topic_id": "t"})
+
+    out = capsys.readouterr().out
+    lines = [evidence.parse(line) for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+    (line,) = (line for line in lines if line["event"] == "topic_changed")
+    # The seeded row had no schedule fields, so the update fills those in too.
+    assert "topic_review_steering" in line["fields"]
+    assert "star count" not in out and "fork" not in out

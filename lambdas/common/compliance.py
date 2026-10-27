@@ -51,6 +51,10 @@ _FINANCIAL_REASON = "financial topic - routed to manual moderation regardless of
 # financial topic never reaches this: it always goes to a person, with no model call.) Whether a
 # claim is accurate or still current is the fresh-data review's job (common/fresh_review.py),
 # not this one's.
+#
+# A topic's operator note steers the fresh-data review only, and nothing here reads it: text kept on
+# a topic must never be able to loosen the publish gate (rules 3 and 4). review_draft reads only the
+# topic's financial flag.
 
 MAX_SOURCE_CHARS = 12_000
 _DELIMITER_TAG = re.compile(r"<(/?)(draft|source_material)", re.IGNORECASE)

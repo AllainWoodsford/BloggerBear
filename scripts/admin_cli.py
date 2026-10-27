@@ -295,6 +295,9 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
         )
     if args.review_mode is not None:
         body["review_mode"] = args.review_mode or None  # '' clears it (inherit the pipeline mode)
+    if args.review_steering is not None:
+        # '' clears it (sent as null): the review runs without a note. The Admin API checks the rest.
+        body["topic_review_steering"] = args.review_steering or None
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
     if args.daily_timezone is not None:
@@ -1683,6 +1686,16 @@ def build_parser() -> argparse.ArgumentParser:
             "This topic's fresh-data review mode: 'off', 'shadow' (record only) or 'enforce' "
             "(act on it); '' inherits the pipeline-wide one"
         ),
+    )
+    update_parser.add_argument(
+        "--review-steering",
+        dest="review_steering",
+        default=None,
+        metavar="TEXT",
+        # One short line: the assistant shows this command's help as one card a screen tall, and a
+        # test holds it under 4,000 characters. The Admin API says the rest (one line, at most 500
+        # characters) when a note breaks it.
+        help="Fresh-data review focus note; '' clears it",
     )
     update_parser.add_argument(
         "--daily-cadence",

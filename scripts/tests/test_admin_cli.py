@@ -1081,6 +1081,40 @@ def test_a_topic_review_mode_that_does_not_exist_is_refused_by_the_cli():
         _run(["topics", "update", "my-topic", "--review-mode", "bogus"])
 
 
+def test_topics_update_sets_a_topics_note_to_its_reviewer_and_an_empty_one_clears_it():
+    note = "Check every star count against the fresh data."
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "my-topic", "--review-steering", note])
+    m.assert_called_once_with(
+        "PUT",
+        "https://api.example.com",
+        "/topics/my-topic",
+        "ap-southeast-2",
+        body={"topic_review_steering": note},
+    )
+
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "my-topic", "--review-steering", ""])
+    assert m.call_args.kwargs["body"] == {"topic_review_steering": None}
+
+
+def test_a_topics_note_goes_with_other_changes_and_the_admin_api_judges_it():
+    """The CLI sends the note as typed: the length and one-line rules are the Admin API's, so its
+    plain reason is what the operator reads."""
+    long_note = "x" * 600
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "my-topic", "--review-mode", "enforce", "--review-steering", long_note])
+    assert m.call_args.kwargs["body"] == {"review_mode": "enforce", "topic_review_steering": long_note}
+
+
+def test_the_review_steering_help_says_what_it_does_and_how_to_clear_it(capsys):
+    with pytest.raises(SystemExit):
+        _run(["topics", "update", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+
+    assert "--review-steering TEXT Fresh-data review focus note; '' clears it" in text
+
+
 def test_review_report_gets_the_report_route():
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
         _run(["review", "report"])
