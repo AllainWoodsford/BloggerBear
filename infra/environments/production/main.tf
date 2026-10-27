@@ -3325,6 +3325,10 @@ module "ops_assistant" {
   # nothing here waits on module.vision_worker.
   vision_enabled = var.vision_enabled
   vision_region  = var.vision_region
+
+  # The evals switch, so the assistant counts eval-jobs and the rest of the evals module's
+  # switched parts as deployed only while they are (ops_mcp/architecture.py switch_env).
+  evals_enabled = var.evals_enabled
 }
 
 # Made once and kept in state, as in dev: the key the agent sends the MCP server so that

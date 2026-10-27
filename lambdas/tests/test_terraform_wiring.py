@@ -1813,7 +1813,8 @@ def test_evals_are_wired_in_both_roots_and_off_until_the_repository_variable_say
     """evals_enabled defaults to false in both roots and CI reads it like VISION_ENABLED (only
     `true` turns it on), so merging the evals work starts nothing. Every Lambda is told the module's
     table and log group (real names either way), eval-work's URL ("" while off) and the switch as
-    "true" or "false". The root reads the switch twice: for that, and for the module."""
+    "true" or "false". The root reads the switch three times: for that, for the module, and for
+    the assistant, whose catalogue counts the module's switched parts as deployed only while on."""
     switch = "${{ vars.EVALS_ENABLED == 'true' && 'true' || 'false' }}"
     for name in ("terraform.yml", "terraform-production-release.yml"):
         text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
@@ -1836,9 +1837,11 @@ def test_evals_are_wired_in_both_roots_and_off_until_the_repository_variable_say
             assert re.search(rf"^\s*{key}\s*=\s*module\.evals\.{output}$", shared, re.M), (env, key)
         switched = r'^\s*EVALS_ENABLED\s*=\s*var\.evals_enabled \? "true" : "false"$'
         assert re.search(switched, shared, re.M), env
-        assert main.count("var.evals_enabled") == 2, env
+        assert main.count("var.evals_enabled") == 3, env
         (call,) = _module_blocks(main, "modules/evals")
         assert re.search(r"^  enabled\s*=\s*var\.evals_enabled$", call, re.M), env
+        (assistant,) = _module_blocks(main, "modules/ops-assistant")
+        assert re.search(r"^  evals_enabled\s*=\s*var\.evals_enabled$", assistant, re.M), env
     outputs = _read("modules", "evals", "outputs.tf")
     url = re.search(r'output "work_queue_url" \{\n.*\n\s*value\s*=\s*(.*)\n', outputs).group(1)
     assert url == 'try(aws_sqs_queue.eval_work[0].url, "")'  # "" while the queue does not exist
@@ -2453,6 +2456,33 @@ def test_the_vision_policy_reads_one_workers_log_and_the_running_states_only_whe
     memory = (ROOT / "lambdas" / "ops_mcp" / "memory.py").read_text(encoding="utf-8")
     assert 'region_env="OPS_VISION_REGION"' in architecture and "component_region" in vision_status
     assert 'SCREEN_CLIENT_IDS_ENV = "OPS_SCREEN_CLIENT_IDS"' in memory
+
+
+def test_the_assistant_is_told_the_evals_switch_its_catalogue_reads():
+    """eval-jobs, the eval-work queue and their schedules exist only while evals are on. The MCP
+    server is told the switch under the pipeline's own name and form (EVALS_ENABLED, the exact word
+    "true" for on), and the catalogue's switch_env reads it, so with evals off a log review neither
+    reads nor refuses eval-jobs' log group."""
+    variable = re.search(
+        r'variable "evals_enabled" \{(.*?)\n\}', _read("modules", "ops-assistant", "variables.tf"), re.S
+    ).group(1)
+    assert re.search(r"type\s*=\s*bool", variable) and re.search(r"default\s*=\s*false", variable)
+    function = _uncommented(_resource_block(_ops_module(), "aws_lambda_function", "ops_mcp"))
+    assert re.search(r'^\s*EVALS_ENABLED\s*=\s*var\.evals_enabled \? "true" : "false"$', function, re.M)
+    for environment in ("dev", "production"):
+        main = _read("environments", environment, "main.tf")
+        call = _uncommented(_module_blocks(main, "modules/ops-assistant")[0])
+        assert re.search(r"^\s*evals_enabled = var\.evals_enabled$", call, re.M), environment
+        # The same switch, in the same form, as the pipeline's functions and the evals module get.
+        assert re.search(r'^\s*EVALS_ENABLED\s*=\s*var\.evals_enabled \? "true" : "false"$', main, re.M)
+        evals = _uncommented(_module_blocks(main, "modules/evals")[0])
+        assert re.search(r"^\s*enabled\s*=\s*var\.evals_enabled$", evals, re.M), environment
+    # The agent reads no catalogue of its own.
+    agent = _uncommented(_resource_block(_agent_module(), "aws_lambda_function", "ops_agent"))
+    assert "EVALS_ENABLED" not in agent
+    architecture = (ROOT / "lambdas" / "ops_mcp" / "architecture.py").read_text(encoding="utf-8")
+    assert architecture.count('switch_env="EVALS_ENABLED"') == 4
+    assert '{"EVALS_ENABLED": ("evals", "evals_enabled")}' in architecture
 
 
 # One environment each (infra/modules/ops-assistant/isolation.tf; the design's section 6). Dev and

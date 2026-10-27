@@ -107,7 +107,11 @@ class Component:
     `region_env` names the environment variable that holds the Region this component lives in, for
     one outside the stack's home Region (the vision worker: OPS_VISION_REGION). Such a component
     exists only while that variable holds a Region (component_region), and its console links and
-    log reads go to that Region."""
+    log reads go to that Region. `switch_env` names the environment variable of the switch a
+    component is made under, for one Terraform makes only while that switch is on (eval-jobs and
+    the rest of the evals module's active parts: EVALS_ENABLED, one of SWITCHES). Such a component
+    exists only while the variable holds the exact word "true" (switched_off), so a log review
+    neither reads nor refuses it while the switch is off."""
 
     kind: str
     key: str
@@ -121,6 +125,7 @@ class Component:
     only_in: tuple[str, ...] = ()
     assistant_reads: bool = False
     region_env: str | None = None
+    switch_env: str | None = None
     keys: tuple[str, ...] = field(default=())  # a table's hash key, then its range key if any
     indexes: tuple[str, ...] = ()
     ttl: str | None = None  # a table's TTL attribute
@@ -296,9 +301,9 @@ CATALOGUE: tuple[Component, ...] = (
     ),
     _table(
         "failed-executions",
-        "One row per daily-cycle run that ran out of retries and landed on the dead-letter "
-        "queue (the topic and the error), and one per model price check that put a price back "
-        '(kind "model_pricing").',
+        "One row per dead-letter message (a daily-cycle run that ran out of retries, with the topic "
+        "and the error; or, while evals are on, an eval-work job, its body kept in raw_message), "
+        'and one per model price check that put a price back (kind "model_pricing").',
         ("failure_id",),
         ttl="expires_at",
         details=(
@@ -580,6 +585,9 @@ CATALOGUE: tuple[Component, ...] = (
         details=(("Exists", "only while evals are switched on (evals_enabled)"),),
         alarms=(f"{PREFIX}{ENV}-eval-rollup-heartbeat",),
         aliases=("evals-jobs", "evals-rollup"),
+        # Made only while evals are on (the deployment tells the assistant EVALS_ENABLED): with
+        # them off it is not deployed here, so a log review neither reads nor refuses its log.
+        switch_env="EVALS_ENABLED",
     ),
     _lambda(
         "musing-feedback",
@@ -718,8 +726,16 @@ CATALOGUE: tuple[Component, ...] = (
         kind="queue",
         key="pipeline-dlq",
         name=f"{PREFIX}{ENV}-pipeline-dlq",
-        purpose="Where a daily-cycle run lands after its retries ran out; dlq-handler records "
-        "each one in failed-executions.",
+        purpose="Where a daily-cycle run lands after its retries ran out and, while evals are on, an "
+        "eval-work judge or scoring job after three receives; dlq-handler records each one in "
+        "failed-executions.",
+        details=(
+            (
+                "Comes from",
+                f"the daily cycle's state machine; {PREFIX}{ENV}-eval-work after three receives, only "
+                "while evals are on (its row in failed-executions has no topic_id)",
+            ),
+        ),
         log_groups=(f"/aws/lambda/{PREFIX}{ENV}-dlq-handler",),
         dashboards=(_PIPELINE_DASHBOARD,),
         alarms=(f"{PREFIX}{ENV}-pipeline-dlq-messages",),
@@ -739,6 +755,7 @@ CATALOGUE: tuple[Component, ...] = (
         log_groups=(f"/aws/lambda/{PREFIX}{ENV}-eval-jobs",),
         alarms=(f"{PREFIX}{ENV}-eval-work-age",),
         aliases=("eval-queue", "evals-queue"),
+        switch_env="EVALS_ENABLED",
     ),
     Component(
         kind="topic",
@@ -882,6 +899,7 @@ CATALOGUE: tuple[Component, ...] = (
         # A rollup that is not invoked has no error to alarm on; the heartbeat notices.
         alarms=(f"{PREFIX}{ENV}-eval-rollup-heartbeat", f"{PREFIX}{ENV}-schedule-invocations-dropped"),
         aliases=("rollup-schedule",),
+        switch_env="EVALS_ENABLED",
     ),
     Component(
         kind="schedule",
@@ -893,6 +911,7 @@ CATALOGUE: tuple[Component, ...] = (
         log_groups=(f"/aws/lambda/{PREFIX}{ENV}-eval-jobs",),
         alarms=(f"{PREFIX}{ENV}-schedule-invocations-dropped",),
         aliases=("judge-schedule",),
+        switch_env="EVALS_ENABLED",
     ),
     Component(
         kind="bucket",
@@ -2012,9 +2031,23 @@ def component_region(component: Component) -> str | None:
     return region()
 
 
+# The switches a component can be made under (Component.switch_env), by environment variable: what
+# they switch on, in words, and the Terraform variable that sets them (the ops-assistant module is
+# given it and tells the function, as the pipeline's functions are told it).
+SWITCHES: dict[str, tuple[str, str]] = {"EVALS_ENABLED": ("evals", "evals_enabled")}
+
+
+def switched_off(component: Component) -> bool:
+    """Whether a component's switch is off: anything but the exact word "true", as the pipeline
+    reads it. False for a component made under no switch."""
+    return component.switch_env is not None and os.environ.get(component.switch_env) != "true"
+
+
 def exists_in(component: Component, env: str | None) -> bool:
-    return (not component.only_in or env in component.only_in) and (
-        component.region_env is None or component_region(component) is not None
+    return (
+        (not component.only_in or env in component.only_in)
+        and (component.region_env is None or component_region(component) is not None)
+        and not switched_off(component)
     )
 
 
@@ -2022,6 +2055,8 @@ def _absent(component: Component, env: str | None) -> str:
     """Why a component is not in this environment, in a few words for a table."""
     if component.only_in and env not in component.only_in:
         return f"only in {', '.join(component.only_in)}"
+    if switched_off(component):
+        return f"only while {SWITCHES[component.switch_env][0]} are on"
     return "not deployed here"
 
 
@@ -2249,10 +2284,15 @@ def describe(component: Component, env: str | None) -> dict:
             ]
         )
     present = exists_in(component, env)
-    if not present and component.region_env and _absent(component, env) == "not deployed here":
+    absent = _absent(component, env)
+    if not present and component.region_env and absent == "not deployed here":
         rows.append(["In this environment", "no: only where vision is on (VISION_ENABLED)"])
+    elif not present and absent.startswith("only while "):
+        # Its switch is off (_absent): named with the Terraform variable that turns it on, as the
+        # vision worker's row names VISION_ENABLED.
+        rows.append(["In this environment", f"no: {absent} ({SWITCHES[component.switch_env][1]})"])
     elif not present:
-        rows.append(["In this environment", f"no: {_absent(component, env)}"])
+        rows.append(["In this environment", f"no: {absent}"])
     url = console_url(component.kind, name, component_region(component)) if present else None
     if url:
         rows.append(["Open", url])

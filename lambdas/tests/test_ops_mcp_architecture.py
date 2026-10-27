@@ -1010,6 +1010,49 @@ def test_a_component_not_deployed_here_says_so_in_the_tables(dev, monkeypatch):
     assert "(only in )" not in str(layer)
 
 
+# The evals module's switched parts (infra/modules/evals: count = var.enabled ? 1 : 0), and the two
+# it makes whether evals are on or off.
+EVALS_SWITCHED = [("function", "eval-jobs"), ("queue", "eval-work"), ("schedule", "eval-rollup"),
+                  ("schedule", "eval-judge")]  # fmt: skip
+EVALS_ALWAYS = [("table", "evals"), ("log_group", "evals")]
+
+
+def test_the_evals_modules_switched_parts_exist_only_while_evals_are_on(dev, monkeypatch):
+    """eval-jobs, the eval-work queue and their schedules are made only while evals are on, which the
+    deployment tells the assistant as EVALS_ENABLED: until then they are not deployed here, so a log
+    review neither reads nor refuses eval-jobs' log group. The table and the log group always are."""
+    assert {(c.kind, c.key) for c in CATALOGUE if c.switch_env} == set(EVALS_SWITCHED)
+    switches = {c.switch_env for c in CATALOGUE if c.switch_env}
+    assert switches == {"EVALS_ENABLED"} and switches <= set(architecture.SWITCHES)
+    for value in (None, "false", "", "True"):
+        if value is None:
+            monkeypatch.delenv("EVALS_ENABLED", raising=False)
+        else:
+            monkeypatch.setenv("EVALS_ENABLED", value)
+        for kind, key in EVALS_SWITCHED:
+            component = architecture.by_key(kind, key)
+            assert not architecture.exists_in(component, "dev"), (value, key)
+            assert not architecture.exists_in(component, "production"), (value, key)
+            answer = architecture.describe(component, "dev")
+            assert answer["exists_here"] is False and answer["console_url"] is None, (value, key)
+            row = ["In this environment", "no: only while evals are on (evals_enabled)"]
+            assert row in answer["table"]["rows"], (value, key)
+        for kind, key in EVALS_ALWAYS:
+            assert architecture.describe(architecture.by_key(kind, key), "dev")["exists_here"] is True, value
+    rows = architecture.architecture(kind="function")["table"]["rows"]
+    (eval_jobs,) = (row for row in rows if row[0] == architecture.fill(f"{PREFIX}{ENV}-eval-jobs", "dev"))
+    assert eval_jobs[1].startswith("(only while evals are on) ")
+
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    for kind, key in EVALS_SWITCHED + EVALS_ALWAYS:
+        component = architecture.by_key(kind, key)
+        assert architecture.exists_in(component, "dev") and architecture.exists_in(component, "production")
+        answer = architecture.describe(component, "dev")
+        assert answer["exists_here"] is True, key
+        assert not any(row[0] == "In this environment" for row in answer["table"]["rows"]), key
+    assert architecture.describe(architecture.by_key("function", "eval-jobs"), "dev")["console_url"]
+
+
 def test_the_content_bucket_holds_the_running_states_and_figures():
     purpose = architecture.by_key("bucket", "content").purpose
     assert "snapshots/<topic>/running-state.json" in purpose

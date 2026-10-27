@@ -31,3 +31,16 @@ def test_an_event_that_is_not_a_job_is_logged_as_unknown_and_never_raises(capsys
     assert eval_jobs_handler.handler(event, None) == {"status": "skipped", "job": "unknown"}
     out = capsys.readouterr().out
     assert out == "eval_jobs_handler: job unknown received; nothing runs it yet\n"
+
+
+def test_an_exception_inside_the_handler_is_printed_by_its_repr_and_returned_as_an_error(capsys, monkeypatch):
+    def broken(kind, value):
+        raise RuntimeError("evidence\nbroke")
+
+    # monkeypatch puts the shared common.evidence back afterwards.
+    monkeypatch.setattr(eval_jobs_handler.evidence, "check", broken)
+
+    assert eval_jobs_handler.handler({"job": "rollup", "trigger": "schedule"}, None) == {"status": "error"}
+    # By its repr (section 6), so the newline in the message stays escaped on one line.
+    out = capsys.readouterr().out
+    assert out == "eval_jobs_handler: unhandled exception: RuntimeError('evidence\\nbroke')\n"

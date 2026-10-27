@@ -283,3 +283,9 @@ variable "vision_region" {
     error_message = "vision_region must look like an AWS region, e.g. us-west-2."
   }
 }
+
+variable "evals_enabled" {
+  type        = bool
+  default     = false
+  description = "Whether the root switches evals on (its var.evals_enabled), so the evals module makes eval-jobs, the eval-work queue and their schedules. The MCP server is told it (EVALS_ENABLED), so the catalogue counts those as deployed only then and a log review neither reads nor refuses eval-jobs' log while evals are off."
+}

@@ -188,15 +188,17 @@ FIELDS = (
 )
 
 MAX_EVENT_ID_CHARS = 512
+# Each of these is matched whole (`fullmatch`): with `match` and `$`, a trailing newline would pass,
+# and `v1\n` would then be a prompt version of its own to the rollup, which groups by these values.
 # `<lambda_id>/<prompt_name>`, each a code (section 4.1).
-_PROMPT_ID = re.compile(r"^[a-z][a-z0-9_]{0,39}/[a-z][a-z0-9_]{0,39}$")
+_PROMPT_ID = re.compile(r"[a-z][a-z0-9_]{0,39}/[a-z][a-z0-9_]{0,39}")
 # An asset's S3 version tag (`v2`), or a code fallback's `vanilla:v1`.
-_PROMPT_VERSION = re.compile(r"^(?:vanilla:)?v[1-9][0-9]{0,5}$")
+_PROMPT_VERSION = re.compile(r"(?:vanilla:)?v[1-9][0-9]{0,5}")
 # One part of an event id: an id, a subject, a prompt id, an ISO time, a model id, or a
 # combination's `<model>@<prompt_id>=<version>,...`. No spaces, so no words. The parts themselves
 # hold colons (a time, a model id), so a whole id is checked by its prefix and its characters.
-_ID_PART = re.compile(r"^[A-Za-z0-9_.:/#+@=,-]{1,200}$")
-_ID_CHARS = re.compile(r"^[A-Za-z0-9_.:/#+@=,-]+$")
+_ID_PART = re.compile(r"[A-Za-z0-9_.:/#+@=,-]{1,200}")
+_ID_CHARS = re.compile(r"[A-Za-z0-9_.:/#+@=,-]+")
 _ID_PREFIXES = frozenset(scoring.event_id[0] for scoring in SCORING.values())
 
 # The Logs client (section 4.3): one second to connect, one to read, one retry (botocore's legacy
@@ -212,20 +214,29 @@ _stream = None
 # --- the kinds --------------------------------------------------------------------------------------
 
 
+def _whole(kind: str, value) -> str | None:
+    """evidence.py's `kind`, matched whole. Its code, id and model patterns end in `$` and are used
+    with `re.match`, which lets one trailing newline past; here an id is a key the rollup groups and
+    deduplicates by, so `a1b2\\n` must not pass as an id of its own."""
+    if isinstance(value, str) and value.endswith("\n"):
+        return None
+    return evidence.check(kind, value)
+
+
 def _subject(value) -> str | None:
     """An article id, or a Finding's `<topic_id>#<captured_at>`."""
     if not isinstance(value, str):
         return None
     if "#" not in value:
-        return evidence.check("id", value)
+        return _whole("id", value)
     topic_id, _, captured_at = value.partition("#")
-    if evidence.check("id", topic_id) is None or evidence.check("iso", captured_at) is None:
+    if _whole("id", topic_id) is None or evidence.check("iso", captured_at) is None:
         return None
     return value
 
 
 def _pattern(pattern: re.Pattern):
-    return lambda value: value if isinstance(value, str) and pattern.match(value) else None
+    return lambda value: value if isinstance(value, str) and pattern.fullmatch(value) else None
 
 
 def _event_id_value(value) -> str | None:
@@ -233,19 +244,19 @@ def _event_id_value(value) -> str | None:
     if not isinstance(value, str) or len(value) > MAX_EVENT_ID_CHARS:
         return None
     prefix, separator, rest = value.partition(":")
-    return value if separator and prefix in _ID_PREFIXES and _ID_CHARS.match(rest) else None
+    return value if separator and prefix in _ID_PREFIXES and _ID_CHARS.fullmatch(rest) else None
 
 
 # Each optional field's kind. schema, reason, performance and rating_delta are checked on their own.
 _KINDS = {
     "event_id": _event_id_value,
     "timestamp": lambda value: evidence.check("iso", value),
-    "model_id": lambda value: evidence.check("model", value),
+    "model_id": lambda value: _whole("model", value),
     "prompt_id": _pattern(_PROMPT_ID),
     "prompt_version": _pattern(_PROMPT_VERSION),
     "subject": _subject,
-    "topic_id": lambda value: evidence.check("id", value),
-    "source": lambda value: evidence.check("code", value),
+    "topic_id": lambda value: _whole("id", value),
+    "source": lambda value: _whole("code", value),
     "by": lambda value: value if value in BY else None,
 }
 
@@ -266,7 +277,7 @@ def event_id(reason: str, **parts) -> str | None:
         return None
     prefix, *names = scoring.event_id
     values = [parts.get(name) for name in names]
-    if set(parts) != set(names) or not all(isinstance(v, str) and _ID_PART.match(v) for v in values):
+    if set(parts) != set(names) or not all(isinstance(v, str) and _ID_PART.fullmatch(v) for v in values):
         return None
     built = ":".join([prefix, *values])
     return built if len(built) <= MAX_EVENT_ID_CHARS else None

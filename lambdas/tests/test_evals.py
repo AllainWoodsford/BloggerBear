@@ -3,7 +3,8 @@ section 4.3).
 
 What is held: the scoring table is section 4.3's; each reason's event id has its own shape; an
 event is refused whole for an unknown reason, a delta the reason may not carry, a performance that
-does not match the delta's sign, or any field that is not its kind, so free text has nowhere to go;
+does not match the delta's sign, or any field that is not its kind (matched whole, so not with a
+trailing newline either), so free text has nowhere to go; a prompt-scoped reason needs its prompt;
 `parse` reads back exactly what `emit` writes and leaves out what the schema does not name; `emit`
 writes one line to this container's stream, writes nothing and builds no client with the switch
 off, and never raises whatever Logs does; `author_of` names the models that wrote an item and not
@@ -88,6 +89,23 @@ def test_the_scoring_table_is_section_4_3s_in_its_order():
     assert gates["Admin Forgive"] == gates["Admin Punish"] == "total_only"
     assert gates["Prompt Fallback"] == "counted"
     assert {gate for gate in gates.values()} <= set(evals.GATES)
+    # Section 4.3's "applies to" column. Nothing reads it yet, so only this holds it.
+    assert {reason: scoring.applies_to for reason, scoring in evals.SCORING.items()} == {
+        "Article Completion": "model_and_prompts",
+        "Article Rewrite": "model",
+        "User Feedback": "model",
+        "Admin Review": "model_and_prompts",
+        "Research Review": "model_and_prompts",
+        "Article Review": "model_and_prompts",
+        "Human Review": "model_and_prompts",
+        "Offline Review": "combination",
+        "Admin Forgive": "target",
+        "Admin Punish": "target",
+        "Prompt Fallback": "prompt_version",
+    }
+    # The reasons whose event ids name a prompt (section 4.3's list) are the ones that need one.
+    prompted = {reason for reason, scoring in evals.SCORING.items() if "prompt" in scoring.needs}
+    assert prompted == {"Article Completion", "Admin Review", "Offline Review", "Prompt Fallback"}
 
 
 def test_the_spec_example_is_written_byte_for_byte():
@@ -165,6 +183,23 @@ def test_an_event_id_with_a_part_missing_extra_or_in_words_is_not_built():
     assert record is None and why == "missing_event_id"
 
 
+def test_an_event_id_over_512_characters_is_refused_by_the_writer_and_the_reader():
+    at_cap = "completion:" + "a" * (evals.MAX_EVENT_ID_CHARS - len("completion:"))
+    record, why = evals.event("Article Completion", **_completion(event_id=at_cap))
+    assert why is None and evals.parse(record) == record
+    over = at_cap + "a"
+    assert evals.event("Article Completion", **_completion(event_id=over)) == (None, "bad_event_id")
+    assert evals.parse(_line(event_id=over)) is None
+
+
+def test_an_event_id_whose_parts_join_past_512_characters_is_not_built():
+    # offline: + 200 + : + 200 + : + 102 is exactly 512 characters. Not User Feedback: its one part
+    # is held to 200 characters, so its id can never reach the cap.
+    assert len(evals.event_id("Offline Review", run_id="r" * 200, item="i" * 200, combo="c" * 102)) == 512
+    assert evals.event_id("Offline Review", run_id="r" * 200, item="i" * 200, combo="c" * 103) is None
+    assert evals.event_id("Admin Review", queue_id="q" * 200, decision="d" * 200, prompt_id="p" * 200) is None
+
+
 # --- the schema -----------------------------------------------------------------------------------
 
 
@@ -213,6 +248,14 @@ def test_a_delta_the_reason_may_not_carry_is_refused(reason, delta):
 def test_a_delta_that_is_not_a_whole_number_is_refused():
     for delta in (2.0, "2", True, None):
         assert evals.parse(_line(rating_delta=delta)) is None, delta
+        assert evals._validated(_line(rating_delta=delta)) == (None, "bad_rating_delta"), delta
+    # True == 1, which a vote may carry: only the bool check refuses it.
+    vote = _line(reason="User Feedback", event_id="vote:fb-1", rating_delta=True)
+    assert evals.parse(vote) is None
+    assert evals._validated(vote) == (None, "bad_rating_delta")
+    assert evals.parse({**vote, "rating_delta": 1}) is not None
+    record, why = evals.event("User Feedback", **_completion(event_id="vote:fb-1"), rating_delta=True)
+    assert record is None and why == "bad_rating_delta"
     record, why = evals.event("User Feedback", **_completion(event_id="vote:fb-1"))
     assert record is None and why == "missing_rating_delta"  # +-1 or +-3: the caller says which
 
@@ -230,12 +273,39 @@ def test_free_text_is_dropped_by_the_reader_and_refused_by_the_writer():
         ("prompt_version", "the new one"),
         ("topic_id", "github trending"),
         ("source", "Daily Cycle"),
-        ("by", "Allain"),
+        # A code's shape but not a role (section 3, deviation 10): only the role codes are taken.
+        ("by", "operator"),
         ("timestamp", "yesterday"),
     ):
         record, why = evals.event("Article Completion", **_completion(**{field: words}))
         assert record is None and why == f"bad_{field}", field
         assert evals.parse(_line(**{field: words})) is None, field
+    for role in evals.BY:
+        record, why = evals.event("Article Completion", **_completion(by=role))
+        assert why is None and record["by"] == role, role
+
+
+def test_a_trailing_newline_is_refused_by_the_writer_and_the_reader():
+    """With `re.match` and `$`, one trailing newline passes, and the rollup groups and deduplicates
+    by these values: `v2\\n` would be a prompt version of its own, and the same event id with and
+    without one would count twice."""
+    for field, value in (
+        ("event_id", "completion:a1b2:daily_cycle/draft\n"),
+        ("prompt_id", "daily_cycle/draft\n"),
+        ("prompt_version", "v2\n"),
+        ("model_id", f"{MODEL}\n"),
+        ("subject", "a1b2\n"),
+        ("subject", "github-trending\n#2026-10-25T03:04:05+00:00"),
+        ("subject", "github-trending#2026-10-25T03:04:05+00:00\n"),
+        ("topic_id", "github-trending\n"),
+        ("source", "daily_cycle\n"),
+    ):
+        record, why = evals.event("Article Completion", **_completion(**{field: value}))
+        assert record is None and why == f"bad_{field}", (field, value)
+        assert evals.parse(_line(**{field: value})) is None, (field, value)
+        assert evals.parse(json.dumps(_line(**{field: value}))) is None, (field, value)
+    assert evals.event_id("Article Completion", article_id="a1b2", prompt_id="daily_cycle/draft\n") is None
+    assert evals.event_id("Article Completion", article_id="a1b2\n", prompt_id="daily_cycle/draft") is None
 
 
 def test_a_finding_subject_is_its_topic_and_capture_time():
@@ -259,6 +329,34 @@ def test_a_prompt_id_comes_with_its_version_and_prompt_reasons_need_one():
     for fields in (_completion(event_id="rewrite:rw-1"), _completion(event_id="rewrite:rw-1", **both_gone)):
         record, why = evals.event("Article Rewrite", **fields)
         assert why is None and record["reason"] == "Article Rewrite"
+
+
+@pytest.mark.parametrize(
+    ("reason", "fields"),
+    [
+        ("Admin Review", _completion(event_id="admin:q-5d1e:approve:daily_cycle/draft", rating_delta=2)),
+        (
+            "Offline Review",
+            _completion(event_id=f"offline:run-9:3:{MODEL}@daily_cycle/draft=v3", rating_delta=-2),
+        ),
+        (
+            "Prompt Fallback",
+            {
+                "event_id": "fallback:req-1:daily_cycle/draft",
+                "source": "daily_cycle",
+                "prompt_id": "daily_cycle/draft",
+                "prompt_version": "vanilla:v1",
+            },
+        ),
+    ],
+)
+def test_a_prompt_scoped_reason_without_its_prompt_is_refused_by_the_writer_and_the_reader(reason, fields):
+    """Section 4.3: these reasons' events are one per (subject, prompt_id), or a prompt version's."""
+    record, why = evals.event(reason, **fields)
+    assert why is None
+    unprompted = {**fields, "prompt_id": None, "prompt_version": None}
+    assert evals.event(reason, **unprompted) == (None, "missing_prompt")
+    assert evals.parse({k: v for k, v in record.items() if k not in ("prompt_id", "prompt_version")}) is None
 
 
 def test_every_reason_but_an_adjustment_or_a_fallback_needs_its_model_subject_and_topic():
@@ -419,18 +517,27 @@ def test_a_refused_event_is_never_written_and_says_why_as_a_code(switched_on, mo
     assert fake.calls == []
 
 
-def test_with_the_switch_off_or_no_group_nothing_is_written_and_no_client_is_built(switched_on, monkeypatch):
-    def no_client(*args, **kwargs):
-        raise AssertionError("a client was built")
+def test_with_the_switch_off_or_no_group_nothing_is_written_and_no_client_is_built(
+    switched_on, monkeypatch, capsys
+):
+    # Recorded, not raised: emit swallows every exception, so a raising stand-in would prove nothing.
+    built, fake = [], FakeLogs()
 
-    monkeypatch.setattr(evals.boto3, "client", no_client)
+    def recording_client(*args, **kwargs):
+        built.append(args)
+        return fake
+
+    monkeypatch.setattr(evals.boto3, "client", recording_client)
     for name, value in (("EVALS_ENABLED", "false"), ("EVALS_ENABLED", ""), ("EVALS_ENABLED", "True")):
         monkeypatch.setenv(name, value)
         assert evals.emit("Article Completion", **_completion()) is False
+        assert built == [], value
     monkeypatch.setenv("EVALS_ENABLED", "true")
     monkeypatch.setenv("EVALS_LOG_GROUP", "")
     assert evals.emit("Article Completion", **_completion()) is False
-    assert evals._client is None
+    assert built == [] and fake.calls == [] and evals._client is None
+    # A write that was tried and swallowed would have said so.
+    assert capsys.readouterr().out == ""
 
 
 def test_the_client_waits_a_second_to_connect_and_to_read_and_retries_once():

@@ -422,6 +422,13 @@ resource "aws_lambda_function" "ops_mcp" {
         # which grants nothing then.
         OPS_VISION_REGION = var.vision_enabled && var.vision_region != null ? var.vision_region : ""
 
+        # Whether the root switched evals on, under the name and in the form the pipeline's
+        # functions are told it (the exact word "true" for on). The evals module makes eval-jobs,
+        # the eval-work queue and their schedules only then, and the catalogue's switch_env counts
+        # them as deployed only then: with evals off a log review neither reads nor refuses
+        # eval-jobs' log group, which does not exist.
+        EVALS_ENABLED = var.evals_enabled ? "true" : "false"
+
         # The page's app client: only its callers see operator and third-party text, in a table's
         # "(unverified)" columns (memory.screen_caller). Alexa+, and any other client, is a voice
         # caller and gets counts and code words only.

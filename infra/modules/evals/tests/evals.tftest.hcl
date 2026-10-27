@@ -353,10 +353,11 @@ run "switched_on_it_makes_everything" {
   assert {
     condition = (
       aws_cloudwatch_log_metric_filter.eval_events[0].log_group_name == "acme-dev-evals" &&
+      aws_cloudwatch_log_metric_filter.eval_events[0].pattern == "{ $.schema = \"evals/1\" }" &&
       aws_cloudwatch_log_metric_filter.eval_events[0].metric_transformation[0].name == "EvalEvents" &&
       aws_cloudwatch_log_metric_filter.eval_events[0].metric_transformation[0].value == "1"
     )
-    error_message = "EvalEvents counts them"
+    error_message = "EvalEvents counts every evals/1 event"
   }
 
   assert {
@@ -387,9 +388,12 @@ run "switched_on_it_makes_everything" {
       aws_cloudwatch_metric_alarm.eval_work_age[0].metric_name == "ApproximateAgeOfOldestMessage" &&
       aws_cloudwatch_metric_alarm.eval_work_age[0].dimensions["QueueName"] == "acme-dev-eval-work" &&
       aws_cloudwatch_metric_alarm.eval_work_age[0].comparison_operator == "GreaterThanThreshold" &&
-      aws_cloudwatch_metric_alarm.eval_work_age[0].threshold == 7200
+      aws_cloudwatch_metric_alarm.eval_work_age[0].threshold == 7200 &&
+      aws_cloudwatch_metric_alarm.eval_work_age[0].statistic == "Maximum" &&
+      aws_cloudwatch_metric_alarm.eval_work_age[0].period * aws_cloudwatch_metric_alarm.eval_work_age[0].evaluation_periods <= 900 &&
+      aws_cloudwatch_metric_alarm.eval_work_age[0].treat_missing_data == "notBreaching"
     )
-    error_message = "a job older than two hours on eval-work"
+    error_message = "the oldest job on eval-work older than two hours, noticed within 15 minutes; an idle queue, which SQS stops reporting on, does not alarm"
   }
 
   assert {
