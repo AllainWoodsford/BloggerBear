@@ -13,7 +13,9 @@ into it. What it keeps, and only this (TABLES below):
 - **costing**: StatsCurrent, StatsHistory and ViewCounts;
 - **gear and refinements**: PromptRefinements;
 - **configuration**: Topics, Models and ModelConfig (the default model, pipeline and feedback
-  settings), the musings the site shows, reader feedback and the moderation queue.
+  settings), the musings the site shows, reader feedback and the moderation queue;
+- **evals**: the Evals table's day totals, adjustments, offline runs and judge pairs (common/evals.py;
+  the module's own policy, not the root's backup grant, lets the admin API scan and restore it).
 
 Findings, candidate ideas (the research angles), failed executions, security events and sign-ins
 are left out, and so is any row already set to expire (`expires_at`: TTL counters, nonces, rejected
@@ -73,6 +75,7 @@ TABLES: dict[str, str] = {
     "stats_current": "STATS_CURRENT_TABLE",
     "stats_history": "STATS_HISTORY_TABLE",
     "view_counts": "VIEW_COUNTS_TABLE",
+    "evals": "EVALS_TABLE",
 }
 
 JOB_KINDS = ("snapshot", "restore", "export")

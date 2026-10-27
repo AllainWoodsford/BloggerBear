@@ -366,7 +366,9 @@ variable "evals_enabled" {
     Whether continuous evals run (docs/enhancements/model-ranch-prompt-assets-evals.md): the scored
     events the pipeline writes, the hourly rollup of them into the evals table, the judge and the
     offline scoring runs. Off by default. Handed to every Lambda as EVALS_ENABLED ("true" or
-    "false"); nothing reads it until the evals module is added. Set from the EVALS_ENABLED GitHub
-    variable (docs/configuration.md).
+    "false"; common/evals.py writes no event while it is "false"), and to the evals module
+    (infra/modules/evals) as `enabled`: off, the module makes only the evals table, its log group
+    and lambda_exec's rights; on, the eval-work queue, the eval-jobs function, its schedules and its
+    alarms too. Set from the EVALS_ENABLED GitHub variable (docs/configuration.md).
   EOT
 }

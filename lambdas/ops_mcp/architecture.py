@@ -362,6 +362,26 @@ CATALOGUE: tuple[Component, ...] = (
         assistant_reads=True,
     ),
     _table(
+        "evals",
+        "Continuous evals' totals: each model's, each prompt version's and each model and prompt "
+        "pairing's score per day, added up from the scored events in the evals log group, with the "
+        "operator's adjustments, offline scoring runs and the judge's and people's paired verdicts. "
+        "Made whether or not evals are on.",
+        ("entity", "sk"),
+        details=(
+            (
+                "Holds",
+                "model#<id>, prompt#<prompt_id>#<version> and cell#<model>#<prompt_id>#<version> rows "
+                "by day#<date> (perf, events, good, bad, by_reason, rolled_up_at); adjust#... rows by "
+                "ts#<time>; run#<run_id> (an offline run and its items); pair#<subject> (a judge's and "
+                "a person's verdicts on one subject); the index row (the rollup's watermark)",
+            ),
+            ("Written by", "eval-jobs' hourly rollup, from the evals log group (once the rollup lands)"),
+            ("Expires", "never: no TTL"),
+        ),
+        aliases=("evals-table", "eval-totals", "model-ranch"),
+    ),
+    _table(
         "stats-current",
         "This week's running totals of AI spend and reader activity that are not part of any one "
         "article (musings, reflection, screening, feedback counts). One row, updated in place.",
@@ -551,6 +571,17 @@ CATALOGUE: tuple[Component, ...] = (
         "schedule of its own",
     ),
     _lambda(
+        "eval-jobs",
+        "Continuous evals' jobs: the hourly rollup of the evals log group into the evals table, the "
+        "judge's selector, and the judge and offline scoring jobs from the eval-work queue. For now "
+        "a skeleton that logs what it was asked and does nothing.",
+        "hourly at five past (the rollup) and hourly (the judge's selector), EventBridge Scheduler; "
+        f"on each job on {PREFIX}{ENV}-eval-work, two at most at once",
+        details=(("Exists", "only while evals are switched on (evals_enabled)"),),
+        alarms=(f"{PREFIX}{ENV}-eval-rollup-heartbeat",),
+        aliases=("evals-jobs", "evals-rollup"),
+    ),
+    _lambda(
         "musing-feedback",
         "Writes a musing reflecting on the last four days of reader feedback.",
         "every 4 days (EventBridge Scheduler)",
@@ -695,6 +726,21 @@ CATALOGUE: tuple[Component, ...] = (
         aliases=("dlq", "dead-letter-queue"),
     ),
     Component(
+        kind="queue",
+        key="eval-work",
+        name=f"{PREFIX}{ENV}-eval-work",
+        purpose="Continuous evals' judge and offline scoring jobs, one per item, which eval-jobs takes "
+        "one at a time, two at most at once.",
+        details=(
+            ("Message", "job (judge or score), run_id, item, combination"),
+            ("Exists", "only while evals are switched on (evals_enabled)"),
+            ("After three receives", f"the job goes to {PREFIX}{ENV}-pipeline-dlq"),
+        ),
+        log_groups=(f"/aws/lambda/{PREFIX}{ENV}-eval-jobs",),
+        alarms=(f"{PREFIX}{ENV}-eval-work-age",),
+        aliases=("eval-queue", "evals-queue"),
+    ),
+    Component(
         kind="topic",
         key="alerts",
         name=f"{PREFIX}{ENV}-alerts",
@@ -791,6 +837,20 @@ CATALOGUE: tuple[Component, ...] = (
         purpose="One JSON line per request to the assistant's API (/ask and /mcp).",
         aliases=("assistant-access-log",),
     ),
+    Component(
+        kind="log_group",
+        key="evals",
+        name=f"{PREFIX}{ENV}-evals",
+        purpose="Continuous evals' scored events: one JSON line each (which model or prompt version, "
+        "good or bad, by how much and why, as codes and ids, never free text). Made whether or not "
+        "evals are on.",
+        details=(
+            ("Kept for", "120 days"),
+            ("Written by", "common/evals.py emit(), from any pipeline Lambda, only while evals are on"),
+            ("Read by", "eval-jobs' hourly rollup (Logs Insights)"),
+        ),
+        aliases=("evals-log", "eval-events"),
+    ),
     # --- Schedules, buckets, firewalls ---------------------------------------------------------
     Component(
         kind="schedule",
@@ -810,6 +870,29 @@ CATALOGUE: tuple[Component, ...] = (
         # A run Scheduler gave up on is silent: the function is never invoked, so it has no error.
         alarms=(f"{PREFIX}{ENV}-schedule-invocations-dropped",),
         aliases=("schedules", "scheduler", "eventbridge"),
+    ),
+    Component(
+        kind="schedule",
+        key="eval-rollup",
+        name=f"{PREFIX}{ENV}-eval-rollup",
+        purpose="Invokes eval-jobs' rollup at five past every hour (made by Terraform, only while evals "
+        "are on).",
+        details=(("Expression", "cron(5 * * * ? *), Australia/Sydney"),),
+        log_groups=(f"/aws/lambda/{PREFIX}{ENV}-eval-jobs",),
+        # A rollup that is not invoked has no error to alarm on; the heartbeat notices.
+        alarms=(f"{PREFIX}{ENV}-eval-rollup-heartbeat", f"{PREFIX}{ENV}-schedule-invocations-dropped"),
+        aliases=("rollup-schedule",),
+    ),
+    Component(
+        kind="schedule",
+        key="eval-judge",
+        name=f"{PREFIX}{ENV}-eval-judge",
+        purpose="Invokes eval-jobs' judge selector every hour; how often the judge really runs is "
+        "judge_interval_hours, read at run time (made by Terraform, only while evals are on).",
+        details=(("Expression", "rate(1 hour)"),),
+        log_groups=(f"/aws/lambda/{PREFIX}{ENV}-eval-jobs",),
+        alarms=(f"{PREFIX}{ENV}-schedule-invocations-dropped",),
+        aliases=("judge-schedule",),
     ),
     Component(
         kind="bucket",

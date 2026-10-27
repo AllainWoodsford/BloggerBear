@@ -1792,17 +1792,28 @@ def test_the_lambda_role_may_list_the_content_bucket_so_a_missing_key_reads_as_n
     assert "condition" not in statement
 
 
-# --- continuous evals: the wiring that lands before the evals module does -------------------------
+# --- continuous evals: the switch, the module, and lambda_exec's rights ----------------------------
 #
-# docs/enhancements/model-ranch-prompt-assets-evals.md, E0. Every Lambda is told where the evals
-# table, log group and queue will be and whether evals run, CI passes the switch, and the Lambdas
-# may publish to the alerts topic, all before any of it exists. Nothing reads any of it yet.
+# docs/enhancements/model-ranch-prompt-assets-evals.md, E0 and PR12. Both roots always call
+# infra/modules/evals, switched by evals_enabled: its table and log group exist either way, so every
+# Lambda is told real names; its queue, function, schedules and alarms only while it is on. Its
+# rights on lambda_exec, the alerts topic's among them (moved there from the roots), are one policy
+# in the module, written after lambda_backup's. The module's own terraform test
+# (infra/modules/evals/tests/evals.tftest.hcl) holds what it makes with the switch off and on.
+
+EVALS_MODULE = ("modules", "evals", "main.tf")
+
+
+def _statement(text: str, sid: str) -> str:
+    """The body of the policy document statement with this sid."""
+    return re.search(rf'statement \{{\n\s*sid\s*=\s*"{sid}"\n(.*?)\n  \}}', text, re.S).group(1)
 
 
 def test_evals_are_wired_in_both_roots_and_off_until_the_repository_variable_says_so():
     """evals_enabled defaults to false in both roots and CI reads it like VISION_ENABLED (only
-    `true` turns it on), so merging the evals work changes nothing. Every Lambda is told the three
-    names, empty until the evals module makes them, and the switch as "true" or "false"."""
+    `true` turns it on), so merging the evals work starts nothing. Every Lambda is told the module's
+    table and log group (real names either way), eval-work's URL ("" while off) and the switch as
+    "true" or "false". The root reads the switch twice: for that, and for the module."""
     switch = "${{ vars.EVALS_ENABLED == 'true' && 'true' || 'false' }}"
     for name in ("terraform.yml", "terraform-production-release.yml"):
         text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
@@ -1817,43 +1828,132 @@ def test_evals_are_wired_in_both_roots_and_off_until_the_repository_variable_say
         assert re.search(r"^  default\s*=\s*false$", block.group(1), re.M), env
         main = _uncommented(_read("environments", env, "main.tf"))
         shared = main.split("  lambda_env_variables = {")[1].split("\n}\n")[0]
-        for key in ("EVALS_TABLE", "EVALS_LOG_GROUP", "EVAL_WORK_QUEUE_URL"):
-            assert re.search(rf'^\s*{key}\s*=\s*""$', shared, re.M), (env, key)
+        for key, output in (
+            ("EVALS_TABLE", "table_name"),
+            ("EVALS_LOG_GROUP", "log_group_name"),
+            ("EVAL_WORK_QUEUE_URL", "work_queue_url"),
+        ):
+            assert re.search(rf"^\s*{key}\s*=\s*module\.evals\.{output}$", shared, re.M), (env, key)
         switched = r'^\s*EVALS_ENABLED\s*=\s*var\.evals_enabled \? "true" : "false"$'
         assert re.search(switched, shared, re.M), env
-        # Only handed on: nothing in the root is counted or gated on it, and the module is PR12's.
-        assert main.count("var.evals_enabled") == 1, env
-        assert 'module "evals"' not in main, env
+        assert main.count("var.evals_enabled") == 2, env
+        (call,) = _module_blocks(main, "modules/evals")
+        assert re.search(r"^  enabled\s*=\s*var\.evals_enabled$", call, re.M), env
+    outputs = _read("modules", "evals", "outputs.tf")
+    url = re.search(r'output "work_queue_url" \{\n.*\n\s*value\s*=\s*(.*)\n', outputs).group(1)
+    assert url == 'try(aws_sqs_queue.eval_work[0].url, "")'  # "" while the queue does not exist
     table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
     assert re.search(r"^\| `EVALS_ENABLED` \| variable \| repo or `production` \|", table, re.M)
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
-def test_the_lambdas_may_publish_to_the_alerts_topic_and_to_no_other_topic(env):
-    """The evals digest will go to the alerts topic, the one the alarms email through. One Allow on
-    the shared exec role, in a policy of its own: sns:Publish on module.observability's topic, by
-    its output rather than a name built by hand. It is the only SNS action the root grants."""
+def test_both_roots_always_call_the_evals_module_with_their_own_names_and_role(env):
+    """Never behind a count or for_each: the table and the log group, and the names every Lambda is
+    told, do not come and go with the switch. The role's name is read through lambda_backup's
+    `role` (lambda_exec's own name), so the module's policy is created only after lambda_backup's
+    is written: IAM caps a role's inline policies at 10,240 characters in all, and a release that
+    shrinks lambda_backup while adding this policy must shrink first, or it stops with
+    LimitExceeded. eval-jobs is handed to observability for its errors and throttles alarms."""
     main = _uncommented(_read("environments", env, "main.tf"))
-    document = re.search(
-        r'^data "aws_iam_policy_document" "lambda_publish_alerts" \{\n(.*?)^\}', main, re.S | re.M
-    ).group(1)
-    assert document.count("statement {") == 1 and len(re.findall(r'effect\s*=\s*"Allow"', document)) == 1
-    assert re.findall(r"actions\s*=\s*(.*)", document) == ['["sns:Publish"]']
-    assert re.findall(r"resources\s*=\s*(.*)", document) == ["[module.observability.sns_topic_arn]"]
-    assert "condition" not in document and "not_actions" not in document
-    attached = _resource_block(main, "aws_iam_role_policy", "lambda_publish_alerts")
-    assert re.search(rf'name\s*=\s*"{DEFAULT_PREFIX}-{env}-lambda-publish-alerts"$', attached, re.M)
-    # The role is named through lambda_backup's `role`, which is lambda_exec's name, so the create
-    # waits for lambda_backup's write: an apply that shrinks it must do so before this policy adds
-    # to the role's 10,240-character inline-policy total, or IAM refuses with LimitExceeded.
-    assert re.search(r"role\s*=\s*aws_iam_role_policy\.lambda_backup\.role$", attached, re.M)
+    (call,) = _module_blocks(main, "modules/evals")
+    given = dict(re.findall(r"^  (\w+)\s*=\s*(.+)$", call, re.M))
+    assert given.pop("source") == '"../../modules/evals"'
+    expected = {
+        "unique_name_prefix": "var.unique_name_prefix",
+        "environment_name": f'"{env}"',
+        "aws_region": "var.aws_region",
+        "enabled": "var.evals_enabled",
+        "lambda_exec_role_arn": "aws_iam_role.lambda_exec.arn",
+        "lambda_exec_role_name": "aws_iam_role_policy.lambda_backup.role",
+        "lambda_package_path": "data.archive_file.lambdas.output_path",
+        "lambda_package_hash": "data.archive_file.lambdas.output_base64sha256",
+        "lambda_environment": "local.lambda_env_variables",
+        "pipeline_dlq_arn": "aws_sqs_queue.pipeline_dlq.arn",
+        "alerts_topic_arn": "module.observability.sns_topic_arn",
+    }
+    if env == "production":
+        expected["protect_data"] = "true"  # like module.app_data's: dev's tables are disposable
+    assert given == expected
     backup = _resource_block(main, "aws_iam_role_policy", "lambda_backup")
     assert re.search(r"role\s*=\s*aws_iam_role\.lambda_exec\.id$", backup, re.M)
-    policy = r"policy\s*=\s*data\.aws_iam_policy_document\.lambda_publish_alerts\.json$"
-    assert re.search(policy, attached, re.M)
-    assert re.findall(r'"sns:[A-Za-z*]+"', main) == ['"sns:Publish"']
+    names = main.split("pipeline_lambda_function_names = concat([", 1)[1].split("\n}\n", 1)[0]
+    assert names.endswith("], aws_lambda_function.reviewer[*].function_name, module.evals.function_names)")
+
+
+def test_every_policy_the_evals_module_puts_on_lambda_exec_names_the_role_by_its_input():
+    """The module's one policy on lambda_exec takes the role as var.lambda_exec_role_name, never
+    the root's role object, so the roots decide the ordering above. Its other policy is on the
+    schedules' role it makes itself."""
+    module = _uncommented(_read(*EVALS_MODULE))
+    policies = dict(re.findall(r'^resource "aws_iam_role_policy" "(\w+)" \{\n(.*?)^\}', module, re.S | re.M))
+    by_input = r"^\s*role\s*=\s*var\.lambda_exec_role_name$"
+    on_exec = [name for name, body in policies.items() if re.search(by_input, body, re.M)]
+    assert on_exec == ["evals"]
+    assert re.search(r"^\s*role\s*=\s*aws_iam_role\.schedule\[0\]\.id$", policies["schedule"], re.M)
+    assert set(policies) == {"evals", "schedule"}
+    assert "lambda_exec.id" not in module and "lambda_exec.name" not in module
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_alerts_topic_grant_moved_from_the_roots_into_the_evals_module(env):
+    """E0 granted lambda_exec sns:Publish on the alerts topic in a root policy of its own; PR12 moves
+    that statement into the evals module's policy rather than granting it twice. No root has an SNS
+    action left; the module has the one, on the topic the root hands it by module.observability's
+    output, with no condition. Nowhere else outside the bootstrap grants an SNS action."""
+    main = _uncommented(_read("environments", env, "main.tf"))
+    assert "lambda_publish_alerts" not in main
+    assert not re.findall(r'"sns:[A-Za-z*]+"', main)
+    module = _uncommented(_read(*EVALS_MODULE))
+    assert re.findall(r'"sns:[A-Za-z*]+"', module) == ['"sns:Publish"']
+    statement = _statement(module, "PublishAlerts")
+    assert re.findall(r"actions\s*=\s*(.*)", statement) == ['["sns:Publish"]']
+    assert re.findall(r"resources\s*=\s*(.*)", statement) == ["[var.alerts_topic_arn]"]
+    assert "condition" not in statement and "not_actions" not in statement
+    (call,) = _module_blocks(main, "modules/evals")
+    assert re.search(r"^\s*alerts_topic_arn\s*=\s*module\.observability\.sns_topic_arn$", call, re.M)
     outputs = _read("modules", "observability", "outputs.tf")
     assert re.search(r'output "sns_topic_arn" \{\n\s*value\s*=\s*aws_sns_topic\.alerts\.arn\n', outputs)
+    granting = {
+        path.relative_to(INFRA).as_posix()
+        for path in terraform_files()
+        if "bootstrap" not in path.parts
+        and re.search(r'"sns:', _uncommented(path.read_text(encoding="utf-8")))
+    }
+    assert granting == {"modules/evals/main.tf"}
+
+
+def test_a_backup_may_scan_and_restore_the_evals_table_through_the_modules_policy():
+    """backup.TABLES includes the evals table: a snapshot scans it and reads its size, a restore
+    batch-writes it (common/backup.py). The roots' BackupTables statement is over the app tables
+    (module.app_data.table_arns), which never hold this table, so the module's own table statement
+    grants those three actions on it, and the roots' backup statement is left as it was."""
+    from common import backup
+
+    assert backup.TABLES["evals"] == "EVALS_TABLE"
+    code = (ROOT / "lambdas" / "common" / "backup.py").read_text(encoding="utf-8")
+    calls = set(re.findall(r"_dynamodb\(\)\.(\w+)\(", code))
+    assert calls == {"describe_table", "scan", "batch_write_item"}
+    needed = {"dynamodb:" + "".join(part.title() for part in call.split("_")) for call in calls}
+    statement = _statement(_uncommented(_read(*EVALS_MODULE)), "EvalsTable")
+    assert needed <= set(re.findall(r'"(dynamodb:\w+)"', statement))
+    assert re.findall(r"resources\s*=\s*(.*)", statement) == [
+        '[aws_dynamodb_table.evals.arn, "${aws_dynamodb_table.evals.arn}/index/*"]'
+    ]
+    for env in ("dev", "production"):
+        main = _uncommented(_read("environments", env, "main.tf"))
+        backup_tables = _statement(main, "BackupTables")
+        assert re.findall(r"resources\s*=\s*(.*)", backup_tables) == ["module.app_data.table_arns"], env
+
+
+def test_the_evals_table_fixture_is_keyed_as_terraform_keys_the_table():
+    from table_schemas import KEYS
+
+    table = _resource_block(_read(*EVALS_MODULE), "aws_dynamodb_table", "evals")
+    hash_key = re.search(r'^\s*hash_key\s*=\s*"(\w+)"', table, re.M).group(1)
+    range_key = re.search(r'^\s*range_key\s*=\s*"(\w+)"', table, re.M).group(1)
+    assert KEYS["Evals"] == (hash_key, range_key) == ("entity", "sk")
+    assert "ttl {" not in table  # section 4.4: no TTL
+    assert "deletion_protection_enabled = var.protect_data" in table
 
 
 # --- The operator's assistant (infra/modules/ops-assistant) -------------------------------------
@@ -3414,7 +3514,7 @@ def test_the_region_shape_check_accepts_real_regions_and_refuses_the_rest():
         assert not shape.match(wrong), wrong
 
 
-@pytest.mark.parametrize("module", ["observability", "ops-assistant", "rest-api", "static-site"])
+@pytest.mark.parametrize("module", ["evals", "observability", "ops-assistant", "rest-api", "static-site"])
 def test_each_module_that_names_a_region_is_given_it_by_the_root(module):
     """No default in the module, so a root that forgets to pass it fails validate instead of quietly
     building something for the wrong region."""
@@ -3589,7 +3689,9 @@ def test_every_module_that_names_resources_is_passed_the_prefix_by_both_environm
             block = variables.split('variable "unique_name_prefix" {')[1].split("\n}\n")[0]
             assert "default" not in re.sub(r"description\s*=.*", "", block), module
             naming.append(module)
-    assert naming == ["api-cdn", "app-data", "observability", "ops-assistant", "static-site", "vision-worker"]
+    assert naming == [
+        "api-cdn", "app-data", "evals", "observability", "ops-assistant", "static-site", "vision-worker",
+    ]  # fmt: skip
     for env in ("dev", "production"):
         main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
         for module in naming:
