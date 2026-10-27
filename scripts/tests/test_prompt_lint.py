@@ -274,6 +274,7 @@ def test_every_guardrail_phrase_is_caught_in_any_case_and_across_line_breaks(tmp
         "You may not give financial advice.",
         # And words that only contain a phrase.
         "Ignore the rules belowdecks.",
+        "Xignore the rules below.",
     ],
 )
 def test_a_guardrail_in_the_negative_is_not_a_breach_of_one(tmp_path, sentence):
@@ -436,6 +437,16 @@ def test_a_release_that_knows_every_prompt_skips_none(tmp_path):
     assert report.ok and report.skip_at_production == {}
 
 
+def test_a_file_that_is_not_utf8_is_an_error_in_the_second_pass_and_not_a_crash(tmp_path):
+    # The release has a registry, so its reader is given the files' text: a file the tree refuses
+    # for its encoding is never among them, nor judged by the release.
+    repo = repository(tmp_path, {D1: DRAFT_V1}, SPECS, "v1.0.0")
+    tree(repo, {D1: DRAFT_V1, D2: b"caf\xe9 {{topic}}\n{{locked:rules}}\n"})
+    report = lint(repo, release_ref="v1.0.0")
+    assert messages(report) == [f"prompts/{D2}: is not UTF-8"]
+    assert report.skip_at_production == {}
+
+
 def test_the_release_is_read_in_a_worktree_that_is_removed_afterwards(tmp_path):
     repo = repository(tmp_path, {D1: DRAFT_V1}, SPECS, "v1.0.0")
     before = git(repo, "worktree", "list", "--porcelain")
@@ -473,11 +484,20 @@ def test_a_release_whose_registry_will_not_load_is_a_lint_error_that_quotes_none
     assert git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1  # still cleaned up
 
 
-@pytest.mark.parametrize("ref", ["no-such-tag", "--output=/tmp/x", ""])
-def test_a_ref_git_does_not_know_or_that_git_would_read_as_an_option_is_refused(tmp_path, ref):
+@pytest.mark.parametrize(
+    ("ref", "message"),
+    [
+        ("no-such-tag", "git does not know the ref 'no-such-tag'"),
+        # Refused before git sees them (git would refuse them too, as refs it does not know).
+        ("--output=/tmp/x", "'--output=/tmp/x' is not a ref"),
+        ("", "'' is not a ref"),
+    ],
+)
+def test_a_ref_git_does_not_know_or_that_git_would_read_as_an_option_is_refused(tmp_path, ref, message):
     repo = repository(tmp_path, {}, SPECS, "v1.0.0")
-    with pytest.raises(pl.LintError):
+    with pytest.raises(pl.LintError) as raised:
         pl.resolve(repo, ref)
+    assert str(raised.value) == message
 
 
 def test_the_newest_tag_is_the_release_when_none_is_named(tmp_path, capsys, monkeypatch):
@@ -487,6 +507,45 @@ def test_the_newest_tag_is_the_release_when_none_is_named(tmp_path, capsys, monk
     assert pl.main(["--root", str(repo)]) == 0
     out = capsys.readouterr().out
     assert "skip-at-production: research_tick/summary: not in v1.0.0's registry" in out
+
+
+def test_the_newest_tag_is_the_one_made_last_not_the_one_named_last(tmp_path, monkeypatch):
+    # Dated by hand (a tag made in the same second as another ties, and git then sorts by name),
+    # and named against their dates, so neither a sort by name nor one by version finds the later.
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+    repo = repository(tmp_path, {}, SPECS, "v2.0.0")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-02-01T00:00:00Z")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "a later release")
+    git(repo, "tag", "v1.0.0")
+    assert pl.newest_tag(repo) == "v1.0.0"
+
+
+def test_the_newest_tag_is_a_release_one_not_a_later_tag_that_is_no_release(tmp_path, capsys, monkeypatch):
+    # The release knows only the draft; a later commit, which knows the summary, carries a tag
+    # that is no release (the hackathon's submission tag, say), made after it.
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+    repo = repository(tmp_path, {}, [DRAFT], "v1.0.0")
+    registry = repo / "lambdas" / "common" / "prompts_registry.py"
+    registry.write_text(registry_source(SPECS), encoding="utf-8")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-02-01T00:00:00Z")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "after the release")
+    git(repo, "tag", "-a", "submission", "-m", "a submission, not a release")
+    tree(repo, {S1: SUMMARY_V1})
+    monkeypatch.setattr(prompts_registry, "all_specs", lambda: SPECS)
+    assert pl.main(["--root", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "skip-at-production: research_tick/summary: not in v1.0.0's registry" in out
+
+
+def test_with_no_release_tag_the_second_pass_does_not_run(tmp_path, capsys, monkeypatch):
+    repo = repository(tmp_path, {}, [DRAFT], "submission")
+    tree(repo, {S1: SUMMARY_V1})
+    monkeypatch.setattr(prompts_registry, "all_specs", lambda: SPECS)
+    assert pl.main(["--root", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "note: no release tag found: the second pass did not run" in out
+    assert "skip-at-production" not in out
 
 
 # --- main: the exit status and what it prints --------------------------------------------------------

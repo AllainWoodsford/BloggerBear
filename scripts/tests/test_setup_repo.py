@@ -234,12 +234,22 @@ def _prompts_reads(workflow: Path = WORKFLOWS / "prompts.yml") -> list[tuple[str
     return reads
 
 
-def _prompts_misplaced(settings) -> list[str]:
+GUIDE = REPO_ROOT / "docs" / "configuration.md"
+# What a configuration.md row that also offers `production` says of a setting a publish job's gate
+# reads, which only the repository's value can reach.
+REPOSITORY_RULE = "only while the repository's value is `true`"
+
+
+def _prompts_misplaced(settings, guide: str | None = None) -> list[str]:
     """Every setting the prompts workflow reads from where its job cannot see it. A setting in
     SETTINGS is held to its `where`; one the script does not ask for is held, when a job's gate
-    reads it, to the place docs/configuration.md says to set it."""
+    reads it, to its row in `guide` (docs/configuration.md unless given): set at repository level,
+    and, where the row offers `production` too, saying that only the repository's value counts
+    and never that `production` alone may differ (a production-only `true` would turn production's
+    Lambdas on with nothing published)."""
     table = {setting.name: setting for setting in settings}
-    guide = (REPO_ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    if guide is None:
+        guide = GUIDE.read_text(encoding="utf-8")
     problems = []
     for job, name, visible, gate in _prompts_reads():
         setting = table.get(name)
@@ -248,9 +258,13 @@ def _prompts_misplaced(settings) -> list[str]:
                 where = f"{name}, which is set on {setting.where!r}"
                 problems.append(f"{job} reads {where}: it sees {sorted(visible)}")
         elif gate and name in sr.NOT_ASKED:
-            row = re.search(rf"^\| `{name}` \| (?:secret|variable) \| ([^|]*) \|", guide, re.M)
+            row = re.search(rf"^\| `{name}` \| (?:secret|variable) \| ([^|]*) \| ([^|]*) \|", guide, re.M)
             if not row or "repo" not in row.group(1):
                 problems.append(f"{job}'s if: reads {name}, not set at repository level by configuration.md")
+            elif "`production`" in row.group(1) and (
+                REPOSITORY_RULE not in row.group(2) or "alone to differ" in row.group(2)
+            ):
+                problems.append(f"{job}'s if: reads {name} at repository level only, which its row omits")
     return problems
 
 
@@ -282,6 +296,40 @@ def test_each_setting_is_where_the_workflow_that_reads_it_can_see_it():
     for job in ("publish-dev", "publish-production"):
         assert (job, "PROMPT_AS_ASSET_ENABLED", frozenset({"repo"}), True) in reads
     assert _prompts_misplaced(sr.SETTINGS) == []
+
+
+_SWITCH_ROW = re.compile(r"^(\| `PROMPT_AS_ASSET_ENABLED` \| variable \| )([^|]*)( \| )([^|]*)( \|.*)$", re.M)
+
+
+@pytest.mark.parametrize(
+    ("change", "problem"),
+    [
+        ("none", None),
+        ("on `production` alone", ", not set at repository level by configuration.md"),
+        ("no row", ", not set at repository level by configuration.md"),
+        ("the old advice instead", " at repository level only, which its row omits"),
+        ("the old advice as well", " at repository level only, which its row omits"),
+    ],
+)
+def test_the_switch_the_publish_jobs_gate_on_is_held_to_its_configuration_md_row(change, problem):
+    """Both publish jobs decide from the repository's PROMPT_AS_ASSET_ENABLED alone, so its row must
+    set it there, and say so wherever it also offers `production`."""
+    guide = GUIDE.read_text(encoding="utf-8")
+    (row,) = _SWITCH_ROW.findall(guide)
+    if change == "on `production` alone":
+        guide = _SWITCH_ROW.sub(lambda m: m.expand(r"\1`production`\3\4\5"), guide)
+    elif change == "no row":
+        guide = _SWITCH_ROW.sub("", guide)
+    elif change != "none":
+        # The row's advice before the publish jobs existed, which a production-only `true` follows.
+        advice = "Set on the `production` environment alone to differ there."
+        kept = "" if change == "the old advice instead" else row[3] + " "
+        guide = _SWITCH_ROW.sub(lambda m: m.expand(r"\1\2\3") + kept + advice + m.group(5), guide)
+    expected = [] if problem is None else [
+        f"{job}'s if: reads PROMPT_AS_ASSET_ENABLED{problem}" for job in ("publish-dev", "publish-production")
+    ]
+    assert _prompts_misplaced(sr.SETTINGS, guide) == expected
+    assert row[1] == "repo or `production`" and REPOSITORY_RULE in row[3]
 
 
 @pytest.mark.parametrize(("where", "misplaced"), [(sr.PRODUCTION, True), ("repo", False)])

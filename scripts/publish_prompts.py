@@ -107,6 +107,17 @@ def table_name(environment: str) -> str:
     return f"{naming.environment_prefix(environment)}prompt-hashes"
 
 
+def bucket_region(s3, bucket: str) -> str:
+    """The region `bucket` is in, from HeadBucket (which s3:ListBucket allows). The hash table is
+    made in the same Terraform root as the bucket (infra/modules/prompts), so it is there too."""
+    response = s3.head_bucket(Bucket=bucket)
+    headers = response.get("ResponseMetadata", {}).get("HTTPHeaders", {})
+    region = response.get("BucketRegion") or headers.get("x-amz-bucket-region")
+    if not region:
+        raise PublishError(f"{bucket} did not say which region it is in")
+    return region
+
+
 def make_release_id(environment: str, commit: str, now: datetime) -> str:
     return f"{environment}-{now.astimezone(UTC):%Y%m%dT%H%M}-{commit[:7]}"
 
@@ -605,10 +616,15 @@ def main(argv: list[str] | None = None, *, s3=None, dynamodb=None, now: datetime
     now = now or datetime.now(UTC)
 
     bucket = args.bucket or bucket_name(args.environment)
-    table = (dynamodb or boto3.resource("dynamodb")).Table(args.table or table_name(args.environment))
     s3 = s3 or boto3.client("s3")
-    publisher = Publisher(s3=s3, table=table, bucket=bucket, environment=args.environment)
     try:
+        # The run signs in wherever AWS_REGION says, and a `production` value of it reaches only a
+        # release's run, not a dispatch's (prompts.yml): the table is read where the bucket is,
+        # whichever region the run started in. S3 itself follows a bucket to its region.
+        if dynamodb is None:
+            dynamodb = boto3.resource("dynamodb", region_name=bucket_region(s3, bucket))
+        table = dynamodb.Table(args.table or table_name(args.environment))
+        publisher = Publisher(s3=s3, table=table, bucket=bucket, environment=args.environment)
         current = publisher.current()
         held = _field(current, prompts.PINNED_RELEASE_FIELD)
         if args.release_id or (held and not args.clear_pin):

@@ -353,6 +353,38 @@ def test_only_live_rows_the_release_does_not_hold_are_retired(aws, tmp_path):
     assert aws.table.get_item(Key={"prompt_hash": "f" * 64})["Item"] == stopped
 
 
+def test_a_pending_row_is_not_in_the_plan_to_retire(aws, tmp_path, capsys):
+    """The plan's own rule, whatever step 4's condition would do with the row."""
+    assert run(aws, tree(tmp_path, {D1: DRAFT_V1})) == 0
+    aws.table.put_item(
+        Item={"prompt_hash": "f" * 64, "prompt_id": "daily_cycle/draft", "version": "v9", "status": "pending"}
+    )
+    capsys.readouterr()
+    assert run(aws, tree(tmp_path, {D1: DRAFT_V1, S1: SUMMARY_V1}), "--dry-run", now=LATER) == 0
+    assert "step 4: 0 row(s) to retire" in capsys.readouterr().out
+
+
+def test_a_row_retired_since_the_plan_keeps_its_retired_at(aws, tmp_path):
+    """Step 4 retires a row only while it is still live: one an overlapping run (an operator's own,
+    beside the workflow's) retired after this run's plan keeps its retired_at, so its grace is never
+    extended."""
+    assert run(aws, tree(tmp_path, {D1: DRAFT_V1})) == 0
+    publisher = pp.Publisher(s3=aws.s3, table=aws.table, bucket=BUCKET, environment="dev", say=lambda _: None)
+    report = REAL_LINT(tree(tmp_path, {D2: DRAFT_V2}))
+    plan = publisher.plan_publish(report.files, release_id=release_id(LATER), commit=COMMIT, skips={},
+                                  current=publisher.current())  # fmt: skip
+    assert plan.retire == [sha256_text(DRAFT_V1)]
+    aws.table.update_item(
+        Key={"prompt_hash": sha256_text(DRAFT_V1)},
+        UpdateExpression="SET #status = :retired, retired_at = :at",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":retired": "retired", ":at": "2026-10-25T03:30:00Z"},
+    )
+    before = row(aws, DRAFT_V1)
+    publisher.apply(plan, LATER)
+    assert row(aws, DRAFT_V1) == before
+
+
 # --- write once, and the hash table as the record of every version -----------------------------------------
 
 
@@ -452,6 +484,20 @@ def test_a_new_version_not_numbered_above_every_published_one_is_refused(aws, tm
     assert run(aws, tree(tmp_path, {D4: DRAFT_V2}), now=LATER4) == 0  # the next number is fine
 
 
+def test_two_files_of_one_release_with_the_same_bytes_are_refused(aws):
+    """The lint refuses such a tree first; this is the publisher's own rule, for a caller that plans
+    files the lint never saw. A hash row names one prompt id and one version."""
+    raw = DRAFT_V1.encode("utf-8")
+    files = [
+        prompt_lint.AssetFile(f"prompts/{key}", key.split("/latest/")[0], prompt_lint.LATEST, "v1", raw)
+        for key in (D1, S1)
+    ]
+    publisher = pp.Publisher(s3=aws.s3, table=aws.table, bucket=BUCKET, environment="dev", say=lambda _: None)
+    with pytest.raises(pp.PublishError, match=f"^{S1} has the same bytes as {D1}$"):
+        publisher.plan_publish(files, release_id=release_id(), commit=COMMIT, skips={}, current=None)
+    assert snapshot(aws) == ([], [], [])
+
+
 def test_a_revert_that_restores_a_published_file_serves_it_again(aws, tmp_path):
     assert run(aws, tree(tmp_path, {D1: DRAFT_V1})) == 0
     assert run(aws, tree(tmp_path, {D2: DRAFT_V2}), now=LATER) == 0
@@ -490,6 +536,25 @@ def test_a_run_that_stops_before_latest_changes_leaves_the_previous_release_serv
     # Whatever step 1 left is a pending row, which is never an approval, or nothing at all.
     left = row(aws, DRAFT_V2)
     assert left is None or left["status"] in ("pending", "live")
+
+
+def test_step_2_never_makes_live_a_row_that_vanished_since_the_plan(aws, tmp_path):
+    """Step 2 sets live only a row that exists (step 1 made it, or a run before): a row deleted
+    since the plan is not made again from step 2's fields alone, and the previous release keeps
+    serving."""
+    assert run(aws, tree(tmp_path, {D1: DRAFT_V1})) == 0
+    publisher = pp.Publisher(s3=aws.s3, table=aws.table, bucket=BUCKET, environment="dev", say=lambda _: None)
+    report = REAL_LINT(tree(tmp_path, {D1: DRAFT_V1}))
+    plan = publisher.plan_publish(report.files, release_id=release_id(LATER), commit=COMMIT, skips={},
+                                  current=publisher.current())  # fmt: skip
+    # Published before, so step 1 has nothing to put back.
+    assert plan.new_rows == [] and [item.version for item in plan.live] == ["v1"]
+    aws.table.delete_item(Key={"prompt_hash": sha256_text(DRAFT_V1)})
+    with pytest.raises(pp.PublishError, match="^step 2 failed: "):
+        publisher.apply(plan, LATER)
+    assert row(aws, DRAFT_V1) is None
+    assert latest_keys(aws) == [D1] and tags(aws, D1)["release"] == release_id()
+    assert current(aws)[prompts.CURRENT_RELEASE_FIELD] == release_id()
 
 
 def test_a_failure_is_reported_with_its_step_and_never_a_traceback(aws, tmp_path, capsys, monkeypatch):
@@ -638,13 +703,17 @@ def test_production_leaves_a_skip_at_production_prompt_exactly_as_it_is(aws, tmp
     reason = "v0.1's rules refuse it: unknown_placeholder"
     fake_lint(monkeypatch, {"research_tick/summary": reason}, seen)
     root = tree(tmp_path, {D1: DRAFT_V1, S2: SUMMARY_V2})
+    tags_before, row_before = tags(aws, S1), row(aws, SUMMARY_V1)
     assert run(aws, root, "--release-ref", "v0.1", environment="production", now=LATER) == 0
     assert seen == ["v0.1"]
     assert latest_keys(aws) == [D1, S1]
     assert object_versions(aws, "research_tick/summary/latest/") == summary_v1
+    # Its file keeps the earlier release's tags, and its row that release: carried, so neither
+    # retired nor made live again by this one.
+    assert tags(aws, S1) == tags_before and tags_before["release"] == release_id(NOW, "production")
+    assert row(aws, SUMMARY_V1) == row_before and row_before["status"] == "live"
     assert row(aws, SUMMARY_V2) is None  # nothing of v2 was written: no row, no upload
     assert versions_key("research_tick/summary", SUMMARY_V2) not in keys(aws)
-    assert row(aws, SUMMARY_V1)["status"] == "live"  # carried, so not retired
     manifest = json.loads(body(aws, f"releases/{release_id(LATER, 'production')}.json"))
     carried = {"prompt_id": "research_tick/summary", "version": "v1", "sha256": sha256_text(SUMMARY_V1),
                "key": S1, "carried_forward": True}  # fmt: skip
@@ -708,6 +777,9 @@ def test_a_pin_restores_an_earlier_release_and_holds_it_until_cleared(aws, tmp_p
     root = tree(tmp_path, {D2: DRAFT_V2})
     assert run(aws, root, now=LATER) == 0
     assert row(aws, DRAFT_V1)["status"] == "retired"
+    records = keys(aws, "releases/")
+    record = f"releases/{release_id(NOW)}.json"
+    before = object_versions(aws, record)
 
     # The rollback: release one again, from its record and versions/.
     assert run(aws, root, "--release-id", release_id(NOW), now=LATER2) == 0
@@ -718,7 +790,9 @@ def test_a_pin_restores_an_earlier_release_and_holds_it_until_cleared(aws, tmp_p
     found = current(aws)
     assert found[prompts.CURRENT_RELEASE_FIELD] == found[prompts.PINNED_RELEASE_FIELD] == release_id(NOW)
     assert served(aws).version == "v1"
-    assert f"releases/{release_id(LATER2)}.json" not in keys(aws)  # a pin makes no new release
+    # A pin writes no release record: none of its own, and the pinned release's is left as it was
+    # (its published_at, previous_release and skipped are that release's).
+    assert keys(aws, "releases/") == records and object_versions(aws, record) == before
 
     # A later merge publishes the pinned release again, not the tree.
     capsys.readouterr()
@@ -727,6 +801,7 @@ def test_a_pin_restores_an_earlier_release_and_holds_it_until_cleared(aws, tmp_p
     assert "is pinned" in capsys.readouterr().out
     assert latest_keys(aws) == [D1] and row(aws, DRAFT_V3) is None
     assert current(aws)[prompts.PINNED_RELEASE_FIELD] == release_id(NOW)
+    assert keys(aws, "releases/") == records and object_versions(aws, record) == before
 
     # Until a run clears it, which publishes the tree as a new release.
     assert run(aws, newer, "--clear-pin", now=LATER4) == 0
@@ -805,6 +880,24 @@ def test_a_pin_refuses_a_release_record_it_cannot_read(aws, tmp_path, capsys, re
     before = snapshot(aws)
     assert run(aws, tmp_path, "--release-id", "dev-20261025T0400-abcdef0", now=LATER) == 1
     assert capsys.readouterr().err.startswith("publish: ")
+    assert snapshot(aws) == before
+
+
+@pytest.mark.parametrize("gone", ["its versions/ copy", "its hash row"])
+def test_a_pin_refuses_a_release_whose_file_it_cannot_restore_before_writing_anything(
+    aws, tmp_path, capsys, gone
+):
+    """Checked for every file before step 1: otherwise step 2 would make the rows live and step 3's
+    copy from versions/ would fail after them."""
+    assert run(aws, tree(tmp_path, {D1: DRAFT_V1})) == 0
+    assert run(aws, tree(tmp_path, {D2: DRAFT_V2}), now=LATER) == 0
+    if gone == "its versions/ copy":
+        aws.s3.delete_object(Bucket=BUCKET, Key=versions_key("daily_cycle/draft", DRAFT_V1))
+    else:
+        aws.table.delete_item(Key={"prompt_hash": sha256_text(DRAFT_V1)})
+    before = snapshot(aws)
+    assert run(aws, tmp_path, "--release-id", release_id(), now=LATER2) == 1
+    assert f"{release_id()}'s {D1} is not in versions/ with a hash row" in capsys.readouterr().err
     assert snapshot(aws) == before
 
 
@@ -892,6 +985,35 @@ def test_a_release_id_is_the_environment_the_minute_and_the_short_commit():
     assert pp.RELEASE_ID.fullmatch(pp.make_release_id("dev", COMMIT, NOW))
 
 
+def test_the_hash_table_is_read_in_the_buckets_region_whatever_region_the_run_signed_in_to(aws, tmp_path):
+    """A run under `production-prompts` cannot see a `production` value of AWS_REGION, so it may sign
+    in somewhere else than production is: the publisher's own clients (none stood in here) find the
+    bucket's region and read the table there."""
+    elsewhere, bucket, hashes = "eu-west-1", f"{BUCKET}-elsewhere", f"{HASHES}Elsewhere"
+    assert elsewhere != REGION
+    boto3.client("s3", region_name=elsewhere).create_bucket(
+        Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": elsewhere}
+    )
+    table = boto3.resource("dynamodb", region_name=elsewhere).create_table(
+        TableName=hashes,
+        KeySchema=[{"AttributeName": "prompt_hash", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "prompt_hash", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    root = tree(tmp_path, {D1: DRAFT_V1})
+    given = ["--environment", "dev", "--root", str(root), "--commit", COMMIT,
+             "--bucket", bucket, "--table", hashes]  # fmt: skip
+    assert pp.main(given, now=NOW) == 0
+    assert table.get_item(Key={"prompt_hash": sha256_text(DRAFT_V1)})["Item"]["status"] == "live"
+
+
+def test_a_bucket_that_cannot_be_found_is_reported_and_never_a_traceback(aws, tmp_path, capsys):
+    root = tree(tmp_path, {D1: DRAFT_V1})
+    given = ["--environment", "dev", "--root", str(root), "--commit", COMMIT, "--bucket", "no-such-bucket"]
+    assert pp.main(given, now=NOW) == 1
+    assert capsys.readouterr().err.startswith("publish: AWS refused or could not be reached: ClientError(")
+
+
 # --- the workflow: .github/workflows/prompts.yml ---------------------------------------------------
 
 PATHS = [
@@ -948,13 +1070,30 @@ def test_the_workflow_gates_pull_requests_and_publishes_merges_on_the_same_paths
     assert workflow()["permissions"] == {"contents": "read"}
 
 
-def test_the_gates_run_only_for_a_pull_request_and_never_with_a_secret():
+def test_the_gates_run_only_for_a_pull_request_and_read_no_secret_but_the_denylist():
     gates = jobs()["gates"]
     assert gates["if"] == "github.event_name == 'pull_request'"
     assert gates["permissions"] == {"contents": "read", "pull-requests": "read"}
-    text = yaml.safe_dump(gates)
-    assert "secrets." not in text and "id-token" not in text and "configure-aws-credentials" not in text
+    text = yaml.safe_dump(gates, width=10**6)
+    assert "id-token" not in text and "configure-aws-credentials" not in text
     assert "environment" not in gates
+    assert set(re.findall(r"\bsecrets\.([A-Za-z0-9_]+)", text)) == {"PII_DENYLIST"}
+    # On the denylist's own step only, which is pr-checks.yml's pii-denylist step exactly.
+    denylist = step("gates", "Personal-data denylist")
+    others = [s for s in steps("gates") if s.get("name") != "Personal-data denylist"]
+    assert all("secrets." not in yaml.safe_dump(s, width=10**6) for s in others)
+    assert denylist["env"] == {
+        "PII_DENYLIST": "${{ secrets.PII_DENYLIST }}",
+        "BASE": "${{ github.event.pull_request.base.sha }}",
+        "HEAD": "${{ github.event.pull_request.head.sha }}",
+    }
+    pr_checks = yaml.safe_load((WORKFLOWS / "pr-checks.yml").read_text(encoding="utf-8"))
+    theirs = next(s for s in pr_checks["jobs"]["pii-denylist"]["steps"] if s.get("name") == denylist["name"])
+    assert (denylist["env"], denylist["run"]) == (theirs["env"], theirs["run"])
+    assert denylist["run"] == 'python3 scripts/pii_denylist_check.py --range "$BASE" "$HEAD"'
+    # Straight after the checkout, on the runner's own python3, before anything is installed.
+    names = [s["name"] for s in steps("gates")]
+    assert names[:4] == ["Checkout", "Personal-data denylist", "Set up Python", "Install dependencies"]
 
 
 def test_no_publish_job_runs_for_a_pull_request_and_each_waits_for_the_switch():
@@ -1029,8 +1168,9 @@ def test_the_gates_pin_the_same_tools_as_the_other_workflows():
     # Trivy runs exactly as security.yml runs it: the report, then the gate.
     assert re.findall(r"trivy fs (.*?)\n\n", text, re.S) == re.findall(r"trivy fs (.*?)\n\n", security, re.S)
     gates = jobs()["gates"]
-    first = ["Prompt lint", "Personal-data denylist", "Trufflehog secret scan"]
-    assert [s["name"] for s in gates["steps"]][3:6] == first
+    first = ["Personal-data denylist", "Set up Python", "Install dependencies", "Prompt lint",
+             "Trufflehog secret scan"]  # fmt: skip
+    assert [s["name"] for s in gates["steps"]][1:6] == first
     assert step("gates", "Lint and publisher tests")["run"] == (
         "python -m pytest -q scripts/tests/test_prompt_lint.py scripts/tests/test_publish_prompts.py"
     )
@@ -1044,6 +1184,40 @@ def test_the_gates_pin_the_same_tools_as_the_other_workflows():
     assert '"--base-ref=$BASE"' in lint["run"] and '"--release-ref=$release"' in lint["run"]
     assert "python scripts/prompt_lint.py" in lint["run"]
     assert step("gates", "Checkout")["with"] == {"fetch-depth": 0}
+
+
+@pytest.mark.parametrize(
+    ("gh", "status", "passed"),
+    [
+        ("echo v0.4.0", 0, ["--base-ref=b4se", "--release-ref=v0.4.0"]),
+        # gh's words when the repository has no release: production runs none.
+        ("echo 'release not found' >&2; exit 1", 0, ["--base-ref=b4se", "--no-release"]),
+        ("echo 'HTTP 502: Bad Gateway' >&2; exit 1", 1, None),
+        ("true", 1, None),  # no failure, and no release named either
+    ],
+)
+def test_the_gates_lint_against_the_release_gh_names_and_never_a_tag_of_their_own(
+    tmp_path, gh, status, passed
+):
+    """The step's own script, with gh and python stood in for: the release `gh release view`
+    names, none when gh says there is none, and a failed gate (never a guess) when gh fails."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    called = tmp_path / "called"
+    for name, script in (("gh", gh), ("python", f'printf "%s\\n" "$@" > "{called}"')):
+        (bin_dir / name).write_text(f"#!/bin/sh\n{script}\n", encoding="utf-8")
+        (bin_dir / name).chmod(0o755)
+    environment = {"PATH": f"{bin_dir}:/usr/bin:/bin", "BASE": "b4se", "TMPDIR": str(tmp_path)}
+    done = subprocess.run(
+        ["bash", "-c", step("gates", "Prompt lint")["run"]],
+        env=environment, cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False,
+    )  # fmt: skip
+    assert done.returncode == status, done.stderr
+    if passed is None:
+        assert not called.exists()  # the lint never ran
+        assert "Could not tell which release production runs:" in done.stderr
+    else:
+        assert called.read_text(encoding="utf-8").splitlines() == ["scripts/prompt_lint.py", *passed]
 
 
 def test_the_publish_jobs_check_the_tree_for_personal_data_with_the_list():
@@ -1062,8 +1236,34 @@ def test_the_production_publish_names_the_release_production_runs():
     assert 'echo "RELEASE_REF=$tag" >> "$GITHUB_ENV"' in found["run"]
     publish = step("publish-production", "Publish")["run"]
     assert 'args=(--environment production "--release-ref=$RELEASE_REF")' in publish
-    assert step("publish-production", "Checkout")["with"] == {"fetch-depth": 0}  # tags, for the worktree
+    # Every tag, for the worktree; a release's run checks out its tag (a dispatch's ref is empty, its
+    # own), as terraform-production-release.yml's apply does.
+    checkout = step("publish-production", "Checkout")["with"]
+    assert checkout == {"ref": "${{ github.event.release.tag_name }}", "fetch-depth": 0}
+    release = yaml.safe_load((WORKFLOWS / "terraform-production-release.yml").read_text(encoding="utf-8"))
+    deploy = next(s for s in release["jobs"]["apply"]["steps"] if s.get("name") == "Checkout")
+    assert checkout == deploy["with"]
     assert "args=(--environment dev)" in step("publish-dev", "Publish")["run"]
+
+
+def test_a_release_publishes_production_only_when_its_commit_is_on_prod():
+    """terraform-production-release.yml's guard, first: the deploy refuses a release cut from
+    another branch, so its prompts must not reach production either, and no AWS sign-in is made for
+    it. The commit is the checked-out tag's, never github.sha."""
+    guard = step("publish-production", "Verify release commit is on prod")
+    assert guard["if"] == "github.event_name == 'release'"
+    release = (WORKFLOWS / "terraform-production-release.yml").read_text(encoding="utf-8")
+    for line in (
+        "git fetch origin prod",
+        'release_sha="$(git rev-parse HEAD)"',
+        'git merge-base --is-ancestor "$release_sha" origin/prod ||',
+    ):
+        assert line in guard["run"] and line in release, line
+    assert "github.sha" not in guard["run"] and guard["run"].startswith("set -euo pipefail\n")
+    names = [s.get("name") for s in steps("publish-production")]
+    order = [names.index(name) for name in ("Checkout", "Verify release commit is on prod",
+                                            "Configure AWS credentials", "Publish")]  # fmt: skip
+    assert order == sorted(order) and order[1] == order[0] + 1
 
 
 def test_no_expression_is_interpolated_into_a_shell_script():

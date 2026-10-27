@@ -20,18 +20,19 @@ prompts/README.md states the rules for the people who edit it; this holds the tr
   (`--base-ref`, and the release below) a version keeps its bytes and a new one is numbered above
   every version that tree had, so a version names one text for ever, in lineage and the evals.
 
-**The second pass**, against the latest release (`--release-ref`, else the newest tag): production
-runs the release's code, so the release's registry decides what production can read. The release
-is checked out in a `git worktree` (its `lambdas/` only), where a subprocess imports the release's
-own registry, runs the release's own `prompts.validate` on each file in latest/ and prints the
-result as JSON. A prompt that registry does not have, has as code-only, or whose files its rules
+**The second pass**, against the latest release (`--release-ref`; a run that names none takes the
+newest `v*` tag, the shape a release's tag has, but the workflow always names the release itself):
+production runs the release's code, so the release's registry decides what production can read.
+The release is checked out in a `git worktree` (its `lambdas/` only), where a subprocess imports
+the release's own registry, runs the release's own `prompts.validate` on each file in latest/ and
+prints the result as JSON. A prompt that registry does not have, has as code-only, or whose files its rules
 refuse, is flagged `skip-at-production`: the production publish leaves that prompt as it is until
 a release knows it (scripts/publish_prompts.py). A flag is not an error: dev publishes it.
 
 Exit status: 0 when the tree can be published, 1 on any error, 2 on a usage error. Nothing it
 prints holds a prompt's text: a finding names the file, the line and the rule, never the words.
 
-    python scripts/prompt_lint.py                          # this checkout; the newest tag is the release
+    python scripts/prompt_lint.py                          # this checkout; the newest v* tag is the release
     python scripts/prompt_lint.py --release-ref v0.4.0     # name the release
     python scripts/prompt_lint.py --base-ref origin/dev    # also hold versions to what dev has now
     python scripts/prompt_lint.py --no-release             # skip the second pass
@@ -377,11 +378,12 @@ def resolve(repo: Path, ref: str) -> str:
 
 
 def newest_tag(repo: Path) -> str | None:
-    """The most recently made tag (releases are tagged), or None when there is none or `repo` is
-    not a git repository."""
+    """The most recently made release-shaped tag (`v*`, as a release is tagged), or None when there
+    is none or `repo` is not a git repository. Another tag, such as one marking a submission that is
+    no release, is never taken for the release production runs."""
     done = _git(
-        repo, "for-each-ref", "--sort=-creatordate", "--count=1", "--format=%(refname:short)", "refs/tags",
-        check=False,
+        repo, "for-each-ref", "--sort=-creatordate", "--count=1", "--format=%(refname:short)",
+        "refs/tags/v*", check=False,
     )
     tag = done.stdout.strip() if done.returncode == 0 else ""
     return tag or None
@@ -589,7 +591,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=ROOT, help="the repository to check (default: this one)")
     release = parser.add_mutually_exclusive_group()
     release.add_argument(
-        "--release-ref", help="the release production runs (default: the newest tag) for the second pass"
+        "--release-ref",
+        help="the release production runs, for the second pass (default: the newest v* tag)",
     )
     release.add_argument("--no-release", action="store_true", help="skip the second pass")
     parser.add_argument("--base-ref", help="also hold versions to the tree at this ref (a PR's base)")

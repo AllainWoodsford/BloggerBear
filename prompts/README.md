@@ -62,8 +62,8 @@ The lint prints file names, line numbers and rules, never a prompt's words. Run 
 ## How it is published
 
 - **Dev**: every merge to `dev` that touches this folder publishes it to dev's bucket.
-- **Production**: every published release publishes it (under the `production` environment), so the
-  prompts and the code never drift; between releases the owner can publish `dev`'s tree to
+- **Production**: every published release publishes it (under the `production` environment, and only
+  a release whose commit is on `prod`, as the deploy requires), so the prompts and the code never drift; between releases the owner can publish `dev`'s tree to
   production by hand (the workflow's *Run workflow* button on `dev`, environment `production`,
   under the `production-prompts` environment). Either needs the owner's approval.
 
