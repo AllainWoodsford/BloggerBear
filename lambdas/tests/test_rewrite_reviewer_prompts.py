@@ -59,6 +59,15 @@ def _values_in(template: str) -> set[str]:
     return {match.group(2) for match in prompts.PLACEHOLDER.finditer(template) if match.group(1) is None}
 
 
+def _v1_file(prompt_id: str) -> Path:
+    """The prompt's v1.txt: in latest/ or, once retired, in archive/ (section 4.2). Its bytes never
+    change, so the tests read whichever is there and stay green when a v2 retires it."""
+    folder = ROOT / "prompts" / prompt_id
+    found = [path for path in (folder / "latest" / "v1.txt", folder / "archive" / "v1.txt") if path.is_file()]
+    assert found, f"{prompt_id}: v1.txt is in neither latest/ nor archive/"
+    return found[0]
+
+
 @pytest.fixture(autouse=True)
 def _assets_off(monkeypatch):
     """PROMPT_AS_ASSET_ENABLED unset, as on every deployment until the owner turns it on."""
@@ -309,11 +318,7 @@ def test_each_rewrite_and_reviewer_v1_asset_file_is_the_vanilla_it_was_migrated_
     bumping its version fails here; a vanilla edited past v1 is no longer held to it."""
     specs = {spec.prompt_id: spec for spec in prompts_registry.all_specs()}
     for prompt_id in PROMPT_IDS:
-        folder = ROOT / "prompts" / prompt_id
-        candidates = (folder / "latest" / "v1.txt", folder / "archive" / "v1.txt")
-        found = [path for path in candidates if path.is_file()]
-        assert found, f"{prompt_id}: v1.txt is in neither latest/ nor archive/"
-        raw = found[0].read_bytes()
+        raw = _v1_file(prompt_id).read_bytes()
         assert hashlib.sha256(raw).hexdigest() == V1_SHA256[prompt_id], prompt_id
         if specs[prompt_id].vanilla_version == "v1":
             assert raw == specs[prompt_id].vanilla.encode("utf-8"), prompt_id
@@ -788,9 +793,17 @@ def test_each_reviewer_task_binds_its_articles_id_for_the_draw_and_lets_go_after
 
 
 def test_a_reviewer_task_that_raises_still_lets_go_of_its_articles_id():
+    seen = []
+
+    def boom(*args, **kwargs):
+        seen.append(prompts.bound_run())
+        raise RuntimeError("boom")
+
     hands, _ = _hands([])
-    with patch.object(reviewer, "_published", side_effect=RuntimeError("boom")):
+    with prompts.bind_run("outer"), patch.object(reviewer, "_published", side_effect=boom):
         assert reviewer.do_task({"task": "published", "article_id": "a-9"}, hands, FIXED_NOW) == "error"
+        assert prompts.bound_run() == "outer"
+    assert seen == ["a-9"]
     assert prompts.bound_run() is None
 
 
@@ -971,8 +984,9 @@ def test_an_asset_that_leaves_out_any_value_is_refused_for_the_exact_vanilla(aws
 
 @pytest.mark.parametrize("prompt_id", PROMPT_IDS)
 def test_an_approved_byte_copy_of_each_vanilla_is_served_as_its_asset_with_the_same_text(aws, prompt_id):
-    """What the publisher's first release does: v1.txt in latest/, approved. The asset is served
-    (its version, not the vanilla's), and the text the model is sent does not change by a byte."""
-    aws(prompt_id, "v1", (ROOT / "prompts" / prompt_id / "latest" / "v1.txt").read_text(encoding="utf-8"))
+    """What the publisher's first release does: v1.txt (in latest/, or archive/ once retired), approved.
+    The asset is served (its version, not the vanilla's), and the text the model is sent does not
+    change by a byte."""
+    aws(prompt_id, "v1", _v1_file(prompt_id).read_text(encoding="utf-8"))
     text, version, expected = _render_at_call_site(prompt_id)
     assert (text, version) == (expected, "v1")
