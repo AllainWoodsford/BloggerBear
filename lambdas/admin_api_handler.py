@@ -461,6 +461,9 @@ def _create_topic(event: dict) -> dict:
     candidates_error = _model_candidates_error(model_id_candidates)
     if candidates_error:
         return _error(400, candidates_error)
+    unsuitable = _unsuitable_model_error(model_id, fallback_model_id, *(model_id_candidates or []))
+    if unsuitable:
+        return _error(400, unsuitable)
 
     # The topic's turn in the stagger (common/stagger.py): a slot of its own, else the next
     # free one. Slot 1's research heartbeat runs at :05 past, slot 2's at :10, and so on.
@@ -642,6 +645,12 @@ def _update_topic(event: dict) -> dict:
         candidates_error = _model_candidates_error(updated["model_id_candidates"])
         if candidates_error:
             return _error(400, candidates_error)
+    named = [updated.get(field) for field in ("model_id", "fallback_model_id") if field in body]
+    if "model_id_candidates" in body:
+        named += updated.get("model_id_candidates") or []
+    unsuitable = _unsuitable_model_error(*named)
+    if unsuitable:
+        return _error(400, unsuitable)
 
     # The stagger slot (common/stagger.py): set it, clear it (null) for the next free one, or
     # leave it; a topic from before slots existed is given one the first time it is edited.
@@ -1527,6 +1536,28 @@ def _registered_model_error(model_id: str, model: dict | None) -> str | None:
     disabled; None when it is a registered, enabled model."""
     if model is None or model.get("enabled") is False:
         return f"model '{model_id}' is not a registered, enabled model (see GET /models)"
+    return None
+
+
+def _not_a_text_model_error(model_id: str, model: dict | None) -> str | None:
+    """The error for `model_id` when its registry row (`model`, already read) says it is not a
+    text model (common/model_fleet.suitable: its purpose, or for a row from before purposes were
+    recorded, its pricing unit); None for a text model, and for a model with no row, which the
+    registry has no say on."""
+    if model is not None and not model_fleet.suitable(model, model_fleet.TEXT):
+        return f"model '{model_id}' does not write text (purpose: {model_fleet.purpose(model)})"
+    return None
+
+
+def _unsuitable_model_error(*model_ids) -> str | None:
+    """The first error among the model ids a topic or the model config names (None and '' skipped)
+    whose registry row says the model is not a text model; None when every one may be used. Each
+    is one registry read; a model with no row passes, as it always has."""
+    for model_id in model_ids:
+        if isinstance(model_id, str) and model_id:
+            problem = _not_a_text_model_error(model_id, get_model(model_id))
+            if problem:
+                return problem
     return None
 
 
@@ -2728,7 +2759,7 @@ def _put_model(event: dict) -> dict:
     return _response(200, item)
 
 
-_CATALOG_MODEL_FIELDS = ("region", "discovered_at", "pricing_unit", *model_catalog.ACCESS_FIELDS)
+_CATALOG_MODEL_FIELDS = model_catalog.CATALOG_MODEL_FIELDS
 
 
 # --- Model catalog (common/model_catalog.py, docs/enhancements/archive/model-catalog-refresh.md) ---------
@@ -2812,6 +2843,10 @@ def _discover_models_route(event: dict) -> dict:
     return _start_model_catalog_job("discover")
 
 
+def _classify_models_route(event: dict) -> dict:
+    return _start_model_catalog_job(model_catalog.CLASSIFY_JOB)
+
+
 def _get_model_config(event: dict) -> dict:
     config = get_model_config() or {"config_id": "default", "model_id": None, "fallback_model_id": None}
     return _response(200, config)
@@ -2831,6 +2866,9 @@ def _put_model_config_route(event: dict) -> dict:
         not isinstance(fallback_model_id, str) or not fallback_model_id
     ):
         return _error(400, "'fallback_model_id' must be a non-empty string if provided")
+    unsuitable = _unsuitable_model_error(model_id, fallback_model_id)
+    if unsuitable:
+        return _error(400, unsuitable)
 
     item = put_model_config(model_id=model_id, fallback_model_id=fallback_model_id)
     return _response(200, item)
@@ -2842,8 +2880,9 @@ def _put_model_config_route(event: dict) -> dict:
 # usable angle, daily_cycle_handler._assign_rotated_model sets the topic's model_id to a random pick
 # from this list. Each entry ends up as some topic's model, so each must be a registered, enabled
 # model (refused in a Re-Write's words), and also one the weekly cycle and model_routing would route
-# to: a model the account can call (not `access: denied`) that writes text. The check runs only when
-# the pool is set, so a pooled model a later access probe finds denied stays until it is replaced.
+# to: a model the account can call (not `access: denied`) that writes text (model_fleet.suitable).
+# The check runs when the pool is set; a pooled model a later probe finds denied, or a later
+# classification finds no text model, is passed over by the daily cycle until it is replaced.
 
 # Nothing bounds a topic's own list, so this bound is chosen: the registry's default size (the model
 # catalog's `max_models`, which pruning keeps it to) and the top of `rotation_max`'s range. It also
@@ -2884,10 +2923,9 @@ def _put_model_rotation_route(event: dict) -> dict:
             return _error(400, model_error)
         if not model_fleet.is_usable(model):
             return _error(400, f"model '{candidate}' cannot be called by this account (access: denied)")
-        if (model.get("pricing_unit") or "tokens") != "tokens":
-            return _error(
-                400, f"model '{candidate}' does not write text (pricing_unit: {model['pricing_unit']})"
-            )
+        text_error = _not_a_text_model_error(candidate, model)
+        if text_error:
+            return _error(400, text_error)
     # The row as written, not read back: that read is eventually consistent, and could still show
     # the pool from before this write.
     return _response(200, put_model_rotation_candidates(candidates))
@@ -3264,6 +3302,7 @@ _ROUTES = {
     "PUT /model-rotation": _put_model_rotation_route,
     "POST /models/reprice": _reprice_models_route,
     "POST /models/discover": _discover_models_route,
+    "POST /models/classify": _classify_models_route,
     "GET /model-catalog-config": _get_model_catalog_config_route,
     "PUT /model-catalog-config": _put_model_catalog_config_route,
     "GET /reviewer-config": _get_reviewer_config_route,

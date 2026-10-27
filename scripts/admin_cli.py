@@ -912,8 +912,52 @@ def _cmd_musings_regenerate(args: argparse.Namespace) -> None:
 # --- models / model-config subcommands --------------------------------------
 
 
+# The purpose column of `models list` for a row from before purposes were recorded (no
+# `model_purpose`): routing takes a token-priced one for a text model until `models classify` says.
+UNCLASSIFIED = "unclassified"
+_MODELS_COLUMNS = ("MODEL ID", "PURPOSE", "ENABLED", "ACCESS", "IN $/1K", "OUT $/1K")
+
+
+def _models_row(model: dict) -> tuple[str, ...]:
+    """One model's cells: its id, purpose (or `unclassified`), whether it is enabled, what the
+    access probe found (blank when never probed) and its two prices (blank when unpriced)."""
+
+    def price(field):
+        value = model.get(field)
+        return "" if value is None else f"{float(value):.5f}"
+
+    return (
+        str(model.get("model_id") or ""),
+        str(model.get("model_purpose") or UNCLASSIFIED),
+        "no" if model.get("enabled") is False else "yes",
+        str(model.get("access") or ""),
+        price("input_price_usd_per_1k_tokens"),
+        price("output_price_usd_per_1k_tokens"),
+    )
+
+
+def _print_models_table(models: list[dict]) -> None:
+    """The registry as a table, one model a line, the columns padded to their widest cell."""
+    rows = [_MODELS_COLUMNS, *(_models_row(m) for m in models)]
+    widths = [max(len(row[i]) for row in rows) for i in range(len(_MODELS_COLUMNS))]
+    for row in rows:
+        print("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+    if not models:
+        print("(no models are registered; `models discover` finds the account's)")
+    elif any(row[1] == UNCLASSIFIED for row in rows[1:]):
+        print(
+            f"\n{UNCLASSIFIED}: recorded before purposes were; a token-priced one counts as a text "
+            "model until `models classify` records what Bedrock says it is."
+        )
+
+
 def _cmd_models_list(args: argparse.Namespace) -> None:
-    _do_request(args, "GET", "/models")
+    data = _fetch_json(args, "GET", "/models")
+    if args.as_json:
+        print(json.dumps(data, indent=2))
+        return
+    models = data.get("models", data) if isinstance(data, dict) else data
+    _print_models_table(models or [])
 
 
 def _cmd_models_add(args: argparse.Namespace) -> None:
@@ -1001,6 +1045,16 @@ def _cmd_models_discover(args: argparse.Namespace) -> None:
     print(
         "Discovering in the background. New models are added disabled and unpriced (at most 5, "
         "none once the registry is full); the next reprice prices them. `models list` shows them.",
+        file=sys.stderr,
+    )
+
+
+def _cmd_models_classify(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", "/models/classify")
+    print(
+        "Classifying in the background: each registered model's purpose and inputs are recorded "
+        "from what Bedrock lists now (unknown for one it no longer lists). `models list` shows the "
+        "purposes once it is done.",
         file=sys.stderr,
     )
 
@@ -2356,9 +2410,19 @@ def build_parser() -> argparse.ArgumentParser:
     models_parser = subparsers.add_parser("models", help="Manage the AI model registry")
     models_sub = models_parser.add_subparsers(dest="action", required=True)
 
-    models_sub.add_parser("list", help="List the supported-models registry").set_defaults(
-        func=_cmd_models_list
+    models_list_parser = models_sub.add_parser(
+        "list",
+        help=(
+            "List the supported-models registry as a table: each model's purpose (text, image, "
+            "embedding, ...; unclassified until `models classify`), whether it is enabled, its "
+            "access and its prices"
+        ),
     )
+    models_list_parser.add_argument(
+        "--json", dest="as_json", action="store_true", default=False,
+        help="Print the registry as the API returns it, instead of the table",
+    )
+    models_list_parser.set_defaults(func=_cmd_models_list)
 
     models_add_parser = models_sub.add_parser(
         "add", help="Add or update a model in the registry"
@@ -2419,6 +2483,14 @@ def build_parser() -> argparse.ArgumentParser:
             "unpriced: the next reprice prices them); none once the registry holds 50"
         ),
     ).set_defaults(func=_cmd_models_discover)
+    models_sub.add_parser(
+        "classify",
+        help=(
+            "Record each registered model's purpose (text, image, embedding, video, speech) and "
+            "inputs from what Bedrock lists now, so models from before purposes were recorded are "
+            "judged by them; a model Bedrock no longer lists is marked unknown"
+        ),
+    ).set_defaults(func=_cmd_models_classify)
 
     reviewer_parser = subparsers.add_parser(
         "reviewer",

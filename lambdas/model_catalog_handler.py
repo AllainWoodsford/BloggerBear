@@ -23,17 +23,19 @@ top-level try/except that logs the real exception and returns an error dict.
 
 from __future__ import annotations
 
-from common import model_catalog
+from common import evidence, model_catalog
 from common.lambda_timing import track_lambda_duration
 
 
 @track_lambda_duration("model_catalog")
 def handler(event, context) -> dict:
-    try:
-        return model_catalog.handle(
-            event if isinstance(event, dict) else {},
-            own_arn=getattr(context, "invoked_function_arn", None),
-        )
-    except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
-        print(f"model_catalog_handler: unhandled exception: {exc!r}")
-        return {"status": "error", "error": str(exc)}
+    # The invocation's id joins each job's `model_catalog_job` evidence line (common/evidence.py).
+    with evidence.bind(tick=getattr(context, "aws_request_id", None)):
+        try:
+            return model_catalog.handle(
+                event if isinstance(event, dict) else {},
+                own_arn=getattr(context, "invoked_function_arn", None),
+            )
+        except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
+            print(f"model_catalog_handler: unhandled exception: {exc!r}")
+            return {"status": "error", "error": str(exc)}

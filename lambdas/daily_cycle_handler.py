@@ -51,7 +51,7 @@ from datetime import UTC, date, datetime
 
 import boto3
 
-from common import compliance, equipment, fresh_review, goal_rotation
+from common import compliance, equipment, fresh_review, goal_rotation, model_fleet
 from common.adapters.base import DaySubject
 from common.attribution import sources_for_topic
 from common.bedrock import invoke_model_tracked
@@ -1297,12 +1297,16 @@ def _assign_rotated_model(topic_id: str) -> None:
     resolve_model precedence -- a topic with its own `model_id_candidates` already rerolls every
     run on its own and keeps doing exactly that; this never touches or clobbers that list.
 
+    Only a pooled model whose registry row is usable and a text model is picked
+    (common/model_fleet.rotation_pool): one disabled, found uncallable or classed as something
+    else since the pool was set is passed over, so the next run never starts on it.
+
     Never allowed to affect an article that has already published: read and write failures, and
     an empty pool, are logged (the latter isn't even logged -- it's the expected steady state
     before anyone has configured a pool) and swallowed, same as the armor bookkeeping above.
     """
     try:
-        candidates = get_model_rotation_candidates()
+        candidates = model_fleet.rotation_pool(get_model_rotation_candidates())
         if not candidates:
             return
         set_topic_model_id(topic_id, random.choice(candidates))

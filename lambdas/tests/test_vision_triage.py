@@ -943,3 +943,24 @@ def test_rail_look_again_at_a_reach_past_the_default_feeder_reach_is_completed_a
     assert answer["settings"] == {"reach_m": 3000, "feeder_reach_m": 3000.0}
     assert vision_triage.PROFILES["rail_access"].complete_params is contract.with_feeder_reach
     assert vision_triage.PROFILES["ships"].complete_params is dict
+
+
+# --- the model the agent is given -------------------------------------------------------------------
+
+
+def test_the_triage_asks_routing_for_a_text_model_that_takes_an_image(monkeypatch):
+    from common import model_fleet
+    from common.adapters import rail_access, satellite_vision
+
+    asked = []
+
+    def resolve(topic, need):
+        asked.append((topic, need))
+        return "sees", "spare"
+
+    monkeypatch.setattr(vision_triage, "resolve_model", resolve)
+    assert vision_triage.choose_model({"topic_id": "t"}) == ("sees", "spare")
+    assert asked == [({"topic_id": "t"}, model_fleet.TEXT_WITH_IMAGE_INPUT)]
+    # Both vision adapters choose their triage model this way.
+    assert satellite_vision.SatelliteVisionAdapter.choose_model is vision_triage.choose_model
+    assert rail_access.RailAccessAdapter.choose_model is vision_triage.choose_model
