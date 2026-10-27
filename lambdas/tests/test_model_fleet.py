@@ -13,7 +13,16 @@ import pytest
 from moto import mock_aws
 
 import admin_api_handler
-from common import costing, dynamo, evidence, model_catalog, model_fleet, model_routing, vision_triage
+from common import (
+    costing,
+    dynamo,
+    evals_settings,
+    evidence,
+    model_catalog,
+    model_fleet,
+    model_routing,
+    vision_triage,
+)
 
 REGION = "ap-southeast-2"
 NOW = datetime(2026, 10, 20, 15, 0, tzinfo=UTC)
@@ -687,6 +696,46 @@ def test_protection_names_each_models_role_and_the_evals_judge_when_that_row_exi
     aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "judge_model_id": "judge-m"})
     assert model_fleet.protected_models(topics, dynamo.get_model_config(), ["pooled"])["judge-m"] == "judge"
     assert model_fleet.judge_model({"judge_model_id": ""}) is None
+
+
+def test_model_roles_lists_every_role_a_model_plays_in_order_and_price_locked_rows(aws):
+    """protected_models names the first role; the models row's model_roles (written by the evals
+    rollup) lists all of them, in model_fleet.ROLES' order, and a locked price as one too."""
+    config = {"model_id": "main", "fallback_model_id": "spare"}
+    topics = [
+        {"topic_id": "t1", "model_id": "spare", "model_id_candidates": ["rot", "main"]},
+        {"topic_id": "t2", "fallback_model_id": "rot"},
+    ]
+    models = [{"model_id": "locked", "price_locked": True}, {"model_id": "main", "price_locked": False}]
+
+    roles = model_fleet.model_roles(topics, config, ["rot"], {"judge_model_id": "rot"}, models)
+
+    assert roles == {
+        "main": ["default", "rotation"],
+        "env-default": ["default"],
+        "spare": ["fallback", "topic_model"],
+        "rot": ["topic_fallback", "rotation", "pool", "judge"],
+        "locked": ["price_locked"],
+    }
+    assert model_fleet.ROLES == (
+        "default", "fallback", "topic_model", "topic_fallback", "rotation", "pool", "price_locked", "judge",
+    )  # fmt: skip
+    # No default row and no judge named: BEDROCK_MODEL_ID is the default, and so the judge.
+    assert model_fleet.model_roles([], None, [], {}, []) == {"env-default": ["default", "judge"]}
+
+
+def test_the_judge_role_goes_to_the_judge_in_effect_when_none_is_named(aws):
+    """Section 4.5's chain, as `evals status` names the judge: judge_model_id, else the default
+    row's fallback, else BEDROCK_MODEL_ID. Protection still reads judge_model_id as stored."""
+    config = {"model_id": "main", "fallback_model_id": "spare"}
+
+    unnamed = model_fleet.model_roles([], config, [], evals_settings.effective_settings({}), [])
+    # An invalid judge_model_id is no judge: the settings in effect fall back to the chain.
+    invalid = evals_settings.effective_settings({"judge_model_id": "not a model id"})
+
+    assert unnamed == {"main": ["default"], "env-default": ["default"], "spare": ["fallback", "judge"]}
+    assert model_fleet.model_roles([], config, [], invalid, []) == unnamed
+    assert model_fleet.protected_models([], config, [], {})["spare"] == "fallback"
 
 
 def test_pruning_never_removes_the_evals_judge(aws, capsys):

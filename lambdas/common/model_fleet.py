@@ -36,7 +36,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 
-from common import dynamo, evidence
+from common import dynamo, evals_settings, evidence
 from common.model_pricing import canonical_model_id
 
 PRUNE_MODES = ("value_for_money", "frontier")
@@ -51,10 +51,17 @@ NEEDS = (TEXT, TEXT_WITH_IMAGE_INPUT)
 # The purposes a row may record (model_catalog.model_purpose), and the one a row from before
 # purposes were recorded is taken to have while its pricing unit says it is billed by tokens.
 TEXT_PURPOSE = "text"
-# The `evals` settings row (PR13 adds the module that owns it; until then this is a plain read of
-# one attribute) and the role its judge model plays in protection.
-EVALS_CONFIG_ID = "evals"
+# The `evals` settings row (common/evals_settings.py owns it) and the role its judge model plays in
+# protection. Protection reads this one attribute as stored, so pruning never stops to say that some
+# other evals setting is invalid.
+EVALS_CONFIG_ID = evals_settings.CONFIG_ID
 JUDGE_FIELD = "judge_model_id"
+# Every role a model can play, as the models row's `model_roles` lists them (section 4.6 of
+# docs/enhancements/model-ranch-prompt-assets-evals.md): protected_models' roles, and price_locked.
+# In model_roles, `judge` marks the judge in effect (section 4.5's chain, the one `evals status`
+# names). Protection reads `judge_model_id` as stored, because the default judge is protected as
+# `fallback` or `default` already.
+ROLES = ("default", "fallback", "topic_model", "topic_fallback", "rotation", "pool", "price_locked", "judge")
 
 
 def _key(model_id) -> str | None:
@@ -158,6 +165,43 @@ def protected_models(
         protect(candidate, "pool")
     protect(judge_model(evals), "judge")
     return protected
+
+
+def model_roles(
+    topics: list[dict], config: dict | None, pool: list[str], evals: dict | None, models: list[dict]
+) -> dict[str, list[str]]:
+    """{canonical id: every role it plays, in ROLES order} for each model that plays any: the roles
+    protected_models gives (all of them, not the first), and `price_locked` for a registry row
+    (`models`) that is locked. The evals rollup writes them on the models row as `model_roles`, for
+    display: they drift as topics change, so anything that acts on them derives them again
+    (section 3, deviation 7). `evals` is the evals settings in effect
+    (evals_settings.effective_settings), and `judge` goes to the judge they make
+    (evals_settings.judge_model): `judge_model_id`, else the default row's fallback, else
+    BEDROCK_MODEL_ID, the model `evals status` names."""
+    config = config or {}
+    found: dict[str, set[str]] = {}
+
+    def add(model_id, role):
+        key = _key(model_id)
+        if key:
+            found.setdefault(key, set()).add(role)
+
+    add(config.get("model_id"), "default")
+    add(os.environ.get("BEDROCK_MODEL_ID"), "default")
+    add(config.get("fallback_model_id"), "fallback")
+    for topic in topics:
+        add(topic.get("model_id"), "topic_model")
+        add(topic.get("fallback_model_id"), "topic_fallback")
+        for candidate in topic.get("model_id_candidates") or []:
+            add(candidate, "rotation")
+    for candidate in pool:
+        add(candidate, "pool")
+    for model in models:
+        if model.get("price_locked"):
+            add(model.get("model_id"), "price_locked")
+    # `config` is a row by now, so the judge's chain reads nothing more.
+    add(evals_settings.judge_model(evals or {}, config), "judge")
+    return {key: [role for role in ROLES if role in roles] for key, roles in found.items()}
 
 
 def prune_order(models: list[dict], mode: str) -> list[dict]:

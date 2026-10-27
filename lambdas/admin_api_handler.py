@@ -42,6 +42,9 @@ import boto3
 from common import (
     backup,
     equipment,
+    evals_rollup,
+    evals_settings,
+    evals_status,
     evidence,
     feedback_limits,
     gear,
@@ -2790,6 +2793,81 @@ def _put_model_catalog_config_route(event: dict) -> dict:
     return _get_model_catalog_config_route(event)
 
 
+# --- Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md, PR13) ---------------------
+#
+# The `evals` settings row (common/evals_settings.py), starting a rollup now (common/evals_rollup.py,
+# run in eval-jobs, invoked asynchronously: reading the log can take minutes), and what is happening
+# (common/evals_status.py). The perf fields the rollup puts on each models row come back with
+# GET /models as they are stored.
+
+
+def _get_evals_config_route(event: dict) -> dict:
+    return _response(200, evals_settings.summary())
+
+
+def _put_evals_config_route(event: dict) -> dict:
+    """Set (or, with null, clear) evals settings: any of evals_settings.SETTINGS but the gates and
+    the judge's calibration thresholds (DYNAMODB_ONLY), which are edited on the row itself. A
+    setting that isn't in the body is left as it is."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    editable = [name for name in evals_settings.SETTINGS if name not in evals_settings.DYNAMODB_ONLY]
+    if not isinstance(body, dict) or not body:
+        return _error(400, f"send any of: {', '.join(editable)} (null clears a setting)")
+    for name, value in body.items():
+        if name in evals_settings.DYNAMODB_ONLY:
+            return _error(400, f"'{name}' is set on the evals row in DynamoDB only, not through this API")
+        problem = evals_settings.validate_setting(name, value)
+        if problem:
+            return _error(400, problem)
+    # The judge must be a model that writes text, as the default and fallback must (PUT /model-config).
+    unsuitable = _unsuitable_model_error(body.get("judge_model_id"))
+    if unsuitable:
+        return _error(400, unsuitable)
+    update_config_row(evals_settings.CONFIG_ID, body)
+    return _get_evals_config_route(event)
+
+
+def _start_evals_rollup_route(event: dict) -> dict:
+    """Run the rollup now in eval-jobs: from its watermark, as the hourly schedule does, or for the
+    days `from` to `to` (ISO dates; `to` defaults to today) again."""
+    if os.environ.get("EVALS_ENABLED") != "true":
+        return _error(409, "evals are off (EVALS_ENABLED): there is no eval-jobs function to run the rollup")
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if not isinstance(body, dict):
+        return _error(400, "send {} for a rollup from the watermark, or 'from' (and 'to') for days")
+    payload = {"job": "rollup", "trigger": "admin"}
+    if body.get("from") is not None or body.get("to") is not None:
+        zone = evals_settings.zone(evals_settings.get_settings())
+        days = evals_rollup.manual_range(body.get("from"), body.get("to"), datetime.now(UTC), zone)
+        if isinstance(days, str):
+            return _error(400, days)
+        payload.update({"from": days[0].isoformat(), "to": days[1].isoformat()})
+    _get_lambda_client().invoke(
+        FunctionName=evals_rollup.function_name(),
+        InvocationType="Event",
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
+    days_asked = {key: payload[key] for key in ("from", "to") if key in payload}
+    return _response(202, {"triggered": "rollup", **days_asked})
+
+
+def _evals_status_route(event: dict) -> dict:
+    return _response(200, evals_status.status())
+
+
+def _evals_digest_route(event: dict) -> dict:
+    result = evals_status.digest(_query_param(event, "since"))
+    if isinstance(result, str):
+        return _error(400, result)
+    return _response(200, result)
+
+
 # --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/archive/reviewer-bear.md) -----
 #
 # The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
@@ -3305,6 +3383,11 @@ _ROUTES = {
     "POST /models/classify": _classify_models_route,
     "GET /model-catalog-config": _get_model_catalog_config_route,
     "PUT /model-catalog-config": _put_model_catalog_config_route,
+    "GET /evals-config": _get_evals_config_route,
+    "PUT /evals-config": _put_evals_config_route,
+    "POST /evals/rollup": _start_evals_rollup_route,
+    "GET /evals/status": _evals_status_route,
+    "GET /evals/digest": _evals_digest_route,
     "GET /reviewer-config": _get_reviewer_config_route,
     "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /pipeline-config": _get_pipeline_config_route,

@@ -1,8 +1,8 @@
 # The evals module (main.tf), planned with a mocked AWS provider like the other modules' tests.
 # What is held: switched off, it makes the table, the log group and lambda_exec's rights, and
 # nothing else, and still hands out real names; the rights are exactly section 5.3's (with what a
-# backup needs on the table and what the queue mapping needs on eval-work) on exactly their
-# resources, the same either way; switched on, it also makes the queue redriving to the pipeline's
+# backup needs on the table, what the queue mapping needs on eval-work, and what the admin API's
+# rollup and status routes need) on exactly their resources, the same either way; switched on, it also makes the queue redriving to the pipeline's
 # dead-letter queue, eval-jobs with its own log group, its two schedules, its mapping, the metric
 # filters, the rollup's heartbeat and the queue's age alarm; production protects the table.
 
@@ -143,8 +143,9 @@ run "the_rights_are_exactly_section_5_3s_on_exactly_their_resources" {
   assert {
     condition = [for statement in data.aws_iam_policy_document.evals.statement : statement.sid] == [
       "EvalsLogWrite", "EvalsLogRead", "EvalsLogQueries", "EvalsTable", "EvalWork", "PublishAlerts",
+      "InvokeEvalJobs", "EvalWorkAge",
     ]
-    error_message = "six statements and no more"
+    error_message = "eight statements and no more"
   }
 
   assert {
@@ -182,7 +183,7 @@ run "the_rights_are_exactly_section_5_3s_on_exactly_their_resources" {
       actions   = toset(["logs:GetQueryResults", "logs:StopQuery"])
       resources = toset(["*"])
     }]
-    error_message = "reading and stopping a query take no resource; nothing else is on *"
+    error_message = "reading and stopping a query take no resource; no other Logs action is on *"
   }
 
   assert {
@@ -219,6 +220,26 @@ run "the_rights_are_exactly_section_5_3s_on_exactly_their_resources" {
       resources = toset(["arn:aws:sns:eu-west-1:111111111111:acme-dev-alerts"])
     }]
     error_message = "publish to the alerts topic it was given, and to no other"
+  }
+
+  assert {
+    condition = [for statement in data.aws_iam_policy_document.evals.statement : {
+      actions = toset(statement.actions), resources = toset(statement.resources)
+      } if statement.sid == "InvokeEvalJobs"] == [{
+      actions   = toset(["lambda:InvokeFunction"])
+      resources = toset(["arn:aws:lambda:eu-west-1:111111111111:function:acme-dev-eval-jobs"])
+    }]
+    error_message = "the admin API starts a rollup in eval-jobs and no other function, by the ARN its name makes, though it does not exist yet"
+  }
+
+  assert {
+    condition = [for statement in data.aws_iam_policy_document.evals.statement : {
+      actions = toset(statement.actions), resources = toset(statement.resources)
+      } if statement.sid == "EvalWorkAge"] == [{
+      actions   = toset(["cloudwatch:GetMetricStatistics"])
+      resources = toset(["*"])
+    }]
+    error_message = "evals status reads eval-work's age metric, which takes no resource; nothing more"
   }
 }
 

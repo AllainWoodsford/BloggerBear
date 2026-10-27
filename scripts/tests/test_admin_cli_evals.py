@@ -1,17 +1,45 @@
 """The Admin CLI's eval commands (scripts/admin_cli_evals.py): wired into admin_cli's parser by
-`register`, which adds nothing yet (docs/enhancements/model-ranch-prompt-assets-evals.md, E0)."""
+`register` (docs/enhancements/model-ranch-prompt-assets-evals.md, E0), and `evals get|set|rollup|
+status|digest` (PR13), each sending what its Admin API route takes."""
 
 from __future__ import annotations
 
 import argparse
 from unittest.mock import patch
 
+import pytest
+
 import admin_cli
 import admin_cli_evals
+
+# Section 4.5's settings, by kind. Written out: scripts/tests also run on their own, with only scripts/
+# on the path (scripts/pyproject.toml), so common/evals_settings.py cannot be imported here.
+DYNAMODB_ONLY = {
+    "daily_gate", "weekly_gate", "total_gate", "min_events", "judge_min_agreement", "judge_min_pairs",
+}  # fmt: skip
+CLI_SETTINGS = {
+    "cull_enabled", "cull_max_per_run", "judge_enabled", "judge_interval_hours", "judge_max_items",
+    "judge_model_id", "score_max_cost_aud", "evals_daily_spend_cap_aud", "trace_calls", "timezone",
+    "excluded_sources",
+}  # fmt: skip
 
 
 def _subparsers(parser: argparse.ArgumentParser) -> argparse._SubParsersAction:
     return next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+
+
+def cli(*argv):
+    """Run `admin_cli.py evals ...` against a recording stand-in for the signed request. The stand-in
+    is in place before the parser is built, as the eval commands are handed admin_cli's helper then."""
+    calls = []
+
+    def record(_args, method, path, body=None):
+        calls.append((method, path, body))
+
+    with patch.object(admin_cli, "_do_request", record):
+        args = admin_cli.build_parser().parse_args(["evals", *argv])
+        args.func(args)
+    return calls
 
 
 def test_build_parser_hands_the_eval_module_its_subparsers_and_helpers():
@@ -23,20 +51,90 @@ def test_build_parser_hands_the_eval_module_its_subparsers_and_helpers():
     assert helpers == {"do_request": admin_cli._do_request, "CliError": admin_cli.CliError}
 
 
-def test_register_adds_no_command_yet_so_the_cli_reference_is_unchanged():
+def test_register_adds_the_evals_group_and_its_commands():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="resource")
     admin_cli_evals.register(subparsers, {"do_request": None, "CliError": Exception})
-    assert subparsers.choices == {}
-    assert "evals" not in _subparsers(admin_cli.build_parser()).choices
+    assert set(subparsers.choices) == {"evals"}
+    commands = _subparsers(subparsers.choices["evals"]).choices
+    assert set(commands) == {"get", "set", "rollup", "status", "digest"}
 
 
 def test_admin_cli_imports_the_eval_module_only_inside_build_parser():
     """At the top of admin_cli, the import would run while admin_cli itself is half loaded, and
-    the commands that will need its helpers could not have them: the lazy import is the cycle's
-    guard, so it stays inside the function."""
+    the commands that need its helpers could not have them: the lazy import is the cycle's guard,
+    so it stays inside the function."""
     source = admin_cli.__loader__.get_source(admin_cli.__name__)
     top_level = [line for line in source.splitlines() if line.startswith(("import ", "from "))]
     assert not [line for line in top_level if "admin_cli_evals" in line]
     body = source.split("def build_parser() -> argparse.ArgumentParser:", 1)[1].split("\ndef ", 1)[0]
     assert "    from admin_cli_evals import register as register_eval_commands\n" in body
+
+
+def test_get_status_and_digest_read_their_routes():
+    assert cli("get") == [("GET", "/evals-config", None)]
+    assert cli("status") == [("GET", "/evals/status", None)]
+    assert cli("digest") == [("GET", "/evals/digest", None)]
+    assert cli("digest", "--since", "2026-10-20") == [("GET", "/evals/digest?since=2026-10-20", None)]
+    # An ISO time's `+` and `:` are sent encoded, so API Gateway does not read the `+` as a space.
+    assert cli("digest", "--since", "2026-10-20T00:00:00+11:00") == [
+        ("GET", "/evals/digest?since=2026-10-20T00%3A00%3A00%2B11%3A00", None)
+    ]
+
+
+def test_set_sends_each_setting_as_the_api_takes_it():
+    [(method, path, body)] = cli(
+        "set", "--cull", "on", "--judge", "", "--judge-interval-hours", "6", "--judge-max-items", "",
+        "--judge-model-id", "maker.judge-v1:0", "--score-max-cost", "2.5", "--daily-spend-cap", "3",
+        "--trace-calls", "off", "--timezone", "UTC", "--excluded-sources", "judge, run:r-1,,",
+        "--cull-max-per-run", "4",
+    )  # fmt: skip
+    assert (method, path) == ("PUT", "/evals-config")
+    assert body == {
+        "cull_enabled": True,
+        "cull_max_per_run": 4,
+        "judge_enabled": None,
+        "judge_interval_hours": 6,
+        "judge_max_items": None,
+        "judge_model_id": "maker.judge-v1:0",
+        "score_max_cost_aud": 2.5,
+        "evals_daily_spend_cap_aud": 3.0,
+        "trace_calls": False,
+        "timezone": "UTC",
+        "excluded_sources": ["judge", "run:r-1"],
+    }
+
+
+def test_set_clears_with_an_empty_value_and_has_no_flag_for_the_dynamodb_only_settings():
+    assert cli("set", "--excluded-sources", "", "--judge-model-id", "") == [
+        ("PUT", "/evals-config", {"excluded_sources": None, "judge_model_id": None})
+    ]
+    flags = {flag for action in _set_parser()._actions for flag in action.option_strings}
+    for name in DYNAMODB_ONLY:
+        assert "--" + name.replace("_", "-") not in flags
+    # Every other setting has its flag.
+    assert {setting for _, setting, _, _ in admin_cli_evals.SET_FLAGS} == CLI_SETTINGS
+
+
+def _set_parser() -> argparse.ArgumentParser:
+    evals = _subparsers(admin_cli.build_parser()).choices["evals"]
+    return _subparsers(evals).choices["set"]
+
+
+def test_set_refuses_nothing_to_set_and_a_number_that_is_not_one():
+    with pytest.raises(admin_cli.CliError):
+        cli("set")
+    with pytest.raises(admin_cli.CliError):
+        cli("set", "--judge-max-items", "ten")
+    with pytest.raises(admin_cli.CliError):
+        cli("set", "--daily-spend-cap", "two dollars")
+
+
+def test_rollup_runs_from_the_watermark_or_for_the_days_named():
+    assert cli("rollup") == [("POST", "/evals/rollup", {})]
+    assert cli("rollup", "--from", "2026-10-01") == [("POST", "/evals/rollup", {"from": "2026-10-01"})]
+    assert cli("rollup", "--from", "2026-10-01", "--to", "2026-10-03") == [
+        ("POST", "/evals/rollup", {"from": "2026-10-01", "to": "2026-10-03"})
+    ]
+    with pytest.raises(admin_cli.CliError):
+        cli("rollup", "--to", "2026-10-03")

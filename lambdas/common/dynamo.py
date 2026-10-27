@@ -1966,21 +1966,24 @@ def _plain_numbers(value):
     return value
 
 
-def _set_remove(updates: dict) -> tuple[str, dict]:
-    """An UpdateExpression for `updates` (a value sets it, None removes it) and its values."""
-    sets, removes, values = [], [], {}
+def _set_remove(updates: dict) -> tuple[str, dict, dict]:
+    """An UpdateExpression for `updates` (a value sets it, None removes it), its names and its
+    values. Every attribute goes in as a `#n<i>` placeholder: some settings are DynamoDB reserved
+    words (`timezone`), and DynamoDB refuses the whole update over a bare one."""
+    sets, removes, names, values = [], [], {}, {}
     for index, (name, value) in enumerate(updates.items()):
+        names[f"#n{index}"] = name
         if value is None:
-            removes.append(name)
+            removes.append(f"#n{index}")
         else:
-            sets.append(f"{name} = :v{index}")
+            sets.append(f"#n{index} = :v{index}")
             values[f":v{index}"] = _floats_to_decimal(value)
     expression = ""
     if sets:
         expression += "SET " + ", ".join(sets)
     if removes:
         expression += (" " if expression else "") + "REMOVE " + ", ".join(removes)
-    return expression, values
+    return expression, names, values
 
 
 def get_config_row(config_id: str) -> dict | None:
@@ -1993,9 +1996,11 @@ def get_config_row(config_id: str) -> dict | None:
 def update_config_row(config_id: str, updates: dict) -> dict:
     """Set (a value) or remove (None) the given attributes of one config row and return the row.
     Attributes not in `updates` are left as they are."""
-    expression, values = _set_remove(updates)
+    expression, names, values = _set_remove(updates)
     if expression:
-        kwargs = {"ExpressionAttributeValues": values} if values else {}
+        kwargs = {"ExpressionAttributeNames": names}
+        if values:
+            kwargs["ExpressionAttributeValues"] = values
         table = get_table(os.environ["MODEL_CONFIG_TABLE"])
         table.update_item(Key={"config_id": config_id}, UpdateExpression=expression, **kwargs)
     return get_config_row(config_id) or {"config_id": config_id}
@@ -2055,8 +2060,7 @@ def set_model_fields(model_id: str, updates: dict, *, expected: dict) -> bool:
     """Set (a value) or remove (None) fields of an existing Models row, but only while each field
     in `expected` still holds its value there (None: is not set). False, and nothing written, when
     the row is gone or one of them has changed since it was read."""
-    expression, values = _set_remove(updates)
-    names = {}
+    expression, names, values = _set_remove(updates)
     conditions = ["attribute_exists(model_id)"]
     for index, (name, value) in enumerate(expected.items()):
         names[f"#e{index}"] = name
