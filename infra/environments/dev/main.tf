@@ -1487,8 +1487,12 @@ module "work_queue" {
   unique_name_prefix = var.unique_name_prefix
   environment_name   = "dev"
 
+  # The role's name is read through lambda_backup (whose role is this role's id, the same name) so
+  # that the module's two inline policies are written after that one: IAM caps a role's inline
+  # policies at 10,240 characters, and a release that shrinks lambda_backup while adding these must
+  # apply the shrink first.
   lambda_exec_role_arn  = aws_iam_role.lambda_exec.arn
-  lambda_exec_role_name = aws_iam_role.lambda_exec.name
+  lambda_exec_role_name = aws_iam_role_policy.lambda_backup.role
   lambda_package_path   = data.archive_file.lambdas.output_path
   lambda_package_hash   = data.archive_file.lambdas.output_base64sha256
   lambda_environment    = local.lambda_env_variables

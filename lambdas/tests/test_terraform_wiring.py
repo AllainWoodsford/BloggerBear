@@ -2236,7 +2236,7 @@ def test_each_root_calls_the_work_queue_module_once_with_its_own_lambdas_and_the
         "unique_name_prefix": "var.unique_name_prefix",
         "environment_name": f'"{env}"',
         "lambda_exec_role_arn": "aws_iam_role.lambda_exec.arn",
-        "lambda_exec_role_name": "aws_iam_role.lambda_exec.name",
+        "lambda_exec_role_name": "aws_iam_role_policy.lambda_backup.role",
         "lambda_package_path": "data.archive_file.lambdas.output_path",
         "lambda_package_hash": "data.archive_file.lambdas.output_base64sha256",
         "lambda_environment": "local.lambda_env_variables",
@@ -2256,6 +2256,19 @@ def test_each_root_calls_the_work_queue_module_once_with_its_own_lambdas_and_the
     ), env
     groups = main.split("lambda_log_group_function_names = [", 1)[1].split("]", 1)[0]
     assert "dispatcher" not in groups, env
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_work_queue_policies_are_written_after_lambda_backup_through_the_role_name(env):
+    """IAM caps lambda_exec's inline policies at 10,240 characters, so a release that shrinks
+    lambda_backup and adds the module's two policies must apply the shrink first: the name is read
+    through that policy, whose role is lambda_exec's id (the same name), for the ordering edge."""
+    main = _uncommented(_read_raw("environments", env, "main.tf"))
+    (call,) = _module_blocks(main, "modules/work-queue")
+    name = r"^\s*lambda_exec_role_name\s*=\s*aws_iam_role_policy\.lambda_backup\.role$"
+    assert re.search(name, call, re.M), env
+    backup = _resource_block(main, "aws_iam_role_policy", "lambda_backup")
+    assert re.search(r"^\s*role\s*=\s*aws_iam_role\.lambda_exec\.id$", backup, re.M), env
 
 
 def test_the_work_queue_is_fifo_without_content_dedup_and_redrives_three_times_to_a_fifo_dlq():
