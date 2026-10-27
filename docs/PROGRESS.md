@@ -1025,6 +1025,7 @@ rebased (spec section 6).
 | `lambda_exec` budget (not in the spec) | #393 | `claude/ranch-05-exec-role-budget` | dev |
 | Q0 queue wiring | #383 | `claude/ranch-10-queue-wiring` | PR0 |
 | Q1 work queue, shadow mode | #389 | `claude/ranch-11-work-queue` | Q0 |
+| Q2 per-topic cutover | #396 | `claude/ranch-12-queue-cutover` | Q1 |
 | P0 prompts wiring | #382 | `claude/ranch-20-prompts-wiring` | PR0 |
 | PR1 delimiter fix | #381 | `claude/ranch-21-delimiter-tag` | P0 |
 | PR2 bootstrap roles [B] | #386 | `claude/ranch-22-bootstrap-roles` | P0 |
@@ -1034,6 +1035,7 @@ rebased (spec section 6).
 | PR6 drafting prompts | #387 | `claude/ranch-26-migrate-drafting` | PR3 |
 | PR7 review prompts | #388 | `claude/ranch-27-migrate-reviews` | PR6 |
 | PR8 research and vision prompts | #392 | `claude/ranch-28-migrate-research` | PR7 |
+| PR9 rewrite and reviewer-bear prompts | #397 | `claude/ranch-29-migrate-rewrite` | PR8 |
 | PR1b model purpose | #385 | `claude/ranch-40-model-purpose` | PR0 |
 | E0 evals wiring | #391 | `claude/ranch-41-evals-wiring` | PR1b |
 | PR12 evals core and module [B] | #395 | `claude/ranch-42-evals-core` | E0 |
@@ -1042,15 +1044,14 @@ rebased (spec section 6).
 #390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
 bundle them: the new policies are ordered after #393's shrinks.
 
-**Being built now:** Q2 (`claude/ranch-12-queue-cutover`, from Q1) and PR9
-(`claude/ranch-29-migrate-rewrite`, from PR8) are in review; PR13 (`claude/ranch-43-evals-rollup`,
-from PR12) and PR17 (`claude/ranch-48-review-steering`, from PR7) are being implemented. PR12
-(#395) merges only after the owner says "bootstrap applied", and after #393. A branch that is not
-on `origin` lived only in the old session's container: start it again from its parent with the
-per-PR workflow.
+**Being built now:** PR13 (`claude/ranch-43-evals-rollup`, from PR12), PR17
+(`claude/ranch-48-review-steering`, from PR7) and PR10 (`claude/ranch-30-migrate-small-prompts`,
+from PR9). PR12 (#395) merges only after the owner says "bootstrap applied", and after #393. A
+branch that is not on `origin` lived only in the old session's container: start it again from its
+parent with the per-PR workflow.
 
-**Then:** PR10 (the small prompts) from PR9; PR13b and PR11b from PR13; PR14 to PR20 in the order
-section 7's table gives; PR21 bug sweep; PR22 docs sweep.
+**Then:** PR13b and PR11b from PR13; PR14 to PR20 in the order section 7's table gives (PR14 is
+built on a branch where the E and P stacks meet); PR21 bug sweep; PR22 docs sweep.
 
 **Owner actions waiting.**
 
