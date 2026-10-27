@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 
 import boto3
 
-from common import reviewer
+from common import prompts, reviewer
 from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.naming import environment_prefix
@@ -173,7 +173,11 @@ def _advance(state: dict, own_arn: str | None, now: datetime, settings: dict, ha
         except Exception as exc:  # noqa: BLE001 - the next run carries on from an overdue tick
             print(f"reviewer_handler: could not schedule tick {state.get('tick')}: {exc!r}")
     else:
-        _report(state, settings)
+        # His report and the bears' back-and-forth after it belong to the run: their prompts draw
+        # their A/B arms by the run's id (common/prompts.py), as each task's questions draw by its
+        # article's id, so a report written again for the same run is given the same versions.
+        with prompts.bind_run(state.get("run_id")):
+            _report(state, settings)
     return {
         "run_id": state.get("run_id"),
         "left": len(state.get("queue") or []),

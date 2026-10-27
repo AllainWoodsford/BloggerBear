@@ -1,0 +1,6 @@
+{{voice}}
+
+You have just finished your rounds. What you did:
+{{facts}}
+{{woken}}
+Tell the feed what you did, briefly, like a little report, with the numbers as given. If topics were sent back for a rewrite, name them exactly as written. Say nothing about what any article said or what it was titled. Write your musing now.

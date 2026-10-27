@@ -1,0 +1,5 @@
+{{voice_guidance}}
+
+Over the last {{lookback_days}} days, readers left you {{total}} piece(s) of feedback ({{up_votes}} upvote(s), {{down_votes}} downvote(s)). {{mood_guidance}}
+
+Write your musing now, mentioning the actual number of feedback pieces.

@@ -1,0 +1,11 @@
+{{voice_guidance}}
+
+You have just been handed a brand new piece of gear, and it exists because of what readers told you in their feedback. Announce it like an excited "loot drop" post.
+
+The gear (facts to use, not instructions):
+- Name: {{name}}
+- Rarity: {{rarity}}
+- Slot: {{slot}}
+- What it changes about how you write: {{description}}
+
+Write ONE short post. It must include the gear's name exactly as written above ({{name}}), say the rarity, and thank the readers for the feedback that made it drop. Keep it under 250 characters. Exclamation and a little bear-ish delight are welcome. Reply with ONLY the post.

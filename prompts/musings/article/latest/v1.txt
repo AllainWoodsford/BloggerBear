@@ -1,0 +1,5 @@
+{{voice_guidance}}
+
+You just published an article titled "{{title}}" for the topic "{{topic_name}}". {{mood_guidance}}
+
+Write your musing now.
