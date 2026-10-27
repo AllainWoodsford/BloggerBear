@@ -65,6 +65,7 @@ from pathlib import Path
 from common.dynamo import get_pipeline_config, get_topic, list_topics
 from common.editorial_resolver import GOAL_FIELDS, validate_editorial_goals
 from common.findings_window import findings_window_error, findings_window_hours
+from common.prompts import is_prompt_id
 from common.research_schedule import resolve_interval_hours
 from common.security_events import untrusted_text
 from ops_mcp import topic_match
@@ -128,6 +129,7 @@ AT_LEAST_ONE_OPTION = frozenset(
         "model-rotation set",
         "model-catalog set",
         "reviewer set",
+        "prompts set",
     }
 )
 
@@ -448,8 +450,13 @@ def _words(argument: dict, value) -> tuple[list[str], bool]:
     quoted = shlex.quote(text)
     if kind == "positional":
         # Every positional in the CLI is an id or a version (an ISO timestamp): one plain word,
-        # never empty, never something argparse would read as a flag, never a sentence.
-        if not _POSITIONAL.match(text):
+        # never empty, never something argparse would read as a flag, never a sentence. A prompt
+        # id is the one with an inner '/': two codes joined by one slash (common/prompts.py's own
+        # grammar, so the two cannot drift), and no other positional may hold a slash.
+        if argument["dest"] == "prompt_id":
+            if not is_prompt_id(text):
+                raise _Refused("must be a prompt id: <lambda_id>/<prompt_name>, as `prompts list` shows it")
+        elif not _POSITIONAL.match(text):
             raise _Refused("must be an id: letters, digits and . _ : + - only")
         return [quoted], quoted != text
     if not text or text.startswith("-"):

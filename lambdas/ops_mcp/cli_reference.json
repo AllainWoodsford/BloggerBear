@@ -8,6 +8,7 @@
     "delete",
     "destroy",
     "drop",
+    "pause",
     "purge",
     "reject",
     "remove",
@@ -53,7 +54,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    model-rotation      The shared rotation pool: the models the daily cycle moves a topic's\n                        model_id to\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,prompts} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,prompts}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    model-rotation      The shared rotation pool: the models the daily cycle moves a topic's\n                        model_id to\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n    prompts             Prompts as assets: what the publisher put in the prompts bucket, pausing\n                        one version, the releases, and the kill switch\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -921,7 +922,7 @@
           "destructive": false
         }
       ],
-      "destructive": false,
+      "destructive": true,
       "help_text": "usage: admin_cli.py topics pause [-h] topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "topics resume": {
@@ -4260,6 +4261,184 @@
       ],
       "destructive": false,
       "help_text": "usage: admin_cli.py equipment unequip [-h] topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "prompts": {
+      "help": "Prompts as assets: what the publisher put in the prompts bucket, pausing one version, the releases, and the kill switch",
+      "group": true,
+      "subcommands": [
+        "list",
+        "pause",
+        "resume",
+        "releases",
+        "set"
+      ],
+      "help_text": "usage: admin_cli.py prompts [-h] {list,pause,resume,releases,set} ...\n\npositional arguments:\n  {list,pause,resume,releases,set}\n    list                Each registered prompt's files under latest/ with their version, release,\n                        sha256, hash status and pause state, and whether this deployment serves\n                        assets at all\n    pause               Stop serving one version of a prompt: its other files under latest/, or\n                        the copy in the code, are served instead, within five minutes\n    resume              Serve a paused version of a prompt again\n    releases            What each publish did, newest first, and which release is in place (or\n                        pinned)\n    set                 The kill switch: --assets off serves every prompt's copy in the code,\n                        without a deploy\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "prompts list": {
+      "help": "Each registered prompt's files under latest/ with their version, release, sha256, hash status and pause state, and whether this deployment serves assets at all",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--json",
+          "dest": "as_json",
+          "kind": "flag",
+          "flags": [
+            "--json"
+          ],
+          "help": "Print the raw answer as JSON",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py prompts list [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json      Print the raw answer as JSON\n"
+    },
+    "prompts pause": {
+      "help": "Stop serving one version of a prompt: its other files under latest/, or the copy in the code, are served instead, within five minutes",
+      "group": false,
+      "arguments": [
+        {
+          "name": "prompt_id",
+          "dest": "prompt_id",
+          "kind": "positional",
+          "flags": [],
+          "help": "<lambda_id>/<prompt_name>, as `prompts list` shows it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "version",
+          "dest": "version",
+          "kind": "positional",
+          "flags": [],
+          "help": "the version to stop serving, e.g. v2",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py prompts pause [-h] prompt_id version\n\npositional arguments:\n  prompt_id   <lambda_id>/<prompt_name>, as `prompts list` shows it\n  version     the version to stop serving, e.g. v2\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "prompts resume": {
+      "help": "Serve a paused version of a prompt again",
+      "group": false,
+      "arguments": [
+        {
+          "name": "prompt_id",
+          "dest": "prompt_id",
+          "kind": "positional",
+          "flags": [],
+          "help": "<lambda_id>/<prompt_name>, as `prompts list` shows it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "version",
+          "dest": "version",
+          "kind": "positional",
+          "flags": [],
+          "help": "the paused version, e.g. v2",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py prompts resume [-h] prompt_id version\n\npositional arguments:\n  prompt_id   <lambda_id>/<prompt_name>, as `prompts list` shows it\n  version     the paused version, e.g. v2\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "prompts releases": {
+      "help": "What each publish did, newest first, and which release is in place (or pinned)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--limit",
+          "dest": "limit",
+          "kind": "option",
+          "flags": [
+            "--limit"
+          ],
+          "help": "how many releases to show (default 20, at most 200)",
+          "type": "int",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--json",
+          "dest": "as_json",
+          "kind": "flag",
+          "flags": [
+            "--json"
+          ],
+          "help": "Print the raw answer as JSON",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py prompts releases [-h] [--limit LIMIT] [--json]\n\noptions:\n  -h, --help     show this help message and exit\n  --limit LIMIT  how many releases to show (default 20, at most 200)\n  --json         Print the raw answer as JSON\n"
+    },
+    "prompts set": {
+      "help": "The kill switch: --assets off serves every prompt's copy in the code, without a deploy",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--assets",
+          "dest": "assets",
+          "kind": "option",
+          "flags": [
+            "--assets"
+          ],
+          "help": "on (the default) or off; '' clears it, back to on",
+          "type": "str",
+          "choices": [
+            "on",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py prompts set [-h] [--assets {on,off,}]\n\noptions:\n  -h, --help          show this help message and exit\n  --assets {on,off,}  on (the default) or off; '' clears it, back to on\n"
     }
   }
 }

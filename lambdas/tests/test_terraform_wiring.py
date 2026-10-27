@@ -1416,11 +1416,12 @@ def test_prompt_assets_are_wired_in_both_roots_and_off_until_the_repository_vari
         condition = re.search(r"condition\s*=\s*(.+)$", arn, re.M).group(1)
         shape = 'var.prompts_publisher_role_arn == "" || can(regex("^arn:aws:iam::[0-9]{12}:role/'
         assert condition.startswith(shape)
-        # Every Lambda is told the two names (empty until the prompts module makes them) and the switch.
+        # Every Lambda is told the two names (the prompts module's, since PR4) and the switch.
         main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
         shared = main.split("  lambda_env_variables = {")[1].split("\n}\n")[0]
-        assert re.search(r'^\s*PROMPTS_BUCKET\s*=\s*""$', shared, re.M), env
-        assert re.search(r'^\s*PROMPT_HASHES_TABLE\s*=\s*""$', shared, re.M), env
+        assert re.search(r"^\s*PROMPTS_BUCKET\s*=\s*module\.prompts\.bucket_name$", shared, re.M), env
+        hashes = r"^\s*PROMPT_HASHES_TABLE\s*=\s*module\.prompts\.hash_table_name$"
+        assert re.search(hashes, shared, re.M), env
         switched = r'^\s*PROMPT_AS_ASSET_ENABLED\s*=\s*var\.prompt_as_asset_enabled \? "true" : "false"$'
         assert re.search(switched, shared, re.M), env
     table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
@@ -1461,6 +1462,81 @@ def test_the_prompt_fallback_alarm_reads_the_evidence_line_from_every_pipeline_l
         ).group(1)
         groups = "prompt_fallback_log_groups = [for group in aws_cloudwatch_log_group.lambda : group.name]"
         assert groups in block, env
+
+
+# --- prompts as assets: the bucket and the hash table (PR4) -------------------------------------------
+#
+# infra/modules/prompts makes them; its tests/prompts.tftest.hcl plans the policies with a mocked
+# provider. What is held here, in the text both roots and the module are written in: each root calls
+# the module with its own prefix, environment and publisher, production protects the data, and
+# nothing but the module's read-only policy gives lambda_exec a right to either.
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_roots_make_the_prompts_bucket_and_table_with_their_own_names_and_publisher(env):
+    main = _read("environments", env, "main.tf")
+    (block,) = _module_blocks(main, "modules/prompts")
+    assert re.search(r'^\s*source\s*=\s*"\.\./\.\./modules/prompts"$', block, re.M)
+    assert re.search(rf'^\s*environment_name\s*=\s*"{env}"$', block, re.M)
+    assert re.search(r"^\s*publisher_role_arn\s*=\s*var\.prompts_publisher_role_arn$", block, re.M)
+    # Production keeps its prompts and their approvals; dev's are disposable.
+    protect = re.search(r"^\s*protect_data\s*=\s*(\S+)$", block, re.M)
+    assert (protect.group(1) if protect else "false") == ("true" if env == "production" else "false")
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_roots_hand_the_prompts_module_lambda_exec_through_lambda_backups_role(env):
+    """The edge orders the module's new inline policy after lambda_backup's, so a release that also
+    shrinks lambda_backup cannot briefly pass IAM's 10,240-character inline cap on lambda_exec."""
+    main = _uncommented(_read("environments", env, "main.tf"))
+    (block,) = _module_blocks(main, "modules/prompts")
+    roles = re.findall(r"^\s*lambda_exec_role_id\s*=\s*(.+?)\s*$", block, re.M)
+    assert roles == ["aws_iam_role_policy.lambda_backup.role"]
+    # That attribute is lambda_exec's own name, so the module's policy lands on the same role.
+    backup = _resource_block(main, "aws_iam_role_policy", "lambda_backup")
+    assert re.findall(r"^\s*role\s*=\s*(.+?)\s*$", backup, re.M) == ["aws_iam_role.lambda_exec.id"]
+
+
+def test_the_bucket_policy_excepts_the_publisher_by_a_condition_and_never_names_it_as_a_principal():
+    """PR2's review: S3 refuses a bucket policy whose Principal names a role that does not exist,
+    and the publisher's ARN may be set before its role is (the stub, or a bootstrap not applied
+    again). The exception is a condition on aws:PrincipalArn, which S3 only compares; the module's
+    tftest checks the planned policy, this the text."""
+    module = _uncommented(_read_raw("modules", "prompts", "main.tf"))
+    document = r'^data "aws_iam_policy_document" "bucket" \{\n(.*?)^\}'
+    bucket = re.search(document, module, re.S | re.M).group(1)
+    assert re.search(r'^\s*has_publisher = var\.publisher_role_arn != ""$', module, re.M)
+    assert "count = local.has_publisher ? 1 : 0" in bucket
+    exception = (
+        '      test     = "ArnNotEquals"\n'
+        '      variable = "aws:PrincipalArn"\n'
+        "      values   = [var.publisher_role_arn]\n"
+    )
+    assert exception in bucket
+    assert "not_principals" not in module
+    # has_publisher's test and the condition: the ARN is never a principal's identifier.
+    assert module.count("var.publisher_role_arn") == 2
+    policy = _resource_block(module, "aws_s3_bucket_policy", "prompts")
+    assert "count = local.has_publisher ? 1 : 0" in policy
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_lambda_exec_may_write_to_neither_the_hash_table_nor_the_prompts_bucket(env):
+    """The publisher alone writes them. The roots' own grants to lambda_exec name the app tables
+    and the content and site buckets, never the prompts module's resources, and the module gives it
+    reads only; backups leave the hash table out (publishing rebuilds it)."""
+    main = _uncommented(_read("environments", env, "main.tf"))
+    assert "module.prompts.hash_table_arn" not in main and "module.prompts.bucket_arn" not in main
+    assert "module.prompts" in main and main.count("module.prompts.") == 2  # the two environment variables
+    module = _uncommented(_read_raw("modules", "prompts", "main.tf"))
+    document = r'^data "aws_iam_policy_document" "lambda_read" \{\n(.*?)^\}'
+    read = re.search(document, module, re.S | re.M).group(1)
+    actions = set(re.findall(r'"((?:s3|dynamodb):\w+)"', read))
+    assert actions == {"s3:GetObject", "s3:GetObjectTagging", "s3:ListBucket", "dynamodb:GetItem"}
+    assert "role   = var.lambda_exec_role_id" in _resource_block(module, "aws_iam_role_policy", "lambda_read")
+    from common import backup
+
+    assert "PROMPT_HASHES_TABLE" not in backup.TABLES.values() and "prompt-hashes" not in backup.TABLES
 
 
 def test_the_fork_guide_names_every_setting_the_workflows_read():
@@ -3602,7 +3678,9 @@ def test_every_module_that_names_resources_is_passed_the_prefix_by_both_environm
             block = variables.split('variable "unique_name_prefix" {')[1].split("\n}\n")[0]
             assert "default" not in re.sub(r"description\s*=.*", "", block), module
             naming.append(module)
-    assert naming == ["api-cdn", "app-data", "observability", "ops-assistant", "static-site", "vision-worker"]
+    assert naming == [
+        "api-cdn", "app-data", "observability", "ops-assistant", "prompts", "static-site", "vision-worker",
+    ]  # fmt: skip
     for env in ("dev", "production"):
         main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
         for module in naming:
@@ -3695,9 +3773,10 @@ def test_the_longest_names_still_fit_with_the_longest_prefix():
     assert longest(functions) == f"{_LONGEST_PREFIX}-production-cost-explorer-poll"  # 44, as described
     # S3 bucket names: 63.
     site = _read_raw("modules", "static-site", "main.tf")
-    buckets = [*_name_literals(main, "bucket"), *_name_literals(site, "bucket")]
+    prompts = _read_raw("modules", "prompts", "main.tf")
+    buckets = [name for text in (main, site, prompts) for name in _name_literals(text, "bucket")]
     buckets = [name for name in buckets if PREFIX_REFERENCE in name]
-    assert len(buckets) == 2 and len(longest(buckets)) <= 63
+    assert len(buckets) == 3 and len(longest(buckets)) <= 63
     # The Cognito sign-in host's first label: 63.
     assert len(longest(_name_literals(main, "hosted_ui_domain_prefix"))) <= 63
 

@@ -309,14 +309,18 @@ def test_a_spec_whose_vanilla_breaks_its_own_rules_is_refused(vanilla, code):
 
 
 @pytest.mark.parametrize(
-    "prompt_id", ["daily_cycle", "Daily/draft", "daily_cycle/draft/x", "daily-cycle/draft", "/draft", ""]
-)
+    "prompt_id",
+    [
+        "daily_cycle", "Daily/draft", "daily_cycle/draft/x", "daily-cycle/draft", "/draft", "",
+        "daily_cycle/draft\n",
+    ],
+)  # fmt: skip
 def test_a_prompt_id_must_be_two_codes_joined_by_a_slash(prompt_id):
     with pytest.raises(ValueError, match="prompt_id"):
         spec(prompt_id=prompt_id)
 
 
-@pytest.mark.parametrize("version", ["1", "v0", "v01", "vanilla:v1", ""])
+@pytest.mark.parametrize("version", ["1", "v0", "v01", "vanilla:v1", "", "v1\n"])
 def test_a_vanilla_version_is_v1_v2_and_so_on(version):
     with pytest.raises(ValueError, match="vanilla_version"):
         spec(vanilla_version=version)
@@ -593,6 +597,14 @@ def test_a_version_tag_that_is_not_a_version_counts_as_missing(aws):
     assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "no_version_tag"
 
 
+def test_a_version_tag_with_a_trailing_newline_counts_as_missing(aws, monkeypatch):
+    """S3 refuses a newline in a tag (moto drops it), so the read is faked: a tag `$` alone would
+    pass could not be paused, since the pause list holds only exact entries."""
+    publish(aws, ASSET, "v2")
+    monkeypatch.setattr(prompts, "_tags", lambda key: {"version": "v2\n"})
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "no_version_tag"
+
+
 def test_a_hash_lookup_failure_falls_back_with_hash_lookup_failed(aws, monkeypatch, capsys):
     publish(aws, ASSET, "v2")
     monkeypatch.setenv("PROMPT_HASHES_TABLE", "NoSuchTable")
@@ -835,8 +847,16 @@ def test_validate_setting_knows_the_two_settings_and_their_shapes():
     assert prompts.validate_setting("paused_versions", ["daily_cycle/draft@v2", "reviews/x@v10"]) is None
     assert prompts.validate_setting("paused_versions", ["daily_cycle/draft"]) is not None
     assert prompts.validate_setting("paused_versions", ["daily_cycle/draft@2"]) is not None
+    # `$` alone would let a trailing newline through, and the Lambda's exact lookup would never match it.
+    assert prompts.validate_setting("paused_versions", ["daily_cycle/draft@v2\n"]) is not None
     assert prompts.validate_setting("paused_versions", "daily_cycle/draft@v2") is not None
     assert prompts.validate_setting("other", 1) == "unknown setting 'other'"
+
+
+def test_is_prompt_id_holds_the_registrys_own_grammar():
+    assert prompts.is_prompt_id("daily_cycle/draft") and prompts.is_prompt_id("a1/b2_c")
+    for value in ("daily_cycle", "daily_cycle/draft\n", "a/b/c", "_x/y", "x/../y", None, 1):
+        assert not prompts.is_prompt_id(value), value
 
 
 def test_effective_settings_take_the_row_where_valid_and_the_default_otherwise(capsys):

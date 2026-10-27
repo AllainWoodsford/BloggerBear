@@ -455,6 +455,15 @@ def _fetch_json(args: argparse.Namespace, method: str, path: str, body: dict | N
     return response.json()
 
 
+def _print_table(headers: list[str], rows: list[list]) -> None:
+    """Rows under their headers, each column as wide as its widest cell and two spaces apart, for
+    the commands that print a table rather than the API's JSON. A cell that is None prints as "-"."""
+    cells = [["-" if cell is None else str(cell) for cell in row] for row in rows]
+    widths = [max([len(header), *(len(row[i]) for row in cells)]) for i, header in enumerate(headers)]
+    for row in [headers, *cells]:
+        print("  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip())
+
+
 def _parse_slot(text: str):
     """`--stagger-slot` value: a whole number (1, 2, 3, ...), or '' meaning "the next free slot"
     (sent as null). The Admin API checks the range and that no other topic holds it."""
@@ -2728,13 +2737,25 @@ def build_parser() -> argparse.ArgumentParser:
     equipment_unequip_parser.set_defaults(func=_cmd_equipment_unequip)
 
     # The prompt commands (prompts as assets) live in scripts/admin_cli_prompts.py. It is handed this
-    # module's request helper and error type rather than importing them, and is imported here rather
-    # than at the top, so the two modules never import each other at load time (a cycle otherwise).
+    # module's request helpers, table printer and error type rather than importing them, and is
+    # imported here rather than at the top, so the two modules never import each other at load time
+    # (a cycle otherwise).
     from admin_cli_prompts import register as register_prompt_commands
 
-    register_prompt_commands(subparsers, {"do_request": _do_request, "CliError": CliError})
+    register_prompt_commands(subparsers, _prompt_helpers())
 
     return parser
+
+
+def _prompt_helpers() -> dict:
+    """What admin_cli_prompts.register is lent, by name. Looked up when a command runs, not when the
+    parser is built, so a test that patches one of them here reaches the prompt commands too."""
+    return {
+        "do_request": lambda *args, **kwargs: _do_request(*args, **kwargs),
+        "fetch_json": lambda *args, **kwargs: _fetch_json(*args, **kwargs),
+        "print_table": lambda *args, **kwargs: _print_table(*args, **kwargs),
+        "CliError": CliError,
+    }
 
 
 def main(argv: list[str] | None = None) -> None:

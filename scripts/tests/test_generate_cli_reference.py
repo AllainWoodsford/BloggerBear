@@ -132,8 +132,10 @@ def test_which_commands_are_destructive_is_read_from_the_parser(fresh):
         "backup restore",
         "equipment delete",
         "moderation reject",
+        "prompts pause",
         "refinements reject",
         "topics delete",
+        "topics pause",
     ]
     assert sorted(
         (path, argument["name"])
