@@ -620,6 +620,32 @@ def test_run_review_sends_the_topics_note_and_the_prompt_keeps_its_id_and_versio
     assert record["lineage_call"]["prompt_version"] == "vanilla:v1"
 
 
+def test_a_stored_note_with_spaces_around_it_reaches_the_reviewer_trimmed(monkeypatch):
+    """The Admin API accepts a note with spaces around it and the review uses it as stored; only the
+    render trims it, so the block holds the same bytes as for the note without them."""
+    padded = f"  {NOTE}  "
+    assert fr.steering_block(padded) == NOTE_BLOCK
+    assert fr.review_prompt("Widgets", "d", "f", "e", AS_OF, steering=padded).text == (
+        fr.review_prompt("Widgets", "d", "f", "e", AS_OF, steering=NOTE).text
+    )
+    monkeypatch.setitem(fr.ADAPTER_REGISTRY, "fake", _adapter(EVIDENCE[1]))
+    topic = {"topic_id": "t", "name": "Widgets", "adapter": "fake", fr.REVIEW_STEERING_FIELD: padded}
+    invoke, sent = _sent("common.fresh_review", '{"claims": []}')
+    with invoke, patch.object(fr, "datetime", _FixedClock):
+        fr.run_review(
+            topic=topic,
+            draft=DRAFTS[1],
+            findings_text=FINDINGS[1],
+            latest_state=None,
+            model_id="m",
+            fallback_model_id=None,
+            mode="shadow",
+        )
+
+    plain = _legacy_review("Widgets", DRAFTS[1], FINDINGS[1], EVIDENCE[1], FIXED_NOW.isoformat())
+    assert sent == [_with_note(plain)]
+
+
 @pytest.mark.parametrize("stored", [None, "", "x" * 501, "two\nlines", 5, ["a note"]])
 def test_run_review_with_no_usable_note_sends_exactly_the_pre_migration_text(monkeypatch, stored):
     monkeypatch.setitem(fr.ADAPTER_REGISTRY, "fake", _adapter(EVIDENCE[0]))

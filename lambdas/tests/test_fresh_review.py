@@ -103,6 +103,8 @@ def test_an_empty_note_is_refused_and_says_null_clears_it(value):
 def test_a_stored_note_is_used_and_one_no_longer_valid_is_ignored_never_trusted():
     note = "Check every star count."
     assert fr.resolve_review_steering({fr.REVIEW_STEERING_FIELD: note}) == note
+    # Spaces around a note are kept here; steering_block trims them when it renders the note.
+    assert fr.resolve_review_steering({fr.REVIEW_STEERING_FIELD: f" {note} "}) == f" {note} "
     assert fr.REVIEW_STEERING_FIELD == "topic_review_steering"
     for stored in (None, "", "x" * 501, "two\nlines", 5):
         assert fr.resolve_review_steering({fr.REVIEW_STEERING_FIELD: stored}) is None, stored
