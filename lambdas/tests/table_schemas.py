@@ -1,11 +1,19 @@
-"""The DynamoDB global secondary indexes Terraform gives the app tables, for moto fixtures.
+"""The DynamoDB global secondary indexes Terraform gives the app tables, and the keys of the tables
+made outside app-data, for moto fixtures.
 
 common/dynamo.py Queries the Articles and ModerationQueue tables' indexes, and moto refuses a
 Query on an index the table was not created with, so every fixture that creates one of those
 tables goes through `create_table` here instead of calling the client directly. The definitions
-mirror infra/modules/app-data/main.tf; test_terraform_wiring.py fails if the two drift apart.
+mirror infra/modules/app-data/main.tf (and KEYS the module named beside each); test_terraform_wiring.py
+fails if the two drift apart.
 """
 from __future__ import annotations
+
+# Table name (as the fixtures call it) -> (hash key, range key), for a table a module other than
+# app-data makes, so every fixture that creates it keys it as Terraform does.
+KEYS: dict[str, tuple[str, str]] = {
+    "Evals": ("entity", "sk"),  # infra/modules/evals/main.tf
+}
 
 # Table name (as the fixtures call it) -> [(index name, hash key, range key, projection type)].
 INDEXES: dict[str, list[tuple[str, str, str, str]]] = {

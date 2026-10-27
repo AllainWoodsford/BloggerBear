@@ -140,8 +140,9 @@ jobs:
     # TF_VAR_evals_enabled: whether continuous evals run (scored events, the hourly rollup, the
     # judge; docs/enhancements/model-ranch-prompt-assets-evals.md). Read like VISION_ENABLED: only
     # `true`, in any letter case, turns it on; unset or anything else is `false`, the variable's own
-    # default, so merging the evals work changes nothing until someone sets it. Nothing reads it
-    # until the evals module lands (docs/configuration.md).
+    # default, so merging the evals work changes nothing until someone sets it. Off, the evals
+    # module (infra/modules/evals) makes only the evals table, its log group and the Lambdas' rights
+    # (docs/configuration.md).
     env:
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_DEV || vars.WAF_ADMIN_ALLOWLIST || 'true' }}

@@ -180,6 +180,54 @@ def test_the_default_sweep_on_a_deployment_without_vision_refuses_nothing():
     assert "vision-worker" not in result["scope"]["functions"]
 
 
+def without_eval_jobs(names, region=None):
+    """The access check on a deployment with evals off: eval-jobs' log group is not there."""
+    gone = [n for n in names if n.endswith("-eval-jobs")]
+    why = "That log group doesn't exist in this environment."
+    return [n for n in names if n not in gone], [{"log_group": n, "why": why} for n in gone]
+
+
+def test_the_default_sweep_with_evals_off_neither_reads_nor_refuses_eval_jobs(monkeypatch):
+    """eval-jobs exists only while evals are on (architecture.Component.switch_env, EVALS_ENABLED),
+    so a review with nothing named neither asks for its log group nor says "I wasn't allowed to
+    read 1 of the logs"; with the switch on (the exact word "true") it reads it."""
+    for value in (None, "false", "True"):
+        if value is None:
+            monkeypatch.delenv("EVALS_ENABLED", raising=False)
+        else:
+            monkeypatch.setenv("EVALS_ENABLED", value)
+        run, asked = Run(), []
+
+        def readable(names, region=None):
+            asked.extend(names)
+            return without_eval_jobs(names)
+
+        result = review(run, readable=readable)
+        assert result["refused"] == [] and "wasn't allowed" not in result["spoken"], value
+        assert GROUP.format("eval-jobs") not in asked and GROUP.format("eval-jobs") not in run.jobs[0][2]
+        assert "eval-jobs" not in result["scope"]["functions"], value
+        assert GROUP.format("research-tick") in run.jobs[0][2]
+
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    run = Run()
+    result = review(run)
+    assert GROUP.format("eval-jobs") in run.jobs[0][2] and "eval-jobs" in result["scope"]["functions"]
+    assert {job[0][0] for job in run.jobs} == {"home"}  # in this Region, with the rest
+
+
+@pytest.mark.parametrize("name", ["eval-jobs", "evals-rollup", GROUP.format("eval-jobs")])
+def test_eval_jobs_named_with_evals_off_is_refused_with_why_and_nothing_is_read(name, monkeypatch):
+    monkeypatch.delenv("EVALS_ENABLED", raising=False)
+    run = Run()
+    result = review(run, function=name)
+    assert run.jobs == [] and result["errors"] == 0 and result["findings"] == []
+    assert result["spoken"] == "eval-jobs isn't deployed in this environment: evals are off."
+
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    review(run, function=name)
+    assert run.jobs[0][2] == (GROUP.format("eval-jobs"),)
+
+
 @pytest.mark.parametrize("name", ["vision-worker", "bloggerbear-dev-vision-worker"])
 def test_the_vision_worker_named_is_refused_with_why_and_nothing_is_read(name, monkeypatch):
     """With vision off it is not deployed, and says so; with OPS_VISION_REGION set, every job runs

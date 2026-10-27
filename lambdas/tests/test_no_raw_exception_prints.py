@@ -23,6 +23,9 @@ GUARDED = sorted(
         "daily_cycle_handler.py",
         "admin_api_handler.py",
         "vision_worker_handler.py",
+        "eval_jobs_handler.py",
+        # Imported by every pipeline Lambda, and prints when Logs refuses an event.
+        "common/evals.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
     ]
 )

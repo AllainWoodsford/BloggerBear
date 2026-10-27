@@ -424,3 +424,32 @@ run "the_default_prefix_is_what_the_functions_are_told" {
     error_message = "NAME_PREFIX is the prefix as given"
   }
 }
+
+# The evals switch (ops_mcp/architecture.py switch_env): the MCP server is told it in the form the
+# pipeline's functions are, the exact word "true" for on, and "false" when the root says nothing.
+run "evals_are_off_unless_the_root_switches_them_on" {
+  command = plan
+
+  assert {
+    condition     = aws_lambda_function.ops_mcp.environment[0].variables.EVALS_ENABLED == "false"
+    error_message = "with evals_enabled unset the server is told EVALS_ENABLED=false"
+  }
+}
+
+run "evals_switched_on_are_told_as_the_exact_word_true" {
+  command = plan
+
+  variables {
+    evals_enabled = true
+  }
+
+  assert {
+    condition     = aws_lambda_function.ops_mcp.environment[0].variables.EVALS_ENABLED == "true"
+    error_message = "with evals_enabled on the server is told EVALS_ENABLED=true"
+  }
+
+  assert {
+    condition     = !contains(keys(aws_lambda_function.ops_agent.environment[0].variables), "EVALS_ENABLED")
+    error_message = "the agent is not told it: it reads no catalogue of its own"
+  }
+}

@@ -38,7 +38,9 @@ for each log group: the runsheet, for exactly what was looked at.
 OPS_VISION_REGION) and exists only where vision is on. Its log is read there, as its own group of
 jobs: with no filter (its lines name neither a topic nor, mostly, a site), and with check-it-
 yourself cards of its own. Where vision is off it is not deployed, so a sweep neither reads nor
-refuses it, and naming it says so.
+refuses it, and naming it says so. A function made only under a switch (eval-jobs, while evals are
+on: architecture.Component.switch_env) is the same: with the switch off a sweep leaves it out,
+and naming it says it is off.
 """
 
 from __future__ import annotations
@@ -371,7 +373,7 @@ class Scope:
 
 def _here(component: architecture.Component, env: str) -> bool:
     """A function of this environment, in whichever Region it lives (architecture.exists_in: the
-    vision worker only where vision is on)."""
+    vision worker only where vision is on, eval-jobs only while evals are on)."""
     return component.kind == "function" and architecture.exists_in(component, env)
 
 
@@ -380,6 +382,8 @@ def _functions(env: str) -> list[architecture.Component]:
 
 
 NOT_DEPLOYED = "The vision worker isn't deployed in this environment: vision is off."
+# A function its switch leaves undeployed: its key (ours) and the switch's words (architecture's).
+SWITCHED_OFF = "{key} isn't deployed in this environment: {what} are off."
 
 
 def scope(function: str | None, topic: str | None, env: str) -> Scope:
@@ -418,6 +422,10 @@ def scope(function: str | None, topic: str | None, env: str) -> Scope:
         found = [c for c in named if _here(c, env)]
         if not found and any(c.region_env for c in named):
             raise Refused(NOT_DEPLOYED)
+        switched = [c for c in named if architecture.switched_off(c)]
+        if not found and switched:
+            what = architecture.SWITCHES[switched[0].switch_env][0]
+            raise Refused(SWITCHED_OFF.format(key=switched[0].key, what=what))
         if not found:
             raise Refused(did_you_mean or "I don't know a function by that name in this environment.")
         if resolved.asked_env is not None and resolved.asked_env not in architecture.ENVIRONMENTS:

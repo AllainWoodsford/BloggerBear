@@ -705,16 +705,18 @@ locals {
     # (`model-catalog` row, discover_enabled / reprice_enabled, on unless set to false).
     MODEL_CATALOG_FUNCTION_NAME = "${var.unique_name_prefix}-dev-model-catalog"
 
-    # Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md): the table the hourly
-    # rollup keeps its day totals in, the log group every scored event is written to, whether evals
-    # run at all, and the queue the judge and offline scoring jobs go through. The names are empty
-    # until the evals module makes the table, the log group and the queue; the switch is
-    # var.evals_enabled, from the EVALS_ENABLED GitHub variable, off by default. Nothing reads any of
-    # the four yet.
-    EVALS_TABLE         = ""
-    EVALS_LOG_GROUP     = ""
+    # Continuous evals (module.evals below; docs/enhancements/model-ranch-prompt-assets-evals.md):
+    # the table the hourly rollup keeps its day totals in, the log group every scored event is
+    # written to (common/evals.py), whether evals run at all, and the queue the judge and offline
+    # scoring jobs go through. The table and the log group are made whether or not evals are on, so
+    # their names are always real; the queue only while they are on, and its URL is "" otherwise.
+    # The switch is var.evals_enabled, from the EVALS_ENABLED GitHub variable, off by default. Not a
+    # cycle although the module is given this map: these outputs depend on its table, log group and
+    # queue alone.
+    EVALS_TABLE         = module.evals.table_name
+    EVALS_LOG_GROUP     = module.evals.log_group_name
     EVALS_ENABLED       = var.evals_enabled ? "true" : "false"
-    EVAL_WORK_QUEUE_URL = ""
+    EVAL_WORK_QUEUE_URL = module.evals.work_queue_url
   }
 }
 
@@ -2739,30 +2741,37 @@ locals {
     aws_lambda_function.model_catalog.function_name,
     aws_lambda_function.security_events.function_name,
     aws_lambda_function.sign_in_events.function_name,
-  ], aws_lambda_function.reviewer[*].function_name)
+  ], aws_lambda_function.reviewer[*].function_name, module.evals.function_names)
 }
 
-# Lets the Lambdas publish to the alerts topic, the one the alarms email through
-# (module.observability). Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md)
-# will send their weekly digest there; nothing publishes yet. A separate policy, like
-# lambda_web_search, so the grant stays visibly scoped to one topic.
-data "aws_iam_policy_document" "lambda_publish_alerts" {
-  statement {
-    sid       = "PublishAlerts"
-    effect    = "Allow"
-    actions   = ["sns:Publish"]
-    resources = [module.observability.sns_topic_arn]
-  }
-}
+# -----------------------------------------------------------------------
+# Continuous evals (infra/modules/evals; docs/enhancements/model-ranch-prompt-assets-evals.md,
+# section 5.3): the evals table and log group, and lambda_exec's rights on them, on eval-work and
+# on the alerts topic, always; the eval-work queue, the eval-jobs function, its schedules, metric
+# filters and alarms only while var.evals_enabled is on (the EVALS_ENABLED GitHub variable, off by
+# default). eval-jobs' errors and throttles alarms are module.observability's
+# (local.pipeline_lambda_function_names).
+# -----------------------------------------------------------------------
+module "evals" {
+  source = "../../modules/evals"
 
-# The role is lambda_exec, named through lambda_backup's `role` (the same name) so that this policy
-# is only created after lambda_backup's has been written. IAM caps a role's inline policies at
-# 10,240 characters in all, and an apply that shrinks lambda_backup while adding this one must
-# shrink first, or it can stop with LimitExceeded.
-resource "aws_iam_role_policy" "lambda_publish_alerts" {
-  name   = "${var.unique_name_prefix}-dev-lambda-publish-alerts"
-  role   = aws_iam_role_policy.lambda_backup.role
-  policy = data.aws_iam_policy_document.lambda_publish_alerts.json
+  unique_name_prefix = var.unique_name_prefix
+  environment_name   = "dev"
+  aws_region         = var.aws_region
+  enabled            = var.evals_enabled
+
+  # The role's name is read through lambda_backup (whose role is this role's id, the same name) so
+  # that the module's inline policy is written after that one: IAM caps a role's inline policies at
+  # 10,240 characters, and a release that shrinks lambda_backup while adding this must apply the
+  # shrink first.
+  lambda_exec_role_arn  = aws_iam_role.lambda_exec.arn
+  lambda_exec_role_name = aws_iam_role_policy.lambda_backup.role
+  lambda_package_path   = data.archive_file.lambdas.output_path
+  lambda_package_hash   = data.archive_file.lambdas.output_base64sha256
+  lambda_environment    = local.lambda_env_variables
+
+  pipeline_dlq_arn = aws_sqs_queue.pipeline_dlq.arn
+  alerts_topic_arn = module.observability.sns_topic_arn
 }
 
 module "observability" {
@@ -3138,6 +3147,10 @@ module "ops_assistant" {
   # nothing here waits on module.vision_worker.
   vision_enabled = var.vision_enabled
   vision_region  = var.vision_region
+
+  # The evals switch, so the assistant counts eval-jobs and the rest of the evals module's
+  # switched parts as deployed only while they are (ops_mcp/architecture.py switch_env).
+  evals_enabled = var.evals_enabled
 }
 
 # Made once and kept in state, like random_password.api_origin_verify: both functions are given

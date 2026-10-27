@@ -13,7 +13,7 @@ import boto3
 import pytest
 from moto import mock_aws
 from moto.s3 import models as moto_s3_models
-from table_schemas import create_table
+from table_schemas import KEYS, create_table
 
 import admin_api_handler
 from common import backup
@@ -36,6 +36,7 @@ SCHEMAS = {
     "stats_current": ("StatsCurrent", "stats_id", None),
     "stats_history": ("StatsHistory", "week_start", None),
     "view_counts": ("ViewCounts", "counter_id", None),
+    "evals": ("Evals", *KEYS["Evals"]),
     # Left out of every snapshot.
     "findings": ("Findings", "topic_id", "captured_at"),
 }
@@ -126,6 +127,15 @@ def _seed(s3, articles=3):
     _table("stats_history").put_item(Item={"week_start": "all-time", "cost_aud": Decimal("12.5")})
     _table("view_counts").put_item(Item={"counter_id": "a1#0", "count": Decimal(7)})
     _table("findings").put_item(Item={"topic_id": "crypto", "captured_at": "x"})
+    # A model's day total and an operator's adjustment (common/evals.py, section 4.4's rows).
+    _table("evals").put_item(
+        Item={"entity": "model#m1", "sk": "day#2026-10-01", "perf": Decimal(4), "events": Decimal(3),
+              "good": Decimal(2), "bad": Decimal(0), "by_reason": {"Article Completion": Decimal(4)}}
+    )  # fmt: skip
+    _table("evals").put_item(
+        Item={"entity": "adjust#model#m1", "sk": "ts#2026-10-02T00:00:00Z", "delta": Decimal(-5),
+              "by": "human"}
+    )  # fmt: skip
     for n in range(1, articles + 1):
         article_id = f"a{n}"
         extra = {}
@@ -213,7 +223,9 @@ def test_a_snapshot_is_one_file_of_content_and_configuration(seeded):
     assert lines[-1]["t"] == "end"
     tables = {line["table"] for line in lines if line["t"] == "item"}
     assert tables == {"topics", "models", "model_config", "prompt_refinements", "articles", "musings",
-                      "stats_history", "view_counts"}  # fmt: skip
+                      "stats_history", "view_counts", "evals"}  # fmt: skip
+    # The evals table's day totals and adjustments: no TTL, kept for good, so in every snapshot.
+    assert lines[-1]["counts"]["evals"] == 2
     # Settings rows, not secrets or rows set to expire.
     config_ids = {line["item"]["config_id"]["S"] for line in lines if line.get("table") == "model_config"}
     assert config_ids == {"default", "pipeline"}
@@ -284,8 +296,9 @@ def _empty_everything(s3):
 
 def test_a_restore_loads_the_snapshot_into_an_empty_deployment(seeded):
     key = _snapshot(seeded)["result"]["key"]
-    names = ("topics", "musings", "view_counts", "stats_history")
+    names = ("topics", "musings", "view_counts", "stats_history", "evals")
     before = {name: _table(name).scan()["Items"] for name in names}
+    assert len(before["evals"]) == 2
     _empty_everything(seeded)
 
     hooks = _hooks()
