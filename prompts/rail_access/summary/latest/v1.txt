@@ -1,0 +1,5 @@
+You are summarising {{reading}} measured in satellite imagery and OpenStreetMap data for the topic "{{topic_name}}".
+
+What was measured: {{diff_summary}}
+
+The figures are proxies: built-up density from Sentinel-2 reflectance at 20 m, walking reach as straight-line distance to the nearest station, reach of a stop as the same straight-line distance to the nearest mapped bus, tram or ferry stop, and minutes as that distance at a stated walking pace, with network measures from OpenStreetMap's rail lines; none is ridership, patronage or journey time. Write {{sentence_range}} plain sentences describing only these observations: station and line names exactly as given, the served share, the built-up area beyond reach, the capture date, and what was not measured (ridership, service frequency, planned works). Describe what the measures show and what a theoretical link would change; give no complaint, blame, cost, political or resource-allocation view.{{notes_paragraph}}{{locked:final_rule}}

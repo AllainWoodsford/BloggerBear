@@ -79,6 +79,7 @@ import boto3
 import requests
 from botocore.exceptions import ClientError
 
+from common import prompts
 from common.editorial_goals import EditorialGoal, goal_for_adapter_config, parse_goal
 from common.editorial_resolver import resolve_editorial_goals
 from common.http_retry import get_json_with_backoff
@@ -176,6 +177,16 @@ MARKET_NEWS_TITLE_KEYWORDS = [
 CRYPTO_EXCLUSION_KEYWORDS = [k for k in CRYPTO_TITLE_KEYWORDS if k != "etf"]
 
 SUMMARY_STATE_MAX_CHARS = 9000
+# The summary prompts' locked end, and the rule an analysis day's prompt adds when the state lists
+# headlines (crypto_feed/* in common/prompts_registry.py).
+_SUMMARY_ADVICE_RULE = (
+    "Do not speculate beyond what the data shows, and do not give financial or investment advice."
+)
+_HEADLINES_RULE = (
+    " The state also lists the latest crypto news headlines (headline and source only, no article "
+    "text): where one relates to an analysed coin or to the market moves described, mention it and "
+    "name its source, and attribute it rather than adding any detail the headline does not contain."
+)
 
 # Things that are not "altcoins" for an altcoin analysis. Stablecoins: known
 # ids catch the big ones and the peg check catches the long tail without a
@@ -945,7 +956,10 @@ class CryptoFeedAdapter(Adapter):
 
     # --- research-summary prompt (P1) -------------------------------------
 
-    def build_summary_prompt(self, topic: dict, diff_summary: str, new_state: dict) -> str | None:
+    def summary_prompt(self, topic: dict, diff_summary: str, new_state: dict) -> prompts.Prompt | None:
+        """The day's summary prompt (common/prompts_registry.py): crypto_feed/news on a news day
+        (WEB_AGGREGATOR's crypto news or MARKET_NEWS's general market news), crypto_feed/trend on a
+        TREND_INVENTOR day, crypto_feed/altcoin on an ALTCOIN_DEEP_DIVE day."""
         goal = parse_goal(new_state.get("editorial_goal"))
         if goal is None or "market_anchors" not in new_state:
             return None  # legacy snapshot: the generic prompt is all it supports
@@ -953,67 +967,32 @@ class CryptoFeedAdapter(Adapter):
         topic_name = topic_label(topic)
         # `analyzed_today` is bookkeeping for the next tick's draw, not data to summarise.
         prompt_state = {k: v for k, v in new_state.items() if k != "analyzed_today"}
-        compact_state = json.dumps(prompt_state, separators=(",", ":"))[:SUMMARY_STATE_MAX_CHARS]
         anchors = _anchor_summary(new_state)  # empty on a MARKET_NEWS day: no crypto data
-        header = (
-            f'You are monitoring the topic "{topic_name}" for a research digest.'
-            + (f" Current Market Anchors: {anchors}." if anchors else "")
-            + "\n\n"
-            f"OPERATIONAL EDITORIAL GOAL:\n{resolve_editorial_goals(topic, goal)}\n\n"
-            f"What changed: {diff_summary}\n\n"
-        )
-        closing = (
-            " Be concise, objective, and data-grounded. Do not speculate beyond what the "
-            "data shows, and do not give financial or investment advice."
-        )
+        values = {
+            "topic_name": topic_name,
+            "market_anchors": f" Current Market Anchors: {anchors}." if anchors else "",
+            "editorial_goals": resolve_editorial_goals(topic, goal),
+            "diff_summary": diff_summary,
+            "compact_state": json.dumps(prompt_state, separators=(",", ":"))[:SUMMARY_STATE_MAX_CHARS],
+        }
+        locked = {"advice_rule": _SUMMARY_ADVICE_RULE}
 
         if goal in (EditorialGoal.WEB_AGGREGATOR, EditorialGoal.MARKET_NEWS):
-            count = len(new_state.get("web_results") or [])
             kind = (
                 "general financial-market (not crypto)"
                 if goal is EditorialGoal.MARKET_NEWS
                 else "crypto"
             )
-            return (
-                header
-                + f"Today's Analysis Focus: A synthesis of {count} {kind} news items published "
-                "in the last 24 hours.\n\n"
-                f"News items (JSON; only headlines and source names are available, not "
-                f"article bodies): {compact_state}\n\n"
-                f"{research_relevance_rule(topic_name)}\n\n"
-                "List the distinct stories and themes with their source, note where sources "
-                "agree or conflict, and describe the overall sentiment the headlines convey."
-                + closing
-            )
+            values |= {
+                "news_count": len(new_state.get("web_results") or []),
+                "news_kind": kind,
+                "relevance_rule": research_relevance_rule(topic_name),
+            }
+            return prompts.get_prompt("crypto_feed/news", values, locked)
 
-        count = len(new_state.get("analyzed_pool") or [])
-        if goal is EditorialGoal.TREND_INVENTOR:
-            focus = (
-                f"Today's Analysis Focus: The anchors' multi-timeframe performance alongside "
-                f"{count} randomly selected altcoins' multi-metric trends -- raw material for "
-                "an original interpretive framework.\n\n"
-            )
-            task = (
-                "Summarize how the anchors and the altcoins behave across the 5-day, 3-month "
-                "and 1-year windows, and point out the relationships, divergences and "
-                "anomalies a thoughtful analyst would want to frame."
-            )
-        else:
-            focus = f"Today's Analysis Focus: A randomized deep dive into {count} altcoins.\n\n"
-            task = (
-                f"Synthesize the state of the broader market by comparing the {count} random "
-                "altcoins against the baseline performance of the market anchors. Name each "
-                "analysed coin with its key figures, note major 1-year macro trends and "
-                "3-month velocity shifts, and flag any asset experiencing an active 5-day "
-                "anomaly (price spikes or sharp crashes)."
-            )
-        if new_state.get("web_results"):
-            task += (
-                " The state also lists the latest crypto news headlines (headline and source "
-                "only, no article text): where one relates to an analysed coin or to the market "
-                "moves described, mention it and name its source, and attribute it rather than "
-                "adding any detail the headline does not contain."
-            )
-        return (
-            header + focus + f"Raw Analysis Metrics (JSON): {compact_state}\n\n" + task + closing
-        )
+        values |= {
+            "coin_count": len(new_state.get("analyzed_pool") or []),
+            "headlines_rule": _HEADLINES_RULE if new_state.get("web_results") else "",
+        }
+        prompt_id = "crypto_feed/trend" if goal is EditorialGoal.TREND_INVENTOR else "crypto_feed/altcoin"
+        return prompts.get_prompt(prompt_id, values, locked)
