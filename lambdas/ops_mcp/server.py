@@ -104,8 +104,8 @@ _INSTRUCTIONS = (
     "vision_evidence says what the vision pipeline measured and decided and what a person did about "
     "it, and with `scene` walks one decision step by step. Say what `spoken` says; it says when rows "
     "are on screen. "
-    # The same workflow the agent's prompt holds (ops_agent/agent.py), for a client that reads only
-    # this: Alexa+ talks to this server directly.
+    # The same workflow the agent's prompt holds (ops_agent/system in common/prompts_registry.py), for a
+    # client that reads only this: Alexa+ talks to this server directly.
     "Your access is read-only: offer to look, to watch, or to put a fix on screen, never to "
     "change anything. Answer a log question with how many errors, the main root cause and "
     "whether it needs a code fix, a settings change or just time, then say how to check it is on "

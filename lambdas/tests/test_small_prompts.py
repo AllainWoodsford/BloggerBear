@@ -12,7 +12,8 @@ reply format, and one that leaves out any value or puts text of its own after th
 refused for the vanilla; the code-only specs report `vanilla:v1` and never touch S3 or DynamoDB,
 even with assets on and an approved file under their ids; a cold container reads S3 at most once
 per cache TTL however many prompts it renders; and the weekly reflection draws by its request id,
-a pricing run by its run id and the reviewer's report by his run's id.
+a pricing run by its run id, the reviewer's report by his run's id, and every Admin API request by
+its request id, while the reviewer's own calls into the Admin API keep his key.
 
 None of these calls is recorded in an article's lineage or any stored record of the call (the
 model's text is kept, its call is only tallied on Stats), so there is no lineage to name a version
@@ -41,6 +42,7 @@ from moto import mock_aws
 from ops_agent_fakes import FakeTool, ScriptedModel
 from table_schemas import create_table
 
+import admin_api_handler
 import reviewer_handler
 import weekly_reflection_handler as reflection
 from common import comment_screening as cs
@@ -833,6 +835,59 @@ def test_the_reviewers_report_binds_his_runs_id_for_the_draw_and_lets_go_after()
         reviewer_handler._advance(state, None, None, {}, hands=object())
         assert prompts.bound_run() == "outer"
     assert seen == ["r-42"]
+
+
+@pytest.mark.parametrize(
+    "context,expected",
+    [(SimpleNamespace(aws_request_id="req-7"), "req-7"), (None, None), (object(), None)],
+    ids=["request-id", "no-context", "context-without-id"],
+)
+def test_the_admin_api_binds_its_request_id_around_a_route_and_lets_go_after(context, expected):
+    """Section 4.1: an API call's run is its request id, so every prompt one request renders (the
+    gear's theme and name check here, a musing elsewhere) draws by it."""
+    seen = []
+
+    def route(event):
+        seen.append(prompts.bound_run())
+        return admin_api_handler._response(200, {})
+
+    with prompts.bind_run("outer"), patch.dict(admin_api_handler._ROUTES, {"POST /equipment": route}):
+        assert admin_api_handler.handler({"routeKey": "POST /equipment"}, context)["statusCode"] == 200
+        assert prompts.bound_run() == "outer"
+    assert seen == [expected]
+    assert prompts.bound_run() is None
+
+
+def test_an_admin_api_route_that_raises_is_answered_500_and_still_lets_go_of_its_request_id():
+    seen = []
+
+    def boom(event):
+        seen.append(prompts.bound_run())
+        raise RuntimeError("boom")
+
+    route_key = "POST /topics/{topic_id}/pause"
+    with prompts.bind_run("outer"), patch.dict(admin_api_handler._ROUTES, {route_key: boom}):
+        result = admin_api_handler.handler({"routeKey": route_key}, SimpleNamespace(aws_request_id="req-9"))
+        assert result["statusCode"] == 500
+        assert prompts.bound_run() == "outer"
+    assert seen == ["req-9"]
+
+
+def test_the_reviewers_calls_into_the_admin_api_keep_the_key_his_task_bound():
+    """He reaches the routes through _call, not the handler, so a musing he has written again draws
+    by the article id reviewer.do_task binds (PR9), not by a request id."""
+    seen = []
+
+    def regenerate(event):
+        seen.append(prompts.bound_run())
+        return admin_api_handler._response(200, {"regenerated": []})
+
+    with (
+        prompts.bind_run("a-1"),
+        patch.object(admin_api_handler, "_regenerate_article_musings", side_effect=regenerate),
+    ):
+        assert admin_api_handler.reviewer_regenerate_musings("a-1") == (200, {"regenerated": []})
+    assert seen == ["a-1"]
 
 
 # --- with moto: the code-only specs, approved assets, the cache ------------------------------------

@@ -8,10 +8,11 @@ across all feedback at once rather than per-topic.
 
 Flow: look back over the last _LOOKBACK_DAYS of Feedback (all topics, all
 articles), tally up/down votes, and ask Bedrock for one short in-character
-musing reflecting on that -- see common/musings.py for the actual prompt
-and mood derivation (mood always comes from the real up/down tally, never
-random, including the zero-feedback case, so the Musings feed doesn't go
-silent for a whole lookback window at a stretch).
+musing reflecting on that -- the prompt is musings/feedback in
+common/prompts_registry.py, and common/musings.py derives the mood (mood
+always comes from the real up/down tally, never random, including the
+zero-feedback case, so the Musings feed doesn't go silent for a whole
+lookback window at a stretch).
 
 Never raises unhandled -- like the other scheduled handlers in this
 codebase, runs under a top-level try/except that logs the real exception

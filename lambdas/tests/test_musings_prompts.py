@@ -6,8 +6,9 @@ article musing written again, Professor Grizzlewick's report, rejection and hold
 back-and-forth) is asked for with byte for byte the text the inline builders made before the
 migration, across the inputs that change it; the largest realistic render stays well under the
 template ceiling; an approved asset is rendered with the call site's values (each bear's voice and
-the student's rules among them), and one that leaves out any value is refused for the vanilla; and
-the reviewer's report draws its arm by his run's id.
+the student's rules among them), and one that leaves out any value is refused for the vanilla; the
+reviewer's report draws its arm by his run's id; and every blank article musing one admin request
+writes again draws its arm by the request's id.
 
 No musing records its call anywhere (the musing row keeps the text, its call is only tallied on
 Stats), so there is no lineage to name a version in, and the tests read it off get_prompt's answer.
@@ -26,6 +27,7 @@ import itertools
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import boto3
@@ -33,8 +35,9 @@ import pytest
 from moto import mock_aws
 from table_schemas import create_table
 
+import admin_api_handler
 import reviewer_handler
-from common import dynamo, evidence, gear, musings, prompts, prompts_registry, reviewer
+from common import comment_screening, dynamo, evidence, gear, musings, prompts, prompts_registry, reviewer
 
 ROOT = Path(__file__).resolve().parents[2]
 KINDS = (
@@ -510,18 +513,23 @@ def test_with_assets_off_no_prompt_fallback_line_is_written(capsys):
 def test_the_largest_realistic_render_of_each_musing_stays_well_under_its_template_ceiling():
     """max_chars limits a template, never a render (common/prompts.validate), and no code holds a
     prompt to it. This test holds the call sites' caps instead, so the largest prompt each one sends
-    stays well under the ceiling chosen for the musings' templates, and an input that lost its cap
-    fails here: the gear's guidance is given as long as the ceiling, so only gear.public_view's cut
-    (gear.MAX_PUBLIC_DESCRIPTION) keeps the loot musing under 0.9 * max_chars. Every other input is
-    as long as it realistically gets, as no code caps them: a topic's name of a hundred characters,
-    an article title of fresh_review.MAX_TITLE_CHARS, and a report with every outcome counted and a
-    dozen topics sent back."""
+    stays well under the ceiling chosen for the musings' templates. The loot musing's gear
+    description is bounded twice: comment_screening's too_long rule withholds guidance longer than
+    MAX_COMMENT_CHARS, and gear.public_view cuts what it lets through to gear.MAX_PUBLIC_DESCRIPTION.
+    The test feeds the longest guidance the rules let through and asserts both bounds at this call
+    site (test_gear.py tests the cut on its own), since even an uncut description that passed the
+    rules would stay under the ceiling. Every other input is as long as it realistically gets, as no
+    code caps them: a topic's name of a hundred characters, an article title of
+    fresh_review.MAX_TITLE_CHARS, and a report with every outcome counted and a dozen topics sent
+    back."""
     specs = {spec.prompt_id: spec for spec in prompts_registry.all_specs()}
-    ceiling = specs["musings/loot"].max_chars
-    guidance = "d" * ceiling
-    assert len(guidance) > ceiling * 0.9  # only an uncut description this long fails the check below
+    guidance = "d" * comment_screening.MAX_COMMENT_CHARS
     item = {"theme": "T" * gear.MAX_THEME_CHARS, "slot": "chest", "rarity": "legendary", "topic_id": "t"}
     view = gear.public_view({**item, "prompt_changes": guidance, "durability": 40, "max_durability": 50})
+    assert view["description"] != gear.WITHHELD
+    assert len(view["description"]) == gear.MAX_PUBLIC_DESCRIPTION
+    too_long = gear.public_view({**item, "prompt_changes": guidance + "d"})
+    assert too_long["description"] == gear.WITHHELD
     name, title = "N" * 100, "T" * 200
     counts = {outcome: 12 for outcome in reviewer.OUTCOMES}
     facts = reviewer.report_facts(counts, [f"Topic {n:02d} " + "n" * 92 for n in range(12)])
@@ -708,6 +716,58 @@ def test_a_split_report_asset_gives_each_of_his_runs_the_arm_its_run_id_draws(aw
         arm = prompts.arm_index("musings/reviewer_report", 2, run_id)
         assert [prompt.version for prompt in served] == [("v2", "v3")[arm]], run_id
         assert sent[0].startswith("Arm three. ") == (arm == 1), run_id
+
+
+def test_one_regenerate_request_writes_every_blank_article_musing_from_the_arm_its_request_id_draws(
+    aws, monkeypatch
+):
+    """POST /articles/{article_id}/musings/regenerate renders musings/article once for each blank
+    musing, and the Admin API binds the request's id as the run (section 4.1), so the musings of one
+    request never land on different arms of a split. The draw an unbound run would make is forced to
+    alternate, so a request that lost its binding fails here every time."""
+    aws("musings/article", "v2", _asset_for("musings/article"))
+    aws("musings/article", "v3", "Arm three. " + _asset_for("musings/article"))
+    for key, value in {
+        "MUSINGS_TABLE": "Musings",
+        "ARTICLES_TABLE": "Articles",
+        "TOPICS_TABLE": "Topics",
+        "BEDROCK_MODEL_ID": MODEL,
+    }.items():
+        monkeypatch.setenv(key, value)
+    client = boto3.client("dynamodb", region_name=REGION)
+    for name, key in (("Musings", "musing_id"), ("Articles", "article_id"), ("Topics", "topic_id")):
+        create_table(
+            client,
+            TableName=name,
+            KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": key, "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+    tables = boto3.resource("dynamodb", region_name=REGION)
+    tables.Table("Topics").put_item(Item={"topic_id": "t1", "name": "Widgets"})
+    article = {"article_id": "a1", "topic_id": "t1", "title": "Repo X Hits 5,000 Stars"}
+    tables.Table("Articles").put_item(Item={**article, "status": "published"})
+    event = {
+        "routeKey": "POST /articles/{article_id}/musings/regenerate",
+        "pathParameters": {"article_id": "a1"},
+    }
+    unbound_draws = itertools.cycle((0, 1))
+
+    for request_id in ("req-1", "req-2", "req-3", "req-4"):
+        for musing_id in ("m-1", "m-2"):
+            blank = {"musing_id": musing_id, "kind": "article", "article_id": "a1", "topic_id": "t1"}
+            tables.Table("Musings").put_item(Item={**blank, "text": "", "mood": "proud"})
+        with (
+            _writing() as (sent, served),
+            patch.object(prompts, "random", SimpleNamespace(randrange=lambda n: next(unbound_draws))),
+        ):
+            result = admin_api_handler.handler(event, SimpleNamespace(aws_request_id=request_id))
+
+        assert result["statusCode"] == 200, request_id
+        arm = prompts.arm_index("musings/article", 2, request_id)
+        assert [prompt.version for prompt in served] == [("v2", "v3")[arm]] * 2, request_id
+        assert [text.startswith("Arm three. ") for text in sent] == [arm == 1] * 2, request_id
+        assert prompts.bound_run() is None
 
 
 # Every value each vanilla places, read from the vanilla itself rather than from the spec's
