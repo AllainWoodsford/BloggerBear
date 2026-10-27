@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
@@ -988,3 +988,249 @@ def test_a_prefetch_event_refuses_a_paused_topic_or_one_with_no_network(aws_reso
     assert result == {"status": "error", "reason": "adapter github_trending has no network to prefetch"}
     result = research_tick_handler.handler({"topic_id": "nope", "prefetch_network": True}, None)
     assert result == {"status": "error", "reason": "unknown topic_id: nope"}
+
+
+# --- a research job from the work queue (docs/enhancements/model-ranch-prompt-assets-evals.md 4.7) ---
+
+# The dispatcher found the topic due at 09:05:30 Sydney (22:05:30 UTC; one topic in slot 1, the
+# default stagger: its heartbeat at :05), and its job reached the research tick 7 minutes later.
+DUE_CHECKED_AT = datetime(2026, 10, 24, 22, 5, 30, tzinfo=UTC)
+LATE = timedelta(minutes=7)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """The research tick's clock, and its real last_research_at recording (which the autouse fixture
+    above switches off for the diffing tests)."""
+    import common.dynamo as dynamo_module
+
+    recording = dynamo_module.set_topic_last_research_at
+    monkeypatch.setattr(research_tick_handler, "set_topic_last_research_at", recording)
+    now = {"now": DUE_CHECKED_AT + LATE}
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now["now"] if tz is None else now["now"].astimezone(tz)
+
+    monkeypatch.setattr(research_tick_handler, "datetime", _Clock)
+    return now
+
+
+def _queue_topic(**extra) -> dict:
+    """The fixture's topic, on the queue, with the cadences the dispatcher reads."""
+    item = {
+        "topic_id": "github-trending-python",
+        "name": "Python trending repos",
+        "adapter": "github_trending",
+        "adapter_config": {"language": "python"},
+        "is_financial": False,
+        "research_cadence": "rate(1 hour)",
+        "daily_cadence": "cron(0 9 * * ? *)",
+        "daily_timezone": "Australia/Sydney",
+        "stagger_slot": 1,
+        "dispatch_mode": "queue",
+        **extra,
+    }
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(Item=item)
+    return item
+
+
+def _stored_topic() -> dict:
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    return table.get_item(Key={"topic_id": "github-trending-python"})["Item"]
+
+
+def _sqs_event(body, message_id="m-1") -> dict:
+    """What the work queue's event source mapping hands the function: a batch of one record."""
+    return {
+        "Records": [
+            {
+                "messageId": message_id,
+                "eventSource": "aws:sqs",
+                "body": body if isinstance(body, str) else json.dumps(body),
+                "attributes": {"MessageGroupId": "github-trending-python"},
+            }
+        ]
+    }
+
+
+def _job(due_checked_at=DUE_CHECKED_AT, **extra) -> dict:
+    stamp = due_checked_at.isoformat(timespec="seconds")
+    return {
+        "topic_id": "github-trending-python",
+        "job": "research",
+        "force": False,
+        "due_checked_at": stamp,
+        "dispatched_at": stamp,
+        **extra,
+    }
+
+
+def _fresh_state(monkeypatch, name="a/b"):
+    state = {"repos": [_repo(name, 100)], "fetched_at": "2026-10-24T22:12:30+00:00"}
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: state)
+
+
+def test_a_queue_record_is_unwrapped_and_its_job_field_ignored(aws_resources, monkeypatch, capsys):
+    _fresh_state(monkeypatch)
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")) as mock_invoke:
+        result = research_tick_handler.handler(_sqs_event(_job(job="anything")), None)
+
+    assert result == {"status": "material_change", "summary": "summary"}
+    mock_invoke.assert_called_once()
+    out = capsys.readouterr().out
+    assert "queue record message_id='m-1' due_checked_at=2026-10-24T22:05:30+00:00" in out
+    assert "starting run for topic_id=github-trending-python force=False" in out
+
+
+def test_a_queue_record_carries_force_through(aws_resources, monkeypatch, clock):
+    _queue_topic(last_research_at=(DUE_CHECKED_AT - timedelta(minutes=10)).isoformat())
+    _fresh_state(monkeypatch)
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")):
+        assert research_tick_handler.handler(_sqs_event(_job()), None)["status"] == "not_due"
+        forced = research_tick_handler.handler(_sqs_event(_job(force=True)), None)
+    assert forced["status"] == "material_change"
+
+
+@pytest.mark.parametrize("body", ["not json", "[1, 2]", "", "null"])
+def test_an_unreadable_queue_record_is_an_error_result_never_an_exception(aws_resources, body, capsys):
+    result = research_tick_handler.handler(_sqs_event(body), None)
+
+    assert result == {"status": "error", "reason": "queue record body is not a JSON object"}
+    assert "queue record body is not a JSON object; nothing to run" in capsys.readouterr().out
+
+
+def test_a_queue_job_is_judged_due_at_due_checked_at_not_when_it_ran(aws_resources, monkeypatch, clock):
+    """Checked 50 minutes before the job was due-checked: not due then (an hour's interval, less its
+    5-minute tolerance, needs 55), though it would be by the time it ran, 7 minutes later. A job
+    that waited behind its own topic's newer state is harmless."""
+    _queue_topic(last_research_at=(DUE_CHECKED_AT - timedelta(minutes=50)).isoformat())
+    _fresh_state(monkeypatch)
+
+    with patch("research_tick_handler.invoke_model_tracked") as mock_invoke:
+        result = research_tick_handler.handler(_sqs_event(_job()), None)
+
+    assert result["status"] == "not_due"
+    mock_invoke.assert_not_called()
+
+    # The same topic invoked directly at that moment runs: its time is now.
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")):
+        assert research_tick_handler.handler({"topic_id": "github-trending-python"}, None)["status"] == (
+            "material_change"
+        )
+    assert _stored_topic()["last_research_at"] == (DUE_CHECKED_AT + LATE).isoformat()
+
+
+def test_a_job_run_long_after_it_was_due_stamps_due_checked_at_so_the_next_hourly_tick_sends_again(
+    aws_resources, monkeypatch, clock
+):
+    """The dispatcher sends at 09:05:30; the job runs at 09:12:30, more than 5 minutes later. The
+    stamp is 09:05:30, so the 10:05:30 tick finds the topic due and sends the next job. Stamping the
+    time it ran (09:12:30) would make 10:05:30 not due (due from 10:07:30) and skip the heartbeat."""
+    from common.dispatch import Dispatcher
+
+    _queue_topic()
+    _fresh_state(monkeypatch)
+    sqs = MagicMock()
+    dispatcher = Dispatcher(
+        sqs=sqs,
+        sfn=MagicMock(),
+        queue_url="https://sqs.ap-southeast-2.amazonaws.com/123456789012/work.fifo",
+        state_machine_arn="arn:aws:states:ap-southeast-2:123456789012:stateMachine:daily-cycle",
+    )
+
+    assert dispatcher.tick(DUE_CHECKED_AT)["dispatched"] == 1
+    body = sqs.send_message.call_args.kwargs["MessageBody"]
+    assert json.loads(body)["due_checked_at"] == "2026-10-24T22:05:30+00:00"
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")):
+        result = research_tick_handler.handler(_sqs_event(body), None)
+    assert result["status"] == "material_change"
+    assert _stored_topic()["last_research_at"] == "2026-10-24T22:05:30+00:00"
+
+    assert dispatcher.tick(DUE_CHECKED_AT + timedelta(hours=1))["dispatched"] == 1
+    assert sqs.send_message.call_count == 2
+    second = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
+    assert second["due_checked_at"] == "2026-10-24T23:05:30+00:00"
+
+
+def test_a_queue_job_never_moves_last_research_at_backwards(aws_resources, monkeypatch, clock):
+    """A run-now stamped 09:10 while a forced job due-checked at 09:05:30 waited: the stamp stays."""
+    later = (DUE_CHECKED_AT + timedelta(minutes=4, seconds=30)).isoformat()
+    _queue_topic(last_research_at=later)
+    _fresh_state(monkeypatch)
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")):
+        result = research_tick_handler.handler(_sqs_event(_job(force=True)), None)
+
+    assert result["status"] == "material_change"
+    assert _stored_topic()["last_research_at"] == later
+
+
+def test_a_queue_job_without_a_readable_due_checked_at_runs_and_stamps_at_now(
+    aws_resources, monkeypatch, clock, capsys
+):
+    _queue_topic()
+    _fresh_state(monkeypatch)
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")):
+        result = research_tick_handler.handler(_sqs_event({**_job(), "due_checked_at": "soon"}), None)
+
+    assert result["status"] == "material_change"
+    assert _stored_topic()["last_research_at"] == (DUE_CHECKED_AT + LATE).isoformat()
+    assert "queue record without a readable due_checked_at; using now" in capsys.readouterr().out
+
+
+def test_a_queue_job_that_fails_still_returns_rather_than_raising(aws_resources, monkeypatch, clock):
+    """The never-raise rule holds on the queue path too, so the job is consumed and the dead-letter
+    queue only ever sees timeouts and crashes."""
+    _queue_topic()
+
+    def broken(adapter, topic_config):
+        raise RuntimeError("source down")
+
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", broken)
+
+    result = research_tick_handler.handler(_sqs_event(_job()), None)
+
+    assert result["status"] == "error" and "source down" in result["reason"]
+    assert "last_research_at" not in _stored_topic()
+
+
+def test_a_batch_of_two_queue_records_says_so_and_runs_only_the_first(
+    aws_resources, monkeypatch, clock, capsys
+):
+    """The mapping's batch_size is 1 (pinned in Terraform). Were it ever larger, the handler would
+    read only the first job, and this line is the only sign of the rest."""
+    _queue_topic()
+    _fresh_state(monkeypatch)
+    event = _sqs_event(_job())
+    event["Records"].append(_sqs_event(_job(topic_id="someone-else"), message_id="m-2")["Records"][0])
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")) as mock_invoke:
+        result = research_tick_handler.handler(event, None)
+
+    assert result["status"] == "material_change"
+    mock_invoke.assert_called_once()
+    out = capsys.readouterr().out
+    assert "research_tick_handler: 2 queue records in one batch; reading the first" in out
+    assert "queue record message_id='m-1'" in out
+    assert "m-2" not in out and "someone-else" not in out
+    assert _stored_topic()["last_research_at"] == DUE_CHECKED_AT.isoformat()
+
+
+def test_a_due_checked_at_without_an_offset_is_read_as_utc(aws_resources, monkeypatch, clock):
+    """The dispatcher always writes an offset; a stamp without one is UTC, not a naive time that
+    cannot be compared with the topic's last_research_at (which would lose the job)."""
+    _queue_topic(last_research_at=(DUE_CHECKED_AT - timedelta(hours=2)).isoformat())
+    _fresh_state(monkeypatch)
+    naive = DUE_CHECKED_AT.replace(tzinfo=None).isoformat(timespec="seconds")
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")):
+        result = research_tick_handler.handler(_sqs_event({**_job(), "due_checked_at": naive}), None)
+
+    assert result["status"] == "material_change"
+    assert _stored_topic()["last_research_at"] == "2026-10-24T22:05:30+00:00"

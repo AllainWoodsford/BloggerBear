@@ -195,6 +195,29 @@ def test_one_topic_gets_its_failed_runs_error_cut_short(tables):
     assert kinds(result) == [("run_failed", "crypto")]
 
 
+def test_a_research_job_that_reached_the_work_queues_dead_letter_queue_is_not_a_failed_daily_run(tables):
+    """dlq_handler records a dead-lettered queue job with kind research_job and no error. Only a
+    record with no kind is a daily run that ran out of retries; the daily-cycle one beside it still
+    is."""
+    put_topic(tables, "crypto", "Crypto", researched=ago(minutes=5))
+    put_topic(tables, "rail", "Rail", researched=ago(minutes=5))
+    for failure_id, topic_id, extra in (
+        ("f1", "crypto", {"kind": "research_job"}),
+        ("f2", "rail", {"error": {"Error": "States.Timeout"}}),
+    ):
+        tables.Table("FailedExecutions").put_item(
+            Item={"failure_id": failure_id, "topic_id": topic_id, "created_at": ago(hours=1), **extra}
+        )
+
+    result = tools.pipeline_health(now=NOW)
+
+    states = {row["topic_id"]: row["article"]["state"] for row in result["topics"]}
+    assert states == {"crypto": "none", "rail": "failed"}
+    assert kinds(result) == [("no_article_today", "crypto"), ("run_failed", "rail")]
+    assert "Crypto failed its daily run" not in result["spoken"]
+    assert "Rail failed its daily run" in result["spoken"]
+
+
 @pytest.mark.parametrize("topic", ["nope", "crypto; topics delete crypto", ""])
 def test_an_unknown_or_malformed_topic_is_said_plainly(tables, topic):
     put_topic(tables, "crypto", "Crypto", researched=ago(minutes=5))

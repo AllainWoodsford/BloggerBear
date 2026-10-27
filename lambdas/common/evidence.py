@@ -226,6 +226,18 @@ EVENTS: dict[str, dict[str, str]] = {
         "count": "int",
         "rss_peak_mb": "int",
     },
+    # The dispatcher (dispatcher_handler.py), once per tick, in a `finally`: the counts of
+    # common/dispatch.Tick (absent when the tick raised), `ok` or `error`, and the error's type.
+    # The work-queue module's heartbeat alarm counts the `ok` lines.
+    "dispatcher_tick": {
+        "considered": "int",
+        "dispatched": "int",
+        "started": "int",
+        "skipped_unparsable": "int",
+        "outcome": "code",
+        "ms": "int",
+        "error_type": "id",
+    },
     # The admin API: a person approved, rejected, force-published, unpublished or sent back an
     # article. Never who.
     "moderation_decision": {

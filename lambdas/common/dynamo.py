@@ -1610,7 +1610,9 @@ def put_failed_execution(
     """Write a FailedExecutions item and return it.
 
     `kind` says what failed when it is not a daily_cycle run: "model_pricing" is a price the
-    model catalog's review put back (common/model_catalog.py). A DLQ record has none.
+    model catalog's review put back (common/model_catalog.py), and "<job>_job" (`research_job`) a
+    work-queue job that reached work-dlq.fifo (dlq_handler.py). Only a daily_cycle DLQ record has
+    none, and readers take a record with none for a daily run that ran out of retries.
 
     `topic_id` and `error` may be None/malformed if the DLQ message body
     didn't parse as expected -- `raw_message` (the untouched SQS message
@@ -1843,7 +1845,7 @@ def get_pipeline_config() -> dict | None:
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])
     item = table.get_item(Key={"config_id": _PIPELINE_CONFIG_ID}).get("Item")
     if item is not None:
-        for number in ("research_interval_hours", "stagger_minutes"):
+        for number in ("research_interval_hours", "stagger_minutes", "daily_starts_per_tick"):
             if item.get(number) is not None:
                 item[number] = int(item[number])
     return item
@@ -1859,12 +1861,16 @@ def put_pipeline_config(
     review_on_unavailable=_UNSET,
     assistant_access=_UNSET,
     stagger_minutes=_UNSET,
+    dispatch_shadow=_UNSET,
+    daily_starts_per_tick=_UNSET,
 ) -> dict:
     """Update pipeline-wide settings and return the row.
 
     Only the settings passed are touched (a value sets it, None clears it), so
     editing one never wipes another or one added later. `stagger_minutes` is the
-    gap between one topic's schedules and the next (common/stagger.py).
+    gap between one topic's schedules and the next (common/stagger.py);
+    `dispatch_shadow` and `daily_starts_per_tick` are the dispatcher's
+    (common/dispatch.py).
     """
     updates = {
         "research_interval_hours": research_interval_hours,
@@ -1872,6 +1878,8 @@ def put_pipeline_config(
         "review_on_unavailable": review_on_unavailable,
         "assistant_access": assistant_access,
         "stagger_minutes": stagger_minutes,
+        "dispatch_shadow": dispatch_shadow,
+        "daily_starts_per_tick": daily_starts_per_tick,
     }
     sets, removes, values = [], [], {}
     for index, (name, value) in enumerate(updates.items()):
@@ -2365,11 +2373,12 @@ def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
     )
 
 
-def set_topic_fields(topic_id: str, fields: dict) -> None:
+def set_topic_fields(topic_id: str, fields: dict, *, remove=()) -> None:
     """Set the given attributes on a Topic (`paused`, `stagger_slot`, the schedules
-    written for it, ...), leaving every other attribute alone. Fails
-    (ConditionalCheckFailedException) rather than creating a deleted topic. The
-    attribute names go through placeholders, so a reserved word is fine."""
+    written for it, ...), leaving every other attribute alone, and remove the ones
+    named in `remove` in the same write. Fails (ConditionalCheckFailedException)
+    rather than creating a deleted topic. The attribute names go through
+    placeholders, so a reserved word is fine."""
     if not fields:
         return
     names, values, sets = {}, {}, []
@@ -2377,10 +2386,15 @@ def set_topic_fields(topic_id: str, fields: dict) -> None:
         names[f"#f{index}"] = name
         values[f":v{index}"] = value
         sets.append(f"#f{index} = :v{index}")
+    removes = []
+    for index, name in enumerate(remove):
+        names[f"#r{index}"] = name
+        removes.append(f"#r{index}")
+    update = "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else "")
     table = get_table(os.environ["TOPICS_TABLE"])
     table.update_item(
         Key={"topic_id": topic_id},
-        UpdateExpression="SET " + ", ".join(sets),
+        UpdateExpression=update,
         ConditionExpression="attribute_exists(topic_id)",
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,

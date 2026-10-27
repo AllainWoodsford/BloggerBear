@@ -49,13 +49,26 @@ def test_the_catalogue_names_the_fields_a_rotating_topic_stores():
     assert "topics.last_article_by_subject" in dict(_of_kind("function")["daily-cycle"].details)["Writes"]
 
 
+def test_the_catalogue_names_what_the_cutover_writes_and_sends():
+    """The per-topic cutover (Q2): the dispatcher's count of checked shadow days, the Admin API's
+    manual research job on the work queue and its manual daily runs, and a topic on the queue
+    having no schedules."""
+    functions, queues = _of_kind("function"), _of_kind("queue")
+    assert "shadow_checked_days" in dict(functions["dispatcher"].details)["Writes"]
+    assert "<topic>-<date>-manual-<HHMMSS>" in dict(functions["admin-api"].details)["Sends"]
+    assert "<topic_id>:research:manual:<hex>" in dict(queues["work"].details)["Deduplicated by"]
+    assert f"/aws/lambda/{PREFIX}{ENV}-admin-api" in queues["work"].log_groups
+    assert "A topic on the queue has none." in _of_kind("schedule")["topic-schedules"].purpose
+
+
 # The functions modules make: the ops-assistant module's two, the vision-worker module's (in the
-# vision Region, so observability's alarms in the home Region can't watch it), and the evals
-# module's eval-jobs. Every other function is made by an environment root and handed to
-# observability, which gives it an errors and a throttles alarm; eval-jobs is handed to it too,
-# through module.evals.function_names (OBSERVED_MODULE_FUNCTIONS).
-MODULE_FUNCTIONS = {"ops-agent", "ops-mcp", "vision-worker", "eval-jobs"}
-OBSERVED_MODULE_FUNCTIONS = {"eval-jobs"}
+# vision Region, so observability's alarms in the home Region can't watch it), the evals module's
+# eval-jobs and the work-queue module's dispatcher. Every other function is made by an environment
+# root and handed to observability, which gives it an errors and a throttles alarm; eval-jobs and the
+# dispatcher are handed to it too, through module.evals.function_names and
+# module.work_queue.function_names (OBSERVED_MODULE_FUNCTIONS).
+MODULE_FUNCTIONS = {"ops-agent", "ops-mcp", "vision-worker", "eval-jobs", "dispatcher"}
+OBSERVED_MODULE_FUNCTIONS = {"eval-jobs", "dispatcher"}
 
 
 def _template(terraform_name: str) -> str:
@@ -151,7 +164,7 @@ def test_every_dashboard_is_in_the_catalogue_and_the_edge_one_only_in_production
 
 def _alarm_templates() -> set[str]:
     """Every alarm name in infra/, wherever it is made (observability's, and a module's own such as
-    the evals module's), as a catalogue template."""
+    the evals module's and the work queue's), as a catalogue template."""
     templates = set()
     for path in _terraform_files():
         names = re.findall(r'alarm_name\s*=\s*"([^"]+)"', read_terraform(path))
@@ -168,18 +181,25 @@ def test_every_alarm_the_catalogue_names_exists_and_every_alarm_is_named_somewhe
     fixed = templates - per_lambda
     # The evals module's own two are among them, read from the module.
     assert {f"{PREFIX}{ENV}-eval-rollup-heartbeat", f"{PREFIX}{ENV}-eval-work-age"} <= fixed
+    # The work queue's own four are among them, read from the module.
+    assert {
+        f"{PREFIX}{ENV}-work-queue-age",
+        f"{PREFIX}{ENV}-work-dlq-messages",
+        f"{PREFIX}{ENV}-work-dlq-received",
+        f"{PREFIX}{ENV}-dispatcher-heartbeat",
+    } <= fixed
 
     lambda_alarms = {a for a in named if a.startswith(f"{PREFIX}{ENV}-{PREFIX}")}
     assert named - lambda_alarms == fixed
     for key, component in _of_kind("function").items():
-        # The pipeline's functions, which observability is given, eval-jobs included.
+        # The pipeline's functions, which observability is given, eval-jobs and the dispatcher included.
         if key not in MODULE_FUNCTIONS or key in OBSERVED_MODULE_FUNCTIONS:
             assert f"{PREFIX}{ENV}-{PREFIX}{ENV}-{key}-errors" in component.alarms
             assert f"{PREFIX}{ENV}-{PREFIX}{ENV}-{key}-throttles" in component.alarms
     for environment in architecture.ENVIRONMENTS:
         main = _read("environments", environment, "main.tf")
         names = main.split("pipeline_lambda_function_names = concat([", 1)[1].split("\n}\n", 1)[0]
-        assert names.endswith(", module.evals.function_names)"), environment
+        assert names.endswith(", module.evals.function_names, module.work_queue.function_names)"), environment
 
 
 def test_the_apis_and_log_groups_are_named_as_the_terraform_names_them():
@@ -260,6 +280,23 @@ def test_the_evals_schedules_queue_and_log_group_are_the_ones_the_catalogue_give
     assert f'eval_jobs_name = "{named}-eval-jobs"' in module
     runs = dict(_of_kind("function")["eval-jobs"].details)["Runs"]
     assert "hourly at five past" in runs and "eval-work" in runs
+
+
+def test_the_dispatchers_schedule_and_queues_are_the_ones_the_catalogue_gives():
+    # As written, the prefix still the variable: the catalogue fills in this deployment's.
+    module = (INFRA / "modules" / "work-queue" / "main.tf").read_text(encoding="utf-8")
+    named = "${var.unique_name_prefix}-${var.environment_name}"
+    block = _blocks(module, "aws_scheduler_schedule")["dispatcher"]
+    assert 'schedule_expression = "rate(1 minute)"' in block and "name                = local.name" in block
+    assert f'name = "{named}-dispatcher"' in module
+    schedule = architecture.by_key("schedule", "dispatcher")
+    assert schedule.name == f"{PREFIX}{ENV}-dispatcher"
+    assert dict(schedule.details)["Expression"] == "rate(1 minute)"
+    assert "every minute" in dict(_of_kind("function")["dispatcher"].details)["Runs"]
+    queues = _blocks(module, "aws_sqs_queue")
+    for key, label in (("work", "work"), ("work-dlq", "work_dlq")):
+        assert f'= "{named}-{key}.fifo"' in queues[label]
+        assert _of_kind("queue")[key].name == f"{PREFIX}{ENV}-{key}.fifo"
 
 
 def test_the_reviewer_bears_schedule_is_the_one_the_catalogue_gives():
@@ -816,9 +853,9 @@ def test_a_layer_gives_its_services_then_our_resources_in_it(dev):
     assert kinds == {"EventBridge Scheduler schedule", "Step Functions state machine", "SQS queue"}
     assert {c["kind"] for c in answer["components"]} == {"schedule", "state_machine", "queue"}
     assert answer["spoken"].startswith("Orchestration. What makes things happen on time")
-    # The daily cycle's state machine, the pipeline DLQ, the topic schedules, and the evals
-    # module's queue and two schedules.
-    assert "Our 6 resources in it are on screen." in answer["spoken"]
+    # The daily cycle's state machine, the pipeline DLQ, the topic schedules, the evals module's
+    # queue and two schedules, and the work-queue module's two queues and its schedule.
+    assert "Our 9 resources in it are on screen." in answer["spoken"]
     assert len(answer["spoken"].split()) < 120
 
 

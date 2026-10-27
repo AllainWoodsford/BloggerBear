@@ -91,3 +91,50 @@ def test_malformed_message_body_still_records_raw_message(failed_executions_tabl
 def test_no_records_processes_nothing(failed_executions_table):
     result = dlq_handler.handler({"Records": []}, None)
     assert result == {"status": "ok", "processed": 0}
+
+
+def test_a_queue_job_is_worded_and_recorded_as_its_job_not_as_a_daily_cycle(failed_executions_table, capsys):
+    """A research job that reached work-dlq.fifo: the dispatcher's message itself, with no error (it
+    timed out or crashed three times). The line names the job, not a daily cycle, and so does the
+    record's kind: pipeline_health reads a record with no kind as a daily run that ran out of
+    retries."""
+    body = json.dumps(
+        {
+            "topic_id": "github-trending",
+            "job": "research",
+            "force": False,
+            "due_checked_at": "2026-10-24T22:05:30+00:00",
+            "dispatched_at": "2026-10-24T22:05:30+00:00",
+        }
+    )
+
+    result = dlq_handler.handler(_sqs_event(body), None)
+
+    assert result == {"status": "ok", "processed": 1}
+    out = capsys.readouterr().out
+    assert "dlq_handler: research job for topic_id=github-trending failed" in out
+    assert "daily_cycle" not in out
+    (item,) = boto3.resource("dynamodb", region_name=REGION).Table("FailedExecutions").scan()["Items"]
+    assert item["topic_id"] == "github-trending" and item["error"] is None and item["raw_message"] == body
+    assert item["kind"] == "research_job"
+
+
+def test_a_daily_cycle_failure_is_still_worded_and_recorded_as_one(failed_executions_table, capsys):
+    body = json.dumps({"topic_id": "topic-a", "error": {"Error": "States.Timeout"}})
+
+    dlq_handler.handler(_sqs_event(body), None)
+
+    assert "dlq_handler: daily_cycle failed for topic_id=topic-a: {'Error': 'States.Timeout'}" in (
+        capsys.readouterr().out
+    )
+    (item,) = boto3.resource("dynamodb", region_name=REGION).Table("FailedExecutions").scan()["Items"]
+    assert "kind" not in item  # a daily cycle's record has none
+
+
+@pytest.mark.parametrize("job", ["Research\nevidence", 7, "", "x" * 41])
+def test_a_job_that_is_not_a_plain_code_is_named_unknown(failed_executions_table, capsys, job):
+    dlq_handler.handler(_sqs_event(json.dumps({"topic_id": "t", "job": job})), None)
+
+    assert "dlq_handler: unknown job for topic_id=t failed" in capsys.readouterr().out
+    (item,) = boto3.resource("dynamodb", region_name=REGION).Table("FailedExecutions").scan()["Items"]
+    assert item["kind"] == "unknown_job"  # still not a daily cycle, and never the body's own text

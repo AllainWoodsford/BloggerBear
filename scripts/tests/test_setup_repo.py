@@ -209,6 +209,16 @@ def test_the_evals_switch_is_read_by_both_deploys_and_deliberately_not_asked():
         assert switch in (WORKFLOWS / name).read_text(encoding="utf-8"), name
 
 
+def test_the_worker_concurrency_variable_is_read_by_both_deploys_and_deliberately_not_asked():
+    """A first deploy wants the default (2); an operator raises it by hand once the queue platform is
+    on, so the script leaves it alone and the table does not list it."""
+    assert "WORKER_CONCURRENCY" in sr.NOT_ASKED
+    assert all(s.name != "WORKER_CONCURRENCY" for s in sr.SETTINGS)
+    for name in ("terraform.yml", "terraform-production-release.yml"):
+        workflow = (WORKFLOWS / name).read_text(encoding="utf-8")
+        assert "TF_VAR_worker_concurrency: ${{ vars.WORKER_CONCURRENCY || '2' }}" in workflow, name
+
+
 def test_the_sensitive_settings_are_secrets_with_no_variable_fallback():
     _, variables = _workflow_names()
     for name in ("AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD"):

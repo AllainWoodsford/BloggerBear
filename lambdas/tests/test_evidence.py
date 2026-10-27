@@ -68,6 +68,10 @@ SAMPLES = {
         "article_id": "9b1c3e2a-0000-4000-8000-000000000002", "decision": "approved",
         "from_status": "pending_moderation", "by": "human",
     },
+    "dispatcher_tick": {
+        "considered": 12, "dispatched": 1, "started": 0, "skipped_unparsable": 0, "outcome": "ok",
+        "ms": 840,
+    },
     "topic_changed": {
         "topic_id": "rail-sydney", "action": "updated", "fields": ["adapter_config"],
         "config_keys": ["max_cloud_cover", "triage"], "config_numbers": {"max_cloud_cover": 40},

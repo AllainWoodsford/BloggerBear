@@ -229,6 +229,10 @@ NOT_ASKED = {
     # hand, once the evals module is deployed; a first deploy never wants it, so this script does
     # not ask.
     "EVALS_ENABLED",
+    # How many queue jobs the pipeline's workers may run at once (docs/configuration.md). Unset
+    # means 2, the smallest an SQS event source mapping accepts and what a first deploy wants;
+    # an operator raises it by hand once the queue platform is on, so this script does not ask.
+    "WORKER_CONCURRENCY",
 }
 
 # Secrets the workflows still read as `secrets.X || vars.X`, left over from when they were
