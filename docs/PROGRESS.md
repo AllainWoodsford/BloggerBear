@@ -1049,6 +1049,9 @@ rebased (spec section 6).
 | PR14 emission | #405 | `claude/ranch-45-emission` | stacks-meet |
 | PR11b dashboards | #406 | `claude/ranch-31-dashboards` | stacks-meet |
 | PR18 judge and eval consumer | #407 | `claude/ranch-49-judge` | stacks-meet |
+| PR19 human review in `approve` | #408 | `claude/ranch-52-human-review` | PR18 (with PR14 merged in) |
+| PR18b offline scoring runs | #409 | `claude/ranch-50-offline-runs` | PR18 |
+| PR18c call traces | #410 | `claude/ranch-51-call-traces` | PR14 |
 
 **Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
 #390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
@@ -1066,21 +1069,20 @@ retargeted to `dev` and rebased like any other. PR12 (#395) merges only after th
 applied", and after #393. A branch that is not on `origin` lived only in the old session's
 container: start it again from its parent with the per-PR workflow.
 
-**Being built now** (one workflow): PR19 (`claude/ranch-52-human-review`), from PR18 with PR14
-merged in (8057937), because it adds `pair#human` to PR14's Admin Review; its PR takes PR18's
-branch as its base. PR18b (`claude/ranch-50-offline-runs`), from PR18. PR18c
-(`claude/ranch-51-call-traces`), from PR14.
+**PR19** (#408) starts from PR18 with PR14 merged in (8057937), because it adds `pair#human` to
+PR14's Admin Review; its PR takes PR18's branch as its base, so its diff shows PR14's commits
+until #405 merges.
 
-**PR20's base** is `claude/ranch-56-evals-meet`: the PR18 and PR14 merge with
-`claude/ranch-47-culling` (PR13b, PR15, PR16) merged in, because PR20's tools read PR13b's
-`adjust#` rows and PR16's proposal. PR19 is merged into it before PR20 starts. It gets no PR of
-its own.
+**Being built now:** PR20 (`claude/ranch-53-mcp-tools`), from `claude/ranch-56-evals-meet` at
+384ac59. That branch is the PR18 and PR14 merge with `claude/ranch-47-culling` (PR13b, PR15,
+PR16) and then PR19 merged in, because PR20's tools read PR13b's `adjust#` rows, PR16's proposal
+and PR19's pairs. It gets no PR of its own; PR20's PR takes PR19's branch as its base.
 
 **#401** fixes a test whose fixed date went stale on 2026-10-31
 (`test_rail_access_adapter.py`): until it reaches `dev`, CI fails that one test on any branch
 without it. PR13b, PR15, PR16 and the meeting branch carry it.
 
-**Then:** PR20 after PR19; PR21, the bug sweep, over everything (PR20's branch with PR18b, PR18c
+**Then:** PR21, the bug sweep, over everything (PR20's branch with PR18b, PR18c
 and PR11b merged in); PR22, the docs sweep.
 
 **Owner actions waiting.**
