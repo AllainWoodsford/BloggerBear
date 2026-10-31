@@ -27,7 +27,7 @@ firewall?"), never on a first question.
 
 **Unusual is decided here.** A spike is blocks in the window above twice the median of the
 previous seven days (scaled to the window) and at least SPIKE_MIN_BLOCKS. That is a finding, with
-nothing to run: what to look at is the edge dashboard.
+nothing to run: what to look at is the pipeline health dashboard's blocks per rule.
 
     OPS_WAF_LOG_GROUPS  comma-separated "<region>:<log group name>" entries
 """

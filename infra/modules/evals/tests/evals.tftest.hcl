@@ -453,6 +453,14 @@ run "switched_on_the_ranch_and_prompts_dashboard_reads_the_evals_group_and_the_f
     error_message = "the dashboard is <prefix>-<env>-ranch-and-prompts"
   }
 
+  assert {
+    condition = (
+      jsondecode(aws_cloudwatch_dashboard.ranch_and_prompts[0].dashboard_body).start == "-P7D" &&
+      jsondecode(aws_cloudwatch_dashboard.ranch_and_prompts[0].dashboard_body).periodOverride == "inherit"
+    )
+    error_message = "it opens on a week, at the period each widget asks for, as pipeline health does"
+  }
+
   # The header, the fallbacks, events per hour, models, prompt versions, cells, reasons, recorded
   # fallbacks and the latest bad events.
   assert {

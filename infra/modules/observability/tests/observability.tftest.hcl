@@ -57,7 +57,10 @@ variables {
 
 # One dashboard for the pipeline (the pipeline, lambda-runs and edge dashboards are gone): every
 # panel the spec lists, each widget's metrics a list of lists (CloudWatch checks the body only at
-# apply), and within the 50 metrics a dashboard may have before it is billed as more than one.
+# apply), and within the 50 metrics of a free dashboard (past 50 it is paid, like a fourth one).
+# The count takes each entry of a widget's metrics as one metric, which is how AWS words the free
+# tier ("up to 50 metrics") but has not been checked against a bill: a search entry draws a line
+# per function, and whether the free tier counts it once or per line is checked after the dev apply.
 run "pipeline_health_has_every_panel_within_50_metrics" {
   command = plan
 
@@ -161,6 +164,21 @@ run "every_lambda_is_searched_once_per_panel_by_its_exact_name" {
     ]), "100 * SEARCH('{AWS/Lambda,FunctionName} MetricName=\"Duration\" (FunctionName=\"acme-test-eval-jobs\")', 'p95', 3600) / 900000")
     error_message = "eval-jobs' p95 as a share of its fifteen minutes"
   }
+
+  # Errors and throttles are counts: each panel searches its own metric, summed per hour, in every
+  # chunk. (A renamed panel leaves nothing to check here; the title set above catches that.)
+  assert {
+    condition = alltrue(flatten([
+      for panel in [["Errors per hour, per Lambda", "Errors"], ["Throttles per hour, per Lambda", "Throttles"]] : [
+        for widget in jsondecode(aws_cloudwatch_dashboard.pipeline_health.dashboard_body).widgets : [
+          for metric in widget.properties.metrics :
+          startswith(metric[0].expression, "SEARCH('{AWS/Lambda,FunctionName} MetricName=\"${panel[1]}\" (") &&
+          endswith(metric[0].expression, ")', 'Sum', 3600)")
+        ] if try(widget.properties.title, "") == panel[0]
+      ]
+    ]))
+    error_message = "the errors panel searches Errors and the throttles panel Throttles, each summed per hour"
+  }
 }
 
 run "no_search_passes_cloudwatchs_limit_with_the_longest_prefix" {
@@ -169,15 +187,20 @@ run "no_search_passes_cloudwatchs_limit_with_the_longest_prefix" {
   variables {
     unique_name_prefix = "fourteen-chars"
     environment_name   = "production"
+    # Two dozen functions, so that one search over them all would pass 1,024 characters.
     lambda_function_names = [
       for suffix in ["research-tick", "daily-cycle", "admin-api", "public-api", "weekly-reflection", "dlq-handler",
         "musing-feedback", "stats-rollover", "cost-explorer-poll", "model-catalog", "security-events",
-      "sign-in-events", "reviewer", "eval-jobs", "dispatcher"] : "fourteen-chars-production-${suffix}"
+        "sign-in-events", "reviewer", "eval-jobs", "dispatcher", "ops-agent", "ops-mcp", "vision-worker",
+        "prompts-publisher", "comment-screening", "gear-refinement", "musing-writer", "reader-digest",
+      "rewrite-worker"] : "fourteen-chars-production-${suffix}"
     ]
     lambda_timeouts = {
       for suffix in ["research-tick", "daily-cycle", "admin-api", "public-api", "weekly-reflection", "dlq-handler",
         "musing-feedback", "stats-rollover", "cost-explorer-poll", "model-catalog", "security-events",
-      "sign-in-events", "reviewer", "eval-jobs", "dispatcher"] : "fourteen-chars-production-${suffix}" => 30
+        "sign-in-events", "reviewer", "eval-jobs", "dispatcher", "ops-agent", "ops-mcp", "vision-worker",
+        "prompts-publisher", "comment-screening", "gear-refinement", "musing-writer", "reader-digest",
+      "rewrite-worker"] : "fourteen-chars-production-${suffix}" => 30
     }
   }
 
@@ -191,13 +214,16 @@ run "no_search_passes_cloudwatchs_limit_with_the_longest_prefix" {
     error_message = "every search string is at most 1,024 characters"
   }
 
-  # Fifteen functions in one timeout: two searches of at most twelve names.
+  # Twenty-four functions in one timeout: every per-Lambda panel searches them twelve at a time.
   assert {
-    condition = sum([
+    condition = [
       for widget in jsondecode(aws_cloudwatch_dashboard.pipeline_health.dashboard_body).widgets :
-      length(widget.properties.metrics) if try(widget.properties.title, "") == "p95 duration as a share of each Lambda's own timeout (100% is timing out)"
-    ]) == 2
-    error_message = "a timeout's functions are searched twelve at a time"
+      length(widget.properties.metrics) if contains([
+        "Errors per hour, per Lambda", "Throttles per hour, per Lambda",
+        "p95 duration as a share of each Lambda's own timeout (100% is timing out)",
+      ], try(widget.properties.title, ""))
+    ] == [2, 2, 2]
+    error_message = "each per-Lambda panel searches the functions twelve at a time: two searches each"
   }
 }
 
@@ -272,6 +298,92 @@ run "the_model_catalog_row_counts_the_evidence_lines_fields" {
         ["ModelCatalogDropped", "dropped"],
     ]]
     error_message = "the row's seven tiles, in order"
+  }
+}
+
+# The daily cycle, feedback and trend panels draw the metrics the spec lists, with the dimensions
+# the module was given. The feedback names are written out (the names main.tf's filters set), so a
+# panel pointed at the wrong filter fails too.
+run "the_daily_cycle_feedback_and_trend_panels_draw_what_the_spec_lists" {
+  command = plan
+
+  assert {
+    condition = [
+      for widget in jsondecode(aws_cloudwatch_dashboard.pipeline_health.dashboard_body).widgets : [
+        for metric in widget.properties.metrics : [metric[0], metric[1], metric[2], metric[3]]
+      ] if try(widget.properties.title, "") == "Daily cycle: Step Functions runs and the dead-letter queue"
+      ] == [[
+        ["AWS/States", "ExecutionsStarted", "StateMachineArn", var.state_machine_arn],
+        ["AWS/States", "ExecutionsSucceeded", "StateMachineArn", var.state_machine_arn],
+        ["AWS/States", "ExecutionsFailed", "StateMachineArn", var.state_machine_arn],
+        ["AWS/States", "ExecutionsTimedOut", "StateMachineArn", var.state_machine_arn],
+        ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", var.dlq_queue_name],
+    ]]
+    error_message = "started, succeeded, failed and timed out on the state machine, then the dead-letter queue"
+  }
+
+  assert {
+    condition = [
+      for widget in jsondecode(aws_cloudwatch_dashboard.pipeline_health.dashboard_body).widgets : [
+        for metric in widget.properties.metrics : [metric[0], metric[1]]
+      ] if try(widget.properties.title, "") == "Feedback in the selected range: accepted, then rejected"
+      ] == [[
+        ["BloggerBear/test", "FeedbackAccepted"],
+        ["BloggerBear/test", "FeedbackCommentKept"],
+        ["BloggerBear/test", "FeedbackRejected"],
+        ["BloggerBear/test", "FeedbackModelDropped"],
+        ["BloggerBear/test", "FeedbackScreeningBudgetUsedUp"],
+    ]]
+    error_message = "the funnel's five counts, in order"
+  }
+
+  # The trend reads 30 days a point a day, whatever range is picked at the top right.
+  assert {
+    condition = [
+      for widget in jsondecode(aws_cloudwatch_dashboard.pipeline_health.dashboard_body).widgets :
+      [try(widget.properties.start, ""), widget.properties.period, [for metric in widget.properties.metrics : metric[1]]]
+      if try(widget.properties.title, "") == "The last 30 days, per day"
+    ] == [["-P30D", 86400, ["ExecutionsSucceeded", "ExecutionsFailed", "FeedbackAccepted"]]]
+    error_message = "30 days, one point a day: daily runs succeeded and failed, and feedback accepted"
+  }
+}
+
+# The three tile widgets add up the whole range picked (setPeriodToTimeRange), and the recent
+# errors table reads every pipeline Lambda's log once, for the lines an error leaves. The table's
+# query moved unchanged from the old pipeline dashboard.
+run "the_tiles_add_up_the_range_and_the_recent_errors_read_every_lambdas_log" {
+  command = plan
+
+  assert {
+    condition = (
+      length([
+        for widget in jsondecode(aws_cloudwatch_dashboard.pipeline_health.dashboard_body).widgets :
+        widget if try(widget.properties.view, "") == "singleValue"
+      ]) == 3 &&
+      alltrue([
+        for widget in jsondecode(aws_cloudwatch_dashboard.pipeline_health.dashboard_body).widgets :
+        try(widget.properties.setPeriodToTimeRange, false) == true if try(widget.properties.view, "") == "singleValue"
+      ])
+    )
+    error_message = "the operator, model-catalog and feedback tiles each add up the whole range picked"
+  }
+
+  assert {
+    condition = length([
+      for widget in jsondecode(aws_cloudwatch_dashboard.pipeline_health.dashboard_body).widgets : widget if widget.type == "log"
+    ]) == 1
+    error_message = "one Logs Insights widget: the recent errors"
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for widget in jsondecode(aws_cloudwatch_dashboard.pipeline_health.dashboard_body).widgets : concat(
+        [for name in var.lambda_function_names : length(regexall("SOURCE '/aws/lambda/${name}'", widget.properties.query)) == 1],
+        [length(regexall("SOURCE '", widget.properties.query)) == length(var.lambda_function_names)],
+        [strcontains(widget.properties.query, " | filter @message like /unhandled exception|Traceback|ERROR|Task timed out/ | ")],
+      ) if widget.type == "log"
+    ]))
+    error_message = "every pipeline Lambda's log group once and no other, filtered on the lines an error leaves"
   }
 }
 

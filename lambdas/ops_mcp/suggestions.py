@@ -158,8 +158,9 @@ CATALOGUE: dict[str, Suggestion] = {
     # is what takes it out of the briefing.
     "security_incident": Suggestion(
         action=(
-            f"Read the incident's next steps on screen; the edge dashboard ({NAME_PREFIX}-<env>-edge) "
-            "shows what the firewall blocked. Then mark it as seen"
+            "Read the incident's next steps on screen; the pipeline health dashboard "
+            f"({NAME_PREFIX}-<env>-pipeline-health) shows what each firewall blocked, per rule. Then "
+            "mark it as seen"
         ),
         arguments="security acknowledge {id}",
         what_it_does=(
@@ -169,16 +170,17 @@ CATALOGUE: dict[str, Suggestion] = {
     ),
     "alarm_firing": Suggestion(
         action=(
-            f"Open the alarm in CloudWatch; the pipeline dashboard ({NAME_PREFIX}-<env>-pipeline) "
-            "shows what led up to it"
+            "Open the alarm in CloudWatch; the pipeline health dashboard "
+            f"({NAME_PREFIX}-<env>-pipeline-health) shows what led up to it"
         ),
     ),
     # Something unusual that is not an incident yet: the command opens one, so it is written
     # down and followed up. The words after --summary are fixed, for the operator to edit.
     "firewall_spike": Suggestion(
         action=(
-            f"Look at the edge dashboard ({NAME_PREFIX}-<env>-edge) for which rule is blocking; if it "
-            "is not ordinary noise, open a security incident for it"
+            f"Look at the pipeline health dashboard ({NAME_PREFIX}-<env>-pipeline-health), whose "
+            "firewall panels show blocks per rule, for which rule is blocking; if it is not ordinary "
+            "noise, open a security incident for it"
         ),
         arguments='security open --severity medium --summary "the firewall is blocking far more than usual"',
         what_it_does=(

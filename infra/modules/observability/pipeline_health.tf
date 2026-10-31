@@ -4,13 +4,16 @@
 # dashboards. CloudWatch bills about US$3 a month for each dashboard past an account's first three
 # (of up to 50 metrics each). Each environment now has this one and, while evals are on, the evals
 # module's ranch-and-prompts: four where dev and production share an account, one of them paid. So
-# this one stays within 50 metrics: a test counts every entry of every widget's metrics list.
+# this one stays within 50 metrics: a test counts every entry of every widget's metrics list, a
+# search counting once.
 #
 # The per-Lambda panels are SEARCH expressions over the pipeline's functions by their exact names,
-# one line per function from a single entry, which is what keeps up to two dozen functions inside
-# the 50. A search is cut into chunks of 12 names so that none passes CloudWatch's 1,024 characters
-# for one search, whatever the prefix. A search finds a function once it has reported in the last
-# two weeks, so a function that has not run since draws no line.
+# one line per function from a single entry. Counted by entry, that keeps up to two dozen functions
+# inside the 50. Whether CloudWatch's free tier counts a search once or once per line it draws is
+# not checked here; it is checked on the bill after the dev apply. A search is cut into chunks of
+# 12 names so that none passes CloudWatch's 1,024 characters for one search, whatever the prefix. A
+# search finds a function once it has reported in the last two weeks, so a function that has not
+# run since draws no line.
 #
 # Opens on the last 7 days at one point per hour, like the dashboards before it: a job that runs
 # every few hours is a dot or two on CloudWatch's 3-hour default. The tiles add up the whole range

@@ -815,8 +815,63 @@ def test_pipeline_health_is_given_every_pipeline_lambdas_timeout(env):
     assert "contains(keys(var.lambda_timeouts), name)" in precondition
 
 
+def _local_value(text: str, name: str) -> str:
+    """A string local's value, from whichever `locals { ... }` block sets it."""
+    for block in re.findall(r"^locals \{\n(.*?)^\}", text, re.S | re.M):
+        if found := re.search(rf'^  {name}\s*=\s*"([^"]+)"$', block, re.M):
+            return found.group(1)
+    raise AssertionError(f"no local {name}")
+
+
 @pytest.mark.parametrize("env", ["dev", "production"])
-def test_pipeline_health_covers_both_apis_and_every_web_acl(env):
+def test_the_module_test_plans_pipeline_health_with_the_roots_functions_timeouts_apis_and_web_acls(env):
+    """The module test caps pipeline health at 50 metrics for its own inputs: a search per twelve
+    functions on each per-Lambda panel, one more per distinct timeout, and widgets per API and web
+    ACL. Its inputs are written out, so they are held to the roots': every pipeline Lambda by name
+    with its timeout (the modules' two included), and as many APIs and web ACLs. A root that gains
+    any of these then fails here until the module test plans it too, and is counted against 50."""
+    main = _read("environments", env, "main.tf")
+    timeouts = main.split("pipeline_lambda_timeouts = merge(", 1)[1].split("\n  )\n", 1)[0]
+    seconds = r"^  timeout\s*=\s*(\d+)$"
+    roots = {}
+    for resource in re.findall(r"aws_lambda_function\.(\w+)", timeouts):
+        block = _resource_block(main, "aws_lambda_function", resource)
+        name = re.search(r'^  function_name\s*=\s*"([^"]+)"$', block, re.M).group(1)
+        roots[name.removeprefix(f"{DEFAULT_PREFIX}-{env}-")] = int(re.search(seconds, block, re.M).group(1))
+    for module, resource in (("evals", "eval_jobs"), ("work-queue", "dispatcher")):
+        text = _read("modules", module, "main.tf")
+        block = _resource_block(text, "aws_lambda_function", resource)
+        local = re.search(r"^  function_name\s*=\s*local\.(\w+)$", block, re.M).group(1)
+        name = _local_value(text, local).removeprefix(f"{DEFAULT_PREFIX}-${{var.environment_name}}-")
+        roots[name] = int(re.search(seconds, block, re.M).group(1))
+
+    fixture = (INFRA / "modules" / "observability" / "tests" / "observability.tftest.hcl").read_text(
+        encoding="utf-8"
+    )
+    inputs = fixture.split("\nrun ", 1)[0]  # the file's own variables, before any run changes them
+    names = inputs.split("lambda_function_names = [", 1)[1].split("\n  ]\n", 1)[0]
+    tested = inputs.split("lambda_timeouts = {", 1)[1].split("\n  }\n", 1)[0]
+    assert sorted(re.findall(r'"acme-test-([a-z-]+)"', names)) == sorted(roots)
+    assert dict(re.findall(r'^    "acme-test-([a-z-]+)"\s*=\s*(\d+)$', tested, re.M)) == {
+        name: str(timeout) for name, timeout in roots.items()
+    }
+
+    (block,) = _module_blocks(main, "modules/observability")
+    apis = re.compile(r"\bapi_name\s*=")
+    acls = re.compile(r"\bmetric_name\s*=")
+    assert len(apis.findall(inputs.split("api_dashboard_apis = [", 1)[1].split("\n  ]\n", 1)[0])) == len(
+        apis.findall(block.split("api_dashboard_apis = [", 1)[1].split("\n  ]\n", 1)[0])
+    )
+    assert len(acls.findall(inputs.split("waf_regional_acls = [", 1)[1].split("\n  ]\n", 1)[0])) == len(
+        acls.findall(block.split("waf_regional_acls = concat(", 1)[1].split("\n  )\n", 1)[0])
+    )
+    assert re.search(r"^  waf_cloudfront_acl\s*=\s*\{", inputs, re.M)
+    assert re.search(r"^  waf_cloudfront_acl\s*=\s*(var\.waf_site_enabled \? )?\{", block, re.M)
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_roots_give_the_observability_module_both_apis_and_every_web_acl(env):
+    """What pipeline health's API and firewall panels draw, from the kept widget locals."""
     text = _read("environments", env, "main.tf")
     block = re.search(r'^module "observability" \{\n(.*?)^\}', text, re.S | re.M).group(1)
 
@@ -855,7 +910,9 @@ def test_every_cloudfront_widget_reads_us_east_1_with_the_global_region_dimensio
     assert "{AWS/WAFV2,Region,Rule,WebACL}" in cloudfront_acl
 
 
-def test_the_api_dashboard_has_every_widget_the_operator_asked_for():
+def test_the_kept_api_gateway_widgets_hold_latency_percentiles_throttles_statuses_and_the_cdn():
+    """Pipeline health draws only each API's requests-and-errors widget from these locals; the rest
+    stays because the spec keeps api_waf_dashboards.tf's widget locals (PR11b)."""
     text = _dashboards()
 
     for metric in ("Count", "4XXError", "5XXError", "Latency", "IntegrationLatency"):
@@ -868,7 +925,9 @@ def test_the_api_dashboard_has_every_widget_the_operator_asked_for():
     assert '"AWS/CloudFront", "Requests"' in text  # always: the CDN against API Gateway
 
 
-def test_the_waf_dashboard_has_totals_per_rule_and_the_top_blocked_requests():
+def test_the_kept_firewall_widgets_hold_totals_per_rule_and_the_top_blocked_requests():
+    """Pipeline health draws only each web ACL's blocked-per-rule widget from these locals; the rest
+    stays because the spec keeps api_waf_dashboards.tf's widget locals (PR11b)."""
     text = _dashboards()
 
     for metric in ("AllowedRequests", "BlockedRequests", "CountedRequests"):

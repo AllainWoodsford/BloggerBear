@@ -989,14 +989,56 @@ def test_the_question_that_got_a_shrug_now_gets_the_api_runsheet(dev):
     assert answer["assistant_tools"] == ["api_errors", "alarms", "security_events"]
 
 
-def test_the_edge_dashboard_step_says_what_to_do_instead_in_dev(dev, monkeypatch):
-    in_dev = runsheets.investigate("api-errors")["steps"][0]
-    monkeypatch.setenv("ENVIRONMENT_NAME", "production")
-    in_production = runsheets.investigate("api-errors")["steps"][0]
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_api_errors_runsheet_opens_on_pipeline_health_in_either_environment(dev, monkeypatch, env):
+    """Pipeline health is made in every environment, so its step is "here" in both and links to it."""
+    monkeypatch.setenv("ENVIRONMENT_NAME", env)
+    first = runsheets.investigate("api-errors")["steps"][0]
 
-    assert in_dev["here"] is False and "not created in dev" in in_dev["look_for"]
-    assert in_production["here"] is True and in_production["where"] == "bloggerbear-production-edge"
-    assert in_production["console_url"].endswith("#dashboards:name=bloggerbear-production-edge")
+    assert first["here"] is True and first["where"] == f"{PREFIX}{env}-pipeline-health"
+    assert first["console_url"].endswith(f"#dashboards:name={PREFIX}{env}-pipeline-health")
+    assert "blocks per rule" in first["look_for"]
+
+
+def test_a_step_only_one_environment_has_says_what_to_do_instead_in_the_other(dev):
+    """No runsheet has such a step today; the mechanism stays for the next one that does."""
+    step = runsheets.Step(
+        f"{PREFIX}{ENV}-something",
+        "dashboard",
+        "What it shows.",
+        only_in=("production",),
+        instead="Use the logs.",
+    )
+
+    in_dev = runsheets._render(step, "dev")
+    in_production = runsheets._render(step, "production")
+
+    assert in_dev["here"] is False and in_dev["look_for"] == "Use the logs." and in_dev["console_url"] is None
+    assert in_production["here"] is True and in_production["look_for"] == "What it shows."
+    assert in_production["console_url"].endswith(f"#dashboards:name={PREFIX}production-something")
+
+
+def test_every_dashboard_the_assistant_points_to_is_one_the_catalogue_has():
+    """A runsheet step or a suggestion never sends the operator to a dashboard that is gone (the
+    pipeline, lambda-runs and edge ones went with PR11b), in either environment."""
+    from ops_mcp import suggestions
+
+    catalogued = {c.name for c in CATALOGUE}
+    dashboards = {c.name for c in _of_kind("dashboard").values()}
+    sheets = runsheets._runsheets(None, None)
+    pointed = [step.where for sheet in sheets for step in sheet.steps if step.kind == "dashboard"]
+    for env in ("dev", "production"):
+        made = {architecture.fill(name, env) for name in dashboards}
+        for where in pointed:
+            assert architecture.fill(where, env) in made, where
+    assert pointed
+    # A suggestion names a resource as <prefix>-<env>-<what>: each must be one the catalogue has.
+    named = re.compile(rf"{re.escape(PREFIX)}<env>-[a-z0-9-]+[a-z0-9]")
+    in_actions = [name for entry in suggestions.CATALOGUE.values() for name in named.findall(entry.action)]
+    assert in_actions and {name.replace("<env>", ENV) for name in in_actions} <= catalogued
+    for module in ("runsheets", "suggestions", "firewall", "architecture"):
+        text = (ROOT / "lambdas" / "ops_mcp" / f"{module}.py").read_text(encoding="utf-8")
+        assert "edge_dashboard_enabled" not in text, module
 
 
 @pytest.mark.parametrize(
