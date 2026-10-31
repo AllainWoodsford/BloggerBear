@@ -3382,7 +3382,8 @@ module "ops_assistant" {
     Project   = local.default_tags.Project
   }
 
-  # The eleven app tables its tools read (read-only), as in dev. Findings is among them for
+  # The eleven app tables its tools read (read-only), as in dev, and the models and evals tables
+  # for the Model Ranch. Findings is among them for
   # topic_findings, which only ever Queries one topic's rows (a test holds it to Query); the one
   # map also grants Scan, accepted to keep the one-map design, since a Scan of Findings reaches
   # nothing a per-topic Query does not.
@@ -3398,6 +3399,11 @@ module "ops_assistant" {
     SIGN_INS_TABLE          = { name = module.app_data.sign_ins_table_name, arn = module.app_data.sign_ins_table_arn }
     STATS_CURRENT_TABLE     = { name = module.app_data.stats_current_table_name, arn = module.app_data.stats_current_table_arn }
     STATS_HISTORY_TABLE     = { name = module.app_data.stats_history_table_name, arn = module.app_data.stats_history_table_arn }
+    # The Model Ranch tools (lambdas/ops_mcp/model_ranch.py): the models' scores and the evals
+    # totals, read only, like every table here. The tools are registered only while evals are on
+    # (evals_enabled below), but the table is made either way, so its name and grant are always here.
+    MODELS_TABLE = { name = module.app_data.models_table_name, arn = module.app_data.models_table_arn }
+    EVALS_TABLE  = { name = module.evals.table_name, arn = module.evals.table_arn }
   }
 
   # The function the pool calls before and after every sign-in (aws_lambda_function.sign_in_events

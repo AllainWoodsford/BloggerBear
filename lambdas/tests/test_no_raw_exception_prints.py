@@ -34,6 +34,8 @@ GUARDED = sorted(
         "common/evals_rollup.py",
         "common/evals_settings.py",
         "common/evals_status.py",
+        # eval-jobs' Friday digest, which prints what it could not publish.
+        "common/evals_digest.py",
         # eval-jobs' judge, which prints what it could not read or send.
         "common/eval_judge.py",
         "common/evals_adjust.py",

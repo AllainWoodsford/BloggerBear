@@ -12,7 +12,8 @@ design is docs/enhancements/archive/alexa-plus-operator-assistant-enhancement.md
     watch#<kind>#<id>       kind, target_id, watched_since, expires_at
 
 A kind is a key of the catalogue (suggestions.CATALOGUE) or one of WATCH_KINDS; an id passes
-ID_PATTERN; the timestamps are ours; a count is a whole number; a fix type is one of FIX_TYPES.
+ID_PATTERN, or the pattern of its kind's ids (a model's id, a prompt's: suggestions.valid_id and
+WATCH_ID_PATTERNS); the timestamps are ours; a count is a whole number; a fix type is one of FIX_TYPES.
 Everything written goes through `_write`, which checks each
 value against that list and refuses anything else, so there is nowhere for a title, a review note
 or a log line to go. Hostile text that reaches a tool's result cannot get itself remembered. A
@@ -67,6 +68,12 @@ for timeouts; it's still happening". A watched table (candidate ideas, findings)
 (samples.table_sample) for whether each topic's newest row is on time. The id is the catalogue's
 key for it, whatever name it was asked with.
 
+**Watching a model or a prompt** (where evals are on, model_ranch.py): a watched model's gate and
+weekly score, a watched prompt's versions over the last week. A model is kept under its canonical id
+and must be in the registry; a prompt must be one the code registers. The Model Ranch's two cards
+about an id (a gated model, a prompt that fell back) are followed up with its own checks, and clear
+by themselves when the gate lifts or the fallbacks stop.
+
 **Already acted on, but still true** (`actioned`). Some fixes take a while to show: a published
 article sent for a rewrite stays up, with its fault, until the rewrite is ready. Its check still
 says "open", so the finding kept coming back as if nothing had been done. Where the pipeline's
@@ -103,9 +110,27 @@ from common.dynamo import (
     list_musings,
     list_pending_moderation,
 )
-from ops_mcp import account, api_errors, architecture, content, log_review, samples, tools, topic_match
+from common.model_pricing import canonical_model_id
+from ops_mcp import (
+    account,
+    api_errors,
+    architecture,
+    content,
+    log_review,
+    model_ranch,
+    samples,
+    tools,
+    topic_match,
+)
 from ops_mcp.access import REQUEST_CONTEXT_HEADER
-from ops_mcp.suggestions import CATALOGUE, ID_PATTERN, finding
+from ops_mcp.suggestions import (
+    CATALOGUE,
+    ID_PATTERN,
+    MODEL_ID_PATTERN,
+    PROMPT_ID_PATTERN,
+    finding,
+    valid_id,
+)
 
 TABLE_ENV = "OPERATOR_SUGGESTIONS_TABLE"
 RETENTION = timedelta(days=30)
@@ -113,7 +138,11 @@ FOLLOW_UP_SPOKEN_LINES = 5
 
 SUGGESTION = "suggestion"
 WATCH = "watch"
-WATCH_KINDS = ("topic", "function", "incident", "spend", "table")
+WATCH_KINDS = ("topic", "function", "incident", "spend", "table", "model", "prompt")
+# A watched model's id and a watched prompt's are shaped as theirs are, not as a topic's: a model id
+# has dots and a colon, a prompt id a slash. Neither pattern lets in a quote, a space or a `#`, so
+# neither can break the row's key.
+WATCH_ID_PATTERNS = {"model": MODEL_ID_PATTERN, "prompt": PROMPT_ID_PATTERN}
 # What a spend watch can be about: the two figures account.spend reports.
 SPEND_IDS = ("ai", "aws")
 
@@ -153,7 +182,12 @@ LOG_READS_MAX = 2
 STATE_READS_MAX = 2
 LOG_READ_WAIT_SECONDS = 8
 
-SELF_CLEARING_KINDS = frozenset({"research_overdue", "no_article_today", "run_failed"}) | LOGGED_KINDS
+# A gate lifts when the model's windows recover, and a prompt stops falling back once its version is
+# fixed or replaced, with or without the suggested command: they clear too.
+SELF_CLEARING_KINDS = (
+    frozenset({"research_overdue", "no_article_today", "run_failed", "model_gated", "prompt_fallback"})
+    | LOGGED_KINDS
+)
 
 # Kinds whose suggested fix is to send the article for a rewrite, read off the catalogue so a kind
 # that gains or loses that fix follows without being listed here.
@@ -261,6 +295,15 @@ def _expires_at(now: datetime) -> int:
     return int((now + RETENTION).timestamp())
 
 
+def _id_ok(prefix: str, kind, target_id) -> bool:
+    """Whether `target_id` is an id a row of this sort and kind may be kept under: a finding's as
+    suggestions.valid_id says, a watch's by WATCH_ID_PATTERNS, else ID_PATTERN; matched whole."""
+    if prefix == SUGGESTION:
+        return valid_id(kind, target_id)
+    pattern = WATCH_ID_PATTERNS.get(kind, ID_PATTERN)
+    return isinstance(target_id, str) and pattern.fullmatch(target_id) is not None
+
+
 def _is_timestamp(value) -> bool:
     return isinstance(value, str) and tools._parse(value) is not None and len(value) <= 40
 
@@ -280,7 +323,9 @@ def _stored_count(value) -> int | None:
 # that is not here: the rule in the module docstring, enforced where the write happens.
 _ALLOWED: dict[str, Callable[[object], bool]] = {
     "kind": lambda value: value in CATALOGUE or value in WATCH_KINDS,
-    "target_id": lambda value: isinstance(value, str) and bool(ID_PATTERN.match(value)),
+    # Shaped as one of the ids a row may hold; _write checks it against its kind's (_id_ok).
+    "target_id": lambda value: isinstance(value, str)
+    and any(pattern.fullmatch(value) for pattern in (ID_PATTERN, MODEL_ID_PATTERN, PROMPT_ID_PATTERN)),
     "first_suggested_at": _is_timestamp,
     "last_mentioned_at": _is_timestamp,
     "watched_since": _is_timestamp,
@@ -305,10 +350,10 @@ def _write(
     """The one place a row is written: an upsert of (user, prefix, kind, id). `always` is set
     every time, `if_absent` only when the attribute is not there yet (so the first write decides
     it). With `only_if_exists` a row that has gone is not brought back."""
-    if not USER_ID_PATTERN.match(user_id) or not ID_PATTERN.match(target_id):
-        raise ValueError("not a key the memory table takes")
     if prefix not in (SUGGESTION, WATCH):
         raise ValueError("not a kind of row the memory table holds")
+    if not USER_ID_PATTERN.match(user_id) or not _id_ok(prefix, kind, target_id):
+        raise ValueError("not a key the memory table takes")
     if kind not in (CATALOGUE if prefix == SUGGESTION else WATCH_KINDS):
         raise ValueError("not a kind the memory table holds")
     always = {"kind": kind, "target_id": target_id, **always}
@@ -356,7 +401,7 @@ def _rows(user_id: str, prefix: str) -> list[dict]:
         row
         for row in rows
         if row.get("kind") in kinds
-        and _ALLOWED["target_id"](row.get("target_id"))
+        and _id_ok(prefix, row["kind"], row.get("target_id"))
         and row.get("item") == _item_key(prefix, row["kind"], row["target_id"])
     ]
 
@@ -374,8 +419,7 @@ def _has_key(found) -> bool:
         isinstance(found, dict)
         and isinstance(found.get("kind"), str)
         and found["kind"] in CATALOGUE
-        and isinstance(found.get("id"), str)
-        and bool(ID_PATTERN.match(found["id"]))
+        and valid_id(found["kind"], found.get("id"))
     )
 
 
@@ -717,6 +761,20 @@ def _check_firewall_spike(log_group: str, sources: _Sources) -> Check:
     return Check(GONE)
 
 
+def _ranch_checker(
+    check: Callable[[str, datetime], tuple[str, dict | None]],
+) -> Callable[[str, _Sources], Check]:
+    """For the Model Ranch's kinds (model_ranch.py): its own check, again, for the one model or
+    prompt. It is named by its id, for speech, as a topic is by its name."""
+
+    def run(target_id: str, sources: _Sources) -> Check:
+        state, found = check(target_id, sources.now)
+        states = {model_ranch.CHECK_OPEN: OPEN, model_ranch.CHECK_FIXED: FIXED}
+        return Check(states.get(state, GONE), found, target_id)
+
+    return run
+
+
 CHECKERS: dict[str, Callable[[str, _Sources], Check]] = {
     "draft_truncated": _check_draft_truncated,
     reviewer.FINDING_KIND: _check_reviewer_flag,
@@ -729,6 +787,8 @@ CHECKERS: dict[str, Callable[[str, _Sources], Check]] = {
     "title_markup": _content_checker("title_markup"),
     "body_code_fence": _content_checker("body_code_fence"),
     "title_markup_and_body_code_fence": _content_checker("title_markup_and_body_code_fence"),
+    "model_gated": _ranch_checker(model_ranch.gate_check),
+    "prompt_fallback": _ranch_checker(model_ranch.fallback_check),
     **{kind: _log_checker(kind) for kind in LOGGED_KINDS if kind.startswith("log_")},
     **{kind: _api_checker(kind) for kind in LOGGED_KINDS if kind.startswith("api_")},
 }
@@ -926,7 +986,7 @@ def dismiss(user_id: str | None, kind: str, target_id: str, *, now: datetime | N
     is not there."""
     if user_id is None:
         return _needs_user()
-    if kind not in CATALOGUE or not isinstance(target_id, str) or not ID_PATTERN.match(target_id):
+    if kind not in CATALOGUE or not valid_id(kind, target_id):
         return {"spoken": "That isn't a suggestion I can set aside.", "findings": [], "dismissed": False}
     now = tools._now(now)
     _write(
@@ -968,6 +1028,9 @@ def _normalized(kind: str, target_id) -> str:
     if kind == "topic" and isinstance(target_id, str):
         one, _, _ = topic_match.pick(target_id)
         return (one or {}).get("topic_id") or target_id
+    if kind == "model" and isinstance(target_id, str):
+        # A model is kept under its canonical id: an inference profile's ARN reduces to the profile.
+        return canonical_model_id(target_id) or target_id
     return target_id
 
 
@@ -975,7 +1038,10 @@ def _watchable(kind: str, target_id) -> str | None:
     """Why `target_id` cannot be watched as a `kind`, in words for speech, or None if it can.
     Checked against what exists where one read answers it."""
     if kind not in WATCH_KINDS:
-        return "I can watch a topic, a function, an incident, spend or a table."
+        return "I can watch a topic, a function, an incident, spend, a table, a model or a prompt."
+    if kind in ("model", "prompt"):
+        # Shaped as its kind's ids, and one the registry or the code knows, while evals are on.
+        return model_ranch.watchable(kind, target_id)
     if kind in ("function", "table") and isinstance(target_id, str) and len(target_id) <= 200:
         if _catalogue_key(kind, target_id) is None:
             return f"I don't know a {kind} by that name in this environment."
@@ -1035,7 +1101,7 @@ def unwatch(user_id: str | None, kind: str, target_id: str) -> dict:
     if user_id is None:
         return _needs_user()
     target_id = _normalized(kind, target_id) if kind in WATCH_KINDS else target_id
-    if kind not in WATCH_KINDS or not isinstance(target_id, str) or not ID_PATTERN.match(target_id):
+    if kind not in WATCH_KINDS or not _id_ok(WATCH, kind, target_id):
         return {"spoken": "That isn't something I could have been watching.", "findings": []}
     _delete(user_id, WATCH, kind, target_id)
     return {
@@ -1191,6 +1257,8 @@ def _watched_state(
         return {"state": "read", **state}, f"a {row['severity']}-severity incident, still open"
     if kind == "table":
         return _watched_table(target_id, now)
+    if kind in ("model", "prompt"):
+        return model_ranch.watched(kind, target_id, now)
     return _watched_function(target_id, now, flagged or [])
 
 

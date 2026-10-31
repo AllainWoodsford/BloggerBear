@@ -349,9 +349,14 @@ CATALOGUE: tuple[Component, ...] = (
                 "the Admin API (admin_cli models ...); model-catalog (discover adds rows, reprice "
                 "and its checks change prices)",
             ),
-            ("Read by", "every function that calls Bedrock, the public API"),
+            (
+                "Read by",
+                "every function that calls Bedrock, the public API, the assistant (model_ranch: each "
+                "model's scores, gate, roles and purpose)",
+            ),
         ),
         aliases=("model-registry",),
+        assistant_reads=True,
     ),
     _table(
         "model-config",
@@ -400,9 +405,16 @@ CATALOGUE: tuple[Component, ...] = (
                 "`evals punish`) and a person's verdicts as pairs (a Finding reviewed with `approve "
                 "--source findings`, an article approved or rejected)",
             ),
+            (
+                "Read by",
+                "eval-jobs (the windows, the judge's agreement, the digest), the admin API (`evals "
+                "status`, `evals digest`), the assistant (model_ranch and prompt_metrics, while evals "
+                "are on)",
+            ),
             ("Expires", "never: no TTL"),
         ),
         aliases=("evals-table", "eval-totals", "model-ranch"),
+        assistant_reads=True,
     ),
     _table(
         "stats-current",

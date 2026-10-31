@@ -4,8 +4,14 @@ an admin_cli command; some have no command, only what to look at.
 The model never writes, edits or chooses a command. It reads articles, review notes and log lines,
 any of which can carry text someone wrote to steer it; if it could put a command on the operator's
 screen, that text could too. So a finding names its *kind*, the kind picks its template here, and
-the only thing filled in is an id read from a table and checked against ID_PATTERN. Nothing in the
-catalogue deletes anything.
+the only thing filled in is an id read from a table and checked against ID_PATTERN (a model's id
+against MODEL_ID_PATTERN, a prompt's against PROMPT_ID_PATTERN: valid_id). Nothing in the catalogue
+deletes anything without asking first: `evals cull --apply`, the one command here that can delete
+(models culled into the archive), shows the proposal and asks y/N before it does, and
+`models restore` puts a culled model back.
+
+A kind whose fix depends on a switch has a second entry in VARIANTS, which the tool that finds it
+picks while the switch is off, so the card names the step that has to come first.
 
 tests/test_ops_mcp_suggestions.py parses every command here with admin_cli's own argument parser,
 so a renamed command or flag fails the build instead of handing the operator a command that errors.
@@ -27,6 +33,20 @@ DOUBLE_CHECK_WARNING = (
 # Topic ids are slugs and article ids are UUIDs: letters, digits, "-" and "_". Anything else is
 # refused, so an id can never carry a quote, a space or a second command into the template.
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+# A model's id has dots and a colon (maker.alpha-v1:0), and an inference profile's ARN slashes: the
+# characters common/evidence.py's model ids may hold, and still no quote, space, `;`, `$` or `#`.
+MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$")
+# A prompt's id is `<lambda_id>/<prompt_name>`, each a code (common/evals.py's prompt id).
+PROMPT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,39}/[a-z][a-z0-9_]{0,39}$")
+# The kinds whose id is not a topic's or an article's: what each is checked against instead.
+ID_PATTERNS = {"model_gated": MODEL_ID_PATTERN, "prompt_fallback": PROMPT_ID_PATTERN}
+
+
+def valid_id(kind: str, target_id) -> bool:
+    """Whether `target_id` is shaped as the id of a finding of `kind` is (ID_PATTERNS, else
+    ID_PATTERN), matched whole: a trailing newline is not part of any id."""
+    pattern = ID_PATTERNS.get(kind, ID_PATTERN)
+    return isinstance(target_id, str) and pattern.fullmatch(target_id) is not None
 
 
 @dataclass(frozen=True)
@@ -149,6 +169,55 @@ CATALOGUE: dict[str, Suggestion] = {
         action="See who failed to sign in, and when",
         arguments="sign-ins list",
         what_it_does="Lists each user's sign-ins, failures and refusals. It changes nothing.",
+    ),
+    # The Model Ranch (model_ranch.py): what continuous evals' scores say. A gated model's id is its
+    # model id (MODEL_ID_PATTERN). The gate lifts by itself when its windows recover; the command is
+    # for a model that is needed before then, or whose scores are wrong.
+    "model_gated": Suggestion(
+        action=(
+            "Look at why the model is gated (its scores are on screen); if it is needed now, or its "
+            "scores are wrong, hold its gates open for two days"
+        ),
+        arguments="evals ungate --model {id} --hours 48",
+        what_it_does=(
+            "Sets the model's ungated_until 48 hours ahead, so no gate holds it back until then, "
+            "whatever its scores. Its scores are not changed; `--hours 0` ends the override sooner."
+        ),
+    ),
+    # A prompt fell back to the copy in the code (common/prompts.py): what is live comes first. The
+    # id is the prompt's (PROMPT_ID_PATTERN); the command takes none.
+    "prompt_fallback": Suggestion(
+        action=(
+            "See which of the prompt's versions are live, released and approved, then read the "
+            "prompt_fallback lines in its Lambda's log for why it fell back"
+        ),
+        arguments="prompts list",
+        what_it_does=(
+            "Lists each prompt's files under latest/ with their version, release, hash status and "
+            "pause state. It changes nothing."
+        ),
+    ),
+    # The judge's verdicts count towards the gates only once it agrees with people often enough, over
+    # enough pairs (common/evals_settings.py); each Finding a person reviews makes one.
+    "judge_uncalibrated": Suggestion(
+        action="Review some research Findings yourself, so the judge has verdicts of yours to agree with",
+        arguments="approve --source findings",
+        what_it_does=(
+            "Shows each Finding in turn without the judge's verdict: y marks it good, r bad, z skips. "
+            "Each one you mark is a Human Review, and a pair with the judge's verdict when it has one. "
+            "Nothing changes until you press a key."
+        ),
+    ),
+    # The weekly cycle's cull proposal (common/model_fleet.cull_proposal): while culling is off, the
+    # card is VARIANTS' instead, which names `evals set --cull on` first.
+    "cull_proposed": Suggestion(
+        action="Read the weekly cull proposal, and cull the models in it if you agree",
+        arguments="evals cull --apply",
+        what_it_does=(
+            "Shows the proposal and asks first; on yes, archives then deletes up to cull_max_per_run of "
+            "the proposed models, each checked again against the live rules. `models restore <id>` "
+            "puts one back."
+        ),
     ),
     # No command from here down: what to look at, and where.
     "musing_dangling": Suggestion(
@@ -275,21 +344,40 @@ CATALOGUE: dict[str, Suggestion] = {
     "api_other": Suggestion(action="Read the breakdown on screen"),
 }
 
+# A kind's card while a switch it depends on is off: (kind, variant) -> the entry used instead of
+# CATALOGUE's. Picked by the tool that finds it (`variant=`), never by a model.
+CULL_OFF = "cull_off"
+VARIANTS: dict[tuple[str, str], Suggestion] = {
+    # `evals cull --apply` is refused while cull_enabled is false, so the step before it comes first.
+    ("cull_proposed", CULL_OFF): Suggestion(
+        action=(
+            "Culling is off: turn it on first (evals set --cull on), then apply the proposal "
+            "(evals cull --apply), which shows it and asks before it deletes anything"
+        ),
+        arguments="evals set --cull on",
+        what_it_does=(
+            "Lets `evals cull --apply` archive and delete the proposed models; it deletes nothing "
+            "itself. `evals set --cull off` turns it off again."
+        ),
+    ),
+}
 
-def suggest(kind: str, target_id: str | None = None) -> dict | None:
+
+def suggest(kind: str, target_id: str | None = None, variant: str | None = None) -> dict | None:
     """The suggestion for a finding of `kind` about `target_id`, ready to show: `action`,
     `command` and `what_it_does`. `command` and `what_it_does` are None for a kind that has no
     command. The whole suggestion is None when the kind is not in the catalogue, or its command
-    needs an id and `target_id` is missing or fails ID_PATTERN -- a finding with no command is
-    still worth reporting, a command built from an id we do not trust is not."""
-    entry = CATALOGUE.get(kind)
-    if entry is None:
+    needs an id and `target_id` is missing or is not shaped as that kind's id (valid_id) -- a
+    finding with no command is still worth reporting, a command built from an id we do not trust
+    is not. `variant` picks the kind's VARIANTS entry, when it has one by that name."""
+    if kind not in CATALOGUE:
         return None
+    entry = VARIANTS.get((kind, variant)) or CATALOGUE[kind]
     arguments = entry.arguments
     if arguments is None:
         return {"action": entry.action, "command": None, "what_it_does": None}
     if "{id}" in arguments:
-        if not isinstance(target_id, str) or not ID_PATTERN.match(target_id):
+        if not valid_id(kind, target_id):
             return None
         arguments = arguments.replace("{id}", target_id)
     return {
@@ -301,14 +389,16 @@ def suggest(kind: str, target_id: str | None = None) -> dict | None:
     }
 
 
-def finding(kind: str, noticed: str, target_id: str | None = None, **where) -> dict:
+def finding(
+    kind: str, noticed: str, target_id: str | None = None, *, variant: str | None = None, **where
+) -> dict:
     """A finding as a tool returns it: its kind, the id it is about, what was noticed (fixed
     words, written here in code), where (ids and labels for the card), and the suggestion, if
-    the catalogue has one."""
+    the catalogue has one (its `variant`, when the tool names one: VARIANTS)."""
     return {
         "kind": kind,
         "id": target_id,
         "noticed": noticed,
         "where": {key: value for key, value in where.items() if value is not None},
-        "suggestion": suggest(kind, target_id),
+        "suggestion": suggest(kind, target_id, variant),
     }

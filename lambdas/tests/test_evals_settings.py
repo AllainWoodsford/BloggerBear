@@ -52,7 +52,7 @@ def test_every_setting_and_its_default_is_section_4_5s():
         "judge_min_agreement": 0.7, "judge_min_pairs": 20, "cull_enabled": False, "cull_max_per_run": 3,
         "judge_enabled": True, "judge_interval_hours": 4, "judge_max_items": 10, "judge_model_id": None,
         "score_max_cost_aud": 5, "evals_daily_spend_cap_aud": 2, "trace_calls": False,
-        "timezone": "Australia/Sydney", "excluded_sources": [],
+        "timezone": "Australia/Sydney", "excluded_sources": [], "digest_email": False,
     }  # fmt: skip
     assert evals_settings.DYNAMODB_ONLY == {
         "daily_gate", "weekly_gate", "total_gate", "min_events", "judge_min_agreement", "judge_min_pairs",
@@ -72,6 +72,7 @@ def test_every_setting_and_its_default_is_section_4_5s():
         ("cull_max_per_run", [1, 50], [0, 51]),
         ("cull_enabled", [True, False], ["on", 1]),
         ("trace_calls", [True, False], [0]),
+        ("digest_email", [True, False], ["on", 1]),
         ("judge_model_id", ["maker.judge-v1:0"], ["", "two words", "maker.judge-v1:0\n", 7]),
         ("score_max_cost_aud", [0, 5, 99.5, 100], [-1, 101, False]),
         ("evals_daily_spend_cap_aud", [2], [1000]),

@@ -68,6 +68,8 @@ SET_FLAGS = (
      "The IANA time zone whose days the rollup counts (default Australia/Sydney)"),
     ("--excluded-sources", "excluded_sources", "list",
      "Comma-separated sources the rollup leaves out: human, judge, system, run:<id>, or a Lambda's code"),
+    ("--digest-email", "digest_email", "switch",
+     "Email the week's digest (as `evals digest` shows it) to the alerts topic on Fridays (default off)"),
 )  # fmt: skip
 
 # What each flag's value is called in the help.

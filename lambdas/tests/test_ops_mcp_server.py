@@ -861,3 +861,81 @@ def test_the_assistant_takes_nothing_from_an_adapter_but_its_hooks():
                 assert node.attr in {"get", "values", "items", "keys"}, (path.name, node.lineno)
             elif from_a_dict or made or (isinstance(holder, ast.Name) and holder.id in tainted):
                 assert node.attr in ADAPTER_HOOKS, (path.name, node.lineno, node.attr)
+
+
+# The Model Ranch (model_ranch.py): registered only where evals are on and the function is told the
+# evals table, which both roots' `tables` map gives it with its read grant.
+RANCH_TOOLS = {"model_ranch", "prompt_metrics"}
+
+
+@pytest.mark.parametrize(
+    ("table", "enabled", "listed"),
+    [("Evals", "true", True), ("Evals", "false", False), ("", "true", False)],
+    ids=["evals-on", "evals-off", "no-table"],
+)
+def test_the_model_ranch_tools_are_listed_exactly_when_evals_are_on_and_the_table_is_told(
+    monkeypatch, table, enabled, listed
+):
+    import asyncio
+
+    monkeypatch.setenv("EVALS_TABLE", table)
+    monkeypatch.setenv("EVALS_ENABLED", enabled)
+
+    registered = {tool.name for tool in asyncio.run(server.build_server().list_tools())}
+
+    base = PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS | EXPERT_TOOLS | LOG_TOOLS
+    assert registered == (base | RANCH_TOOLS if listed else base)
+
+
+@pytest.fixture
+def ranch_client(monkeypatch):
+    monkeypatch.setenv("EVALS_TABLE", "Evals")
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    monkeypatch.setenv("OPS_MCP_ALLOWED_HOSTS", HOST)
+    with TestClient(server.create_app(), base_url=f"http://{HOST}") as test_client:
+        yield test_client
+
+
+def test_the_model_ranch_tools_are_read_only_briefing_tools_under_the_specs_names(ranch_client):
+    tools = {tool["name"]: tool for tool in call(ranch_client, "tools/list").json()["result"]["tools"]}
+
+    for name in RANCH_TOOLS:
+        assert tools[name]["annotations"]["readOnlyHint"] is True
+        assert "Part of a briefing" in " ".join(tools[name]["description"].split())
+    assert "get_model_ranch_health" in tools["model_ranch"]["description"]
+    assert "get_prompt_ab_metrics" in tools["prompt_metrics"]["description"]
+    assert set(tools["prompt_metrics"]["inputSchema"]["properties"]) == {"prompt_id", "days"}
+    assert "ctx" not in tools["model_ranch"]["inputSchema"].get("properties", {})
+    # A model and a prompt can be watched, and unwatched, like the rest.
+    for name in ("watch", "unwatch"):
+        assert {"model", "prompt"} <= set(tools[name]["inputSchema"]["properties"]["kind"]["enum"])
+
+
+def test_the_model_ranch_tools_pass_their_arguments_on_and_are_remembered(ranch_client):
+    answer = {"spoken": "No prompt version has scored events in the last 7 days.", "findings": []}
+    with (
+        patch("ops_mcp.model_ranch.prompt_metrics", return_value=answer) as mock_metrics,
+        patch("ops_mcp.model_ranch.model_ranch", return_value=answer) as mock_ranch,
+        patch("ops_mcp.memory.remember", side_effect=lambda user, result: result) as mock_remember,
+    ):
+        metrics = call(
+            ranch_client,
+            "tools/call",
+            {"name": "prompt_metrics", "arguments": {"prompt_id": "daily_cycle/draft", "days": 7}},
+            name="prompt_metrics",
+        )
+        ranch = call(ranch_client, "tools/call", {"name": "model_ranch", "arguments": {}}, name="model_ranch")
+
+    assert metrics.json()["result"]["structuredContent"] == answer
+    assert ranch.json()["result"]["structuredContent"] == answer
+    mock_metrics.assert_called_once_with("daily_cycle/draft", 7)
+    mock_ranch.assert_called_once_with()
+    assert mock_remember.call_count == 2
+
+
+def test_the_instructions_tell_a_client_that_reads_only_them_to_reason_by_pairing():
+    said = " ".join(server._INSTRUCTIONS.split())
+
+    assert "model_ranch says how each model is scoring" in said
+    assert "before blaming a model or a prompt, look at their pairing" in said
+    assert "never call a version marked insufficient data better or worse" in said

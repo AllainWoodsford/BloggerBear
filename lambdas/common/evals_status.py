@@ -295,7 +295,10 @@ def _cull(now: datetime) -> dict:
     return part
 
 
-def _judge(settings: dict, index: dict) -> dict:
+def judge_summary(settings: dict, index: dict) -> dict:
+    """The judge as status, the digest and the assistant's Model Ranch (ops_mcp/model_ranch.py) show
+    it: its switch and model, its agreement with people over how many pairs (the index row's, which
+    the rollup works out), whether that makes it calibrated, and the thresholds."""
     agreement = _number(index.get("judge_agreement"))
     pairs = _number(index.get("judge_pairs")) or 0
     return {
@@ -349,7 +352,7 @@ def status(now: datetime | None = None) -> dict:
         "prompt_fallbacks": _part("prompt_fallbacks", lambda: _prompt_fallbacks(now)),
         "rollup": _part("rollup", lambda: _rollup(index())),
         "late_dropped": _part("late_dropped", lambda: {"late_dropped": _late_dropped(index())}),
-        "judge": _part("judge", lambda: {**_judge(settings(), index()), **_judge_run(index(), row())}),
+        "judge": _part("judge", lambda: {**judge_summary(settings(), index()), **_judge_run(index(), row())}),
         "gated_models": _part("gated_models", lambda: _gated_models(settings(), now)),
         "cull": _part("cull", lambda: _cull(now)),
         # One part per queue, so one that cannot be read never hides the other.
@@ -383,7 +386,10 @@ def _since_day(since, today: date, zone) -> date | str:
     return day
 
 
-def _sum(rows: list[dict]) -> dict:
+def sum_days(rows: list[dict]) -> dict:
+    """Day rows (one entity's, over some days) added up: perf, events, good and bad, n (good plus
+    bad, section 4.9's count) with the Wilson interval of good / n, and each reason's totals. The
+    digest's per-entity totals, and the assistant's (ops_mcp/model_ranch.py)."""
     perf = events = good = bad = 0
     by_reason: dict[str, dict[str, int]] = {}
     for row in rows:
@@ -427,7 +433,7 @@ def digest(since, now: datetime | None = None) -> dict | str:
         kind, _, rest = entity.partition("#")
         if kind not in ("model", "prompt"):
             continue
-        totals = _sum(evals_rollup.query_all(table, Key("entity").eq(entity) & span))
+        totals = sum_days(evals_rollup.query_all(table, Key("entity").eq(entity) & span))
         if kind == "model":
             row = registry.get(rest)
             gated = evals_settings.gated_windows(row, settings) if row else []
@@ -442,7 +448,7 @@ def digest(since, now: datetime | None = None) -> dict | str:
         "timezone": settings["timezone"],
         "models": sorted(models, key=lambda model: (model["perf"], model["model_id"])),
         "prompts": prompts,
-        "judge": _judge(settings, index),
+        "judge": judge_summary(settings, index),
         "last_rolled_day": index.get("last_rolled_day"),
         "late_dropped": _late_dropped(index),
     }

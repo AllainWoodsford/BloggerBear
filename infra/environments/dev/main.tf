@@ -3195,9 +3195,9 @@ module "ops_assistant" {
   # security_events: SecurityEvents; spend: the two Stats tables) and Findings, for topic_findings
   # (a topic's research Findings, newest first). topic_findings only ever Queries one topic's
   # rows, and a test holds it to Query; the one map also grants Scan, which is accepted to keep
-  # the one-map design, since a Scan of Findings reaches nothing a per-topic Query does not. Not
-  # here, so neither readable by it nor known to it: CandidateIdeas, Feedback, PromptRefinements,
-  # Models, ViewCounts.
+  # the one-map design, since a Scan of Findings reaches nothing a per-topic Query does not. Models
+  # and the evals table are here for the Model Ranch. Not here, so neither readable by it nor known
+  # to it: CandidateIdeas, Feedback, PromptRefinements, ViewCounts.
   tables = {
     TOPICS_TABLE            = { name = module.app_data.topics_table_name, arn = module.app_data.topics_table_arn }
     FINDINGS_TABLE          = { name = module.app_data.findings_table_name, arn = module.app_data.findings_table_arn }
@@ -3210,6 +3210,11 @@ module "ops_assistant" {
     SIGN_INS_TABLE          = { name = module.app_data.sign_ins_table_name, arn = module.app_data.sign_ins_table_arn }
     STATS_CURRENT_TABLE     = { name = module.app_data.stats_current_table_name, arn = module.app_data.stats_current_table_arn }
     STATS_HISTORY_TABLE     = { name = module.app_data.stats_history_table_name, arn = module.app_data.stats_history_table_arn }
+    # The Model Ranch tools (lambdas/ops_mcp/model_ranch.py): the models' scores and the evals
+    # totals, read only, like every table here. The tools are registered only while evals are on
+    # (evals_enabled below), but the table is made either way, so its name and grant are always here.
+    MODELS_TABLE = { name = module.app_data.models_table_name, arn = module.app_data.models_table_arn }
+    EVALS_TABLE  = { name = module.evals.table_name, arn = module.evals.table_arn }
   }
 
   # The function the pool calls before and after every sign-in (aws_lambda_function.sign_in_events

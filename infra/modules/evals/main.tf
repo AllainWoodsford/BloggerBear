@@ -253,6 +253,9 @@ resource "aws_lambda_function" "eval_jobs" {
       EVALS_TABLE         = aws_dynamodb_table.evals.name
       EVALS_LOG_GROUP     = aws_cloudwatch_log_group.evals.name
       EVAL_WORK_QUEUE_URL = aws_sqs_queue.eval_work[0].url
+      # The week's digest goes here on Fridays while digest_email is on (common/evals_digest.py); the
+      # PublishAlerts statement above is its right.
+      ALERTS_TOPIC_ARN = var.alerts_topic_arn
     })
   }
 }

@@ -2963,33 +2963,50 @@ def test_the_root_hands_the_assistant_its_own_default_tags():
 
 
 def test_the_assistant_is_told_about_exactly_the_tables_it_may_read():
-    """One map gives the function its table names and its role its table ARNs. Every key must be
-    a variable common/dynamo.py reads, and the tables the tools use today must be among them."""
-    call = _module_blocks(_read("environments", "dev", "main.tf"), "modules/ops-assistant")[0]
-    tables = re.search(r"^  tables = \{\n(.*?)^  \}", call, re.S | re.M).group(1)
-    passed = dict(
-        re.findall(r"^\s*([A-Z_]+)\s*=\s*\{ name = module\.app_data\.([a-z_]+)_table_name,", tables, re.M)
-    )
-    dynamo = (ROOT / "lambdas" / "common" / "dynamo.py").read_text(encoding="utf-8")
-    read_by_code = set(re.findall(r'os\.environ\["([A-Z_]+_TABLE)"\]', dynamo))
-
-    assert set(passed) == {
-        "TOPICS_TABLE",
-        "FINDINGS_TABLE",
-        "ARTICLES_TABLE",
-        "MODERATION_QUEUE_TABLE",
-        "FAILED_EXECUTIONS_TABLE",
-        "MODEL_CONFIG_TABLE",
-        "MUSINGS_TABLE",
-        "SECURITY_EVENTS_TABLE",
-        "SIGN_INS_TABLE",
-        "STATS_CURRENT_TABLE",
-        "STATS_HISTORY_TABLE",
+    """One map gives the function its table names and its role its table ARNs, in both roots. Every
+    key must be a variable the code reads a table's name from, and the tables the tools use today
+    must be among them: the app tables, and the models and evals tables for the Model Ranch (the
+    evals table is the evals module's, so its line names that module's outputs)."""
+    common = ROOT / "lambdas" / "common"
+    read_by_code = {
+        name
+        for path in common.glob("*.py")
+        for name in re.findall(r'os\.environ\["([A-Z_]+_TABLE)"\]', path.read_text(encoding="utf-8"))
     }
-    assert set(passed) <= read_by_code
-    for env_name, table in passed.items():  # the name and the ARN on a line are the same table's
-        assert env_name == f"{table.upper()}_TABLE"
-        assert f"arn = module.app_data.{table}_table_arn }}" in tables
+    for environment in ("dev", "production"):
+        call = _module_blocks(_read("environments", environment, "main.tf"), "modules/ops-assistant")[0]
+        tables = re.search(r"^  tables = \{\n(.*?)^  \}", call, re.S | re.M).group(1)
+        output = r"(module\.[a-z_]+)\.([a-z_]+)"
+        lines = re.findall(rf"^\s*([A-Z_]+)\s*=\s*\{{ name = {output}, arn = {output} \}}$", tables, re.M)
+        passed = {env_name: tuple(found) for env_name, *found in lines}
+
+        assert len(passed) == len(lines) == len(re.findall(r"^\s*[A-Z_]+\s*=", tables, re.M)), environment
+        assert set(passed) == {
+            "TOPICS_TABLE",
+            "FINDINGS_TABLE",
+            "ARTICLES_TABLE",
+            "MODERATION_QUEUE_TABLE",
+            "FAILED_EXECUTIONS_TABLE",
+            "MODEL_CONFIG_TABLE",
+            "MUSINGS_TABLE",
+            "SECURITY_EVENTS_TABLE",
+            "SIGN_INS_TABLE",
+            "STATS_CURRENT_TABLE",
+            "STATS_HISTORY_TABLE",
+            "MODELS_TABLE",
+            "EVALS_TABLE",
+        }, environment
+        assert set(passed) <= read_by_code
+        # The name and the ARN on a line are the same table's, from the module that makes it.
+        for env_name, (module, name, arn_module, arn) in passed.items():
+            if env_name == "EVALS_TABLE":
+                evals = ("module.evals", "table_name", "module.evals", "table_arn")
+                assert (module, name, arn_module, arn) == evals
+                continue
+            table = env_name.removesuffix("_TABLE").lower()
+            assert (module, name, arn_module, arn) == (
+                "module.app_data", f"{table}_table_name", "module.app_data", f"{table}_table_arn",
+            ), env_name  # fmt: skip
     module = _ops_module()
     assert "{ for env_name, table in var.tables : env_name => table.name }," in module
     # Article bodies are in the content bucket, and the function is told which one.

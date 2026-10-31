@@ -17,7 +17,9 @@ Two kinds:
 * **The CLI's** (`admin_cli evals set`): culling (`cull_enabled`, `cull_max_per_run`), the judge
   (`judge_enabled`, `judge_interval_hours`, `judge_max_items`, `judge_model_id`), spending
   (`score_max_cost_aud`, `evals_daily_spend_cap_aud`), `trace_calls`, the `timezone` whose days
-  the rollup adds events up by, and `excluded_sources`, whose events the rollup leaves out.
+  the rollup adds events up by, `excluded_sources`, whose events the rollup leaves out, and
+  `digest_email`, whether eval-jobs emails the week's digest to the alerts topic on Fridays
+  (common/evals_digest.py; off by default).
 
 **gated_windows** is what the gates say about one models row: the windows whose score is below
 their gate with at least `min_events` events behind it. `evals status` shows them; the rotation
@@ -57,6 +59,7 @@ SETTINGS: dict[str, object] = {
     "trace_calls": False,
     "timezone": "Australia/Sydney",
     "excluded_sources": [],
+    "digest_email": False,
 }
 DYNAMODB_ONLY = frozenset(
     {"daily_gate", "weekly_gate", "total_gate", "min_events", "judge_min_agreement", "judge_min_pairs"}
@@ -83,7 +86,7 @@ _NUMBER = {
     "score_max_cost_aud": (0, 100),
     "evals_daily_spend_cap_aud": (0, 100),
 }
-_SWITCHES = ("cull_enabled", "judge_enabled", "trace_calls")
+_SWITCHES = ("cull_enabled", "judge_enabled", "trace_calls", "digest_email")
 MAX_EXCLUDED_SOURCES = 20
 # An excluded source that names an offline scoring run rather than a source or a decider.
 RUN_SOURCE_PREFIX = "run:"

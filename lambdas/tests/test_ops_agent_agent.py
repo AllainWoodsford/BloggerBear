@@ -637,6 +637,23 @@ def test_the_model_is_told_how_to_answer_a_how_to_question():
         assert rule in prompt, rule
 
 
+def test_the_model_is_told_to_reason_by_model_and_prompt_cell_before_blaming_either():
+    """PR20's one rule: a bad pairing makes both its model and its prompt version look bad, so the
+    model says which the numbers point at, and never judges a version that has too little data."""
+    prompt = agent.SYSTEM_PROMPT
+
+    for rule in (
+        "call model_ranch, or prompt_metrics for prompts",
+        "Reason by cell, the pairing of a model and a prompt version, before blaming either",
+        "a model that does badly with one version and well with the rest has a bad pairing, not a "
+        "bad model",
+        "Never call a version with insufficient data better or worse than another",
+    ):
+        assert rule in prompt, rule
+    # One rule, one entry: the prompt's other rules are unchanged around it.
+    assert prompt.count("model_ranch") == 1
+
+
 def test_the_model_is_told_where_a_question_about_a_feature_goes():
     """Production answered "what is the equipment do" with a table of the Lambdas and a made-up
     account of gear ("slots that run your pipeline"). What a feature is comes from its guide."""

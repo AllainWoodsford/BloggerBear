@@ -22,7 +22,7 @@ DYNAMODB_ONLY = {
 CLI_SETTINGS = {
     "cull_enabled", "cull_max_per_run", "judge_enabled", "judge_interval_hours", "judge_max_items",
     "judge_model_id", "score_max_cost_aud", "evals_daily_spend_cap_aud", "trace_calls", "timezone",
-    "excluded_sources",
+    "excluded_sources", "digest_email",
 }  # fmt: skip
 
 
@@ -111,6 +111,12 @@ def test_set_sends_each_setting_as_the_api_takes_it():
         "timezone": "UTC",
         "excluded_sources": ["judge", "run:r-1"],
     }
+
+
+def test_set_switches_the_friday_digest_email_on_and_off():
+    assert cli("set", "--digest-email", "on") == [("PUT", "/evals-config", {"digest_email": True})]
+    assert cli("set", "--digest-email", "off") == [("PUT", "/evals-config", {"digest_email": False})]
+    assert cli("set", "--digest-email", "") == [("PUT", "/evals-config", {"digest_email": None})]
 
 
 def test_set_clears_with_an_empty_value_and_has_no_flag_for_the_dynamodb_only_settings():
