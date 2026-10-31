@@ -145,13 +145,16 @@ def _compliance(reasons=()):
     return {"compliant": not reasons, "reasons": list(reasons), "lineage_call": call}
 
 
-def _run(reply=None, *, compliance_result=None, invoke_error=None, review_mode="off"):
+def _run(reply=None, *, compliance_result=None, compliance_error=None, invoke_error=None, review_mode="off"):
     invoke = patch("common.rewrite.invoke_model_tracked", return_value=reply or _model_reply())
     if invoke_error is not None:
         invoke = patch("common.rewrite.invoke_model_tracked", side_effect=invoke_error)
+    review = patch("common.rewrite.compliance.review_draft", return_value=compliance_result or _compliance())
+    if compliance_error is not None:
+        review = patch("common.rewrite.compliance.review_draft", side_effect=compliance_error)
     with (
         invoke as mock_invoke,
-        patch("common.rewrite.compliance.review_draft", return_value=compliance_result or _compliance()),
+        review,
         patch("common.rewrite._pipeline_config", return_value={"review_mode": review_mode}),
         patch("common.rewrite._evidence", return_value="BTC now $80,500"),
         patch("common.rewrite.resolve_model", return_value=(MODEL, None)),
@@ -606,6 +609,54 @@ def test_a_reply_that_is_not_json_is_rejected(aws):
     result, _, _ = _run({**_model_reply(), "text": "Sorry, I can't do that."})
 
     assert result["status"] == "failed" and "JSON" in _queue()["q1"]["last_rewrite_error"]
+
+
+def _stored_calls():
+    return _table("Articles").get_item(Key={"article_id": "a1"})["Item"]["lineage"]["calls"]
+
+
+def test_a_failed_rewrites_call_is_stored_marked_failed_and_still_counted(aws):
+    """Its text was thrown away, so continuous evals must not credit it (common/evals_emission.py),
+    but its tokens were spent."""
+    _seed()
+
+    result, _, mock_stats = _run(_model_reply(stop_reason="max_tokens"))
+
+    assert result["status"] == "failed"
+    marks = [(call["stage"], call.get(rewrite.FAILED_MARK)) for call in _stored_calls()]
+    assert marks == [("draft", None), ("rewrite", True)]
+    assert [call[rewrite.FAILED_MARK] for call in mock_stats.call_args.args[0]["calls"]] == [True]
+
+
+def test_the_review_of_a_failed_rewrites_text_is_marked_failed_too(aws):
+    _seed()
+    record = {
+        "status": "reviewed",
+        "outcome": "none",
+        "claims": [],
+        "mode": "shadow",
+        "lineage_call": {
+            "stage": "adversarial_review",
+            "model_id": MODEL,
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "used_fallback": False,
+        },
+        "evidence": "x",
+    }
+    with patch("common.rewrite.fresh_review.run_review", return_value=record):
+        result, _, _ = _run(review_mode="shadow", compliance_error=RuntimeError("throttled"))
+
+    assert result["status"] == "failed" and "throttled" in result["reason"]
+    marks = [(call["stage"], call.get(rewrite.FAILED_MARK)) for call in _stored_calls()]
+    assert marks == [("draft", None), ("rewrite", True), ("adversarial_review", True)]
+
+
+def test_a_finished_rewrites_calls_carry_no_mark(aws):
+    _seed()
+
+    assert _run()[0]["status"] == "rewritten"
+    assert [call.get(rewrite.FAILED_MARK) for call in _stored_calls()] == [None, None, None]
 
 
 # --- ownership --------------------------------------------------------------------------------------

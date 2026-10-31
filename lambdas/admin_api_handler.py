@@ -44,6 +44,7 @@ from common import (
     backup,
     dispatch,
     equipment,
+    evals_emission,
     evals_rollup,
     evals_settings,
     evals_status,
@@ -1970,10 +1971,20 @@ def _invoke_rewrite(
         "sent_back", topic_id=item.get("topic_id"), article_id=item["article_id"], queue_id=queue_id,
         from_status=from_status,
     )  # fmt: skip
-    return _response(
+    response = _response(
         202,
         {"rewriting": queue_id, "article_id": item["article_id"], "model_id": model_id, **(extra or {})},
     )
+    # Continuous evals: a person sending an article back to be rewritten scores the model that wrote
+    # it (common/evals_emission.py), once the rewrite has started. Professor Grizzlewick's rewrites
+    # (_DECIDED_BY) are left out, like his approvals. Never raises; the article is read only while
+    # evals are on.
+    if _DECIDED_BY.get() == "human":
+        evals_emission.article_rewrite(
+            lambda: get_article(item["article_id"]), article_id=item["article_id"], rewrite_id=rewrite_id,
+            topic_id=item.get("topic_id"),
+        )  # fmt: skip
+    return response
 
 
 def _rewrite_article(event: dict) -> dict:
@@ -2174,7 +2185,17 @@ def _resolve_moderation_item(
     refresh_articles_snapshot()
 
     action_key = "approved" if new_status == "approved" else "rejected"
-    return _response(200, {action_key: queue_id, "article_id": article_id})
+    response = _response(200, {action_key: queue_id, "article_id": article_id})
+    # Continuous evals: a person's approve or reject scores the article's model and each prompt in
+    # its lineage (common/evals_emission.py). Professor Grizzlewick's decisions come through here
+    # too (_DECIDED_BY) and are left out: his verdict is an AI's, not a person's. After the answer is
+    # built, and never raises, so it cannot change what the operator is told.
+    if _DECIDED_BY.get() == "human":
+        evals_emission.admin_review(
+            article, article_id=article_id, queue_id=queue_id, decision=new_status,
+            topic_id=item.get("topic_id") or (article or {}).get("topic_id"),
+        )  # fmt: skip
+    return response
 
 
 def _post_rejection_musing(topic_id: str | None) -> None:

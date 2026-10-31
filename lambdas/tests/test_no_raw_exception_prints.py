@@ -27,6 +27,9 @@ GUARDED = sorted(
         "dispatcher_handler.py",
         # Imported by every pipeline Lambda, and prints when Logs refuses an event.
         "common/evals.py",
+        # Its emission points in the daily cycle and the admin and public APIs, which print what
+        # they could not write.
+        "common/evals_emission.py",
         # eval-jobs' rollup and the admin API's evals routes, which print what they could not read.
         "common/evals_rollup.py",
         "common/evals_settings.py",

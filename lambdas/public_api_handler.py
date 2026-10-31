@@ -40,7 +40,15 @@ from xml.sax.saxutils import escape
 
 import boto3
 
-from common import equipment, feedback_limits, feedback_verification, gear, security_events, wear
+from common import (
+    equipment,
+    evals_emission,
+    feedback_limits,
+    feedback_verification,
+    gear,
+    security_events,
+    wear,
+)
 from common.attribution import (
     LEGACY_CROSS_TOPIC_ID,
     clean_sources,
@@ -691,7 +699,7 @@ def _submit_feedback(event: dict) -> dict:
     # repairs it (common/wear.py). Never raises, and says nothing to the reader about it.
     wear.apply_feedback(article, vote)
 
-    return _response(
+    response = _response(
         201,
         {
             "status": "recorded",
@@ -700,6 +708,16 @@ def _submit_feedback(event: dict) -> dict:
             "comment_saved": final_comment is not None,
         },
     )
+    # Continuous evals (section 4.3: in the public API the event is written after the response is
+    # built): the reader's vote scores the model that wrote the article, +-1, or +-3 with a comment
+    # the screening kept. The model is read from the article already in hand; no prompt is named
+    # (the rollup joins the vote to the article's completion events). Never raises, and writes
+    # nothing while evals are off, so the reader is told the same either way.
+    evals_emission.user_feedback(
+        article, article_id=article_id, feedback_id=feedback_id, vote=vote,
+        comment_kept=final_comment is not None,
+    )  # fmt: skip
+    return response
 
 
 # --- Musings --------------------------------------------------------------
