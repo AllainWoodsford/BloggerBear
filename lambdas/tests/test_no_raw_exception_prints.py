@@ -36,6 +36,8 @@ GUARDED = sorted(
         "common/evals_status.py",
         # eval-jobs' judge, which prints what it could not read or send.
         "common/eval_judge.py",
+        # The admin API's review of Findings by a person, which prints a claim it could not let go.
+        "common/human_review.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
     ]
 )

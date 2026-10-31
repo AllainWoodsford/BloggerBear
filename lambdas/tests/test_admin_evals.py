@@ -34,6 +34,8 @@ QUEUE_URL = "https://sqs.ap-southeast-2.amazonaws.com/123456789012/acme-dev-eval
 WORK_QUEUE_URL = "https://sqs.ap-southeast-2.amazonaws.com/123456789012/acme-dev-work.fifo"
 ROUTES = {
     "GET /evals-config", "PUT /evals-config", "POST /evals/rollup", "GET /evals/status", "GET /evals/digest",
+    # A person's review of research Findings (PR19; its own tests are test_human_review.py's).
+    "GET /evals/findings", "POST /evals/findings/review",
 }  # fmt: skip
 
 
@@ -303,7 +305,7 @@ def test_status_answers_every_part(aws, queue):
     assert body["late_dropped"] == {"late_dropped": 3}
     assert body["judge"] == {
         "judge_enabled": True, "judge_model": ALPHA, "agreement": 0.75, "pairs": 4, "calibrated": True,
-        "min_agreement": 0.7, "min_pairs": 2,
+        "min_agreement": 0.7, "min_pairs": 2, "last_judge_at": None, "judge_paused_reason": None,
     }  # fmt: skip
     gated = body["gated_models"]
     assert [model["model_id"] for model in gated["gated"]] == ["maker.poor-v1:0"]
@@ -431,6 +433,32 @@ def test_without_the_evals_table_only_the_parts_that_read_it_cannot_be_checked(a
     for part in ("rollup", "late_dropped", "judge"):
         assert body[part] == {"status": "could not check", "error": "ResourceNotFoundException"}, part
     assert body["switches"]["judge_enabled"] is True and body["gated_models"]["gated"] == []
+
+
+def test_the_judge_part_says_when_the_judge_last_ran_and_why_its_tripwire_paused_it(aws, queue):
+    reason = "tripwire: run judge-20261027T030000 marked 9 of 10 items bad"
+    aws.Table("ModelConfig").put_item(
+        Item={"config_id": "evals", "judge_enabled": False, "judge_paused_reason": reason}
+    )
+    aws.Table("Evals").put_item(Item={**evals_rollup.INDEX_KEY, "last_judge_at": "2026-10-27T03:00:05+00:00"})
+
+    _, body = call("GET /evals/status")
+
+    judge = body["judge"]
+    assert (judge["judge_enabled"], judge["judge_paused_reason"]) == (False, reason)
+    assert judge["last_judge_at"] == "2026-10-27T03:00:05+00:00"
+
+
+def test_the_judge_part_says_could_not_check_when_the_settings_row_cannot_be_read(aws, queue, capsys):
+    """The paused reason is on the settings row, which every setting is read from too: the parts that
+    need it cannot be checked, and the rest still answer."""
+    with patch.object(evals_status.evals_settings, "get_row", side_effect=RuntimeError("no row")):
+        _, body = call("GET /evals/status")
+
+    assert body["judge"] == {"status": "could not check", "error": "RuntimeError"}
+    for part in ("rollup", "late_dropped", "cull", "topics_by_dispatch_mode"):
+        assert "status" not in body[part], part
+    assert "evals_status: could not check judge: RuntimeError('no row')" in capsys.readouterr().out
 
 
 # --- the digest -----------------------------------------------------------------------------------

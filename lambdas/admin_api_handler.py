@@ -51,6 +51,7 @@ from common import (
     evidence,
     feedback_limits,
     gear,
+    human_review,
     model_catalog,
     model_fleet,
     prompts,
@@ -3222,6 +3223,31 @@ def _evals_digest_route(event: dict) -> dict:
     return _response(200, result)
 
 
+# --- A person's review of research Findings (common/human_review.py, PR19) -----------------------------
+#
+# The Findings waiting for a person, the judge's first and never with its verdict, and one person's
+# verdict on one of them: a Human Review event, the `pair#<subject>` row `human` the judge's agreement
+# is measured from, and the person's marks on the Finding. `admin_cli approve --source findings`.
+
+
+def _list_findings_to_review_route(event: dict) -> dict:
+    try:
+        count = _whole_number_param(event, "count", 1, human_review.COUNT_MAX, human_review.COUNT_DEFAULT)
+    except ValueError as exc:
+        return _error(400, str(exc))
+    findings = human_review.queue(count)
+    return _response(200, {"findings": findings, "count": len(findings)})
+
+
+def _review_finding_route(event: dict) -> dict:
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    status, answer = human_review.review(body)
+    return _response(status, answer) if isinstance(answer, dict) else _error(status, answer)
+
+
 # --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/archive/reviewer-bear.md) -----
 #
 # The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
@@ -3989,6 +4015,9 @@ _ROUTES = {
     "POST /evals/rollup": _start_evals_rollup_route,
     "GET /evals/status": _evals_status_route,
     "GET /evals/digest": _evals_digest_route,
+    # A person's review of research Findings (common/human_review.py).
+    "GET /evals/findings": _list_findings_to_review_route,
+    "POST /evals/findings/review": _review_finding_route,
     "GET /reviewer-config": _get_reviewer_config_route,
     "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /prompts": _list_prompts_route,

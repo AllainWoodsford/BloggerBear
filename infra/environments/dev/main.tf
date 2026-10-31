@@ -1214,6 +1214,11 @@ module "admin_api" {
     "POST /evals/rollup",
     "GET /evals/status",
     "GET /evals/digest",
+    # A person's review of research Findings: the ones waiting (the judge's first, never with its
+    # verdict) and one verdict. See admin_api_handler.py's _list_findings_to_review_route and
+    # _review_finding_route, and `admin_cli approve --source findings`.
+    "GET /evals/findings",
+    "POST /evals/findings/review",
     "GET /reviewer-config",
     "PUT /reviewer-config",
     # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): each registered

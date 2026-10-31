@@ -36,6 +36,7 @@ from common import (
     dynamo,
     eval_judge,
     evals,
+    evals_emission,
     evals_rollup,
     evals_settings,
     evidence,
@@ -492,6 +493,37 @@ def test_a_saved_rewrite_whose_call_the_lineage_lacks_is_credited_to_its_model_w
     [event] = events(written)
     assert event["model_id"] == FALLBACK and "prompt_id" not in event and "prompt_version" not in event
     assert model.models == [DEFAULT]
+
+
+def failed_attempt(model_id, version) -> list[dict]:
+    """A failed rewrite's calls as rewrite._fail records them since PR14: the rewrite and its review,
+    each marked failed."""
+    return [rewrite_call(model_id, version=version, failed=True), {**compliance_call(), "failed": True}]
+
+
+def test_the_judges_article_credit_goes_through_the_writer_and_skips_a_failed_marked_rewrite(
+    aws, model, written
+):
+    """The failed attempt's review follows its rewrite call as a saved one's does, so only the mark
+    tells them apart: the credit is evals_emission.writer()'s, as every other event of the article."""
+    calls = drafted() + [rewrite_call(FALLBACK, version="v3"), compliance_call()]
+    calls += failed_attempt(FALLBACK, "v4")
+    article = {"lineage": {"calls": calls}, "rewrites": [saved_rewrite(1, FALLBACK)]}
+
+    found = eval_judge.credit(article, eval_judge.ARTICLE)
+
+    assert found == {"model_id": FALLBACK, "prompt_id": "rewrite/rewrite", "prompt_version": "v3"}
+    model_id, call = evals_emission.writer(article)
+    assert (model_id, call["prompt_version"]) == (FALLBACK, "v3")
+    put_article(aws, lineage={"calls": calls}, rewrites=[saved_rewrite(1, FALLBACK)])
+    start_run(aws)
+    consume(article_item())
+    [event] = events(written)
+    assert (event["model_id"], event["prompt_version"]) == (FALLBACK, "v3")
+
+
+def test_a_failed_marked_rewrite_alone_leaves_the_credit_with_the_draft():
+    assert credited(drafted() + failed_attempt(FALLBACK, "v4"), []) == DRAFT_CREDIT
 
 
 def test_a_prompt_id_of_another_shape_is_left_out_and_the_verdicts_event_kept(aws, model, written):
