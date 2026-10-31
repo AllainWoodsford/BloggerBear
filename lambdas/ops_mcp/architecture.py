@@ -516,7 +516,8 @@ CATALOGUE: tuple[Component, ...] = (
             ("Written by", "the prompts publisher alone (its own role); every Lambda may only read a row"),
             (
                 "Read by",
-                "every Lambda that renders a prompt (common/prompts.py), the Admin API's prompts list",
+                "every Lambda that renders a prompt (common/prompts.py), the Admin API's prompts list; "
+                "the Admin API's `evals score` (whether a version was published, live or retired)",
             ),
             ("No TTL", "a retired row is the record of what was once approved"),
             ("Backups", "not in the snapshots: publishing writes it again from the repository's prompts/"),
@@ -599,7 +600,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "Sends",
                 f"for a topic on the queue, topics trigger sends a research job to {PREFIX}{ENV}-work.fifo "
                 f"or starts {PREFIX}{ENV}-daily-cycle with an execution named "
-                "<topic>-<date>-manual-<HHMMSS>",
+                "<topic>-<date>-manual-<HHMMSS>; `evals score` and `evals runs resume` send score jobs, "
+                f"one per item and combination, to {PREFIX}{ENV}-eval-work (only while evals are on)",
             ),
         ),
         dashboards=(_EDGE_DASHBOARD,),
@@ -1098,8 +1100,10 @@ CATALOGUE: tuple[Component, ...] = (
             ("Written by", "the prompts publisher alone: the bucket policy refuses every other writer"),
             (
                 "Read by",
-                "the Lambdas, only while PROMPT_AS_ASSET_ENABLED is on (common/prompts.py); the "
-                "Admin API's prompts list and prompts releases",
+                "the Lambdas, to serve prompts, only while PROMPT_AS_ASSET_ENABLED is on "
+                "(common/prompts.py); the Admin API's prompts list and prompts releases; offline scoring "
+                "whether or not it is on: the Admin API's `evals score` (a prompt's versions/ listing) and "
+                "eval-jobs' scoring jobs (the run's versions/<sha256>.txt)",
             ),
             ("Old versions", "kept 90 days after a file is replaced"),
         ),

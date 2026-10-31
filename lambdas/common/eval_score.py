@@ -12,9 +12,10 @@ is asked for the very draft the article was. No other prompt is scored offline y
 rebuilt as its own call site built it, and the comparison rubric reads articles.
 
 **Combinations** multiply: each model named with each version named, up to MAX_COMBINATIONS. A
-version is `vN`, live in the prompt-hash table (a file under latest/ whose hash row says live for this
-prompt and version, prompts.live_version, whose sha256 the run records), or `vanilla`, the code's own
-(recorded as `vanilla:v1`).
+version is `vN`, published in this deployment (a file under versions/ whose hash row names this prompt
+and version, live or retired: prompts.published_version, whose sha256 the run records), so a version a
+later one replaced can still be scored against it; or `vanilla`, the code's own (recorded as
+`vanilla:v1`).
 
 **The request** (`start`; the admin API's POST /evals/runs, `admin_cli evals score`): the judge is none
 of the candidate models; the judge and every candidate are in the registry, enabled and text models
@@ -22,11 +23,14 @@ of the candidate models; the judge and every candidate are in the registry, enab
 ITEM_LOOKBACK that can be rebuilt (their Findings still there, the model that drafted them recorded, fit
 to draft and not the judge), one topic at a time, so a busy topic does not fill the sample. The estimate
 is, for each item and combination, two drafts (the candidate's, and the live version's on the model that
-drafted the article) and one judge call, each priced from the registry (eval_judge.call_cost_aud): an
-upper bound, since the live version is drafted once per item. A run is refused when its estimate is more
-than today's cap leaves (eval_judge.remaining_aud, the day row the judge spends against), when it is more
-than `score_max_cost_aud` without `yes`, and when it records without `yes`. A `dry_run` answers the plan
-and writes nothing: the CLI shows it, with the environment, and asks before it starts the run.
+drafted the article) and one judge call, each priced from the registry (eval_judge.call_cost_aud). It is
+an estimate, not a bound: it counts the live version's draft for every combination though it is made once
+per item, and it leaves out the one retry, with more tokens, of a draft cut off at its limit (both
+attempts are billed, so that draft costs about two and a half times its estimate). A run is refused
+when its estimate is more than today's cap leaves (eval_judge.remaining_aud, the day row the judge spends
+against), when it is more than `score_max_cost_aud` without `yes`, and when it records without `yes`. A
+`dry_run` answers the plan and writes nothing: the CLI shows it, with the environment, and asks before
+it starts the run.
 
 **The run** is the evals table's `run#<run_id>` (section 4.4): its header (`meta`: status, estimate_aud,
 spent_aud, created_at, the combinations and the items) and a row per item and combination,
@@ -35,27 +39,33 @@ combination goes to eval-work (section 4.7), combination by combination, so two 
 seldom run at once.
 
 **The consumer** (`consume`, one message): reads the run's header first (a cancelled run's message is
-dropped; one that is not the run's own combination or item is refused), holds the day's cap (at the cap
-the run is paused and the message sent back to wait 900 s: eval_judge._pause), claims the item's row (a
-copy of the message that comes while it is claimed is dropped, and one that comes after it has its
+dropped; one that is not the run's own combination or item is refused), holds the day's cap, checked
+against the most the message can cost, a retried draft included (at the cap the run is paused and the
+message sent back to wait 900 s: eval_judge._pause; two messages scored at once, as eval-work's mapping
+runs two, can pass the check together, so a day can end one message over its cap), claims the item's row
+(a copy of the message that comes while it is claimed is dropped, and one that comes after it has its
 result counts it once), rebuilds the item's draft prompt, drafts the live version once per item
 (`live#<n>`, kept on the run, so every combination of the item is compared with the same draft), renders
 the candidate (its versions/ file, or the vanilla), drafts with the candidate model, and asks the judge,
 which is neither model, which of the two drafts is better, in an order drawn per item. The verdict is
 good (+2) when the candidate's is, bad (-2) when the live version's is. With `record`, it writes one
 Offline Review event for the candidate model and prompt version (`offline:<run_id>:<n>:<combination>`,
-by judge), which gates only while the judge is calibrated (common/evals.py's SCORING). Its spend goes to
-the same day row, the run and the Stats page's evals category as the judge's (eval_judge._record_spend).
+by judge), which gates only while the judge is calibrated (common/evals.py's SCORING), after the row and
+before the message is counted finished. Its spend goes to the same day row, the run and the Stats page's
+evals category as the judge's (eval_judge._record_spend).
 
 **Cancel and resume.** `cancel` marks a queued, running or paused run cancelled; its messages are
 dropped as they come. `resume` sends again every message of a scoring run that has no result and is not
-being scored (a paused run's, a cancelled run's, one whose send failed), under the same cap check as a
-new run; a copy of one still on the queue is dropped when it comes, once the other has its result.
+being scored (a paused run's, a cancelled run's, one whose send failed, one that failed), under the same
+cap check as a new run; a copy of one still on the queue is dropped when it comes, once the other has its
+result.
 
-Only codes, ids and numbers are ever printed. `consume` returns what became of its message. A failure
-it does not expect, once the row is claimed, is recorded as the message's result (`error`), so the run
-still closes and `resume` can send the message again; a consumer that dies leaves its claim, which goes
-stale after CLAIM_STALE.
+Only codes, ids and numbers are ever printed. `consume` returns what became of its message. A model call
+that fails, or a failure it does not expect once the row is claimed, is recorded as the message's
+outcome (`error`), so the run still closes; an error is no result, so `resume` sends the message again
+and the retry keeps what the failed attempt spent on the row. A result already written is never
+rewritten by a failure after it (counting the message finished, say): that is tried again instead. A
+consumer that dies leaves its claim, which goes stale after CLAIM_STALE.
 """
 
 from __future__ import annotations
@@ -109,8 +119,12 @@ ARTICLES_READ = 200
 SAMPLE_TRIES = 3
 
 # The estimate's calls. A draft's prompt is at most the findings block (SUMMARIES_MAX_CHARS, 40,000
-# characters, about 10,000 tokens) and the template around it; its reply is at most the draft's own
-# limit (daily_cycle_handler.DRAFT_MAX_TOKENS). The judge reads both drafts (DRAFT_MAX_CHARS each) and the
+# characters, about 10,000 tokens) and the template around it; its reply, on the first attempt, at most
+# the draft's own limit (daily_cycle_handler.DRAFT_MAX_TOKENS). A reply cut off there is asked for once
+# more with DRAFT_RETRY_MAX_TOKENS, and invoke_model_tracked bills both attempts, so a truncated draft
+# costs about two and a half times its estimate. A run is priced at one attempt (_draft_tokens): most
+# drafts need no retry. Each message's check against the day's cap counts the retry (_draft_ceiling_tokens),
+# so no one message takes the day past it. The judge reads both drafts (DRAFT_MAX_CHARS each) and the
 # findings (FINDINGS_MAX_CHARS): under 9,000 tokens; its reply is a verdict.
 DRAFT_ESTIMATE_INPUT_TOKENS = 12_000
 COMPARE_ESTIMATE_INPUT_TOKENS = 9_000
@@ -126,8 +140,10 @@ CLAIM_STALE = timedelta(minutes=20)
 # The rows of a run beside its header (section 4.4): an item's result per combination, and the live
 # version's draft of an item, made once.
 ITEM, LIVE = "item#", "live#"
-# A row's outcome: claimed and being scored; scored (a verdict); or why there is no verdict.
-SCORING, SCORED = "scoring", "scored"
+# A row's outcome: claimed and being scored; scored (a verdict); a model call, or something unexpected,
+# failed (an error is no result: `resume` sends its message again, and the copy takes the row over); or
+# why there is no verdict, which is final.
+SCORING, SCORED, ERROR = "scoring", "scored", "error"
 
 # The reply contract (the rubric's locked `reply_rule`): one JSON object of exactly these two keys.
 POSITIONS = ("A", "B")
@@ -221,7 +237,7 @@ def parse_request(body) -> dict:
         if not isinstance(version, str) or not (
             version in (VANILLA, vanilla_label) or _VERSION.fullmatch(version)
         ):
-            raise Refused(400, f"each of 'versions' is vN (live in the prompt-hash table) or {VANILLA}")
+            raise Refused(400, f"each of 'versions' is vN (published here: live or retired) or {VANILLA}")
     labels = [vanilla_label if version == VANILLA else version for version in versions]
     if len(set(labels)) != len(labels):
         raise Refused(400, "a version is named twice in 'versions'")
@@ -261,7 +277,8 @@ def model_problem(model_id: str, role: str) -> str | None:
 
 
 def resolve_versions(prompt_id: str, labels: list[str]) -> dict[str, str | None]:
-    """Each version's sha256 (None for the vanilla): a `vN` must be live in the prompt-hash table."""
+    """Each version's sha256 (None for the vanilla): a `vN` must be one this deployment published, live
+    or retired (prompts.published_version)."""
     vanilla_label = prompts.spec_for(prompt_id).vanilla_label
     resolved: dict[str, str | None] = {}
     for label in labels:
@@ -271,13 +288,15 @@ def resolve_versions(prompt_id: str, labels: list[str]) -> dict[str, str | None]
         if not prompts.store_named():
             raise Refused(400, f"this deployment names no prompts bucket: only {VANILLA} can be scored")
         try:
-            sha = prompts.live_version(prompt_id, label)
+            sha = prompts.published_version(prompt_id, label)
         except Exception as exc:  # noqa: BLE001 - the request is refused, never half made
             print(f"eval_score: could not read the prompts bucket or the prompt-hash table: {exc!r}")
             raise Refused(502, "could not read the prompts bucket or the prompt-hash table") from exc
         if sha is None:
             raise Refused(
-                400, f"{prompt_id} {label} is not live in the prompt-hash table: name a live one or {VANILLA}"
+                400,
+                f"{prompt_id} {label} was never published here (no live or retired row in the "
+                f"prompt-hash table names it): name a published one or {VANILLA}",
             )
         resolved[label] = sha
     return resolved
@@ -356,7 +375,15 @@ def sample_items(judge: str, sample: int, now: datetime) -> list[dict]:
 
 
 def _draft_tokens() -> tuple[int, int]:
+    """A draft as a run's estimate prices it: one attempt."""
     return DRAFT_ESTIMATE_INPUT_TOKENS, _daily_cycle().DRAFT_MAX_TOKENS
+
+
+def _draft_ceiling_tokens() -> tuple[int, int]:
+    """The most a draft can bill: a reply cut off at its limit and asked for again with more tokens,
+    both attempts billed (invoke_model_tracked)."""
+    cycle = _daily_cycle()
+    return 2 * DRAFT_ESTIMATE_INPUT_TOKENS, cycle.DRAFT_MAX_TOKENS + cycle.DRAFT_RETRY_MAX_TOKENS
 
 
 def estimate_aud(judge: str, combos: list[dict], items: list[dict]) -> float:
@@ -694,10 +721,11 @@ def resume(run_id, *, now: datetime | None = None, sqs=None) -> dict:
     if meta.get("job") != SCORE_JOB:
         raise Refused(409, f"run {run_id} is a judge run: the next judge run picks its items again")
     combos, count = meta["combinations"], int(meta["item_count"])
+    # A message is held back by its result, or by a consumer still scoring it; an error is no result.
     held = {
         (str(row.get("combo")), int(row.get("n", -1)))
         for row in _rows(table, run_id, ITEM)
-        if row.get("outcome") != SCORING or _claimed(row, now)
+        if row.get("outcome") not in (SCORING, ERROR) or _claimed(row, now)
     }
     numbers = [
         k * count + n
@@ -822,14 +850,21 @@ def _message_combination(value) -> dict | None:
 
 
 def _claim(table, row: dict, now: datetime) -> bool:
-    """Take the item's row for this message (`row`: its key, number and combination): free, or claimed
-    so long ago that its consumer must have died."""
+    """Take the item's row for this message (`row`: its key, number and combination, and what earlier
+    attempts spent): free, an earlier attempt's that failed (an error), or claimed so long ago that its
+    consumer must have died. A copy of a failed message that comes on its own, not sent by `resume`,
+    takes an error row over too: it is still under the day's cap, checked before the claim."""
     try:
         table.put_item(
             Item={**row, "outcome": SCORING, "claimed_at": eval_judge._iso(now)},
-            ConditionExpression="attribute_not_exists(entity) OR (#o = :scoring AND claimed_at < :stale)",
+            ConditionExpression="attribute_not_exists(entity) OR #o = :error "
+            "OR (#o = :scoring AND claimed_at < :stale)",
             ExpressionAttributeNames={"#o": "outcome"},
-            ExpressionAttributeValues={":scoring": SCORING, ":stale": eval_judge._iso(now - CLAIM_STALE)},
+            ExpressionAttributeValues={
+                ":error": ERROR,
+                ":scoring": SCORING,
+                ":stale": eval_judge._iso(now - CLAIM_STALE),
+            },
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         return False
@@ -838,6 +873,19 @@ def _claim(table, row: dict, now: datetime) -> bool:
 
 def _cost(cost: float) -> Decimal:
     return Decimal(str(round(cost, 6)))
+
+
+def _spent_before(existing: dict | None) -> dict:
+    """What earlier attempts at a message recorded on its row (one that failed, or a claim that carried
+    it on from one): a retry adds to it, so the row's cost, which results() adds up per combination,
+    is what the message cost. The run's spent_aud and the day row have it already."""
+    if existing is None:
+        return {}
+    return {
+        "input_tokens": int(existing.get("input_tokens") or 0),
+        "output_tokens": int(existing.get("output_tokens") or 0),
+        "cost_aud": _cost(_number(existing.get("cost_aud"))),
+    }
 
 
 def _live_draft(table, run_id: str, n: int, values: dict, locked: dict, model_id: str, settings, now) -> dict:
@@ -936,7 +984,7 @@ def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, 
     ((prompt_id, label),) = combo["prompt_versions"].items()
     key = eval_judge._run_key(run_id, f"{ITEM}{n}#{combo['code']}")
     existing = table.get_item(Key=key, ConsistentRead=True).get("Item")
-    if existing is not None and existing.get("outcome") != SCORING:
+    if existing is not None and existing.get("outcome") not in (SCORING, ERROR):
         eval_judge._finish(table, run_id, m, now)
         return {"status": "dropped", "reason": "already_scored"}
     if existing is not None and _claimed(existing, now):
@@ -945,7 +993,8 @@ def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, 
     settings = evals_settings.get_settings()
     judge, candidate = str(meta["judge_model_id"]), combo["model_id"]
     live_model = str(articles[n]["live_model_id"])
-    draft_in, draft_out = _draft_tokens()
+    # The most the message can cost, a retried draft included, so no one message takes the day past it.
+    draft_in, draft_out = _draft_ceiling_tokens()
     estimate = eval_judge.call_cost_aud(candidate, draft_in, draft_out) + eval_judge.call_cost_aud(
         judge, COMPARE_ESTIMATE_INPUT_TOKENS, COMPARE_MAX_TOKENS
     )
@@ -953,7 +1002,7 @@ def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, 
         estimate += eval_judge.call_cost_aud(live_model, draft_in, draft_out)
     if estimate > eval_judge.remaining_aud(table, now, settings):
         return eval_judge._pause(table, run_id, m, raw, sqs, now)
-    row = {**key, "n": n, "combo": combo["code"]}
+    row = {**key, "n": n, "combo": combo["code"], **_spent_before(existing)}
     if not _claim(table, row, now):
         return {"status": "dropped", "reason": "being_scored"}
     eval_judge._set_status(table, run_id, eval_judge.RUNNING, (eval_judge.QUEUED, eval_judge.PAUSED))
@@ -961,13 +1010,13 @@ def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, 
     scoring = _Scoring(table, run_id, m, scored_row, settings, now)
     try:
         return _scored(scoring, meta, item, combo, live_model)
-    except Exception as exc:  # noqa: BLE001 - recorded as the message's result, so the run still closes
+    except Exception as exc:  # noqa: BLE001 - recorded as the message's outcome, so the run still closes
         print(f"eval_score: item {n} of run {run_id} failed: {exc!r}")
         try:
-            return scoring.done("error", stage="unexpected")
-        except Exception as again:  # noqa: BLE001 - the claim goes stale; `evals runs resume` sends it again
+            return scoring.failed()
+        except Exception as again:  # noqa: BLE001 - an unwritten outcome leaves a claim that goes stale
             print(f"eval_score: could not record that item {n} of run {run_id} failed: {again!r}")
-            return {"status": "error"}
+            return {"status": ERROR}
 
 
 class _Scoring:
@@ -975,8 +1024,12 @@ class _Scoring:
 
     def __init__(self, table, run_id: str, m: int, row: dict, settings: dict, now: datetime):
         self.table, self.run_id, self.m, self.settings, self.now = table, run_id, m, settings, now
-        self.row = {**row, "input_tokens": 0, "output_tokens": 0}
-        self.cost = 0.0
+        # From what earlier attempts spent (_spent_before), so a retry adds to it.
+        tokens = {name: int(row.get(name) or 0) for name in ("input_tokens", "output_tokens")}
+        self.row = {**row, **tokens}
+        self.cost = _number(row.get("cost_aud"))
+        # The outcome once the result row is written: from then on nothing rewrites it.
+        self.recorded: str | None = None
 
     def spent(self, model_id: str, result: dict) -> None:
         """A call made for this message: its tokens and cost on the row, its spend on the day row, the
@@ -986,13 +1039,44 @@ class _Scoring:
         used = canonical_model_id(result.get("model_id") or model_id)
         self.cost += eval_judge._record_spend(self.table, self.run_id, self.now, self.settings, used, result)
 
-    def done(self, outcome: str, **fields) -> dict:
-        """The message's result row, and the message counted finished (eval_judge._finish closes the run
-        with the last)."""
+    def record(self, outcome: str, *, condition: dict | None = None, **fields) -> dict:
+        """The message's result row (written only while `condition`, put_item's, holds, when given)."""
         result = {**self.row, **fields, "outcome": outcome, "cost_aud": _cost(self.cost)}
-        self.table.put_item(Item={**result, "at": eval_judge._iso(self.now)})
-        eval_judge._finish(self.table, self.run_id, self.m, self.now)
+        self.table.put_item(Item={**result, "at": eval_judge._iso(self.now)}, **(condition or {}))
+        self.recorded = outcome
         return {"status": outcome}
+
+    def finish(self) -> None:
+        """The message counted finished (eval_judge._finish closes the run with the last): a set ADD, so
+        counting it again counts it once."""
+        eval_judge._finish(self.table, self.run_id, self.m, self.now)
+
+    def done(self, outcome: str, **fields) -> dict:
+        """The message's result row, then the message counted finished."""
+        answer = self.record(outcome, **fields)
+        self.finish()
+        return answer
+
+    def failed(self) -> dict:
+        """After a failure nothing expected: the message's outcome is an error, unless its row holds its
+        result already (a verdict whose count failed, say), which is never rewritten; either way the
+        message is counted finished, so the run still closes. Raises when that fails too."""
+        if self.recorded is None:
+            try:
+                self.record(
+                    ERROR,
+                    stage="unexpected",
+                    condition={
+                        "ConditionExpression": "#o = :scoring",
+                        "ExpressionAttributeNames": {"#o": "outcome"},
+                        "ExpressionAttributeValues": {":scoring": SCORING},
+                    },
+                )
+            except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+                # No longer this claim: a result was written whose reply was lost. It stands.
+                print(f"eval_score: message {self.m} of run {self.run_id} has an outcome already; it stands")
+        self.finish()
+        return {"status": self.recorded or ERROR}
 
 
 def _scored(scoring: _Scoring, meta: dict, item: dict, combo: dict, live_model: str) -> dict:
@@ -1020,12 +1104,12 @@ def _scored(scoring: _Scoring, meta: dict, item: dict, combo: dict, live_model: 
         live = _live_draft(scoring.table, run_id, n, values, locked, live_model, settings, now)
     except Exception as exc:  # noqa: BLE001 - the message has no result; `evals runs resume` sends it again
         print(f"eval_score: the live draft of item {n} of run {run_id} failed: {exc!r}")
-        return scoring.done("error", stage="live_draft")
+        return scoring.done(ERROR, stage="live_draft")
     try:
         drafted = _draft(candidate_prompt.text, candidate)
     except Exception as exc:  # noqa: BLE001
         print(f"eval_score: the candidate's draft of item {n} of run {run_id} failed: {exc!r}")
-        return scoring.done("error", stage="candidate_draft")
+        return scoring.done(ERROR, stage="candidate_draft")
     scoring.spent(candidate, drafted)
     first = candidate_first(run_id, n, combo["code"])
     rubric = render(topic, str(values.get("summaries") or ""), drafted["text"], str(live["text"]), first)
@@ -1039,7 +1123,7 @@ def _scored(scoring: _Scoring, meta: dict, item: dict, combo: dict, live_model: 
         answer = invoke_model_tracked(rubric.text, judge, max_tokens=COMPARE_MAX_TOKENS)
     except Exception as exc:  # noqa: BLE001
         print(f"eval_score: the judge's call for item {n} of run {run_id} failed: {exc!r}")
-        return scoring.done("error", stage="judge", **context)
+        return scoring.done(ERROR, stage="judge", **context)
     scoring.spent(judge, answer)
     better, reason_code = parse_answer(answer.get("text"))
     if better is None:
@@ -1049,9 +1133,12 @@ def _scored(scoring: _Scoring, meta: dict, item: dict, combo: dict, live_model: 
     good = better == context["candidate_position"]
     delta = eval_judge.DELTA if good else -eval_judge.DELTA
     verdict = "good" if good else "bad"
-    result = scoring.done(SCORED, **context, verdict=verdict, delta=delta, reason_code=reason_code)
+    result = scoring.record(SCORED, **context, verdict=verdict, delta=delta, reason_code=reason_code)
+    # The event goes after the row and before the message is counted finished, as the judge's does, so a
+    # count that fails costs no event (_score's catch-all counts it again).
     if meta.get("record") is True:
         _emit(run_id, n, combo, item, label, delta, now)
+    scoring.finish()
     return {**result, "verdict": verdict}
 
 

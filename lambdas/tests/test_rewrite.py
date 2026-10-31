@@ -467,6 +467,22 @@ def test_a_late_rewrite_reads_the_articles_window_not_the_findings_captured_sinc
     assert "stopped at" not in capsys.readouterr().out
 
 
+def test_a_late_rewrite_of_an_article_without_a_subject_reads_its_own_window(aws):
+    """An article with no subject is read from its window too, ending at its created_at: the Findings
+    captured since, more than the read's MAX_FINDINGS, take none of its places, so a late rewrite (or
+    an offline scoring run rebuilding the article, common/eval_score.py) reads what it was drafted
+    from rather than the window's oldest few."""
+    for n in range(10):
+        _put_finding((_CREATED - timedelta(hours=10 - n)).isoformat(), f"before {n}")
+    for n in range(rewrite.MAX_FINDINGS + 2):  # one an hour since
+        _put_finding((_CREATED + timedelta(hours=1 + n)).isoformat(), f"since {n}")
+    article = {"topic_id": TOPIC["topic_id"], "created_at": _CREATED.isoformat()}
+
+    findings = rewrite.findings_for(article, TOPIC)
+
+    assert [f["summary"] for f in findings] == [f"before {n}" for n in range(9, -1, -1)]
+
+
 def test_an_article_without_a_subject_keeps_every_finding_in_its_window(aws):
     _seed_on_subject(None)
 

@@ -4,15 +4,16 @@ eval-work queue that keeps what is sent, and stand-in models: each draft says wh
 and the judge picks the draft of the model each test names.
 
 What is held: a run's judge is none of the models it scores, and every model is a registered, enabled
-text model; a version is live in the prompt-hash table or the vanilla; the sample is 1 to 50 past
-articles that can be rebuilt, newest first, a topic at a time; the estimate is two drafts and one
+text model; a version is one the deployment published (live or retired) or the vanilla; the sample is
+1 to 50 past articles that can be rebuilt, newest first, a topic at a time; the estimate is two drafts and one
 verdict per item and combination, priced from the registry; a run is refused over what today's cap
 leaves, over score_max_cost_aud without yes, and with record without yes; a run sends one message per
 item and combination; the consumer drafts the live version once per item, renders the candidate from
 its versions/ file or the vanilla, scores the candidate's draft against it in either place, writes the
 item row and, only with record, one Offline Review event; at the cap it pauses the run and sends the
 message back to wait 900 s; a cancelled run's messages are dropped; a copy of a message is scored once;
-resume sends only what has no result; a scoring run never trips the judge's wire; the results add up
+resume sends only what has no result (an error has none) and is not being scored; a verdict once written
+is never lost to a failure after it; a scoring run never trips the judge's wire; the results add up
 from the rows; a past article's draft prompt is rebuilt byte for byte as the daily cycle sent it,
 without a write; and no offline or judge code writes to S3 or the prompt-hash table.
 """
@@ -37,6 +38,7 @@ from common import (
     eval_judge,
     eval_score,
     evals,
+    evals_rollup,
     goal_rotation,
     prompts,
     prompts_registry,
@@ -72,12 +74,14 @@ MESSAGE_AUD = 0.12744
 
 class FakeQueue:
     """eval-work: keeps every message sent, one at a time or in batches; `fail_from` makes the batch of
-    that number (from 0) and every later one fail."""
+    that number (from 0) and every later one fail; `refuse_ids` makes it refuse the entries of those
+    message numbers (answered under Failed, not kept) and take the rest of their batch."""
 
-    def __init__(self, fail_from: int | None = None):
+    def __init__(self, fail_from: int | None = None, refuse_ids=()):
         self.sent: list[dict] = []
         self.batches = 0
         self.fail_from = fail_from
+        self.refuse_ids = {str(m) for m in refuse_ids}
 
     def send_message(self, **kwargs):
         self.sent.append(kwargs)
@@ -88,9 +92,15 @@ class FakeQueue:
             raise RuntimeError("throttled\nby SQS")
         self.batches += 1
         assert len(Entries) <= 10
-        for entry in Entries:
+        taken = [entry for entry in Entries if entry["Id"] not in self.refuse_ids]
+        for entry in taken:
             self.sent.append({"QueueUrl": QueueUrl, "MessageBody": entry["MessageBody"], "Id": entry["Id"]})
-        return {"Successful": [{"Id": entry["Id"]} for entry in Entries], "Failed": []}
+        failed = [
+            {"Id": entry["Id"], "SenderFault": False, "Code": "InternalError", "Message": "refused"}
+            for entry in Entries
+            if entry["Id"] in self.refuse_ids
+        ]
+        return {"Successful": [{"Id": entry["Id"]} for entry in taken], "Failed": failed}
 
     def bodies(self) -> list[dict]:
         return [json.loads(sent["MessageBody"]) for sent in self.sent]
@@ -405,23 +415,41 @@ def test_a_request_out_of_shape_is_refused_before_anything_is_read(aws, override
     assert caught.status == 400 and words in caught.message
 
 
-def test_a_version_is_live_in_the_prompt_hash_table_or_the_vanilla(aws):
+def test_a_version_is_one_this_deployment_published_live_or_retired_or_the_vanilla(aws):
+    """A version a later one replaced (retired, its file kept under versions/) can still be scored
+    against the live one; a version never published cannot."""
     put_article(aws)
-    publish(aws, "v2", asset_of_the_draft("Version two."))
-    publish(aws, "v1", asset_of_the_draft("Version one."), status="retired")
+    v2 = publish(aws, "v2", asset_of_the_draft("Version two."))
+    v1 = publish(aws, "v1", asset_of_the_draft("Version one."), status="retired")
 
-    status, plan = start(versions=["v2", "vanilla"], dry_run=True)
+    status, plan = start(versions=["v2", "v1", "vanilla"], dry_run=True)
     assert status == 200
-    assert plan["combinations"] == [f"{CANDIDATE}@{DRAFT}=v2", f"{CANDIDATE}@{DRAFT}={VANILLA}"]
-    for version in ("v1", "v3"):
-        caught = refused(versions=[version])
-        assert caught.status == 400 and "is not live in the prompt-hash table" in caught.message
+    assert plan["combinations"] == [
+        f"{CANDIDATE}@{DRAFT}=v2", f"{CANDIDATE}@{DRAFT}=v1", f"{CANDIDATE}@{DRAFT}={VANILLA}",
+    ]  # fmt: skip
+    assert eval_score.resolve_versions(DRAFT, ["v2", "v1", VANILLA]) == {"v2": v2, "v1": v1, VANILLA: None}
+    caught = refused(versions=["v3"])
+    assert caught.status == 400 and "was never published here" in caught.message
 
 
-def test_a_live_file_whose_hash_row_names_another_prompt_or_version_is_not_live(aws):
+def test_a_version_whose_hash_row_is_pending_was_never_published_whatever_files_the_bucket_holds(aws):
+    """The hash row, not the bucket, says what was approved: a pending one never was, even with its
+    file under latest/ tagged with the version and under versions/."""
+    put_article(aws)
+    sha = publish(aws, "v3", asset_of_the_draft("Version three."))
+    row = {"prompt_hash": sha, "prompt_id": DRAFT, "version": "v3", "status": "pending"}
+    aws.Table("PromptHashes").put_item(Item=row)
+
+    caught = refused(versions=["v3"])
+
+    assert caught.status == 400 and "was never published here" in caught.message
+
+
+@pytest.mark.parametrize("named", [{"version": "v3"}, {"prompt_id": "daily_cycle/title"}])
+def test_a_file_whose_hash_row_names_another_prompt_or_version_is_not_that_version(aws, named):
     put_article(aws)
     sha = publish(aws, "v2", asset_of_the_draft("Version two."))
-    row = {"prompt_hash": sha, "prompt_id": DRAFT, "version": "v3", "status": "live"}
+    row = {"prompt_hash": sha, "prompt_id": DRAFT, "version": "v2", "status": "live", **named}
     aws.Table("PromptHashes").put_item(Item=row)
     assert refused(versions=["v2"]).status == 400
 
@@ -451,15 +479,17 @@ def test_a_run_with_nothing_to_score_is_refused(aws):
 
 
 def test_the_sample_is_the_newest_rebuildable_articles_a_topic_at_a_time(aws):
+    # Every rail article is newer than crypto's newest, so newest first alone would fill the sample with
+    # rail before crypto had one.
     aws.Table("Topics").put_item(Item={"topic_id": "crypto", "name": "Crypto"})
     put_article(aws, "rail-new", created_at="2026-10-26T21:00:00+00:00")
-    put_article(aws, "rail-mid", created_at="2026-10-25T21:00:00+00:00")
-    put_article(aws, "rail-old", created_at="2026-10-24T21:00:00+00:00")
-    put_article(aws, "crypto-new", topic_id="crypto", created_at="2026-10-26T09:00:00+00:00")
-    put_article(aws, "crypto-gone", topic_id="crypto", created_at="2026-10-25T09:00:00+00:00", findings=False)
-    put_article(aws, "crypto-judged", topic_id="crypto", created_at="2026-10-24T09:00:00+00:00",
+    put_article(aws, "rail-mid", created_at="2026-10-26T20:00:00+00:00")
+    put_article(aws, "rail-old", created_at="2026-10-26T19:00:00+00:00")
+    put_article(aws, "crypto-new", topic_id="crypto", created_at="2026-10-25T09:00:00+00:00")
+    put_article(aws, "crypto-gone", topic_id="crypto", created_at="2026-10-24T09:00:00+00:00", findings=False)
+    put_article(aws, "crypto-judged", topic_id="crypto", created_at="2026-10-23T09:00:00+00:00",
                 drafter=JUDGE)  # fmt: skip
-    put_article(aws, "crypto-retired", topic_id="crypto", created_at="2026-10-23T09:00:00+00:00",
+    put_article(aws, "crypto-retired", topic_id="crypto", created_at="2026-10-22T09:00:00+00:00",
                 drafter=RETIRED_MODEL)  # fmt: skip
     put_article(aws, "rail-too-old", created_at="2026-10-12T21:00:00+00:00")
 
@@ -583,6 +613,26 @@ def test_messages_that_could_not_be_sent_count_finished_and_resume_sends_them(aw
     assert not meta(aws, run_id).get("finished_items")
 
 
+def test_messages_eval_work_refuses_in_a_batch_count_finished_and_resume_sends_only_them(aws, models, capsys):
+    for n in range(3):
+        put_article(aws, f"a{n}", created_at=f"2026-10-2{6 - n}T21:00:00+00:00")
+
+    run_id, queue = started(aws, FakeQueue(refuse_ids={1, 4}), sample=3, model_ids=[CANDIDATE, OTHER])
+
+    # Message m is combination m // 3 and item m % 3: 1 and 4 are item 1 for each model.
+    assert len(queue.sent) == 4
+    assert meta(aws, run_id)["finished_items"] == {1, 4} and meta(aws, run_id)["status"] == "queued"
+    assert f"eval-work refused 2 message(s) of run {run_id}" in capsys.readouterr().out
+    consume_all(queue.records())
+    assert meta(aws, run_id)["status"] == "done"
+
+    answer = eval_score.resume(run_id, now=NOW, sqs=(again := FakeQueue()))
+
+    assert answer["resent"] == 2
+    sent_again = [(b["item"]["article_id"], b["combination"]["model_id"]) for b in again.bodies()]
+    assert sent_again == [("a1", CANDIDATE), ("a1", OTHER)]
+
+
 # --- scoring ---------------------------------------------------------------------------------------------
 
 
@@ -693,12 +743,51 @@ def test_a_versions_file_that_no_longer_hashes_to_its_name_is_not_drafted(aws, m
     put_article(aws)
     sha = publish(aws, "v2", asset_of_the_draft("Version two."))
     run_id, queue = started(aws, versions=["v2"])
-    put_object(PROMPTS_BUCKET, f"{DRAFT}/versions/{sha}.txt", "Something else entirely.")
+    # Text that passes the template rules, so only its hash refuses it.
+    put_object(PROMPTS_BUCKET, f"{DRAFT}/versions/{sha}.txt", asset_of_the_draft("Tampered."))
 
     [result] = consume_all(queue.records())
 
     assert result == {"status": "version_unreadable"}
     assert models.by(CANDIDATE) == [] and meta(aws, run_id)["status"] == "done"
+
+
+@pytest.mark.parametrize(
+    "breaks",
+    [
+        lambda text: text.replace("{{topic_name}}", "the topic"),  # missing_placeholder
+        lambda text: text.replace("Version two.", "Write it for {{reader}}."),  # unknown_placeholder
+        lambda text: text.replace("{{locked:few_shot}}", ""),  # locked_missing
+        lambda text: text + "\nA line after the locked blocks.",  # locked_order: they are the tail
+    ],
+)
+def test_a_published_version_that_breaks_its_template_rules_is_not_drafted(aws, models, breaks):
+    """The publisher refuses such a file, but a later change to the code's spec (a new required
+    placeholder, say) can make one that passed when it was published fail now. A run is asked for
+    without reading the file, so the consumer checks the rules again, before any model is called."""
+    put_article(aws)
+    text = breaks(asset_of_the_draft("Version two."))
+    assert prompts.validate(prompts.spec_for(DRAFT), text) is not None
+    publish(aws, "v2", text)
+    run_id, queue = started(aws, versions=["v2"])
+
+    [result] = consume_all(queue.records())
+
+    assert result == {"status": "version_unreadable"}
+    assert models.calls == [] and meta(aws, run_id)["status"] == "done"
+
+
+def test_a_retired_version_is_drafted_from_its_versions_file(aws, models):
+    put_article(aws)
+    publish(aws, "v1", asset_of_the_draft("Write it as a ballad."), status="retired")
+    run_id, queue = started(aws, versions=["v1"])
+
+    assert consume_all(queue.records()) == [{"status": "scored", "verdict": "good"}]
+
+    [candidate_prompt] = models.by(CANDIDATE)
+    assert candidate_prompt.startswith("Write it as a ballad.\n\n")
+    [row] = rows(aws, run_id)
+    assert (row["prompt_version"], row["live_version"]) == ("v1", VANILLA)
 
 
 def test_at_the_cap_the_run_pauses_and_the_message_waits_900_seconds(aws, models):
@@ -718,6 +807,39 @@ def test_at_the_cap_the_run_pauses_and_the_message_waits_900_seconds(aws, models
     tomorrow = NOW + timedelta(days=1)
     assert consume_all([{"body": back.sent[0]["MessageBody"]}], now=tomorrow)[0]["status"] == "scored"
     assert meta(aws, run_id)["status"] == "done"
+
+
+def test_the_cap_check_counts_a_retried_draft_so_no_one_message_takes_the_day_past_it(aws, models):
+    """A run is priced at one attempt per draft (MESSAGE_AUD here), but a draft cut off at its limit is
+    asked for again with more tokens and both attempts are billed: what is left must pay for that too."""
+    put_article(aws)
+    run_id, queue = started(aws)
+    # Left: more than the message's estimate, less than its two drafts with their retries and a verdict.
+    retried_draft = (24_000 * 0.001 + 12_288 * 0.005) / 1000 * 1.5
+    most = 2 * retried_draft + 0.020 * 1.5
+    spend_today(aws, str(round(2 - (MESSAGE_AUD + most) / 2, 4)))
+
+    [result] = consume_all(queue.records(), queue=FakeQueue())
+
+    assert MESSAGE_AUD < 2 - float(evals_item(aws, "spend", "day#2026-10-27")["spent_aud"]) < most
+    assert result["status"] == "paused" and models.calls == []
+
+
+def test_a_run_paused_by_the_cap_is_cancelled_and_its_waiting_message_is_dropped(aws, models):
+    put_article(aws)
+    run_id, queue = started(aws)
+    spend_today(aws, "1.95")
+    back = FakeQueue()
+    consume_all(queue.records(), queue=back)
+    assert meta(aws, run_id)["status"] == "paused: spend cap"
+
+    assert eval_score.cancel(run_id, now=NOW) == {"run_id": run_id, "status": "cancelled"}
+    again = FakeQueue()
+    [result] = consume_all([{"body": back.sent[0]["MessageBody"]}], now=NOW + timedelta(days=1), queue=again)
+
+    assert result == {"status": "dropped", "reason": "cancelled"}
+    assert models.calls == [] and again.sent == [] and rows(aws, run_id) == []
+    assert meta(aws, run_id)["status"] == "cancelled"
 
 
 def test_a_cancelled_runs_messages_are_dropped(aws, models):
@@ -768,6 +890,40 @@ def test_a_message_claimed_by_a_live_consumer_is_dropped_and_a_stale_claim_is_ta
     assert models.calls == []
     later = NOW + timedelta(minutes=30)
     assert consume_all(queue.records(), now=later)[0]["status"] == "scored"
+
+
+@pytest.mark.parametrize(
+    "before,meanwhile",
+    [
+        (None, {"outcome": "scoring", "claimed_at": "2026-10-27T03:00:05+00:00"}),
+        (None, {"outcome": "scored", "verdict": "bad", "delta": -2}),
+        # Two copies both read a stale claim: the first to claim it takes it, the other finds it live.
+        ({"outcome": "scoring", "claimed_at": "2026-10-27T02:30:05+00:00"},
+         {"outcome": "scoring", "claimed_at": "2026-10-27T03:00:05+00:00"}),
+    ],
+    ids=["a live claim", "a result", "a stale claim taken over"],
+)  # fmt: skip
+def test_a_message_claimed_between_the_read_and_the_claim_is_dropped(aws, models, before, meanwhile):
+    """eval-work runs two consumers at once, and resume sends copies while the originals may still be
+    on the queue: the claim itself is a conditional write, so of two copies that both read the row as
+    free (or stale), one scores it. The other changes nothing, and the one that scores it counts it."""
+    put_article(aws)
+    run_id, queue = started(aws)
+    key = {"entity": f"run#{run_id}", "sk": f"item#0#{CANDIDATE}@{DRAFT}={VANILLA}"}
+    if before is not None:
+        aws.Table("Evals").put_item(Item={**key, **before, "n": 0})
+    other = {**key, **meanwhile, "n": 0}
+    real = eval_judge.remaining_aud
+
+    def claimed_meanwhile(*args, **kwargs):  # the cap check runs between the read and the claim
+        aws.Table("Evals").put_item(Item=other)
+        return real(*args, **kwargs)
+
+    with patch.object(eval_judge, "remaining_aud", side_effect=claimed_meanwhile):
+        assert consume_all(queue.records()) == [{"status": "dropped", "reason": "being_scored"}]
+
+    assert models.calls == [] and rows(aws, run_id) == [other]
+    assert not meta(aws, run_id).get("finished_items")
 
 
 @pytest.mark.parametrize(
@@ -834,6 +990,104 @@ def test_an_unexpected_failure_after_the_claim_is_the_messages_result(aws, model
     assert "failed: RuntimeError('bad\\ntable')" in capsys.readouterr().out
 
 
+def test_a_verdict_is_kept_with_its_event_when_counting_its_message_finished_fails_once(aws, models, written):
+    put_article(aws)
+    run_id, queue = started(aws, record=True, yes=True)
+    real, failures = eval_judge._finish, []
+
+    def fails_once(*args, **kwargs):
+        if not failures:
+            failures.append(args)
+            raise RuntimeError("ProvisionedThroughputExceededException")
+        return real(*args, **kwargs)
+
+    with patch.object(eval_judge, "_finish", side_effect=fails_once):
+        assert consume_all(queue.records()) == [{"status": "scored"}]
+
+    [row] = rows(aws, run_id)
+    assert (row["outcome"], row["verdict"], row["delta"]) == ("scored", "good", 2)
+    code = f"{CANDIDATE}@{DRAFT}={VANILLA}"
+    assert [evals.parse(line)["event_id"] for line in written] == [f"offline:{run_id}:0:{code}"]
+    header = meta(aws, run_id)
+    assert header["status"] == "done" and header["finished_items"] == {0}
+    assert len(models.calls) == 3 and len(failures) == 1
+
+
+def test_a_verdict_whose_write_lost_its_reply_is_not_overwritten_by_the_failure(aws, models):
+    """The write of a result can be made and its reply lost: the failure is then written only over the
+    message's own claim, so the verdict stands, and the message is still counted finished."""
+    put_article(aws)
+    run_id, queue = started(aws)
+    table = aws.Table("Evals")
+
+    class LostReply:
+        def __getattr__(self, name):
+            return getattr(table, name)
+
+        def put_item(self, **kwargs):
+            answer = table.put_item(**kwargs)
+            if kwargs["Item"].get("outcome") == "scored":
+                raise RuntimeError("ReadTimeoutError")
+            return answer
+
+    with patch.object(evals_rollup, "evals_table", return_value=LostReply()):
+        assert consume_all(queue.records()) == [{"status": "error"}]
+
+    [row] = rows(aws, run_id)
+    assert (row["outcome"], row["verdict"]) == ("scored", "good") and "stage" not in row
+    assert meta(aws, run_id)["status"] == "done" and meta(aws, run_id)["finished_items"] == {0}
+
+
+CANDIDATE_CALL_AUD = (1000 * 0.001 + 100 * 0.005) / 1000 * 1.5
+JUDGE_CALL_AUD = (1000 * 0.002 + 100 * 0.010) / 1000 * 1.5
+
+
+@pytest.mark.parametrize("failing,stage", [(CANDIDATE, "candidate_draft"), (JUDGE, "judge")])
+def test_a_message_whose_model_call_failed_is_sent_again_by_resume_and_scored(aws, models, failing, stage):
+    """An error is no result: resume sends the message again, the copy takes the row over, and the row
+    keeps what the failed attempt spent (the judge's failure comes after the candidate's paid draft)."""
+    put_article(aws)
+    run_id, queue = started(aws)
+    failed = []
+
+    def fails_once(prompt, model_id, **kwargs):
+        if model_id == failing and not failed:
+            failed.append(model_id)
+            raise RuntimeError("ThrottlingException")
+        return models(prompt, model_id, **kwargs)
+
+    with patch.object(eval_score, "invoke_model_tracked", side_effect=fails_once):
+        assert consume_all(queue.records()) == [{"status": "error"}]
+        [row] = rows(aws, run_id)
+        assert (row["outcome"], row["stage"]) == ("error", stage)
+        assert meta(aws, run_id)["status"] == "done"
+        first = CANDIDATE_CALL_AUD if failing == JUDGE else 0
+        assert row["cost_aud"] == pytest.approx(first)
+
+        answer = eval_score.resume(run_id, now=NOW, sqs=(again := FakeQueue()))
+        assert answer["resent"] == 1 and again.bodies() == queue.bodies()
+        assert consume_all(again.records()) == [{"status": "scored", "verdict": "good"}]
+
+    [row] = rows(aws, run_id)
+    assert row["outcome"] == "scored" and "stage" not in row
+    assert row["cost_aud"] == pytest.approx(first + CANDIDATE_CALL_AUD + JUDGE_CALL_AUD)
+    assert row["input_tokens"] == (3000 if failing == JUDGE else 2000)
+    header = meta(aws, run_id)
+    assert header["status"] == "done" and header["finished_items"] == {0}
+
+
+def test_a_copy_of_a_failed_message_that_comes_on_its_own_is_scored_not_dropped(aws, models):
+    put_article(aws)
+    run_id, queue = started(aws)
+
+    with patch.object(eval_score, "_draft", side_effect=RuntimeError("ThrottlingException")):
+        assert consume_all(queue.records()) == [{"status": "error"}]
+    assert rows(aws, run_id)[0]["stage"] == "live_draft"
+
+    assert consume_all(queue.records()) == [{"status": "scored", "verdict": "good"}]
+    assert meta(aws, run_id)["status"] == "done" and len(models.calls) == 3
+
+
 def test_a_scoring_run_never_trips_the_judges_wire(aws, models):
     for n in range(10):
         created = datetime(2026, 10, 26, 21, tzinfo=UTC) - timedelta(hours=n)
@@ -868,6 +1122,30 @@ def test_resume_sends_again_only_the_messages_without_a_result(aws, models):
     assert [b["item"]["article_id"] for b in again.bodies()] == ["a2"]
     consume_all(again.records())
     assert meta(aws, run_id)["status"] == "done" and len(rows(aws, run_id)) == 2
+
+
+def test_resume_holds_back_a_message_a_live_consumer_is_scoring_and_sends_a_stale_claim_again(aws, models):
+    put_article(aws)
+    put_article(aws, "a2", created_at="2026-10-25T21:00:00+00:00")
+    run_id, _ = started(aws, sample=2)
+    code = f"{CANDIDATE}@{DRAFT}={VANILLA}"
+
+    def row(n, **fields):
+        return {"entity": f"run#{run_id}", "sk": f"item#{n}#{code}", "n": n, "combo": code, **fields}
+
+    for n, minutes in ((0, 5), (1, 30)):
+        claimed_at = eval_judge._iso(NOW - timedelta(minutes=minutes))
+        aws.Table("Evals").put_item(Item=row(n, outcome="scoring", claimed_at=claimed_at))
+
+    answer = eval_score.resume(run_id, now=NOW, sqs=(again := FakeQueue()))
+
+    assert answer["resent"] == 1 and answer["estimate_aud"] == round(MESSAGE_AUD, 4)
+    assert [b["item"]["n"] for b in again.bodies()] == [1]
+    # Once the stale one has its result, all that is left is being scored: nothing to send.
+    aws.Table("Evals").put_item(Item=row(1, outcome="scored"))
+    with pytest.raises(eval_score.Refused) as nothing:
+        eval_score.resume(run_id, now=NOW, sqs=FakeQueue())
+    assert nothing.value.status == 409 and "being scored" in nothing.value.message
 
 
 def test_resume_is_refused_over_the_cap_for_a_judge_run_and_with_nothing_left(aws, models):
@@ -1103,9 +1381,29 @@ def test_a_day_subject_article_keeps_its_subject_while_the_rota_still_names_it(a
     asked.assert_called_once_with(topic, datetime.fromisoformat(CREATED))
     with patch.object(daily_cycle_handler, "_day_subject", return_value=subject):
         assert rebuilt == _sent_draft(topic, "Late trains, a1b2", "- South line.", goal=subject)
+    # Once the rota names another subject for that day, the article is rebuilt as drafted with no goal.
     other = DaySubject(key="north", label="North", mandate="Cover the north.", style="Long.")
     with patch.object(daily_cycle_handler, "_day_subject", return_value=other):
-        assert "Cover the north." not in _rebuilt(topic, article)
+        rebuilt_after_the_rota_changed = _rebuilt(topic, article)
+    assert "Article style: Long." not in rebuilt_after_the_rota_changed
+    assert rebuilt_after_the_rota_changed == _sent_draft(topic, "Late trains, a1b2", "- South line.")
+
+
+def test_an_article_without_a_subject_is_rebuilt_from_its_whole_window_however_much_was_found_since(aws):
+    """Two days of hourly research since the article, more than the 48 Findings a draft reads, take
+    none of its window's places: it is rebuilt from the Findings it was drafted from, and sampled."""
+    topic = {"topic_id": TOPIC, "name": "Sydney Trains"}
+    created = datetime(2026, 10, 24, 21, tzinfo=UTC)
+    for n in range(10):
+        put_finding(aws, captured_at=(created - timedelta(hours=10 - n)).isoformat(), summary=f"before {n}")
+    for n in range(daily_cycle_handler.MAX_WINDOW_FINDINGS + 2):
+        put_finding(aws, captured_at=(created + timedelta(hours=1 + n)).isoformat(), summary=f"since {n}")
+    article = put_article(aws, created_at=created.isoformat(), findings=False)
+
+    values, _ = daily_cycle_handler.rebuild_draft_prompt(topic, article)
+
+    assert values["summaries"].splitlines() == [f"- before {n}" for n in range(9, -1, -1)]
+    assert [item["article_id"] for item in eval_score.sample_items(JUDGE, 5, NOW)] == ["a1b2"]
 
 
 def test_an_article_whose_findings_are_gone_cannot_be_rebuilt(aws):

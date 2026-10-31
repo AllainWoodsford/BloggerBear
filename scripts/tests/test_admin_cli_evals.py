@@ -223,7 +223,7 @@ def test_score_prices_the_run_shows_it_with_its_environment_and_asks_before_it_s
     ]
     asked.assert_called_once_with("Start this run on production? [y/N] ")
     out = capsys.readouterr().out
-    assert "Environment:   production" in out and "Estimate:      A$0.5100 at most" in out
+    assert "Environment:   production" in out and "Estimate:      about A$0.5100" in out
     assert "maker.a-v1:0@daily_cycle/draft=vanilla:v1" in out and '"run_id": "score-1"' in out
 
 

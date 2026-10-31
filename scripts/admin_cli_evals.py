@@ -221,7 +221,7 @@ def _print_plan(plan: dict) -> None:
     print(f"Items:         {plan.get('items')} past article(s) of the {plan.get('sample')} asked for")
     print(f"Messages:      {plan.get('messages')}")
     print(
-        f"Estimate:      A${plan.get('estimate_aud', 0):.4f} at most (today's evals cap leaves "
+        f"Estimate:      about A${plan.get('estimate_aud', 0):.4f} (today's evals cap leaves "
         f"A${plan.get('remaining_aud', 0):.4f}; over A${plan.get('score_max_cost_aud', 0)} needs --yes)"
     )
     records = "yes, as Offline Review events" if plan.get("record") else "no (item rows only)"
@@ -343,8 +343,8 @@ def _register_runs(evals_sub, helpers: dict) -> None:
         "--prompt",
         required=True,
         metavar="PROMPT_ID=VERSIONS",
-        help="The prompt and its versions to score, e.g. daily_cycle/draft=v2,v3: each live in the "
-        "prompt-hash table, or vanilla (the copy in the code)",
+        help="The prompt and its versions to score, e.g. daily_cycle/draft=v2,v3: each one this "
+        "deployment published (live, or retired since), or vanilla (the copy in the code)",
     )
     score_parser.add_argument(
         "--sample", type=int, default=10, metavar="N", help="Past articles to score, 1 to 50 (default 10)"

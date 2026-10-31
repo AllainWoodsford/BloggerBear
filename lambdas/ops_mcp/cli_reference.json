@@ -4904,7 +4904,7 @@
           "flags": [
             "--prompt"
           ],
-          "help": "The prompt and its versions to score, e.g. daily_cycle/draft=v2,v3: each live in the prompt-hash table, or vanilla (the copy in the code)",
+          "help": "The prompt and its versions to score, e.g. daily_cycle/draft=v2,v3: each one this deployment published (live, or retired since), or vanilla (the copy in the code)",
           "type": "str",
           "choices": null,
           "default": null,
@@ -4982,7 +4982,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py evals score [-h] --judge MODEL_ID --models MODEL_IDS\n                                --prompt PROMPT_ID=VERSIONS [--sample N] [--record] [--yes]\n                                [--no-wait]\n\noptions:\n  -h, --help            show this help message and exit\n  --judge MODEL_ID      The model that compares the drafts: none of --models\n  --models MODEL_IDS    Comma-separated models to score, 1 to 5\n  --prompt PROMPT_ID=VERSIONS\n                        The prompt and its versions to score, e.g. daily_cycle/draft=v2,v3: each\n                        live in the prompt-hash table, or vanilla (the copy in the code)\n  --sample N            Past articles to score, 1 to 50 (default 10)\n  --record              Write each verdict as an Offline Review event, which counts towards the\n                        gates while the judge is calibrated (needs --yes)\n  --yes                 Do not ask; needed over score_max_cost_aud and with --record\n  --no-wait             Return once the run is started instead of following its progress\n"
+      "help_text": "usage: admin_cli.py evals score [-h] --judge MODEL_ID --models MODEL_IDS\n                                --prompt PROMPT_ID=VERSIONS [--sample N] [--record] [--yes]\n                                [--no-wait]\n\noptions:\n  -h, --help            show this help message and exit\n  --judge MODEL_ID      The model that compares the drafts: none of --models\n  --models MODEL_IDS    Comma-separated models to score, 1 to 5\n  --prompt PROMPT_ID=VERSIONS\n                        The prompt and its versions to score, e.g. daily_cycle/draft=v2,v3: each\n                        one this deployment published (live, or retired since), or vanilla (the\n                        copy in the code)\n  --sample N            Past articles to score, 1 to 50 (default 10)\n  --record              Write each verdict as an Offline Review event, which counts towards the\n                        gates while the judge is calibrated (needs --yes)\n  --yes                 Do not ask; needed over score_max_cost_aud and with --record\n  --no-wait             Return once the run is started instead of following its progress\n"
     },
     "evals runs": {
       "help": "The judge's and the offline scoring runs: list, progress and results, cancel, resume",

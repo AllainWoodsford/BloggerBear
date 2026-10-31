@@ -542,8 +542,12 @@ def get_prompt(prompt_id: str, values: dict | None = None, locked: dict | None =
 #
 # An offline scoring run drafts with a version a person names, live or not served here at all, so it
 # never draws an arm and never writes a prompt_fallback line: the version is checked once, when the run
-# is asked for (live_version), and read by its sha256 from versions/, where the publisher writes each
-# file once and never deletes it (version_prompt). Both only read.
+# is asked for (published_version), and read by its sha256 from versions/, where the publisher writes
+# each file once and never deletes it (version_prompt). Both only read, and neither asks whether assets
+# are served (PROMPT_AS_ASSET_ENABLED): a version can be scored before they are.
+
+# A file under versions/ is named by the sha256 of its bytes.
+_VERSIONS_FILE = re.compile(r"([0-9a-f]{64})\.txt")
 
 
 def store_named() -> bool:
@@ -557,24 +561,28 @@ def version_key(prompt_id: str, sha256: str) -> str:
     return f"{prompt_id}/versions/{sha256}.txt"
 
 
-def live_version(prompt_id: str, version: str) -> str | None:
-    """The sha256 of `version` (`v2`) of `prompt_id` while it is live: a file under latest/ tagged with
-    that version whose bytes hash to a hash row that says `live` for this prompt and this version. None
-    when there is no such file (never published, retired, or not approved). Read now, never from the
-    cache; raises when the bucket or the hash table cannot be read (store_named must hold)."""
+def published_version(prompt_id: str, version: str) -> str | None:
+    """The sha256 of `version` (`v2`) of `prompt_id` when this deployment published it: a file under
+    versions/ whose hash row names this prompt and this version, `live` or `retired`. The hash table is
+    the record of every version published, and a version names one text for ever
+    (scripts/publish_prompts.py), so a version a later one replaced is found as well as the live one.
+    None for a version no such row names: never published here, or `pending`, which was never approved.
+    Each file's key names its sha256, so this lists the prompt's versions/ and reads their rows, as
+    many as it has versions. Read now, never from the cache; raises when the bucket or the hash table
+    cannot be read (store_named must hold)."""
     if not _VERSION.fullmatch(version or ""):
         return None
-    for key in _list_latest(prompt_id):
-        if _tags(key).get("version") != version:
-            continue
-        raw = _s3().get_object(Bucket=os.environ["PROMPTS_BUCKET"], Key=key)["Body"].read()
-        try:
-            sha = sha256_text(raw.decode("utf-8"))
-        except UnicodeDecodeError:
-            continue
-        row = _hash_row(sha) or {}
-        if (row.get("status"), row.get("prompt_id"), row.get("version")) == ("live", prompt_id, version):
-            return sha
+    bucket, prefix = os.environ["PROMPTS_BUCKET"], f"{prompt_id}/versions/"
+    for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for item in page.get("Contents", []):
+            named = _VERSIONS_FILE.fullmatch(item["Key"][len(prefix) :])
+            if named is None:
+                continue
+            row = _hash_row(named.group(1)) or {}
+            if (row.get("prompt_id"), row.get("version")) != (prompt_id, version):
+                continue
+            if row.get("status") in ("live", "retired"):
+                return named.group(1)
     return None
 
 

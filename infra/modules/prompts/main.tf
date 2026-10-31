@@ -5,9 +5,10 @@
 #
 # Terraform owns the bucket and the table, never what is in them. The publisher (its own role,
 # gha-<prefix>-dev-prompts or gha-<prefix>-prod-prompts, made by infra/bootstrap) writes every
-# object and every hash row; the Lambdas only read, through common/prompts.py, and only while the
-# root's prompt_as_asset_enabled is on (PROMPT_AS_ASSET_ENABLED). Merging this module therefore
-# makes an empty bucket and an empty table that nothing reads.
+# object and every hash row; the Lambdas only read, through common/prompts.py: they serve prompts
+# from it only while the root's prompt_as_asset_enabled is on (PROMPT_AS_ASSET_ENABLED), while the
+# admin API's listings and the offline scoring runs read it whatever that says. Merging this module
+# therefore makes an empty bucket and an empty table that no prompt is served from.
 #
 # The bucket's keys:
 #   <lambda_id>/<prompt_name>/latest/vN.txt   what is served (one file: the prompt; two or more:
