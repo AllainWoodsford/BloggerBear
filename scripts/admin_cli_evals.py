@@ -46,7 +46,8 @@ from urllib.parse import quote
 # dollars; "text" a value as given; "list" comma-separated values. '' clears any of them.
 SET_FLAGS = (
     ("--cull", "cull_enabled", "switch",
-     "Turn culling on or off (default off; nothing is deleted until `evals cull --apply`)"),
+     "Let `evals cull --apply` archive and delete the proposed models (default off); the weekly "
+     "proposal is made while evals are on either way"),
     ("--cull-max-per-run", "cull_max_per_run", "whole",
      "Models one cull may delete, 1 to 50 (default 3)"),
     ("--judge", "judge_enabled", "switch",

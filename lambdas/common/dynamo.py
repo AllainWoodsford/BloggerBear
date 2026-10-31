@@ -1787,15 +1787,19 @@ def list_models() -> list[dict]:
     return items
 
 
-def get_model(model_id: str) -> dict | None:
+def get_model(model_id: str, *, consistent: bool = False) -> dict | None:
     """Fetch a single Models item by model_id, or None if it isn't registered.
 
     Same Decimal -> float conversion as list_models, for the same reason
     (json.dumps can't serialize Decimal) -- needed by common/costing.py's
     per-model pricing lookup (PR 2 of 5).
+
+    `consistent` makes it a strongly consistent read, for an operator's route that must see a row
+    written just before (common/evals_adjust._registry_row, after `models restore` puts one back);
+    routing and pricing keep the cheaper eventually consistent read.
     """
     table = get_table(os.environ["MODELS_TABLE"])
-    response = table.get_item(Key={"model_id": model_id})
+    response = table.get_item(Key={"model_id": model_id}, ConsistentRead=consistent)
     item = response.get("Item")
     if item is None:
         return None

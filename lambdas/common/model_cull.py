@@ -9,16 +9,16 @@ adjustment is (common/evals_adjust.py): a cull reads the scores the rollup keeps
 writes an Admin Forgive event.
 
 **apply** archives then deletes up to `cull_max_per_run` of the proposal's models, worst total
-first, and only while `cull_enabled` is true; it is refused when there is no proposal or it has
-expired. Each model is checked again against the live rules first (model_fleet.cull_check, over
-the registry, the topics, the default row, the pool and the evals settings as they are now), so a
-model that has since been given a role, had its price locked or its gates held open, recovered
-above the gate, or left the registry is kept, and the answer says why. The culled models go
-through the prune path (model_fleet.retire): each archive entry keeps the model's row, and
-discovery never adds one back (deviation 8). The proposal is left as it was, so another apply
-takes the next ones, checked again. What was done is recorded on the state row as
-`last_cull_apply` (when, the ids culled, those kept and why, those left for another apply), which
-`evals status` shows.
+first, and only while `cull_enabled` is true (the switch gates this step alone: the weekly proposal
+is made whenever evals are on); it is refused when there is no proposal or it has expired. Each
+model is checked again against the live rules first (model_fleet.cull_check, over the registry, the
+topics, the default row, the pool and the evals settings as they are now), so a model that has
+since been given a role, had its price locked or its gates held open, recovered above the gate, or
+left the registry is kept, and the answer says why. The culled models go through the prune path
+(model_fleet.retire): each archive entry keeps the model's row, and discovery never adds one back
+(deviation 8). The proposal is left as it was, so another apply takes the next ones, checked again.
+What was done is recorded on the state row as `last_cull_apply` (when, the ids culled, those kept
+and why, those left for another apply), which `evals status` shows.
 
 **restore** puts a model the archive holds (culled, or pruned) back in the registry: the row the
 archive kept for a culled model (a pruned one's price and names only, disabled, for `models add`
@@ -27,9 +27,11 @@ scores settle. When its total is below zero it writes an Admin Forgive that brin
 through common/evals_adjust.adjust (allow_cull when the forgive is over 100), which writes the
 adjust# row and the event as `evals forgive` does: the models row's total moves at the next hourly
 rollup. Then it deletes the archive entry. A model the registry already holds (put back by hand)
-is not written again; it is forgiven and held open all the same. Steps are in that order so that a
-restore that fails part-way can be sent again: the forgive is worked out from the total as it then
-is, so a second one is never written.
+is not written again; it is forgiven and held open all the same, and a row deleted while that is
+done is refused (409) before anything is forgiven. The registry is read by key with strongly
+consistent reads (evals_adjust._registry_row), so the forgive's own check sees the row just put
+back. Steps are in that order so that a restore that fails part-way can be sent again: the forgive
+is worked out from the total as it then is, so a second one is never written.
 """
 
 from __future__ import annotations
@@ -169,13 +171,18 @@ def restore(given, now: datetime | None = None) -> dict:
     key, entry = found
     until = (now + RESTORE_UNGATED).astimezone(UTC).isoformat(timespec="seconds")
     existing = evals_adjust._registry_row(given, model_id)
-    if existing is None:
-        added = dynamo.add_model_if_missing({**_row(key, entry), "ungated_until": until})
-        registry_id = key
-    else:
-        added = False
-        registry_id = existing["model_id"]
-        dynamo.set_model_fields(registry_id, {"ungated_until": until}, expected={})
+    added = existing is None and dynamo.add_model_if_missing({**_row(key, entry), "ungated_until": until})
+    registry_id = key if existing is None else existing["model_id"]
+    if not added:
+        # The row is there: found, or missed by the lookup (its scan for an ARN-keyed row is
+        # eventually consistent) and so refusing the add. Either way it is held open, never rewritten.
+        if not dynamo.set_model_fields(registry_id, {"ungated_until": until}, expected={}):
+            raise Refused(
+                409,
+                f"the registry's row for '{model_id}' was deleted while it was being restored: nothing "
+                "was forgiven and the archive still holds it, so send it again",
+            )
+        existing = existing or dynamo.get_model(registry_id, consistent=True)
 
     settings = evals_settings.get_settings()
     total = evals_adjust.model_total(model_id, settings, now)

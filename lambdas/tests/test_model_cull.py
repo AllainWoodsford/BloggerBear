@@ -14,7 +14,8 @@ cull_max_per_run, worst first, each checked again against the live rules, archiv
 (so neither discover nor the rollup brings one back), and records itself for `evals status`. A
 restore puts the archived row back, deletes the archive entry, writes an Admin Forgive that brings
 the total to zero and holds the gates open for 7 days, so the model is not proposed again at the
-next cycle.
+next cycle; it finds the row it put back although an eventually consistent read would not, holds
+open a row it missed, and is refused before anything is forgiven when the row goes meanwhile.
 """
 
 from __future__ import annotations
@@ -32,7 +33,16 @@ from test_admin_evals import ALPHA, AT, Clock, adjust_rows, call, events_of, mod
 from test_evals_rollup import completion, sydney
 
 import admin_api_handler
-from common import dynamo, evals_rollup, evals_settings, evals_status, evidence, model_catalog, model_fleet
+from common import (
+    dynamo,
+    evals_adjust,
+    evals_rollup,
+    evals_settings,
+    evals_status,
+    evidence,
+    model_catalog,
+    model_fleet,
+)
 
 # The admin evals tests' fixtures, under their own names: the tables with evals on (`aws`), the evals
 # log the admin API writes and the rollup reads at Clock's time (`logs`), and the queues (`queue`).
@@ -262,6 +272,19 @@ def test_the_weekly_cycle_proposes_after_refreshing_the_rotations(evals_on):
     assert result["cycle"]["cull"]["proposed_ids"] == [POOR]
     assert state()["last_cycle_result"]["cull"]["status"] == "proposed"
     assert proposed_ids() == [POOR]
+
+
+def test_the_weekly_cycle_proposes_under_the_gates_the_evals_row_stores_not_the_defaults(evals_on):
+    """Section 4.5: total_gate and min_events are set in DynamoDB only; the cycle reads them there."""
+    evals_on.Table("ModelConfig").put_item(Item={"config_id": "evals", "total_gate": -500, "min_events": 50})
+    put_scored(evals_on, POOR, total=-600, events=50)  # below the stored gate, above the default one
+    put_scored(evals_on, BAD, total=-1200, events=40)  # enough events for the default, not the stored 50
+
+    result = model_catalog.handle({"job": "cycle", "trigger": "schedule"}, AT)
+
+    assert result["cycle"]["cull"]["proposed_ids"] == [POOR]
+    assert proposed_ids() == [POOR]
+    assert (state()["cull_proposal"]["total_gate"], state()["cull_proposal"]["min_events"]) == (-500, 50)
 
 
 def test_a_proposal_that_fails_leaves_the_cycles_rotations_done(evals_on, capsys):
@@ -555,6 +578,124 @@ def test_a_restore_that_fails_after_putting_the_row_back_can_be_sent_again_witho
     assert status == 200 and body["restored"] is False and body["forgive"] is None
     assert body["total_perf_before"] == 0 and len(adjust_rows(evals_on)) == 1
     assert POOR not in dynamo.get_model_archive()
+
+
+def test_a_restore_forgives_and_unarchives_although_an_eventually_consistent_read_misses_the_row_it_put_back(
+    evals_on, logs, monkeypatch
+):
+    """The forgive's registry check reads the row by key with a strongly consistent read: an
+    eventually consistent one made just after the put, or the scan, may not see the row yet."""
+    culled(evals_on, logs)
+    add_model_if_missing, get_model = dynamo.add_model_if_missing, dynamo.get_model
+    list_models = dynamo.list_models
+    added = []
+
+    def add(item):
+        added.append(add_model_if_missing(item))
+        return added[-1]
+
+    def stale_get(model_id, *, consistent=False):
+        return get_model(model_id, consistent=consistent) if consistent or not any(added) else None
+
+    def stale_list():
+        return [row for row in list_models() if not any(added) or row["model_id"] != POOR]
+
+    monkeypatch.setattr(dynamo, "add_model_if_missing", add)
+    monkeypatch.setattr(dynamo, "get_model", stale_get)
+    monkeypatch.setattr(dynamo, "list_models", stale_list)
+
+    status, body = route_restore(POOR)
+
+    assert added == [True]
+    assert (status, body["restored"], body["forgive"]["delta"]) == (200, True, 1200)
+    assert [(row["delta"], row["reason"]) for row in adjust_rows(evals_on)] == [(1200, "Admin Forgive")]
+    [event] = events_of(logs, "Admin Forgive")
+    assert event["model_id"] == POOR
+    assert POOR not in dynamo.get_model_archive()
+
+
+def test_a_row_the_restores_lookup_missed_is_held_open_when_the_add_finds_it_there(
+    evals_on, logs, monkeypatch
+):
+    """A resend after a restore that stopped part-way, or a row put back by hand, that the lookup did
+    not see: the add is refused, and the row there still gets its ungated_until."""
+    culled(evals_on, logs)
+    put_scored(evals_on, POOR, total=-1200, display_name="By hand")
+    registry_row, looked_up = evals_adjust._registry_row, []
+
+    def missed_once(given, model_id):
+        looked_up.append(given)
+        return None if len(looked_up) == 1 else registry_row(given, model_id)
+
+    monkeypatch.setattr(evals_adjust, "_registry_row", missed_once)
+
+    status, body = route_restore(POOR)
+
+    assert status == 200 and body["restored"] is False and body["forgive"]["delta"] == 1200
+    row = dynamo.get_model(POOR)
+    assert row["ungated_until"] == body["ungated_until"] and row["display_name"] == "By hand"
+    assert POOR not in dynamo.get_model_archive()
+
+
+def test_a_restore_whose_row_is_deleted_meanwhile_is_refused_before_anything_is_forgiven(evals_on, logs):
+    culled(evals_on, logs)
+    put_scored(evals_on, POOR, total=-1200)  # put back by hand, then deleted just after the restore reads it
+    set_model_fields = dynamo.set_model_fields
+
+    def deleted_first(model_id, updates, *, expected):
+        dynamo.delete_model(model_id)
+        return set_model_fields(model_id, updates, expected=expected)
+
+    with patch.object(dynamo, "set_model_fields", deleted_first):
+        status, body = route_restore(POOR)
+
+    assert status == 409
+    assert body["error"] == (
+        f"the registry's row for '{POOR}' was deleted while it was being restored: nothing was forgiven "
+        "and the archive still holds it, so send it again"
+    )
+    assert POOR not in registry() and POOR in dynamo.get_model_archive() and adjust_rows(evals_on) == []
+    # Sent again, it puts the archived row back and forgives it.
+    status, body = route_restore(POOR)
+    assert (status, body["restored"], body["forgive"]["delta"]) == (200, True, 1200)
+    assert POOR in registry() and dynamo.get_model_archive() == {}
+
+
+POOR_ARN = f"arn:aws:bedrock:{test_admin_evals.REGION}:123456789012:inference-profile/{POOR}"
+
+
+def test_a_model_the_registry_kept_under_its_arn_is_restored_by_its_id(evals_on, logs):
+    put_scored(evals_on, POOR_ARN, total=0, events=0)
+    poor_history(evals_on, POOR)  # evals rows are kept under the canonical id
+    rolled_up(logs)
+    assert dynamo.get_model(POOR_ARN)["total_perf"] == -1200
+    propose()
+    cull_on(evals_on)
+    assert call("POST /evals/cull/apply")[1]["culled_ids"] == [POOR_ARN]
+    # Archived under the ARN, so only matching the archive's keys as the registry's rows finds it.
+    assert set(dynamo.get_model_archive()) == {POOR_ARN}
+
+    status, body = route_restore(POOR)
+
+    assert (status, body["model_id"], body["restored"]) == (200, POOR_ARN, True)
+    assert (body["forgive"]["model_id"], body["forgive"]["delta"]) == (POOR, 1200)
+    [event] = events_of(logs, "Admin Forgive")
+    assert event["model_id"] == POOR
+    assert dynamo.get_model(POOR_ARN)["ungated_until"] == body["ungated_until"]
+    # Back under the ARN, with no second row under the canonical id.
+    assert dynamo.get_model(POOR) is None and dynamo.get_model_archive() == {}
+
+
+def test_unarchiving_a_model_the_archive_does_not_hold_returns_false_and_writes_nothing(evals_on):
+    assert dynamo.unarchive_model(POOR) is False
+    assert dynamo.get_config_row("model-archive") is None
+    entry = {"display_name": "Fine", "provider": "maker", "pruned_at": "2026-10-01T00:00:00+00:00"}
+    dynamo.archive_models({FINE: entry})
+
+    assert dynamo.unarchive_model(POOR) is False
+    assert dynamo.get_model_archive() == {FINE: entry}
+    assert dynamo.unarchive_model(FINE) is True
+    assert dynamo.get_model_archive() == {}
 
 
 def route_restore(model_id):

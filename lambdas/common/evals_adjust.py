@@ -103,10 +103,14 @@ def _registry_row(given: str, model_id: str) -> dict | None:
     """The registry row of the model whose canonical id is `model_id`: the row under the id as sent
     (`given`, an inference profile's ARN or the id itself), else the row under `model_id`, else the
     row whose own id is an ARN that names it (as the rollup and the digest match them). None when
-    the registry has no row for it."""
+    the registry has no row for it.
+
+    The lookups by key are strongly consistent reads: `models restore` puts a row back and then
+    forgives it through adjust, whose check here must see that row (common/model_cull.restore
+    passes the key it wrote). The scan for an ARN-keyed row stays eventually consistent."""
     for key in dict.fromkeys((given, model_id)):
         if len(key.encode("utf-8")) <= KEY_BYTES:
-            row = dynamo.get_model(key)
+            row = dynamo.get_model(key, consistent=True)
             if row is not None:
                 return row
     return next(

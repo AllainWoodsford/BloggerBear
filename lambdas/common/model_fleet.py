@@ -534,7 +534,9 @@ def cull_proposal(settings: dict, now: datetime) -> dict:
     written to the state row as `cull_proposal`, with `expires_at` the next cycle's time, an empty one
     too (so `evals status` tells "nothing to cull" from "never looked"); nothing is deleted. While
     evals are off nothing is proposed, as the scores are not being kept, and the last proposal
-    expires on its own at the time this cycle was due."""
+    expires on its own at the time this cycle was due. It is made whatever `cull_enabled` says: that
+    switch gates only the apply that deletes (common/model_cull.apply), so proposals can be read for
+    a few cycles before anything can be deleted, and culling takes `evals set --cull on` first."""
     if not model_ranch.enabled():
         evidence.emit("model_cull", job="propose", status="off")
         return {"status": "off"}
