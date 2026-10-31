@@ -2,13 +2,24 @@
 GET /evals/digest (docs/enhancements/model-ranch-prompt-assets-evals.md, PR13).
 
 **status** answers "are evals working, and what are they holding back?" in parts, each read on its
-own: the switches, the rollup (its watermark and last run), `late_dropped`, the judge (its agreement
-with people, pairs and whether it is calibrated), the gated models, the cull proposal in place, each
-queue's depth and the age of its oldest job (eval-work's, and the queue platform's work.fifo), and
-the topics by dispatch mode. A part that cannot be read says "could not check" (COULD_NOT_CHECK) and
-the others still answer, so one missing grant or one slow service never hides the rest. The prompt
-release in place and the prompt fallbacks of the last 24 hours join it where prompts as assets meet
-evals (PR14); the last cull applied with culling (PR16), which writes the proposal too.
+own: the switches, the prompt release in place and the prompt fallbacks of the last 24 hours, the
+rollup (its watermark and last run), `late_dropped`, the judge (its agreement with people, pairs and
+whether it is calibrated), the gated models, the cull proposal in place, each queue's depth and the
+age of its oldest job (eval-work's, and the queue platform's work.fifo), and the topics by dispatch
+mode. A part that cannot be read says "could not check" (COULD_NOT_CHECK) and the others still
+answer, so one missing grant or one slow service never hides the rest. The last cull applied joins
+it with culling (PR16), which writes the proposal too.
+
+**The prompt parts** are where prompts as assets meet evals. The release is the publisher's
+`releases/current.json` in the prompts bucket (common/prompts.current_release), read by its two
+fields' names (prompts.CURRENT_RELEASE_FIELD, PINNED_RELEASE_FIELD), with whether this deployment
+reads assets at all. The fallbacks are the observability module's PromptFallback metric, which its
+metric filter counts from every pipeline log group's prompt_fallback evidence lines; read with
+`cloudwatch:GetMetricStatistics`, which lambda_exec already holds for the queues' age (the evals
+module's EvalWorkAge statement: a metric read takes no resource), so the part needs no grant of its
+own. The release is "off" while the deployment has no prompts bucket, and the fallbacks while it does
+not read assets (its Lambdas then use the code's copy of every prompt and have nothing to fall back
+from); neither reads anything then.
 
 **digest** adds the day rows up from a day (`since`, a week ago by default) to today, per model and
 per prompt version: perf, events, good and bad with the Wilson interval of good/(good + bad)
@@ -25,7 +36,7 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Key
 
-from common import dynamo, evals, evals_rollup, evals_settings, evidence, model_catalog
+from common import dynamo, evals, evals_rollup, evals_settings, evidence, model_catalog, prompts
 from common.model_pricing import canonical_model_id
 
 COULD_NOT_CHECK = "could not check"
@@ -51,6 +62,24 @@ DIGEST_DAYS = 7
 DIGEST_MAX_DAYS = 120
 # Topics with no dispatch_mode run on their own schedules (the queue platform's cutover sets it).
 DEFAULT_DISPATCH_MODE = "schedule"
+# The prompt fallbacks' metric, as infra/modules/observability's prompt_fallback filter names it: one
+# metric with no dimensions, fed by every pipeline log group. The namespace is the project's own name,
+# which stays whatever the deployment's prefix is (common/naming.py), and the environment's.
+FALLBACK_NAMESPACE = "BloggerBear/{environment}"
+FALLBACK_METRIC = "PromptFallback"
+FALLBACK_LOOKBACK = timedelta(hours=24)
+FALLBACK_PERIOD_SECONDS = 3600
+PROMPTS_OFF = {
+    "release": "prompts as assets are not deployed: there is no prompts bucket (PROMPTS_BUCKET is empty)",
+    "fallbacks": (
+        "prompts as assets are off (PROMPT_AS_ASSET_ENABLED): every prompt is the copy in the code, "
+        "so nothing falls back"
+    ),
+}
+FALLBACK_DETAIL = (
+    "each fallback is a prompt_fallback line in its Lambda's log, naming the prompt, the version and "
+    "why; `prompts list` shows what is live"
+)
 
 _sqs = None
 _cloudwatch = None
@@ -144,6 +173,45 @@ def _queue_age(queue: str, now: datetime) -> dict:
     return {"queue": name, "oldest_seconds": int(latest["Maximum"]), "at": latest["Timestamp"].isoformat()}
 
 
+def _prompt_release() -> dict:
+    """The publisher's release in place and, while a rollback holds to one, the pinned release; None
+    for each before the first publish."""
+    bucket = os.environ.get("PROMPTS_BUCKET", "")
+    if not bucket:
+        return {"status": "off", "detail": PROMPTS_OFF["release"]}
+    current = prompts.current_release()
+    answer = {"bucket": bucket, "assets_enabled": prompts.assets_enabled()}
+    if current is None:
+        return {**answer, "current": None, "pinned": None, "detail": "nothing has been published yet"}
+    return {
+        **answer,
+        "current": current.get(prompts.CURRENT_RELEASE_FIELD),
+        "pinned": current.get(prompts.PINNED_RELEASE_FIELD),
+    }
+
+
+def _prompt_fallbacks(now: datetime) -> dict:
+    """How many prompts fell back to the code's copy in the last 24 hours, in how many of those hours,
+    and the latest such hour."""
+    if not prompts.assets_enabled():
+        return {"status": "off", "detail": PROMPTS_OFF["fallbacks"]}
+    points = _cloudwatch_client().get_metric_statistics(
+        Namespace=FALLBACK_NAMESPACE.format(environment=os.environ["ENVIRONMENT_NAME"]),
+        MetricName=FALLBACK_METRIC,
+        StartTime=now - FALLBACK_LOOKBACK,
+        EndTime=now,
+        Period=FALLBACK_PERIOD_SECONDS,
+        Statistics=["Sum"],
+    ).get("Datapoints") or []
+    hours = sorted((p for p in points if p.get("Sum", 0) > 0), key=lambda p: p["Timestamp"])
+    return {
+        "last_24_hours": int(sum(p["Sum"] for p in hours)),
+        "hours_with_fallbacks": len(hours),
+        "latest_hour": hours[-1]["Timestamp"].isoformat() if hours else None,
+        "detail": FALLBACK_DETAIL,
+    }
+
+
 def _topics_by_dispatch_mode() -> dict:
     counts = {DEFAULT_DISPATCH_MODE: 0, "queue": 0}
     for topic in dynamo.list_topics():
@@ -221,6 +289,8 @@ def status(now: datetime | None = None) -> dict:
                 **{name: settings()[name] for name in ("judge_enabled", "cull_enabled", "trace_calls")},
             },
         ),
+        "prompt_release": _part("prompt_release", _prompt_release),
+        "prompt_fallbacks": _part("prompt_fallbacks", lambda: _prompt_fallbacks(now)),
         "rollup": _part("rollup", lambda: _rollup(index())),
         "late_dropped": _part("late_dropped", lambda: {"late_dropped": _late_dropped(index())}),
         "judge": _part("judge", lambda: _judge(settings(), index())),
