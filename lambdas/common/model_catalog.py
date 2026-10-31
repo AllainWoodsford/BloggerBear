@@ -1195,7 +1195,8 @@ def write_snapshot(run: dict, kept: list[dict], now: datetime, client=None) -> s
 GRANTED, DENIED, UNKNOWN = "granted", "denied", "unknown"
 ACCESS_FIELDS = ("access", "access_checked_at", "access_error")
 # What the Model Ranch keeps on a row: its purpose and inputs (discover, classify), the evals
-# rollup's ratings, the roles it plays (model_fleet.protected_models' codes) and the gate override.
+# rollup's ratings and the rewrite picker's counts (`perf_good`, `perf_bad`), the roles it plays
+# (model_fleet.protected_models' codes) and the gate override.
 RANCH_FIELDS = (
     "model_purpose",
     "model_inputs",
@@ -1204,6 +1205,8 @@ RANCH_FIELDS = (
     "monthly_perf",
     "total_perf",
     "perf_events",
+    "perf_good",
+    "perf_bad",
     "perf_updated_at",
     "model_roles",
     "ungated_until",

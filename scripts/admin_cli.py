@@ -599,9 +599,44 @@ def _cmd_articles_rewrite(args: argparse.Namespace) -> None:
     body = {"instructions": args.instructions}
     if args.model_id:
         body["model_id"] = args.model_id
+    else:
+        body.update(_best_rewrite_model(args))
     if args.force:
         body["force"] = True
     _do_request(args, "POST", f"/articles/{args.article_id}/rewrite", body)
+
+
+def _best_rewrite_model(args: argparse.Namespace) -> dict:
+    """{"model_id": ...} for the best-ranked model `approve`'s Re-Write would offer first
+    (review_inbox.rewrite_models: usable text models the Model Ranch has not gated, by the Wilson
+    lower bound of their scores, then price), but only while one is ranked: evals are on and it has
+    at least `min_events` scored events (section 4.9). Otherwise {}, and the API picks the topic's
+    own model (resolve_model, with the rotation guard) as it always has: while evals are off, while
+    no model has enough scored events yet, and when the models cannot be read."""
+    import review_inbox
+
+    topic_model = "the topic's own model writes it"
+    try:
+        models = review_inbox.rewrite_models(_review_api(args))
+    except review_inbox.ApiError as exc:
+        print(f"Could not read the models to rank them ({exc.message}); {topic_model}.", file=sys.stderr)
+        return {}
+    best = models[0] if models else None
+    if best is None:
+        why = (
+            "No model can be picked for a rewrite: none is a callable text model the Model Ranch "
+            "has not gated"
+        )
+    elif "ranking" not in best:
+        why = "Evals are off, so no model is ranked for a rewrite"
+    elif not best["ranking"].get("ranked"):
+        why = "No model has enough scored events to be ranked for a rewrite yet"
+    else:
+        chosen = best["model_id"]
+        print(f"Rewriting with {chosen}, the best-ranked model (--model picks another).", file=sys.stderr)
+        return {"model_id": chosen}
+    print(f"{why}; {topic_model}.", file=sys.stderr)
+    return {}
 
 
 # --- feedback subcommands -----------------------------------------------
@@ -1838,7 +1873,11 @@ def build_parser() -> argparse.ArgumentParser:
     rewrite_parser.add_argument(
         "--model",
         dest="model_id",
-        help="A registered model to rewrite with (admin_cli models list). Default: the topic's model",
+        help=(
+            "A registered model to rewrite with (admin_cli models list). Default: while evals are on, "
+            "the best-ranked model approve's Re-Write offers (a callable text model the Model Ranch "
+            "has not gated, with at least min_events scored events); else the topic's model"
+        ),
     )
     rewrite_parser.add_argument(
         "--force",

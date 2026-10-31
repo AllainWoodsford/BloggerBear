@@ -26,6 +26,10 @@ A held article also has w (Re-Write): pick one of the registered models and the 
 in the background to fix what it was held for (lambdas/common/rewrite.py), while you move on to the
 next item. It comes back to this inbox when it is done -- to approve, reject or rewrite again -- with
 the model and what the rewrite cost. If the rewrite fails, the original comes back with the reason.
+The models offered (rewrite_models) are the enabled text models the account can call (not
+`access: denied`) and the Model Ranch has not gated, best first by how their work has been judged
+(section 4.9 of docs/enhancements/model-ranch-prompt-assets-evals.md), each with its score, n and
+interval.
 
 A skipped item is left exactly as it is, and hidden from your next reviews for a while (a small local
 file, never sent anywhere) so a rerun gives you the next batch instead of the same ones.
@@ -44,6 +48,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from vision_eval_scoring import wilson
+
 DEFAULT_LIMIT = 30
 DEFAULT_SKIP_HOURS = 24
 PREVIEW_CHARS = 700
@@ -57,6 +63,11 @@ HELP_LINE = "[y] Approve | [r] Reject | [z] Skip | [v] View all | [q] Quit -> "
 REWRITE_HELP_LINE = "[y] Approve | [r] Reject | [w] Re-Write | [z] Skip | [v] View all | [q] Quit -> "
 # One keystroke picks a model, so the picker shows at most this many.
 MAX_MODEL_CHOICES = 9
+# The window whose good and bad counts the rewrite picker ranks by (the models row's `perf_good` and
+# `perf_bad`, which the evals rollup writes): the whole record, the most events a model has.
+RANK_WINDOW = "total"
+# lambdas/common/model_fleet.py's purpose for a model that writes text (TEXT_PURPOSE).
+TEXT_PURPOSE = "text"
 
 
 class ApiError(Exception):
@@ -250,8 +261,7 @@ class ModerationSource(ContentSource):
 
     def rewrite_models(self) -> list[dict]:
         if self._models is None:
-            rows = self.api.get("/models").get("models") or []
-            self._models = [row for row in rows if row.get("enabled") is not False]
+            self._models = rewrite_models(self.api)
         return self._models
 
     def rewrite(self, item: Item, model_id: str) -> str:
@@ -346,18 +356,121 @@ def _rewrite_fact(rewrite: dict) -> str:
     return line + (f'; you asked: "{_short(instructions, 120)}"' if instructions else "")
 
 
+# --- the rewrite picker -----------------------------------------------------------------------
+
+
+def _usable(model: dict) -> bool:
+    """lambdas/common/model_fleet.is_usable, which the CLI cannot import: an enabled model (rows
+    from before the flag are) that an access probe has not found uncallable (`access: denied`); a
+    model whose access is unknown or never checked counts as usable."""
+    return model.get("enabled") is not False and model.get("access") != "denied"
+
+
+def _writes_text(model: dict) -> bool:
+    """lambdas/common/model_fleet.suitable(model, TEXT), which the CLI cannot import: a model whose
+    recorded purpose is text, or, for a row from before purposes were recorded, one billed by
+    tokens."""
+    recorded = model.get("model_purpose")
+    if recorded:
+        return recorded == TEXT_PURPOSE
+    return (model.get("pricing_unit") or "tokens") == "tokens"
+
+
+def _blended_price(model: dict) -> float | None:
+    """Input plus output USD per 1K tokens, or None for a model with no price."""
+    inp = model.get("input_price_usd_per_1k_tokens")
+    if not isinstance(inp, int | float) or isinstance(inp, bool):
+        return None
+    out = model.get("output_price_usd_per_1k_tokens")
+    return float(inp) + (float(out) if isinstance(out, int | float) and not isinstance(out, bool) else 0.0)
+
+
+def _by_price(model: dict) -> tuple:
+    """Cheapest first, unpriced models last, then by id."""
+    price = _blended_price(model)
+    return (price is None, price or 0.0, str(model.get("model_id") or ""))
+
+
+def _good_and_bad(model: dict) -> tuple[int, int]:
+    """The model's good and bad events in RANK_WINDOW (0 for a count it does not have)."""
+
+    def count(field: str) -> int:
+        counts = model.get(field)
+        value = counts.get(RANK_WINDOW) if isinstance(counts, dict) else None
+        ok = isinstance(value, int | float) and not isinstance(value, bool) and value > 0
+        return int(value) if ok else 0
+
+    return count("perf_good"), count("perf_bad")
+
+
+def rank_rewrite_models(models: list[dict], gated=(), min_events: int | None = None) -> list[dict]:
+    """The models a Re-Write may use, best first (section 4.9): the usable text models (enabled,
+    not `access: denied`: _usable, _writes_text) not in `gated` (what the Model Ranch holds back).
+    With `min_events` (evals are on), the models with at least that many good and bad events come
+    first, by the Wilson lower bound of good / (good + bad), then blended price, then id; the rest
+    follow by blended price, then id. Each is then returned with its `ranking`: score (the good
+    share), n, the interval's low and high, and whether it was ranked by them. Without
+    `min_events` every model is ordered by price alone."""
+    held_back = set(gated)
+    usable = [
+        model
+        for model in models
+        if _usable(model) and _writes_text(model) and model.get("model_id") not in held_back
+    ]
+    if min_events is None:
+        return sorted(usable, key=_by_price)
+    ranked, rest = [], []
+    for model in usable:
+        good, bad = _good_and_bad(model)
+        n = good + bad
+        low, high = wilson(good, n)
+        score = round(good / n, 4) if n else None
+        ranking = {"score": score, "n": n, "low": low, "high": high, "ranked": bool(n) and n >= min_events}
+        (ranked if ranking["ranked"] else rest).append({**model, "ranking": ranking})
+    ranked.sort(key=lambda model: (-model["ranking"]["low"], *_by_price(model)))
+    return ranked + sorted(rest, key=_by_price)
+
+
+def rewrite_models(api: Api) -> list[dict]:
+    """GET /models' usable (enabled, callable) text models, ranked for a Re-Write
+    (rank_rewrite_models) by what its `ranch` says while evals are on: the models gated, and
+    `min_events`. With evals off there is no `ranch`: nothing is held back and no score is in
+    effect, so the models come cheapest first, and none carries a `ranking`."""
+    listed = api.get("/models")
+    ranch = listed.get("ranch") if isinstance(listed.get("ranch"), dict) else {}
+    min_events = ranch.get("min_events")
+    if not isinstance(min_events, int) or isinstance(min_events, bool):
+        min_events = None
+    return rank_rewrite_models(listed.get("models") or [], ranch.get("gated") or (), min_events)
+
+
+def _ranking_text(ranking: dict | None) -> str:
+    """What the picker ranked a model by: its score, n and 95 % interval, or that it has none."""
+    if not ranking:
+        return ""
+    if not ranking["n"]:
+        return "  (no scores yet)"
+    text = f"score {ranking['score']:.2f}, n {ranking['n']}, 95% {ranking['low']:.2f}-{ranking['high']:.2f}"
+    return f"  ({text})" if ranking["ranked"] else f"  ({text}: too few to rank, by price)"
+
+
 def _model_line(n: int, model: dict) -> str:
     name = model.get("display_name") or model.get("model_id")
     inp, outp = model.get("input_price_usd_per_1k_tokens"), model.get("output_price_usd_per_1k_tokens")
     price = f"  (${inp}/${outp} USD per 1k tokens in/out)" if inp is not None and outp is not None else ""
-    return f"  [{n}] {name}{price}"
+    return f"  [{n}] {name}{_ranking_text(model.get('ranking'))}{price}"
 
 
 def choose_model(models: list[dict], key_reader: Callable[[], str], out) -> str | None:
     """Ask which model a Re-Write uses. Returns its model_id, or None when the person backs out
     (or there is no model to choose)."""
     if not models:
-        _emit("  ! No enabled models are registered (admin_cli models), so nothing can rewrite it.", out)
+        _emit(
+            "  ! No enabled models can rewrite it: none is a registered text model the account can "
+            "call (not access: denied) and the Model Ranch has not gated (admin_cli models list, "
+            "evals status).",
+            out,
+        )
         return None
     shown = models[:MAX_MODEL_CHOICES]
     _emit("  Re-Write with which model?", out)

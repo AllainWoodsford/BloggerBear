@@ -84,6 +84,10 @@ SAMPLES = {
         "models": 18, "not_in_registry": 1, "classify": "done", "classified": 2, "unknown": 0,
         "judge_pairs": 24, "judge_agreement": 0.7917, "calibrated": True, "splits": 0, "ms": 5310,
     },
+    "model_gated_protected": {
+        "model_id": "au.maker.alpha-v1:0", "role": "default", "slot": "model",
+        "windows": ["daily", "weekly"], "caller": "routing",
+    },
 }  # fmt: skip
 
 

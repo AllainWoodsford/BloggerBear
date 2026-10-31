@@ -281,6 +281,7 @@ def test_status_answers_every_part(aws, queue):
         "min_agreement": 0.7, "min_pairs": 2,
     }  # fmt: skip
     gated = body["gated_models"]
+    assert set(gated) == {"gated", "held_open", "protected", "gates"}
     assert [model["model_id"] for model in gated["gated"]] == ["maker.poor-v1:0"]
     # Under the daily gate with 12 events; at -60 the week and the total are above theirs.
     assert gated["gated"][0]["windows"] == ["daily"]
@@ -296,6 +297,65 @@ def test_status_answers_every_part(aws, queue):
     # The queue platform is not deployed here: WORK_QUEUE_URL is empty.
     assert body["queue_depth"]["work.fifo"]["status"] == body["queue_age"]["work.fifo"]["status"] == "off"
     assert body["topics_by_dispatch_mode"] == {"schedule": 2, "queue": 1, "other": 1}
+
+
+# Below the daily gate (-50) with more than min_events (10) events behind it.
+GATED_SCORES = {
+    "daily_perf": -80, "weekly_perf": 0, "total_perf": 0,
+    "perf_events": {"daily": 20, "weekly": 20, "monthly": 20, "total": 20},
+}  # fmt: skip
+
+
+def put_gated(aws, model_id, **fields):
+    item = {"model_id": model_id, "display_name": model_id, "model_purpose": "text", **GATED_SCORES, **fields}
+    aws.Table("Models").put_item(Item=item)
+
+
+def test_status_and_get_models_agree_on_what_is_gated(aws, queue, monkeypatch):
+    """Status decides as the rotation guard does (common/model_ranch.py): the default, the fallback
+    and the judge are never gated, and an ungated_until that is not a time holds the gate open."""
+    default, fallback, judge = "maker.default-v1:0", "maker.fallback-v1:0", "maker.judge-v1:0"
+    aws.Table("ModelConfig").put_item(
+        Item={"config_id": "default", "model_id": default, "fallback_model_id": fallback}
+    )
+    aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "judge_model_id": judge})
+    for model_id in (ALPHA, default, fallback, judge, "maker.poor-v1:0"):
+        put_gated(aws, model_id)
+    put_gated(aws, "maker.forgiven-v1:0", ungated_until="2099-01-01T00:00:00Z")
+    put_gated(aws, "maker.odd-v1:0", ungated_until="soon")
+    put_gated(aws, "maker.lapsed-v1:0", ungated_until="2020-01-01T00:00:00Z")
+
+    _, body = call("GET /evals/status")
+    _, listed = call("GET /models")
+
+    part = body["gated_models"]
+    gated = ["maker.lapsed-v1:0", "maker.poor-v1:0"]
+    assert [model["model_id"] for model in part["gated"]] == listed["ranch"]["gated"] == gated
+    # Served whatever their scores (each time with a model_gated_protected line), so apart.
+    assert {model["model_id"]: model["role"] for model in part["protected"]} == {
+        ALPHA: "default", default: "default", fallback: "fallback", judge: "judge",
+    }  # fmt: skip
+    assert all(model["windows"] == ["daily"] for model in part["protected"])
+    held = {model["model_id"]: model for model in part["held_open"]}
+    assert set(held) == {"maker.forgiven-v1:0", "maker.odd-v1:0"}
+    assert (held["maker.odd-v1:0"]["ungated_until"], held["maker.odd-v1:0"]["ungated_until_unreadable"]) == (
+        "soon", True,
+    )  # fmt: skip
+    assert "ungated_until_unreadable" not in held["maker.forgiven-v1:0"]
+
+    # Status answers whatever the switch says; GET /models then says nothing is held back.
+    monkeypatch.setenv("EVALS_ENABLED", "false")
+    _, off = call("GET /evals/status")
+    _, listed_off = call("GET /models")
+    assert off["gated_models"] == part and "ranch" not in listed_off
+
+
+def test_without_the_default_row_the_gated_models_cannot_be_checked(aws, queue):
+    with patch.object(evals_status.dynamo, "get_model_config", side_effect=RuntimeError("throttled")):
+        _, body = call("GET /evals/status")
+
+    assert body["gated_models"] == {"status": "could not check", "error": "RuntimeError"}
+    assert "status" not in body["switches"]
 
 
 def test_status_says_the_queue_is_off_while_evals_are_and_asks_sqs_nothing(aws, queue, monkeypatch):
