@@ -1046,6 +1046,8 @@ rebased (spec section 6).
 | PR13b forgive, punish, ungate, revoke | #402 | `claude/ranch-44-evals-adjust` | PR13 |
 | PR15 rotation guard and rewrite picker | #403 | `claude/ranch-46-rotation-guard` | PR13 |
 | PR16 culling, proposal mode | #404 | `claude/ranch-47-culling` | PR15 + PR13b |
+| PR14 emission | #405 | `claude/ranch-45-emission` | stacks-meet |
+| PR11b dashboards | #406 | `claude/ranch-31-dashboards` | stacks-meet |
 
 **Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
 #390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
@@ -1054,23 +1056,32 @@ bundle them: the new policies are ordered after #393's shrinks.
 **PR16** (#404) starts from PR15 with PR13b merged in (its `models restore` reuses PR13b's
 forgive), so its diff shows PR13b's commits until #402 merges.
 
-**Being built now:** PR14
-(`claude/ranch-45-emission`), PR18 (`claude/ranch-49-judge`) and PR11b
-(`claude/ranch-31-dashboards`) need the evals and prompts stacks together, so they are built on
+**PR14, PR11b and PR18** need the evals and prompts stacks together, so they are built on
 `claude/ranch-55-stacks-meet`, the branch where the stacks meet, and their PRs take it as their
 base. That branch is PR13's tip with #393, Q2, PR10, PR17, PR4, PR5, PR2 and #401 merged in and
 their conflicts resolved (PR2, PR4 and PR5 sit beside PR6 to PR10, not under them, so each is
 merged on its own). It gets no PR of its own. Once the stacks reach `dev`, the PRs built on it are
-retargeted to `dev` and rebased like any other. PR12 (#395) merges only after the owner says
-"bootstrap applied", and after #393. A branch that is not on `origin` lived only in the old
-session's container: start it again from its parent with the per-PR workflow.
+retargeted to `dev` and rebased like any other. PR18 (`claude/ranch-49-judge`) is finished; its PR
+opens once its full suite passes. PR12 (#395) merges only after the owner says "bootstrap
+applied", and after #393. A branch that is not on `origin` lived only in the old session's
+container: start it again from its parent with the per-PR workflow.
+
+**Being built now** (one workflow): PR19 (`claude/ranch-52-human-review`), from PR18 with PR14
+merged in (8057937), because it adds `pair#human` to PR14's Admin Review; its PR takes PR18's
+branch as its base. PR18b (`claude/ranch-50-offline-runs`), from PR18. PR18c
+(`claude/ranch-51-call-traces`), from PR14.
+
+**PR20's base** is `claude/ranch-56-evals-meet`: the PR18 and PR14 merge with
+`claude/ranch-47-culling` (PR13b, PR15, PR16) merged in, because PR20's tools read PR13b's
+`adjust#` rows and PR16's proposal. PR19 is merged into it before PR20 starts. It gets no PR of
+its own.
 
 **#401** fixes a test whose fixed date went stale on 2026-10-31
 (`test_rail_access_adapter.py`): until it reaches `dev`, CI fails that one test on any branch
 without it. PR13b, PR15, PR16 and the meeting branch carry it.
 
-**Then:** PR18b, PR18c, PR19 and PR20 after PR14 and PR18; PR21 bug sweep;
-PR22 docs sweep.
+**Then:** PR20 after PR19; PR21, the bug sweep, over everything (PR20's branch with PR18b, PR18c
+and PR11b merged in); PR22, the docs sweep.
 
 **Owner actions waiting.**
 
