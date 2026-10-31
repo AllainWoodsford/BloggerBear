@@ -968,6 +968,147 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `reviewer_may_approve`; `articles get` and `articles checked`; the assistant's
   `reviewer_financial_check`; the Terms, Privacy Policy and About page say what he does
 
+### Model Ranch, prompts as assets, continuous evals, the queue platform (2026-10-25)
+
+Spec: [model-ranch-prompt-assets-evals.md](enhancements/model-ranch-prompt-assets-evals.md). One PR per
+line, in three parallel stacks (queue, prompts, evals); ticked only by the final docs PR, as the spec's
+owner decisions say (an agreed override of "check off in the same PR" for this feature).
+
+- [ ] **PR0** — the spec (this section) and the superseded note on the dispatcher proposal
+- [ ] **Q0** — queue wiring: `cron_match`, `dispatch`, `WORKER_CONCURRENCY`, pipeline-config `dispatch_shadow` and `daily_starts_per_tick` (inert)
+- [ ] **Q1** — the work-queue module: `work.fifo`, `work-dlq.fifo`, the dispatcher in shadow mode, the research-tick event-source mapping
+- [ ] **Q2** — per-topic `dispatch_mode` with pre-flight, manual triggers routed through the queue, `topics reschedule --dispatch-mode schedule`
+- [ ] **P0** — prompts wiring: the switch, the publisher-role variable, the `prompt_fallback` evidence event and its alarm (inert)
+- [ ] **PR1** — `fresh_review._DELIMITER_TAG` covers `claims_to_fix`
+- [ ] **PR2** — bootstrap: the two publisher roles and the evals log-group statement (manual apply)
+- [ ] **PR3** — `common/prompts.py`: `get_prompt`, `vanilla_prompt`, `bind_run`, the registry (inert)
+- [ ] **PR4** — the prompts module (bucket, hash table), `GET /prompts`, pause/resume, releases, `prompts set`; `admin_cli prompts`
+- [ ] **PR5** — `prompts.yml`, `prompt_lint.py`, `publish_prompts.py` (release reconcile, hash table rebuilt per release)
+- [ ] **PR6** — migrate the drafting prompts (ideation, draft, title)
+- [ ] **PR7** — migrate the review prompts; compliance stays code-only; `bedrock_redact_review` deleted
+- [ ] **PR8** — migrate the research and vision summary prompts; triage stays code-only
+- [ ] **PR9** — migrate the rewrite and reviewer-bear prompts
+- [ ] **PR10** — migrate the small prompts (gear, reflection, web price, musings); the code-only specs record `vanilla:vN`
+- [ ] **PR1b** — model purpose and suitability, ranch fields preserved on overwrite, `model_catalog_job` counters, `models classify`
+- [ ] **E0** — evals wiring: the switch, `logs_insights` move, the `evals` stats category (inert)
+- [ ] **PR12** — `common/evals.py` and the evals module (table, log group, grants; the rest gated) (bootstrap applied first)
+- [ ] **PR13** — the hourly rollup, the `evals` settings row, `evals status|digest|rollup`
+- [ ] **PR13b** — `evals forgive|punish|ungate|revoke`
+- [ ] **PR11b** — dashboards: `pipeline_health` (with the model-catalog counter row) and `ranch_and_prompts` replace the three
+- [ ] **PR14** — eval events: completion, admin review, rewrite, votes
+- [ ] **PR15** — the rotation guard as a filter; the rewrite picker ranked by performance
+- [ ] **PR16** — culling in proposal mode; `evals cull --apply`; `models restore`
+- [ ] **PR17** — `topic_review_steering` in the fresh-data review
+- [ ] **PR18** — the LLM judge through the eval queue, calibrated against human reviews, with a tripwire
+- [ ] **PR18b** — offline scoring runs: `evals score`, `evals runs`
+- [ ] **PR18c** — call traces (opt-in)
+- [ ] **PR19** — human review of Findings in `approve --source findings`
+- [ ] **PR20** — the assistant's `model_ranch` and `prompt_metrics` tools; the agent prompt; the Friday digest
+- [ ] **PR21** — bug sweep
+- [ ] **PR22** — documentation sweep: configuration, models, observability, runsheets, two architecture pages, README, this checklist ticked; the spec archived
+
+#### Where it is up to (updated 2026-10-31)
+
+A hand-off note for the next agent session: read this, then the spec. The spec is the brief: its
+section 6 holds the working rules (tools, tests, Terraform offline, attribution), section 7 the PR
+sequence and each PR's contents, and section 7.1 the obligations earlier reviews handed to later
+PRs. The open PRs on GitHub are the live truth; this note was right when written. PR22 deletes
+this block.
+
+**Open PRs, all reviewed (three lenses, three skeptics per finding), fixed and green.** Each is
+stacked on its parent's branch until the parent merges; then it is retargeted to `dev` and
+rebased (spec section 6).
+
+| PR | GitHub | branch | parent |
+|---|---|---|---|
+| PR0 spec | #380 | `claude/jolly-lovelace-1ty0ba` | dev |
+| `lambda_exec` budget (not in the spec) | #393 | `claude/ranch-05-exec-role-budget` | dev |
+| Q0 queue wiring | #383 | `claude/ranch-10-queue-wiring` | PR0 |
+| Q1 work queue, shadow mode | #389 | `claude/ranch-11-work-queue` | Q0 |
+| Q2 per-topic cutover | #396 | `claude/ranch-12-queue-cutover` | Q1 |
+| P0 prompts wiring | #382 | `claude/ranch-20-prompts-wiring` | PR0 |
+| PR1 delimiter fix | #381 | `claude/ranch-21-delimiter-tag` | P0 |
+| PR2 bootstrap roles [B] | #386 | `claude/ranch-22-bootstrap-roles` | P0 |
+| PR3 prompts core | #384 | `claude/ranch-23-prompts-core` | PR1 |
+| PR4 prompts bucket and routes | #390 | `claude/ranch-24-prompts-infra` | PR3 |
+| PR5 publisher workflow | #394 | `claude/ranch-25-prompts-publisher` | PR4 |
+| PR6 drafting prompts | #387 | `claude/ranch-26-migrate-drafting` | PR3 |
+| PR7 review prompts | #388 | `claude/ranch-27-migrate-reviews` | PR6 |
+| PR8 research and vision prompts | #392 | `claude/ranch-28-migrate-research` | PR7 |
+| PR9 rewrite and reviewer-bear prompts | #397 | `claude/ranch-29-migrate-rewrite` | PR8 |
+| PR10 the remaining prompts | #398 | `claude/ranch-30-migrate-small-prompts` | PR9 |
+| PR17 topic review steering | #399 | `claude/ranch-48-review-steering` | PR7 |
+| PR1b model purpose | #385 | `claude/ranch-40-model-purpose` | PR0 |
+| E0 evals wiring | #391 | `claude/ranch-41-evals-wiring` | PR1b |
+| PR12 evals core and module [B] | #395 | `claude/ranch-42-evals-core` | E0 |
+| PR13 rollup, settings, status | #400 | `claude/ranch-43-evals-rollup` | PR12 |
+| rail test date fix (not in the spec) | #401 | `claude/fix-rail-access-date-bomb` | dev |
+| PR13b forgive, punish, ungate, revoke | #402 | `claude/ranch-44-evals-adjust` | PR13 |
+| PR15 rotation guard and rewrite picker | #403 | `claude/ranch-46-rotation-guard` | PR13 |
+| PR16 culling, proposal mode | #404 | `claude/ranch-47-culling` | PR15 + PR13b |
+| PR14 emission | #405 | `claude/ranch-45-emission` | stacks-meet |
+| PR11b dashboards | #406 | `claude/ranch-31-dashboards` | stacks-meet |
+| PR18 judge and eval consumer | #407 | `claude/ranch-49-judge` | stacks-meet |
+
+**Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
+#390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
+bundle them: the new policies are ordered after #393's shrinks.
+
+**PR16** (#404) starts from PR15 with PR13b merged in (its `models restore` reuses PR13b's
+forgive), so its diff shows PR13b's commits until #402 merges.
+
+**PR14, PR11b and PR18** need the evals and prompts stacks together, so they are built on
+`claude/ranch-55-stacks-meet`, the branch where the stacks meet, and their PRs take it as their
+base. That branch is PR13's tip with #393, Q2, PR10, PR17, PR4, PR5, PR2 and #401 merged in and
+their conflicts resolved (PR2, PR4 and PR5 sit beside PR6 to PR10, not under them, so each is
+merged on its own). It gets no PR of its own. Once the stacks reach `dev`, the PRs built on it are
+retargeted to `dev` and rebased like any other. PR12 (#395) merges only after the owner says "bootstrap
+applied", and after #393. A branch that is not on `origin` lived only in the old session's
+container: start it again from its parent with the per-PR workflow.
+
+**Being built now** (one workflow): PR19 (`claude/ranch-52-human-review`), from PR18 with PR14
+merged in (8057937), because it adds `pair#human` to PR14's Admin Review; its PR takes PR18's
+branch as its base. PR18b (`claude/ranch-50-offline-runs`), from PR18. PR18c
+(`claude/ranch-51-call-traces`), from PR14.
+
+**PR20's base** is `claude/ranch-56-evals-meet`: the PR18 and PR14 merge with
+`claude/ranch-47-culling` (PR13b, PR15, PR16) merged in, because PR20's tools read PR13b's
+`adjust#` rows and PR16's proposal. PR19 is merged into it before PR20 starts. It gets no PR of
+its own.
+
+**#401** fixes a test whose fixed date went stale on 2026-10-31
+(`test_rail_access_adapter.py`): until it reaches `dev`, CI fails that one test on any branch
+without it. PR13b, PR15, PR16 and the meeting branch carry it.
+
+**Then:** PR20 after PR19; PR21, the bug sweep, over everything (PR20's branch with PR18b, PR18c
+and PR11b merged in); PR22, the docs sweep.
+
+**Owner actions waiting.**
+
+- Review and merge the open PRs in the order above.
+- After PR2 (#386) merges: apply `infra/bootstrap` by hand; create the `production-prompts`
+  environment (required reviewer: you; deployment branch `dev`); set the two
+  `AWS_*_PROMPTS_ROLE_ARN` secrets at repository level; tell the agent "bootstrap applied"
+  (PR12, #395, waits on it).
+- To start publishing prompts: `PROMPT_AS_ASSET_ENABLED=true` as a repository variable, and the
+  `production` environment's own value `false` until production should read assets.
+- Once PR1b (#385) is deployed, run `admin_cli models classify` once.
+- Leave `EVALS_ENABLED` off until PR13 is deployed: before it, nothing writes the rollup's
+  heartbeat line and its alarm fires.
+
+**Practical notes for a cloud session.**
+
+- The container has 4 CPUs, so a workflow runs two agents at a time. The full suite takes 11 to 13
+  minutes: run it in the background and read its log. `pytest-xdist` is not installed.
+- The container has restarted twice mid-work. Agents commit as soon as the touched suites pass;
+  push finished branches (a push to a `claude/ranch-*` branch starts no workflow).
+- The Terraform registry is blocked. Module tests and `validate` need the offline provider mirror
+  in spec section 6. Do not add a `plugin_cache_dir`: its providers fail the committed lock files'
+  checksums and every root `validate` breaks.
+- The session has a fixed disk allowance, which filled once. Delete Terraform data directories and
+  throwaway worktree copies as soon as they are done.
+- No secret in a job a pull request triggers: such jobs run the PR's own code.
+
 ## Backlog / not yet scheduled
 
 *(Freeform — drop ideas here as they occur to you; promote them into a
