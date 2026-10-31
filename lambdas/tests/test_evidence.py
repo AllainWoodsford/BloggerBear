@@ -97,6 +97,13 @@ SAMPLES = {
         "captured_at": "2026-10-27T02:14:09.512330+00:00", "code": "author_only",
     },
     "judge_tripwire": {"run_id": "judge-20261027T030000", "judged": 10, "bad": 9, "share": 0.9},
+    "model_gated_protected": {
+        "model_id": "au.maker.alpha-v1:0", "role": "default", "slot": "model",
+        "windows": ["daily", "weekly"], "caller": "routing",
+    },
+    "model_cull": {
+        "job": "apply", "status": "applied", "proposed": 5, "culled": 3, "kept": 1, "left": 1, "cap": 3,
+    },
 }  # fmt: skip
 
 

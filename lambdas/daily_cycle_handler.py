@@ -1329,7 +1329,10 @@ def _assign_rotated_model(topic_id: str) -> None:
 
     Only a pooled model whose registry row is usable and a text model is picked
     (common/model_fleet.rotation_pool): one disabled, found uncallable or classed as something
-    else since the pool was set is passed over, so the next run never starts on it.
+    else since the pool was set is passed over, so the next run never starts on it. So is one the
+    Model Ranch has gated, while evals are on (common/model_ranch.py): the topic's own `model_id`
+    is never gated once set, so a gated model must not be rolled into it. When every pooled model
+    is passed over, nothing is written and the topic keeps the model it has.
 
     Never allowed to affect an article that has already published: read and write failures, and
     an empty pool, are logged (the latter isn't even logged -- it's the expected steady state

@@ -175,9 +175,9 @@ data "aws_iam_policy_document" "evals" {
     resources = [var.alerts_topic_arn]
   }
 
-  # The admin API's POST /evals/rollup (`admin_cli evals rollup`) starts a rollup in eval-jobs, by
-  # the ARN its name makes, so the grant holds whether or not the function exists (it answers 409
-  # while evals are off).
+  # The admin API's POST /evals/rollup (`admin_cli evals rollup`) starts a rollup in eval-jobs, and
+  # POST /evals/revoke one of the days that hold the revoked events, by the ARN its name makes, so
+  # the grant holds whether or not the function exists (neither starts one while evals are off).
   statement {
     sid       = "InvokeEvalJobs"
     effect    = "Allow"

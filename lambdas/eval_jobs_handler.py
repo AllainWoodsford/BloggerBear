@@ -7,7 +7,8 @@ schedules and its queue's mapping only then):
 * by the module's two EventBridge Scheduler schedules, with `{"job": "rollup", "trigger":
   "schedule"}` hourly at five past and `{"job": "judge_select", "trigger": "schedule"}` hourly;
 * by the admin API's POST /evals/rollup (`admin_cli evals rollup`), with `{"job": "rollup",
-  "trigger": "admin"}`, and `"from"`/`"to"` (ISO dates) to add those days up again;
+  "trigger": "admin"}`, and `"from"`/`"to"` (ISO dates) to add those days up again; POST
+  /evals/revoke (`admin_cli evals revoke`) sends the same with the days that hold the revoked events;
 * by the event source mapping on the eval-work queue, with one judge or scoring job per batch
   (`{"Records": [...]}`).
 

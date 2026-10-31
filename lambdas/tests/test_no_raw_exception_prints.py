@@ -36,6 +36,11 @@ GUARDED = sorted(
         "common/evals_status.py",
         # eval-jobs' judge, which prints what it could not read or send.
         "common/eval_judge.py",
+        "common/evals_adjust.py",
+        # The rotation guard, which every pipeline Lambda that picks a model imports.
+        "common/model_ranch.py",
+        # Culling's apply and restore, which the admin API's routes call.
+        "common/model_cull.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
     ]
 )

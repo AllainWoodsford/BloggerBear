@@ -395,7 +395,8 @@ CATALOGUE: tuple[Component, ...] = (
             (
                 "Written by",
                 "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), and "
-                "its judge (runs, pairs, spend)",
+                "its judge (runs, pairs, spend); the admin API, its adjust# rows (`evals forgive` and "
+                "`evals punish`)",
             ),
             ("Expires", "never: no TTL"),
         ),
@@ -988,7 +989,11 @@ CATALOGUE: tuple[Component, ...] = (
         "evals are on.",
         details=(
             ("Kept for", "120 days"),
-            ("Written by", "common/evals.py emit(), from any pipeline Lambda, only while evals are on"),
+            (
+                "Written by",
+                "common/evals.py emit(), from any pipeline Lambda and the admin API (`evals forgive` "
+                "and `evals punish`), only while evals are on",
+            ),
             ("Read by", "eval-jobs' hourly rollup (Logs Insights)"),
         ),
         aliases=("evals-log", "eval-events"),

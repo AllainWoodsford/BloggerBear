@@ -1271,13 +1271,91 @@ def test_articles_feedback_lock_and_unlock():
     assert m.call_args.kwargs["body"] == {"locked": False, "reset_count": True}
 
 
+def _rewrite_api(models: dict, status: int = 200):
+    """signed_request for `articles rewrite`: GET /models answers `models` (with `status`), anything
+    else 202."""
+
+    def answer(method, api_url, path, region, body=None):
+        return FakeResponse(status, models) if (method, path) == ("GET", "/models") else FakeResponse(202, {})
+
+    return answer
+
+
+def _priced(model_id, price, **fields):
+    """A GET /models row for an enabled text model with a price (and any scores in `fields`)."""
+    prices = {"input_price_usd_per_1k_tokens": price, "output_price_usd_per_1k_tokens": price * 4}
+    return {"model_id": model_id, "enabled": True, "model_purpose": "text", **prices, **fields}
+
+
 def test_articles_rewrite_posts_the_instructions_and_the_model_when_given():
-    with patch("admin_cli.signed_request", return_value=FakeResponse(202, {})) as m:
+    with patch("admin_cli.signed_request", side_effect=_rewrite_api({"models": []})) as m:
         _run(["articles", "rewrite", "article-1", "-i", "The intro is wrong."])
-        _run(["articles", "rewrite", "article-1", "--instructions", "x", "--model", "haiku"])
-    assert m.call_args_list[0].args[2] == "/articles/article-1/rewrite"
-    assert m.call_args_list[0].kwargs["body"] == {"instructions": "The intro is wrong."}
-    assert m.call_args_list[1].kwargs["body"] == {"instructions": "x", "model_id": "haiku"}
+        _run(["articles", "rewrite", "article-1", "--instructions", "x", "--model", "maker.chosen-v1:0"])
+    posts = [call for call in m.call_args_list if call.args[0] == "POST"]
+    assert posts[0].args[2] == "/articles/article-1/rewrite"
+    # No model ranked for a rewrite: none is named, and the API uses the topic's own model.
+    assert posts[0].kwargs["body"] == {"instructions": "The intro is wrong."}
+    assert posts[1].kwargs["body"] == {"instructions": "x", "model_id": "maker.chosen-v1:0"}
+    assert [call.args[2] for call in m.call_args_list].count("/models") == 1  # --model reads none
+
+
+def test_articles_rewrite_without_a_model_takes_the_best_ranked_one(capsys):
+    listed = {
+        "models": [
+            _priced("cheap", 0.001),
+            _priced("proven", 0.003, perf_good={"total": 30}, perf_bad={"total": 2}),
+            _priced("held-back", 0.0001, perf_good={"total": 90}, perf_bad={"total": 0}),
+            # The best scores and the lowest price, but an access probe found it uncallable.
+            _priced("denied", 0.0001, access="denied", perf_good={"total": 90}, perf_bad={"total": 0}),
+        ],
+        "ranch": {"gated": ["held-back"], "min_events": 10},
+    }
+    with patch("admin_cli.signed_request", side_effect=_rewrite_api(listed)) as m:
+        _run(["articles", "rewrite", "article-1", "-i", "The intro is wrong."])
+
+    post = m.call_args_list[-1]
+    assert (post.args[0], post.args[2]) == ("POST", "/articles/article-1/rewrite")
+    assert post.kwargs["body"] == {"instructions": "The intro is wrong.", "model_id": "proven"}
+    assert "Rewriting with proven, the best-ranked model" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("listed", "why"),
+    [
+        # Evals off: GET /models carries no `ranch`, so no score is in effect.
+        ({"models": [_priced("cheap", 0.0001), _priced("topic-model", 0.003)]}, "Evals are off"),
+        # Evals on, but no model has min_events scored events yet: none is ranked.
+        (
+            {
+                "models": [
+                    _priced("cheap", 0.0001, perf_good={"total": 4}, perf_bad={"total": 1}),
+                    _priced("topic-model", 0.003, perf_good={"total": 9}, perf_bad={"total": 0}),
+                ],
+                "ranch": {"gated": [], "min_events": 10},
+            },
+            "No model has enough scored events",
+        ),
+    ],
+)
+def test_articles_rewrite_with_no_model_ranked_leaves_the_choice_to_the_api(listed, why, capsys):
+    with patch("admin_cli.signed_request", side_effect=_rewrite_api(listed)) as m:
+        _run(["articles", "rewrite", "article-1", "-i", "The intro is wrong."])
+
+    post = m.call_args_list[-1]
+    assert (post.args[0], post.args[2]) == ("POST", "/articles/article-1/rewrite")
+    # No model_id: the API picks the topic's own model (resolve_model, with the rotation guard).
+    assert post.kwargs["body"] == {"instructions": "The intro is wrong."}
+    err = capsys.readouterr().err
+    assert why in err and "the topic's own model writes it" in err and "best-ranked" not in err
+
+
+def test_articles_rewrite_still_rewrites_when_the_models_cannot_be_read(capsys):
+    with patch("admin_cli.signed_request", side_effect=_rewrite_api({"error": "boom"}, status=500)) as m:
+        _run(["articles", "rewrite", "article-1", "-i", "The intro is wrong."])
+
+    assert [call.args[0] for call in m.call_args_list] == ["GET", "POST"]
+    assert m.call_args_list[-1].kwargs["body"] == {"instructions": "The intro is wrong."}
+    assert "Could not read the models to rank them (boom); the topic's own model" in capsys.readouterr().err
 
 
 def test_articles_rewrite_needs_instructions():

@@ -1422,3 +1422,134 @@ def test_a_sent_back_article_whose_rewrite_failed_retries_with_the_same_note(sto
         "/moderation-queue/q1/rewrite",
         {"model_id": "sonnet", "instructions": "Fix the intro."},
     )
+
+
+# --- the rewrite picker (section 4.9; the rotation guard, PR15) ----------------------------------
+
+
+def scored(model_id, good=0, bad=0, price=None, **extra):
+    """A GET /models row with the rollup's good and bad counts (`perf_good`, `perf_bad`)."""
+    row = {"model_id": model_id, "display_name": model_id.title(), "enabled": True, **extra}
+    if good or bad:
+        row["perf_good"] = {"daily": 0, "total": good}
+        row["perf_bad"] = {"daily": 0, "total": bad}
+    if price is not None:
+        row["input_price_usd_per_1k_tokens"] = price
+        row["output_price_usd_per_1k_tokens"] = price * 4
+    return row
+
+
+RANKED = [
+    scored("few-dear", 1, 0, price=0.01),
+    scored("b", 9, 1, price=0.001),
+    # Ties a and c on the bound, sorts before both by id, and costs more: price must come first.
+    scored("0-dear", 18, 2, price=0.003),
+    scored("none"),
+    scored("c", 18, 2, price=0.002),
+    scored("few-cheap", 5, 0, price=0.0005),
+    scored("a", 18, 2, price=0.002),
+    scored("gated", 20, 0, price=0.0001),
+    scored("off", 20, 0, price=0.0001, enabled=False),
+    scored("denied", 20, 0, price=0.0001, access="denied"),  # an access probe found it uncallable
+    scored("embed", 20, 0, price=0.0001, model_purpose="embedding"),
+    scored("image", 20, 0, price=0.0001, pricing_unit="other"),
+    scored("words", 2, 2, price=0.0001, model_purpose="text", pricing_unit="other"),
+]
+
+
+def test_the_picker_ranks_by_the_wilson_lower_bound_then_price_then_id_and_the_rest_by_price():
+    ranked = ri.rank_rewrite_models(RANKED, gated=["gated"], min_events=10)
+
+    # a, c and 0-dear tie on 18 of 20 (lower bound 0.699): 0-dear sorts first by id but costs more,
+    # so price puts it after a and c, which tie on price too and go by id; b's 9 of 10 is lower
+    # (0.5958). few-cheap's 5 of 5 is better still, but under min_events: after, by price, with the
+    # unscored and unpriced model last. A purpose of text wins over a pricing unit.
+    expected = ["a", "c", "0-dear", "b", "words", "few-cheap", "few-dear", "none"]
+    assert [m["model_id"] for m in ranked] == expected
+    assert ranked[0]["ranking"] == {"score": 0.9, "n": 20, "low": 0.699, "high": 0.9721, "ranked": True}
+    assert ranked[-1]["ranking"] == {"score": None, "n": 0, "low": None, "high": None, "ranked": False}
+
+
+def test_the_picker_offers_only_callable_text_models_the_model_ranch_has_not_gated():
+    offered = {m["model_id"] for m in ri.rank_rewrite_models(RANKED, gated=["gated"], min_events=10)}
+
+    assert not offered & {"gated", "off", "denied", "embed", "image"}
+    assert {m["model_id"] for m in ri.rank_rewrite_models(RANKED)} & {"off", "denied"} == set()
+
+
+def test_each_model_line_shows_its_score_n_and_interval():
+    ranked = {m["model_id"]: m for m in ri.rank_rewrite_models(RANKED, gated=["gated"], min_events=10)}
+
+    assert ri._model_line(1, ranked["a"]) == (
+        "  [1] A  (score 0.90, n 20, 95% 0.70-0.97)  ($0.002/$0.008 USD per 1k tokens in/out)"
+    )
+    few = ri._model_line(2, ranked["few-cheap"])
+    assert "(score 1.00, n 5, 95% 0.57-1.00: too few to rank, by price)" in few
+    assert ri._model_line(3, ranked["none"]) == "  [3] None  (no scores yet)"
+
+
+def test_with_evals_off_the_api_says_nothing_is_gated_and_the_picker_orders_by_price_alone():
+    api = FakeApi({"GET /models": {"models": RANKED}})
+
+    models = ri.rewrite_models(api)
+
+    # Nothing gated, no score in effect: cheapest first, unpriced last, no ranking shown.
+    assert [m["model_id"] for m in models][:3] == ["gated", "words", "few-cheap"]
+    assert models[-1]["model_id"] == "none"
+    assert all("ranking" not in m for m in models)
+    assert ri._model_line(1, models[0]) == "  [1] Gated  ($0.0001/$0.0004 USD per 1k tokens in/out)"
+
+
+def test_with_evals_on_the_api_says_what_is_gated_and_the_events_a_rank_needs():
+    api = FakeApi({"GET /models": {"models": RANKED, "ranch": {"gated": ["gated", "a"], "min_events": 20}}})
+
+    models = ri.rewrite_models(api)
+
+    # Only c and 0-dear have 20 events (a is gated): c is cheaper, though 0-dear sorts first by id.
+    assert [m["model_id"] for m in models][:3] == ["c", "0-dear", "words"]
+    assert "a" not in {m["model_id"] for m in models}
+
+
+def test_w_offers_the_best_ranked_model_first(store):
+    api = _rewrite_api([_held("q1")])
+    api.routes["GET /models"] = {"models": RANKED, "ranch": {"gated": ["gated"], "min_events": 10}}
+
+    summary, out = _run([ri.ModerationSource(api)], store, "w", "1")
+
+    assert api.bodies[0] == ("/moderation-queue/q1/rewrite", {"model_id": "a"})
+    assert "[1] A  (score 0.90, n 20" in out and "Gated" not in out and summary.rewritten == 1
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"model_purpose": "text"},
+        {"model_purpose": "embedding"},
+        {"model_purpose": "image", "pricing_unit": "tokens"},
+        {"model_purpose": "text", "pricing_unit": "other"},
+        {"pricing_unit": "tokens"},
+        {"pricing_unit": "other"},
+        {},
+        {"input_price_usd_per_1k_tokens": 0.001, "output_price_usd_per_1k_tokens": 0.004},
+        {"input_price_usd_per_1k_tokens": 0.001},
+        *(
+            {**enabled, **access}
+            for enabled in ({}, {"enabled": True}, {"enabled": False})
+            for access in ({}, {"access": "denied"}, {"access": "granted"}, {"access": "unknown"})
+        ),
+        {"model_purpose": "embedding", "access": "granted"},
+    ],
+)
+def test_the_pickers_copies_of_the_lambdas_rules_agree_with_them(row, monkeypatch):
+    """The CLI cannot import lambdas/common, so it keeps copies of model_fleet.is_usable,
+    suitable(TEXT) and blended_price; these hold them, and the picker's whole filter, to the
+    originals."""
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "lambdas"))
+    from common import model_fleet
+
+    model = {"model_id": "m", **row}
+    assert ri._usable(model) is model_fleet.is_usable(model)
+    assert ri._writes_text(model) is model_fleet.suitable(model, model_fleet.TEXT)
+    assert ri._blended_price(model) == model_fleet.blended_price(model)
+    offered = bool(ri.rank_rewrite_models([model], min_events=10))
+    assert offered is (model_fleet.is_usable(model) and model_fleet.suitable(model, model_fleet.TEXT))

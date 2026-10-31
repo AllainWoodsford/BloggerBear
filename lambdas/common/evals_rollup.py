@@ -39,7 +39,7 @@ its reason applies to:
   (looked up further back in the log when this run's read does not hold them), and never a prompt's
   own row;
 * nothing, for an operator's forgive or punish: those are `adjust#` rows, which the admin API writes
-  (PR13b), and they count in `total_perf` only.
+  itself (common/evals_adjust.py) beside the event, and they count in `total_perf` only.
 
 A day row holds `perf` (the sum of the deltas), `events`, `good` and `bad` (section 4.9's counts:
 events above and below zero, Article Completion and Prompt Fallback left out) and `by_reason` (each
@@ -51,7 +51,10 @@ the windows are summed from its day rows: `daily_perf` today, `weekly_perf` the 
 `monthly_perf` the calendar month so far, `total_perf` every day and the model's `adjust#` rows,
 each with its count in `perf_events` (adjustments are not events). They hold what the gates read
 (section 4.5): the reasons that gate, the judge's only while it is calibrated, never readers'
-votes. `model_roles` (model_fleet.model_roles) and `perf_updated_at` go with them. Each write is
+votes. Beside them, `perf_good` and `perf_bad` hold section 4.9's counts behind each window (the
+day rows' `good` and `bad`: readers' votes and the judge's verdicts included, Article Completion
+and Prompt Fallback not), which the rewrite picker ranks by (scripts/review_inbox.py).
+`model_roles` (model_fleet.model_roles) and `perf_updated_at` go with them. Each write is
 conditional on the row being there (dynamo.set_model_fields, `attribute_exists(model_id)`), so a
 model that was culled or deleted is never written back (deviation 8). A model with no purpose yet is
 classified from one Bedrock listing: model_catalog.listed_models, the whole listing, so that
@@ -114,6 +117,9 @@ INDEX = "index"
 INDEX_KEY = {"entity": INDEX, "sk": INDEX}
 DAY = "day#"
 PAIR = "pair#"
+# An operator's forgive or punish of a model (common/evals_adjust.py writes these rows): its deltas
+# count in total_perf and in no window.
+ADJUST_MODEL = "adjust#model#"
 VERDICTS = ("good", "bad")
 
 COMPLETION = "Article Completion"
@@ -391,29 +397,64 @@ def gating(by_reason, calibrated: bool) -> tuple[int, int]:
     return perf, events
 
 
+def _spans(row: dict, today: date) -> list[str]:
+    """The windows a day row counts in (section 4.4): every one in `total`, today's in `daily`, the
+    last seven days' in `weekly`, the calendar month's so far in `monthly`; none for a row whose sort
+    key is not a day."""
+    try:
+        day = date.fromisoformat(str(row.get("sk", ""))[len(DAY) :])
+    except ValueError:
+        return []
+    spans = ["total"]
+    spans += ["daily"] if day == today else []
+    spans += ["weekly"] if today - timedelta(days=WEEK_DAYS - 1) <= day <= today else []
+    spans += ["monthly"] if today.replace(day=1) <= day <= today else []
+    return spans
+
+
 def windows(day_rows: list[dict], adjustments: list[dict], today: date, calibrated: bool) -> dict:
     """A model's windows from its day rows and `adjust#` rows (section 4.4): `daily_perf` today's
     row, `weekly_perf` the last seven days', `monthly_perf` the calendar month's so far,
     `total_perf` every row's and every adjustment's; `perf_events` the events behind each."""
-    week_start = today - timedelta(days=WEEK_DAYS - 1)
-    month_start = today.replace(day=1)
     perf = dict.fromkeys(WINDOWS, 0)
     events = dict.fromkeys(WINDOWS, 0)
     for row in day_rows:
-        try:
-            day = date.fromisoformat(str(row.get("sk", ""))[len(DAY) :])
-        except ValueError:
-            continue
         gated_perf, gated_events = gating(row.get("by_reason"), calibrated)
-        spans = ["total"]
-        spans += ["daily"] if day == today else []
-        spans += ["weekly"] if week_start <= day <= today else []
-        spans += ["monthly"] if month_start <= day <= today else []
-        for window in spans:
+        for window in _spans(row, today):
             perf[window] += gated_perf
             events[window] += gated_events
     perf["total"] += sum(count_of(adjustment.get("delta")) for adjustment in adjustments)
     return {**{f"{window}_perf": perf[window] for window in WINDOWS}, "perf_events": events}
+
+
+def good_and_bad(day_rows: list[dict], today: date) -> dict:
+    """Section 4.9's counts behind each window, from a model's day rows: `perf_good` and
+    `perf_bad`, {window: events above (below) zero}. They are the day rows' `good` and `bad`, so
+    every reason counts but Article Completion and Prompt Fallback, readers' votes and the judge's
+    verdicts too, calibrated or not: the picker's statistic, not a gate's."""
+    good = dict.fromkeys(WINDOWS, 0)
+    bad = dict.fromkeys(WINDOWS, 0)
+    for row in day_rows:
+        for window in _spans(row, today):
+            good[window] += count_of(row.get("good"))
+            bad[window] += count_of(row.get("bad"))
+    return {"perf_good": good, "perf_bad": bad}
+
+
+def model_windows(table, key: str, today: date, is_calibrated: bool) -> dict:
+    """One model's windows (`windows`) from its day rows and its `adjust#model#` rows in the evals
+    table. `key` is the model's canonical id, the one its rows are kept under."""
+    day_rows = query_all(table, Key("entity").eq(f"model#{key}") & Key("sk").begins_with(DAY))
+    adjustments = query_all(table, Key("entity").eq(f"{ADJUST_MODEL}{key}"))
+    return windows(day_rows, adjustments, today, is_calibrated)
+
+
+def index_calibrated(index: dict, settings: dict) -> bool:
+    """Whether the judge was calibrated at the last rollup, from the index row's `judge_agreement`
+    and `judge_pairs` (what that run worked out from the pair# rows)."""
+    agreement = index.get("judge_agreement")
+    agreement = float(agreement) if isinstance(agreement, int | float | Decimal) else None
+    return calibrated(agreement, count_of(index.get("judge_pairs")), settings)
 
 
 # --- the tables -----------------------------------------------------------------------------------
@@ -524,10 +565,11 @@ def calibrated(agreement: float | None, pairs: int, settings: dict) -> bool:
 def update_models(
     table, touched: set[str], today: date, is_calibrated: bool, settings: dict, now_iso: str
 ) -> tuple[int, int, list[dict]]:
-    """Put the windows, `model_roles` and `perf_updated_at` on every registry model's row and on any
-    other model an event named, never making a row (dynamo.set_model_fields' condition is
-    `attribute_exists(model_id)`). `settings` are the evals settings in effect, whose judge the
-    roles name. (rows updated, models with no row, the registry)."""
+    """Put the windows, the picker's counts (good_and_bad), `model_roles` and `perf_updated_at` on
+    every registry model's row and on any other model an event named, never making a row
+    (dynamo.set_model_fields' condition is `attribute_exists(model_id)`). `settings` are the evals
+    settings in effect, whose judge the roles name. (rows updated, models with no row, the
+    registry)."""
     registry = dynamo.list_models()
     by_key = {canonical_model_id(model["model_id"]): model for model in registry}
     roles = model_fleet.model_roles(
@@ -540,8 +582,9 @@ def update_models(
     updated = missing = 0
     for key in sorted(set(by_key) | touched):
         day_rows = query_all(table, Key("entity").eq(f"model#{key}") & Key("sk").begins_with(DAY))
-        adjustments = query_all(table, Key("entity").eq(f"adjust#model#{key}"))
+        adjustments = query_all(table, Key("entity").eq(f"{ADJUST_MODEL}{key}"))
         fields = windows(day_rows, adjustments, today, is_calibrated)
+        fields.update(good_and_bad(day_rows, today))
         fields.update(perf_updated_at=now_iso, model_roles=roles.get(key, []))
         row = by_key.get(key)
         if dynamo.set_model_fields(row["model_id"] if row else key, fields, expected={}):

@@ -4,11 +4,12 @@ GET /evals/digest (docs/enhancements/model-ranch-prompt-assets-evals.md, PR13).
 **status** answers "are evals working, and what are they holding back?" in parts, each read on its
 own: the switches, the prompt release in place and the prompt fallbacks of the last 24 hours, the
 rollup (its watermark and last run), `late_dropped`, the judge (its agreement with people, pairs and
-whether it is calibrated), the gated models, the cull proposal in place, each queue's depth and the
+whether it is calibrated), the gated models (as the rotation guard decides it, PR15, with the
+protected and the held-open ones apart), culling (the proposal in place, whether it has expired,
+and the last `evals cull --apply`: when, and which models it culled), each queue's depth and the
 age of its oldest job (eval-work's, and the queue platform's work.fifo), and the topics by dispatch
 mode. A part that cannot be read says "could not check" (COULD_NOT_CHECK) and the others still
-answer, so one missing grant or one slow service never hides the rest. The last cull applied joins
-it with culling (PR16), which writes the proposal too.
+answer, so one missing grant or one slow service never hides the rest.
 
 **The prompt parts** are where prompts as assets meet evals. The release is the publisher's
 `releases/current.json` in the prompts bucket (common/prompts.current_release), read by its two
@@ -36,7 +37,17 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Key
 
-from common import dynamo, evals, evals_rollup, evals_settings, evidence, model_catalog, prompts
+from common import (
+    dynamo,
+    evals,
+    evals_rollup,
+    evals_settings,
+    evidence,
+    model_catalog,
+    model_fleet,
+    model_ranch,
+    prompts,
+)
 from common.model_pricing import canonical_model_id
 
 COULD_NOT_CHECK = "could not check"
@@ -222,9 +233,28 @@ def _topics_by_dispatch_mode() -> dict:
 
 
 def _gated_models(settings: dict, now: datetime) -> dict:
-    gated, held_open = [], []
+    """The models below a gate (gated_windows), each in one list, decided as the rotation guard
+    decides it (common/model_ranch.py: Guard.gated, gate and held_open), so this part's `gated`
+    and GET /models' `ranch.gated` agree whenever evals are on (GET /models has no `ranch` while
+    they are off; this part answers either way):
+
+    * `gated`: held back from every candidate list until its windows recover;
+    * `protected`: the default, the fallback or the judge (its `role`), which are never gated:
+      served whatever their scores, each time with a `model_gated_protected` line;
+    * `held_open`: an operator's `ungated_until` holds its gate open, a time still ahead, or a value
+      that is not a time (`ungated_until_unreadable`), which the guard does not gate either.
+
+    It builds its own Guard from the settings status read and one read of the model-config default
+    row, rather than model_ranch.load_guard, which reads nothing while evals are off and protects
+    nothing when a read fails: status answers whatever the switch says, and a read that fails says
+    "could not check"."""
+    config = dynamo.get_model_config() or {}
+    guard = model_ranch.Guard(
+        settings=settings, protected=model_ranch.never_gated(settings, config), config=config, now=now
+    )
+    gated, held_open, protected = [], [], []
     for row in sorted(dynamo.list_models(), key=lambda model: model["model_id"]):
-        windows = evals_settings.gated_windows(row, settings)
+        windows = model_ranch.gated_windows(row, settings)
         if not windows:
             continue
         entry = {
@@ -233,21 +263,34 @@ def _gated_models(settings: dict, now: datetime) -> dict:
             **{field: _number(row.get(field)) for field in ("daily_perf", "weekly_perf", "total_perf")},
             "perf_events": _number(row.get("perf_events")),
         }
-        if evals_settings.ungated(row, now):
-            held_open.append({**entry, "ungated_until": row["ungated_until"]})
-        else:
+        role = guard.role(row["model_id"])
+        if role is not None:
+            protected.append({**entry, "role": role})
+        elif guard.gated(row):
             gated.append(entry)
+        else:
+            held = {**entry, "ungated_until": _number(row.get("ungated_until"))}
+            if model_ranch.held_open(row, now) == model_ranch.HELD_OPEN_UNREADABLE:
+                held["ungated_until_unreadable"] = True
+            held_open.append(held)
     gates = {name: settings[name] for name in ("daily_gate", "weekly_gate", "total_gate", "min_events")}
-    return {"gated": gated, "held_open": held_open, "gates": gates}
+    return {"gated": gated, "held_open": held_open, "protected": protected, "gates": gates}
 
 
-def _cull() -> dict:
-    """The cull proposal in place: model-catalog-state's `cull_proposal` as stored, which culling's
-    weekly proposal writes (PR16); None until there is one."""
-    proposal = _number(model_catalog.get_state().get("cull_proposal"))
+def _cull(now: datetime) -> dict:
+    """Culling (PR16), from model-catalog-state: the proposal in place as stored (`cull_proposal`,
+    which the weekly cycle writes; None until there is one) and whether it has expired (an apply
+    refuses it then), and the last `evals cull --apply` as it recorded itself (`last_cull_apply`:
+    when, the ids it culled, those it kept and why; None until one has run)."""
+    state = model_catalog.get_state()
+    proposal = _number(state.get(model_fleet.CULL_PROPOSAL_FIELD))
+    part = {"proposal": proposal, "last_apply": _number(state.get(model_fleet.LAST_CULL_FIELD))}
     if proposal is None:
-        return {"proposal": None, "detail": "no cull proposal yet"}
-    return {"proposal": proposal}
+        part["detail"] = "no cull proposal yet"
+    else:
+        expires = evals_settings._parse(proposal.get("expires_at")) if isinstance(proposal, dict) else None
+        part["expired"] = expires is None or now >= expires
+    return part
 
 
 def _judge(settings: dict, index: dict) -> dict:
@@ -295,7 +338,7 @@ def status(now: datetime | None = None) -> dict:
         "late_dropped": _part("late_dropped", lambda: {"late_dropped": _late_dropped(index())}),
         "judge": _part("judge", lambda: _judge(settings(), index())),
         "gated_models": _part("gated_models", lambda: _gated_models(settings(), now)),
-        "cull": _part("cull", _cull),
+        "cull": _part("cull", lambda: _cull(now)),
         # One part per queue, so one that cannot be read never hides the other.
         "queue_depth": {
             queue: _part(f"queue_depth/{queue}", lambda queue=queue: _queue_depth(queue)) for queue in QUEUES

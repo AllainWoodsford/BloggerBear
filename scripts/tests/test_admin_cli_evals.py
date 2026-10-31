@@ -1,10 +1,12 @@
 """The Admin CLI's eval commands (scripts/admin_cli_evals.py): wired into admin_cli's parser by
-`register` (docs/enhancements/model-ranch-prompt-assets-evals.md, E0), and `evals get|set|rollup|
-status|digest` (PR13), each sending what its Admin API route takes."""
+`register` (docs/enhancements/model-ranch-prompt-assets-evals.md, E0), `evals get|set|rollup|
+status|digest` (PR13), `evals forgive|punish|ungate|revoke` (PR13b) and `evals cull` (PR16), each
+sending what its Admin API route takes."""
 
 from __future__ import annotations
 
 import argparse
+import json
 from unittest.mock import patch
 
 import pytest
@@ -48,16 +50,22 @@ def test_build_parser_hands_the_eval_module_its_subparsers_and_helpers():
     register.assert_called_once()
     subparsers, helpers = register.call_args.args
     assert subparsers is _subparsers(parser)
-    assert helpers == {"do_request": admin_cli._do_request, "CliError": admin_cli.CliError}
+    assert helpers == {
+        "do_request": admin_cli._do_request,
+        "fetch_json": admin_cli._fetch_json,
+        "CliError": admin_cli.CliError,
+    }
 
 
 def test_register_adds_the_evals_group_and_its_commands():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="resource")
-    admin_cli_evals.register(subparsers, {"do_request": None, "CliError": Exception})
+    admin_cli_evals.register(subparsers, {"do_request": None, "fetch_json": None, "CliError": Exception})
     assert set(subparsers.choices) == {"evals"}
     commands = _subparsers(subparsers.choices["evals"]).choices
-    assert set(commands) == {"get", "set", "rollup", "status", "digest"}
+    assert set(commands) == {
+        "get", "set", "rollup", "status", "digest", "forgive", "punish", "ungate", "revoke", "cull",
+    }  # fmt: skip
 
 
 def test_admin_cli_imports_the_eval_module_only_inside_build_parser():
@@ -138,3 +146,153 @@ def test_rollup_runs_from_the_watermark_or_for_the_days_named():
     ]
     with pytest.raises(admin_cli.CliError):
         cli("rollup", "--to", "2026-10-03")
+
+
+# --- forgive, punish, ungate, revoke --------------------------------------------------------------
+
+
+def test_forgive_and_punish_send_a_models_adjustment():
+    assert cli("forgive", "--model", "maker.alpha-v1:0", "--amount", "30") == [
+        (
+            "POST",
+            "/evals/adjust",
+            {
+                "target": "model", "model_id": "maker.alpha-v1:0", "direction": "forgive", "amount": 30,
+                "allow_cull": False,
+            },
+        )
+    ]  # fmt: skip
+    [(_, _, body)] = cli("punish", "--model", "maker.alpha-v1:0", "--amount", "250", "--allow-cull")
+    assert (body["direction"], body["amount"], body["allow_cull"]) == ("punish", 250, True)
+
+
+def test_forgive_and_punish_send_a_prompt_versions_adjustment():
+    assert cli("punish", "--prompt", "daily_cycle/draft", "--version", "v2", "--amount", "5") == [
+        (
+            "POST",
+            "/evals/adjust",
+            {
+                "target": "prompt", "prompt_id": "daily_cycle/draft", "version": "v2", "direction": "punish",
+                "amount": 5, "allow_cull": False,
+            },
+        )
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--amount", "5"],
+        ["--model", "maker.alpha-v1:0", "--prompt", "daily_cycle/draft", "--version", "v2", "--amount", "5"],
+        ["--prompt", "daily_cycle/draft", "--amount", "5"],
+        ["--model", "maker.alpha-v1:0", "--version", "v2", "--amount", "5"],
+    ],
+)
+def test_an_adjustment_names_exactly_one_model_or_one_prompt_version(argv):
+    with pytest.raises(admin_cli.CliError):
+        cli("forgive", *argv)
+
+
+def test_an_adjustment_needs_a_whole_amount():
+    with pytest.raises(SystemExit):
+        cli("punish", "--model", "maker.alpha-v1:0")
+    with pytest.raises(SystemExit):
+        cli("punish", "--model", "maker.alpha-v1:0", "--amount", "lots")
+
+
+def test_ungate_holds_a_models_gates_open_for_some_hours():
+    assert cli("ungate", "--model", "maker.alpha-v1:0", "--hours", "48") == [
+        ("POST", "/evals/ungate", {"model_id": "maker.alpha-v1:0", "hours": 48})
+    ]
+    assert cli("ungate", "--model", "maker.alpha-v1:0", "--hours", "0")[0][2]["hours"] == 0
+    with pytest.raises(SystemExit):
+        cli("ungate", "--model", "maker.alpha-v1:0")
+
+
+def test_revoke_sends_the_source_and_its_time_when_given():
+    assert cli("revoke", "--source", "judge", "--since", "2026-10-27T00:00:00Z") == [
+        ("POST", "/evals/revoke", {"source": "judge", "since": "2026-10-27T00:00:00Z"})
+    ]
+    assert cli("revoke", "--source", "run:r-1") == [("POST", "/evals/revoke", {"source": "run:r-1"})]
+    with pytest.raises(SystemExit):
+        cli("revoke")
+
+
+# --- cull -----------------------------------------------------------------------------------------
+
+PROPOSAL = {
+    "proposed_at": "2026-10-23T04:00:00+00:00",
+    "expires_at": "2026-10-29T17:00:00+00:00",
+    "models": [
+        {"model_id": "maker.worst-v1:0", "total_perf": -5000, "events": 40},
+        {"model_id": "maker.poor-v1:0", "total_perf": -1200, "events": 12},
+    ],
+}
+
+
+def cull(*argv, status=None, answer=None):
+    """Run `evals cull ...` against a GET /evals/status answering `status` (its `cull` part) and a
+    recording stand-in for the POST, answering the question with `answer`. (calls, what it printed)."""
+    calls = []
+
+    def record(_args, method, path, body=None):
+        calls.append((method, path, body))
+
+    def fetch(_args, method, path, body=None):
+        calls.append((method, path, body))
+        return {"cull": status} if status is not None else {}
+
+    with patch.object(admin_cli, "_do_request", record), patch.object(admin_cli, "_fetch_json", fetch), patch(
+        "builtins.input", side_effect=[answer] if answer is not None else EOFError
+    ) as asked:
+        args = admin_cli.build_parser().parse_args(["evals", "cull", *argv])
+        args.func(args)
+    return calls, asked
+
+
+def test_cull_shows_the_proposal_and_the_last_cull_and_deletes_nothing(capsys):
+    part = {"proposal": PROPOSAL, "last_apply": None, "expired": False}
+    calls, asked = cull(status=part)
+    assert calls == [("GET", "/evals/status", None)]
+    assert json.loads(capsys.readouterr().out) == part and not asked.called
+
+
+def test_cull_apply_shows_the_models_and_asks_before_it_sends_anything(capsys):
+    calls, asked = cull("--apply", status={"proposal": PROPOSAL, "expired": False}, answer="y")
+
+    assert calls == [("GET", "/evals/status", None), ("POST", "/evals/cull/apply", {})]
+    shown = capsys.readouterr().out
+    assert "maker.worst-v1:0: total -5000 over 40 events" in shown and "maker.poor-v1:0" in shown
+    assert "[y/N]" in asked.call_args.args[0] and "`models restore <id>`" in asked.call_args.args[0]
+
+
+@pytest.mark.parametrize("answer", ["n", "", None])
+def test_cull_apply_sends_nothing_unless_the_answer_is_yes(capsys, answer):
+    with pytest.raises(SystemExit) as stopped:
+        cull("--apply", status={"proposal": PROPOSAL, "expired": False}, answer=answer)
+    assert stopped.value.code == 1
+    assert "Nothing was culled." in capsys.readouterr().err
+
+
+def test_cull_apply_with_yes_sends_at_once_without_showing_or_asking():
+    calls, asked = cull("--apply", "--yes")
+    assert calls == [("POST", "/evals/cull/apply", {})] and not asked.called
+
+
+@pytest.mark.parametrize(
+    ("status", "said"),
+    [
+        ({"proposal": None, "detail": "no cull proposal yet"}, "there is no cull proposal"),
+        ({"proposal": {**PROPOSAL, "models": []}, "expired": False}, "there is no cull proposal"),
+        ({"proposal": PROPOSAL, "expired": True}, "expired at 2026-10-29T17:00:00"),
+        ({"status": "could not check", "error": "RuntimeError"}, "could not read the cull proposal"),
+    ],
+)
+def test_cull_apply_asks_nothing_and_sends_nothing_when_there_is_nothing_to_apply(status, said):
+    with pytest.raises(admin_cli.CliError, match=said):
+        cull("--apply", status=status, answer="y")
+
+
+def test_cull_yes_goes_with_apply():
+    with pytest.raises(admin_cli.CliError, match="--yes goes with --apply"):
+        cull("--yes")

@@ -693,9 +693,44 @@ def _cmd_articles_rewrite(args: argparse.Namespace) -> None:
     body = {"instructions": args.instructions}
     if args.model_id:
         body["model_id"] = args.model_id
+    else:
+        body.update(_best_rewrite_model(args))
     if args.force:
         body["force"] = True
     _do_request(args, "POST", f"/articles/{args.article_id}/rewrite", body)
+
+
+def _best_rewrite_model(args: argparse.Namespace) -> dict:
+    """{"model_id": ...} for the best-ranked model `approve`'s Re-Write would offer first
+    (review_inbox.rewrite_models: usable text models the Model Ranch has not gated, by the Wilson
+    lower bound of their scores, then price), but only while one is ranked: evals are on and it has
+    at least `min_events` scored events (section 4.9). Otherwise {}, and the API picks the topic's
+    own model (resolve_model, with the rotation guard) as it always has: while evals are off, while
+    no model has enough scored events yet, and when the models cannot be read."""
+    import review_inbox
+
+    topic_model = "the topic's own model writes it"
+    try:
+        models = review_inbox.rewrite_models(_review_api(args))
+    except review_inbox.ApiError as exc:
+        print(f"Could not read the models to rank them ({exc.message}); {topic_model}.", file=sys.stderr)
+        return {}
+    best = models[0] if models else None
+    if best is None:
+        why = (
+            "No model can be picked for a rewrite: none is a callable text model the Model Ranch "
+            "has not gated"
+        )
+    elif "ranking" not in best:
+        why = "Evals are off, so no model is ranked for a rewrite"
+    elif not best["ranking"].get("ranked"):
+        why = "No model has enough scored events to be ranked for a rewrite yet"
+    else:
+        chosen = best["model_id"]
+        print(f"Rewriting with {chosen}, the best-ranked model (--model picks another).", file=sys.stderr)
+        return {"model_id": chosen}
+    print(f"{why}; {topic_model}.", file=sys.stderr)
+    return {}
 
 
 # --- feedback subcommands -----------------------------------------------
@@ -1100,6 +1135,10 @@ def _post_model(args: argparse.Namespace, body: dict, *, assume_yes: bool) -> No
                 raise SystemExit(1)
             response = signed_request("POST", api_url, "/models", region, body={**body, "confirm": True})
     _print_response_and_exit_on_error(response)
+
+
+def _cmd_models_restore(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", f"/models/{urllib.parse.quote(args.model_id, safe='')}/restore")
 
 
 def _cmd_models_disable(args: argparse.Namespace) -> None:
@@ -1964,7 +2003,11 @@ def build_parser() -> argparse.ArgumentParser:
     rewrite_parser.add_argument(
         "--model",
         dest="model_id",
-        help="A registered model to rewrite with (admin_cli models list). Default: the topic's model",
+        help=(
+            "A registered model to rewrite with (admin_cli models list). Default: while evals are on, "
+            "the best-ranked model approve's Re-Write offers (a callable text model the Model Ranch "
+            "has not gated, with at least min_events scored events); else the topic's model"
+        ),
     )
     rewrite_parser.add_argument(
         "--force",
@@ -2639,6 +2682,17 @@ def build_parser() -> argparse.ArgumentParser:
             "judged by them; a model Bedrock no longer lists is marked unknown"
         ),
     ).set_defaults(func=_cmd_models_classify)
+    models_restore_parser = models_sub.add_parser(
+        "restore",
+        help=(
+            "Put a culled (or pruned) model back from the archive: an Admin Forgive brings its total to "
+            "zero and its gates are held open for 7 days; a pruned one comes back disabled"
+        ),
+    )
+    models_restore_parser.add_argument(
+        "model_id", help="The model to put back (its id, as `evals cull` or the archive names it)"
+    )
+    models_restore_parser.set_defaults(func=_cmd_models_restore)
 
     reviewer_parser = subparsers.add_parser(
         "reviewer",
@@ -2961,7 +3015,9 @@ def build_parser() -> argparse.ArgumentParser:
     # otherwise).
     from admin_cli_evals import register as register_eval_commands
 
-    register_eval_commands(subparsers, {"do_request": _do_request, "CliError": CliError})
+    register_eval_commands(
+        subparsers, {"do_request": _do_request, "fetch_json": _fetch_json, "CliError": CliError}
+    )
 
     return parser
 
