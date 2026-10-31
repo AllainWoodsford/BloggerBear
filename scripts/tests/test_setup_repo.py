@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 import setup_repo as sr
 
@@ -227,8 +228,71 @@ def test_the_sensitive_settings_are_secrets_with_no_variable_fallback():
         assert name not in variables and name not in sr.VARIABLE_FALLBACKS
 
 
+def _prompts_reads(workflow: Path = WORKFLOWS / "prompts.yml") -> list[tuple[str, str, frozenset, bool]]:
+    """(job, name, visible, gate) for each secret or variable a job of the prompts workflow reads.
+    `visible` is where a value must be for every run of that read to see it: "repo", plus the one
+    environment the job runs in. A job sees its environment's settings besides the repository's,
+    and only that environment's, so a job that runs under two (prompts.yml's production publish:
+    `production-prompts` by hand, `production` with a release) sees only what they share, the
+    repository's. `gate` marks a read in the job's `if:`, which GitHub decides before the job enters
+    any environment, so it sees the repository's settings alone."""
+    reads = []
+    names = r"\b(?:secrets|vars)\.([A-Za-z_][A-Za-z0-9_]*)"
+    for name, job in yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"].items():
+        environment = job.get("environment") or ""
+        if isinstance(environment, dict):
+            environment = environment.get("name", "")
+        # An expression names each environment it can choose as a quoted literal.
+        environments = set(re.findall(r"'([A-Za-z0-9_-]+)'", environment)) if "${{" in environment else (
+            {environment} if environment else set()
+        )
+        own = frozenset(environments) if len(environments) == 1 else frozenset()
+        body = yaml.safe_dump({key: value for key, value in job.items() if key != "if"}, width=10**6)
+        for read in sorted(set(re.findall(names, body))):
+            reads.append((name, read, frozenset({"repo"}) | own, False))
+        for read in sorted(set(re.findall(names, str(job.get("if", ""))))):
+            reads.append((name, read, frozenset({"repo"}), True))
+    return reads
+
+
+GUIDE = REPO_ROOT / "docs" / "configuration.md"
+# What a configuration.md row that also offers `production` says of a setting a publish job's gate
+# reads, which only the repository's value can reach.
+REPOSITORY_RULE = "only while the repository's value is `true`"
+
+
+def _prompts_misplaced(settings, guide: str | None = None) -> list[str]:
+    """Every setting the prompts workflow reads from where its job cannot see it. A setting in
+    SETTINGS is held to its `where`; one the script does not ask for is held, when a job's gate
+    reads it, to its row in `guide` (docs/configuration.md unless given): set at repository level,
+    and, where the row offers `production` too, saying that only the repository's value counts
+    and never that `production` alone may differ (a production-only `true` would turn production's
+    Lambdas on with nothing published)."""
+    table = {setting.name: setting for setting in settings}
+    if guide is None:
+        guide = GUIDE.read_text(encoding="utf-8")
+    problems = []
+    for job, name, visible, gate in _prompts_reads():
+        setting = table.get(name)
+        if setting is not None:
+            if setting.where not in visible:
+                where = f"{name}, which is set on {setting.where!r}"
+                problems.append(f"{job} reads {where}: it sees {sorted(visible)}")
+        elif gate and name in sr.NOT_ASKED:
+            row = re.search(rf"^\| `{name}` \| (?:secret|variable) \| ([^|]*) \| ([^|]*) \|", guide, re.M)
+            if not row or "repo" not in row.group(1):
+                problems.append(f"{job}'s if: reads {name}, not set at repository level by configuration.md")
+            elif "`production`" in row.group(1) and (
+                REPOSITORY_RULE not in row.group(2) or "alone to differ" in row.group(2)
+            ):
+                problems.append(f"{job}'s if: reads {name} at repository level only, which its row omits")
+    return problems
+
+
 def test_each_setting_is_where_the_workflow_that_reads_it_can_see_it():
-    """The dev jobs run in no GitHub environment, so what they read must be at repository level."""
+    """The dev jobs run in no GitHub environment, so what they read must be at repository level.
+    The prompts workflow, job by job: what a job reads must be visible from every environment it
+    runs in, and what its `if:` reads must be at repository level."""
     dev_jobs = "".join(
         (WORKFLOWS / name).read_text(encoding="utf-8") for name in ("terraform.yml", "destroy-dev.yml")
     )
@@ -245,6 +309,60 @@ def test_each_setting_is_where_the_workflow_that_reads_it_can_see_it():
         if setting.same_as:  # the answer it reuses was asked for earlier
             names = [s.name for s in sr.SETTINGS]
             assert names.index(setting.same_as) < names.index(setting.name)
+    reads = _prompts_reads()
+    # The production publish runs under both its environments, so it sees the repository's only;
+    # the switch is read in every publish job's gate.
+    assert ("publish-production", "AWS_PROD_PROMPTS_ROLE_ARN", frozenset({"repo"}), False) in reads
+    assert ("publish-dev", "AWS_DEV_PROMPTS_ROLE_ARN", frozenset({"repo"}), False) in reads
+    for job in ("publish-dev", "publish-production"):
+        assert (job, "PROMPT_AS_ASSET_ENABLED", frozenset({"repo"}), True) in reads
+    assert _prompts_misplaced(sr.SETTINGS) == []
+
+
+_SWITCH_ROW = re.compile(r"^(\| `PROMPT_AS_ASSET_ENABLED` \| variable \| )([^|]*)( \| )([^|]*)( \|.*)$", re.M)
+
+
+@pytest.mark.parametrize(
+    ("change", "problem"),
+    [
+        ("none", None),
+        ("on `production` alone", ", not set at repository level by configuration.md"),
+        ("no row", ", not set at repository level by configuration.md"),
+        ("the old advice instead", " at repository level only, which its row omits"),
+        ("the old advice as well", " at repository level only, which its row omits"),
+    ],
+)
+def test_the_switch_the_publish_jobs_gate_on_is_held_to_its_configuration_md_row(change, problem):
+    """Both publish jobs decide from the repository's PROMPT_AS_ASSET_ENABLED alone, so its row must
+    set it there, and say so wherever it also offers `production`."""
+    guide = GUIDE.read_text(encoding="utf-8")
+    (row,) = _SWITCH_ROW.findall(guide)
+    if change == "on `production` alone":
+        guide = _SWITCH_ROW.sub(lambda m: m.expand(r"\1`production`\3\4\5"), guide)
+    elif change == "no row":
+        guide = _SWITCH_ROW.sub("", guide)
+    elif change != "none":
+        # The row's advice before the publish jobs existed, which a production-only `true` follows.
+        advice = "Set on the `production` environment alone to differ there."
+        kept = "" if change == "the old advice instead" else row[3] + " "
+        guide = _SWITCH_ROW.sub(lambda m: m.expand(r"\1\2\3") + kept + advice + m.group(5), guide)
+    expected = [] if problem is None else [
+        f"{job}'s if: reads PROMPT_AS_ASSET_ENABLED{problem}" for job in ("publish-dev", "publish-production")
+    ]
+    assert _prompts_misplaced(sr.SETTINGS, guide) == expected
+    assert row[1] == "repo or `production`" and REPOSITORY_RULE in row[3]
+
+
+@pytest.mark.parametrize(("where", "misplaced"), [(sr.PRODUCTION, True), ("repo", False)])
+def test_a_production_secret_the_prompts_publish_reads_must_be_at_repository_level(where, misplaced):
+    """The production role's ARN, as the bootstrap change adds it to SETTINGS: on the `production`
+    environment alone, the publish under `production-prompts` could never read it."""
+    role = sr.Setting("AWS_PROD_PROMPTS_ROLE_ARN", "secret", where, "optional", "role_arn", "A role.")
+    problems = _prompts_misplaced([*sr.SETTINGS, role])
+    assert bool(problems) is misplaced
+    if misplaced:
+        read = "publish-production reads AWS_PROD_PROMPTS_ROLE_ARN"
+        assert problems == [f"{read}, which is set on 'production': it sees ['repo']"]
 
 
 def test_each_tf_var_is_the_one_the_workflow_passes_and_terraform_declares():

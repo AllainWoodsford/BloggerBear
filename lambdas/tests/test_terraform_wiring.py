@@ -1549,7 +1549,8 @@ def test_the_fork_guide_names_every_setting_the_workflows_read():
     assert "(docs/deployment-runsheet.md)" in readme and "(docs/configuration.md)" in readme
     assert "(configuration.md" in guide
     settings = set()
-    for name in ("terraform.yml", "destroy-dev.yml", "terraform-production-release.yml"):
+    # The deploy workflows, and the prompts workflow, which publishes to the same deployments.
+    for name in ("terraform.yml", "destroy-dev.yml", "terraform-production-release.yml", "prompts.yml"):
         text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
         settings |= set(re.findall(r"\$\{\{[^}]*?\b(?:secrets|vars)\.([A-Z0-9_]+)", text))
         settings |= set(re.findall(r"\|\| vars\.([A-Z0-9_]+)", text))
@@ -4228,6 +4229,11 @@ _REGION_LITERAL_ALLOWED = {
     ".github/workflows/terraform-production-release.yml": [
         r"aws-region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
         r"TF_VAR_aws_region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
+    ],
+    # The prompts publisher's two jobs (dev's, production's), each signing in where its bucket is.
+    ".github/workflows/prompts.yml": [
+        r"aws-region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
+        r"aws-region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
     ],
     # The setup script's one copy of the default, which its own tests hold to Terraform's.
     "scripts/setup_repo.py": [r'DEFAULT_REGION = "ap-southeast-2"'],
