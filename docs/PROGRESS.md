@@ -1043,13 +1043,15 @@ rebased (spec section 6).
 | PR12 evals core and module [B] | #395 | `claude/ranch-42-evals-core` | E0 |
 | PR13 rollup, settings, status | #400 | `claude/ranch-43-evals-rollup` | PR12 |
 | rail test date fix (not in the spec) | #401 | `claude/fix-rail-access-date-bomb` | dev |
+| PR13b forgive, punish, ungate, revoke | #402 | `claude/ranch-44-evals-adjust` | PR13 |
+| PR15 rotation guard and rewrite picker | #403 | `claude/ranch-46-rotation-guard` | PR13 |
 
 **Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
 #390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
 bundle them: the new policies are ordered after #393's shrinks.
 
-**Being built now:** PR13b (`claude/ranch-44-evals-adjust`) and PR15
-(`claude/ranch-46-rotation-guard`), both from PR13: they need only the evals stack. PR14
+**Being built now:** PR16 (`claude/ranch-47-culling`), from PR15 with PR13b merged in: its
+`models restore` reuses PR13b's forgive. Its PR takes PR15's branch as its base. PR14
 (`claude/ranch-45-emission`), PR18 (`claude/ranch-49-judge`) and PR11b
 (`claude/ranch-31-dashboards`) need the evals and prompts stacks together, so they are built on
 `claude/ranch-55-stacks-meet`, the branch where the stacks meet, and their PRs take it as their
@@ -1062,9 +1064,9 @@ session's container: start it again from its parent with the per-PR workflow.
 
 **#401** fixes a test whose fixed date went stale on 2026-10-31
 (`test_rail_access_adapter.py`): until it reaches `dev`, CI fails that one test on any branch
-without it. PR13b, PR15 and the meeting branch carry it.
+without it. PR13b, PR15, PR16 and the meeting branch carry it.
 
-**Then:** PR16 from PR15; PR18b, PR18c, PR19 and PR20 after PR14 and PR18; PR21 bug sweep;
+**Then:** PR18b, PR18c, PR19 and PR20 after PR14 and PR18; PR21 bug sweep;
 PR22 docs sweep.
 
 **Owner actions waiting.**
