@@ -2037,6 +2037,30 @@ def claim_config_field(config_id: str, field: str, value: str) -> bool:
     return True
 
 
+def replace_config_field(config_id: str, field: str, expected, value) -> bool:
+    """Set `field` on a config row to `value` only if it still holds `expected` (None: only if it
+    is not set). False when it changed since the caller read it, so a read-modify-write of a list
+    (the prompts row's paused_versions) never drops another writer's change."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    values = {":v": value}
+    if expected is None:
+        condition = "attribute_not_exists(#f)"
+    else:
+        condition = "#f = :old"
+        values[":old"] = expected
+    try:
+        table.update_item(
+            Key={"config_id": config_id},
+            UpdateExpression="SET #f = :v",
+            ConditionExpression=condition,
+            ExpressionAttributeNames={"#f": field},
+            ExpressionAttributeValues=_floats_to_decimal(values),
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
 def release_config_field(config_id: str, field: str, value: str) -> None:
     """Remove `field` from a config row if it still holds `value` (anything else is left)."""
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])

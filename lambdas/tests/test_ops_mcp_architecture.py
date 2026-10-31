@@ -1097,6 +1097,27 @@ def test_the_content_bucket_holds_the_running_states_and_figures():
     assert "expiring after 21 days" in purpose
 
 
+def test_the_prompts_bucket_and_hash_table_are_catalogued_as_the_prompts_module_names_them(dev):
+    """Prompts as assets (infra/modules/prompts, PR4): the bucket is catalogued under the name the
+    module gives it, as a bucket, and the hash table with its key (the table test above holds every
+    table to the Terraform; nothing does that for buckets, so this one is held here)."""
+    module = _read("modules", "prompts", "main.tf")
+    bucket = re.search(r'^\s*bucket\s*=\s*"([^"]+)"', _blocks(module, "aws_s3_bucket")["prompts"], re.M)
+    assert architecture.by_key("bucket", "prompts").name == _template(bucket.group(1))
+    table = architecture.by_key("table", "prompt-hashes")
+    assert table.keys == ("prompt_hash",) and table.ttl is None and not table.assistant_reads
+    # Pasted as deployed, or as the environment variable a Lambda is told, each name finds its own.
+    for pasted, expected in (
+        (f"{PREFIX}dev-prompts", ("bucket", "prompts")),
+        ("PROMPTS_BUCKET", ("bucket", "prompts")),
+        (f"{PREFIX}production-prompt-hashes", ("table", "prompt-hashes")),
+        ("PROMPT_HASHES_TABLE", ("table", "prompt-hashes")),
+    ):
+        assert [(c.kind, c.key) for c in architecture.resolve(pasted).matches] == [expected], pasted
+    # "prompts" is the bucket's word now; the refinements answer to their own.
+    assert architecture.by_key("table", "prompt-refinements") in architecture.resolve("refinements").matches
+
+
 def test_the_vision_runsheet_links_to_the_vision_region_and_says_when_vision_is_off(dev, monkeypatch):
     monkeypatch.setenv("OPS_VISION_REGION", "us-west-2")
     answer = runsheets.investigate("vision")

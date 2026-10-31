@@ -52,6 +52,9 @@ API): `prompt_assets` (`on`|`off`) turns every asset off without a deploy, and `
 (`<prompt_id>@<version>` entries) pulls one version while the others of its split keep serving.
 An unreadable row falls open to the defaults: the hash check reads the same service and fails the
 asset to vanilla when DynamoDB is down, so nothing unapproved is ever served.
+
+**What is published** (`published_files`, `releases`, `current_release`): the same reads, made
+fresh rather than from the cache, for the admin API's GET /prompts and GET /prompts/releases.
 """
 
 from __future__ import annotations
@@ -59,6 +62,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import hashlib
+import json
 import os
 import random
 import re
@@ -107,6 +111,15 @@ _CODE = r"[a-z][a-z0-9_]{0,39}"
 # A prompt id is two evidence codes (the Lambda, the prompt), so the fallback line can carry both.
 _PROMPT_ID = re.compile(rf"^{_CODE}/{_CODE}$")
 _PAUSED_ENTRY = re.compile(rf"^{_CODE}/{_CODE}@v[1-9][0-9]*$")
+# Every check against these is `fullmatch`: `$` also matches before a trailing newline, and an entry
+# such as "daily_cycle/draft@v2\n" would be stored and never equal what the Lambda looks up.
+
+
+def is_prompt_id(value) -> bool:
+    """Whether `value` is a prompt id, `<lambda_id>/<prompt_name>`: two codes joined by one `/`
+    (the grammar PromptSpec holds every registered id to; ops_mcp/cli_guide.py checks a `prompt_id`
+    positional with it)."""
+    return isinstance(value, str) and _PROMPT_ID.fullmatch(value) is not None
 
 
 @dataclass(frozen=True)
@@ -131,9 +144,9 @@ class PromptSpec:
         object.__setattr__(self, "required", frozenset(self.required))
         object.__setattr__(self, "optional", frozenset(self.optional))
         object.__setattr__(self, "locked", tuple(self.locked))
-        if not isinstance(self.prompt_id, str) or not _PROMPT_ID.match(self.prompt_id):
+        if not isinstance(self.prompt_id, str) or not _PROMPT_ID.fullmatch(self.prompt_id):
             raise ValueError(f"prompt_id {self.prompt_id!r} is not <lambda_id>/<prompt_name>")
-        if not isinstance(self.vanilla_version, str) or not _VERSION.match(self.vanilla_version):
+        if not isinstance(self.vanilla_version, str) or not _VERSION.fullmatch(self.vanilla_version):
             raise ValueError(f"{self.prompt_id}: vanilla_version {self.vanilla_version!r} is not v1, v2, ...")
         if not isinstance(self.max_chars, int) or isinstance(self.max_chars, bool) or self.max_chars <= 0:
             raise ValueError(f"{self.prompt_id}: max_chars must be a positive whole number")
@@ -143,7 +156,7 @@ class PromptSpec:
                 f"{self.prompt_id}: a placeholder is named in more than one of required, optional, locked"
             )
         for name in names:
-            if not isinstance(name, str) or not _NAME.match(name):
+            if not isinstance(name, str) or not _NAME.fullmatch(name):
                 raise ValueError(
                     f"{self.prompt_id}: placeholder name {name!r} is not lower-case letters and underscores"
                 )
@@ -304,7 +317,7 @@ def validate_setting(name: str, value) -> str | None:
         return f"unknown setting '{name}'"
     if name == "prompt_assets":
         return None if value in ("on", "off") else "'prompt_assets' must be on or off"
-    if isinstance(value, list) and all(isinstance(e, str) and _PAUSED_ENTRY.match(e) for e in value):
+    if isinstance(value, list) and all(isinstance(e, str) and _PAUSED_ENTRY.fullmatch(e) for e in value):
         return None
     return "'paused_versions' must be a list of <lambda_id>/<prompt_name>@<version> entries"
 
@@ -471,7 +484,7 @@ def _read_asset(spec: PromptSpec) -> tuple[str | None, str | None, str | None]:
         print(f"prompts: {spec.prompt_id}: could not read the tags of {key}: {exc!r}")
         return None, None, "s3_error"
     version = tags.get("version")
-    if not isinstance(version, str) or not _VERSION.match(version):
+    if not isinstance(version, str) or not _VERSION.fullmatch(version):
         return None, None, "no_version_tag"
     if f"{spec.prompt_id}@{version}" in settings["paused_versions"]:
         return None, version, "paused"
@@ -523,3 +536,103 @@ def get_prompt(prompt_id: str, values: dict | None = None, locked: dict | None =
     if code is None:
         return Prompt(render(spec, template, values, locked), prompt_id, version, SOURCE_ASSET, None)
     return _fallback(spec, values, locked, code, version)
+
+
+# --- what is published (the admin API's listings) -----------------------------------------------------
+
+RELEASES_PREFIX = "releases/"
+CURRENT_RELEASE_KEY = "releases/current.json"
+# The two fields of current.json (section 4.2): the release in place, and the one a rollback holds
+# to (null when none). PR5's publisher writes them by these names, and GET /prompts/releases marks
+# `current` and `pinned` by them.
+CURRENT_RELEASE_FIELD = "release_id"
+PINNED_RELEASE_FIELD = "pinned_release"
+
+
+def published_files(prompt_id: str, paused_versions) -> list[dict]:
+    """Each file under `<prompt_id>/latest/`, the keys `get_prompt` draws an arm from, read now
+    rather than from the cache: its key, the publisher's tags (`version`, `release`,
+    `tagged_sha256`), the sha256 of its bytes (`sha256`, what the hash check looks up), its hash
+    row's `hash_status` (`live`, `pending`, `retired` with `retired_at`, or `missing`) and whether
+    its version is in `paused_versions`. A part that cannot be read is None, with `error` saying
+    which; the listing itself failing raises."""
+    paused = set(paused_versions or ())
+    return [_describe_file(prompt_id, key, paused) for key in _list_latest(prompt_id)]
+
+
+def _describe_file(prompt_id: str, key: str, paused: set) -> dict:
+    found = {
+        "key": key,
+        "version": None,
+        "release": None,
+        "tagged_sha256": None,
+        "sha256": None,
+        "hash_status": None,
+        "retired_at": None,
+        "paused": False,
+    }
+    try:
+        tags = _tags(key)
+    except Exception as exc:  # noqa: BLE001 - a listing says what it could not read, and goes on
+        print(f"prompts: {prompt_id}: could not read the tags of {key}: {exc!r}")
+        found["error"] = "could not read its tags"
+        tags = {}
+    version = tags.get("version")
+    found.update(version=version, release=tags.get("release"), tagged_sha256=tags.get("sha256"))
+    found["paused"] = version is not None and f"{prompt_id}@{version}" in paused
+    try:
+        raw = _s3().get_object(Bucket=os.environ["PROMPTS_BUCKET"], Key=key)["Body"].read()
+        found["sha256"] = sha256_text(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        found["error"] = "its bytes are not UTF-8"
+        return found
+    except Exception as exc:  # noqa: BLE001
+        print(f"prompts: {prompt_id}: could not read {key}: {exc!r}")
+        found.setdefault("error", "could not read it")
+        return found
+    try:
+        row = _hash_row(found["sha256"])
+    except Exception as exc:  # noqa: BLE001
+        print(f"prompts: {prompt_id}: could not read the hash row of {key}: {exc!r}")
+        found.setdefault("error", "could not read its hash row")
+        return found
+    found["hash_status"] = row.get("status") if row else "missing"
+    found["retired_at"] = row.get("retired_at") if row else None
+    return found
+
+
+def releases(limit: int) -> tuple[list[dict], int]:
+    """The publisher's releases, newest first: at most `limit` of the `releases/<release_id>.json`
+    files, each as its `release_id` and when it was written (`written_at`), and how many there are
+    in all. Raises when the listing fails."""
+    found = []
+    pages = _s3().get_paginator("list_objects_v2").paginate(
+        Bucket=os.environ["PROMPTS_BUCKET"], Prefix=RELEASES_PREFIX
+    )
+    for page in pages:
+        for item in page.get("Contents", []):
+            name = item["Key"][len(RELEASES_PREFIX) :]
+            if item["Key"] == CURRENT_RELEASE_KEY or "/" in name or not name.endswith(".json"):
+                continue
+            release_id = name.removesuffix(".json")
+            if release_id:
+                written = item["LastModified"].astimezone(UTC).isoformat()
+                found.append({"release_id": release_id, "written_at": written})
+    found.sort(key=lambda release: (release["written_at"], release["release_id"]), reverse=True)
+    return found[:limit], len(found)
+
+
+def current_release() -> dict | None:
+    """`releases/current.json` as the publisher wrote it (section 4.2): CURRENT_RELEASE_FIELD
+    (`release_id`), the release in place, and PINNED_RELEASE_FIELD (`pinned_release`) while a
+    rollback holds to one. None before the first publish (no such key is not an error). Raises when
+    it cannot be read or is not a JSON object."""
+    client = _s3()
+    try:
+        raw = client.get_object(Bucket=os.environ["PROMPTS_BUCKET"], Key=CURRENT_RELEASE_KEY)["Body"].read()
+    except client.exceptions.NoSuchKey:
+        return None
+    current = json.loads(raw)
+    if not isinstance(current, dict):
+        raise ValueError(f"{CURRENT_RELEASE_KEY} is not a JSON object")
+    return current

@@ -50,13 +50,14 @@ REGENERATE = "python scripts/generate_cli_reference.py"
 HELP_COLUMNS = 100
 
 # A command whose last word is one of these deletes something or takes it down. Wider than the
-# commands that exist today (delete, unpublish, reject, and restore, which writes over what is
-# there), so one added later under another of
-# these names is covered without anyone remembering this list.
+# commands that exist today (delete, unpublish, reject, restore, which writes over what is there,
+# and pause, which stops something being served or run), so one added later under another of
+# these names is covered without anyone remembering this list. `pause` makes `topics pause` a
+# template as well as `prompts pause`: both stop something the operator then has to resume.
 DESTRUCTIVE_VERBS = frozenset(
     {
         "delete", "unpublish", "reject", "remove", "purge", "destroy", "drop", "wipe", "clear",
-        "restore",
+        "restore", "pause",
     }
 )  # fmt: skip
 # A flag that makes any command skip a safeguard.
