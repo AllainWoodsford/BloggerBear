@@ -39,7 +39,7 @@ its reason applies to:
   (looked up further back in the log when this run's read does not hold them), and never a prompt's
   own row;
 * nothing, for an operator's forgive or punish: those are `adjust#` rows, which the admin API writes
-  (PR13b), and they count in `total_perf` only.
+  itself (common/evals_adjust.py) beside the event, and they count in `total_perf` only.
 
 A day row holds `perf` (the sum of the deltas), `events`, `good` and `bad` (section 4.9's counts:
 events above and below zero, Article Completion and Prompt Fallback left out) and `by_reason` (each
@@ -117,6 +117,9 @@ INDEX = "index"
 INDEX_KEY = {"entity": INDEX, "sk": INDEX}
 DAY = "day#"
 PAIR = "pair#"
+# An operator's forgive or punish of a model (common/evals_adjust.py writes these rows): its deltas
+# count in total_perf and in no window.
+ADJUST_MODEL = "adjust#model#"
 VERDICTS = ("good", "bad")
 
 COMPLETION = "Article Completion"
@@ -438,6 +441,22 @@ def good_and_bad(day_rows: list[dict], today: date) -> dict:
     return {"perf_good": good, "perf_bad": bad}
 
 
+def model_windows(table, key: str, today: date, is_calibrated: bool) -> dict:
+    """One model's windows (`windows`) from its day rows and its `adjust#model#` rows in the evals
+    table. `key` is the model's canonical id, the one its rows are kept under."""
+    day_rows = query_all(table, Key("entity").eq(f"model#{key}") & Key("sk").begins_with(DAY))
+    adjustments = query_all(table, Key("entity").eq(f"{ADJUST_MODEL}{key}"))
+    return windows(day_rows, adjustments, today, is_calibrated)
+
+
+def index_calibrated(index: dict, settings: dict) -> bool:
+    """Whether the judge was calibrated at the last rollup, from the index row's `judge_agreement`
+    and `judge_pairs` (what that run worked out from the pair# rows)."""
+    agreement = index.get("judge_agreement")
+    agreement = float(agreement) if isinstance(agreement, int | float | Decimal) else None
+    return calibrated(agreement, count_of(index.get("judge_pairs")), settings)
+
+
 # --- the tables -----------------------------------------------------------------------------------
 
 
@@ -563,7 +582,7 @@ def update_models(
     updated = missing = 0
     for key in sorted(set(by_key) | touched):
         day_rows = query_all(table, Key("entity").eq(f"model#{key}") & Key("sk").begins_with(DAY))
-        adjustments = query_all(table, Key("entity").eq(f"adjust#model#{key}"))
+        adjustments = query_all(table, Key("entity").eq(f"{ADJUST_MODEL}{key}"))
         fields = windows(day_rows, adjustments, today, is_calibrated)
         fields.update(good_and_bad(day_rows, today))
         fields.update(perf_updated_at=now_iso, model_roles=roles.get(key, []))

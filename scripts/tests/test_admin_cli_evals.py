@@ -1,6 +1,7 @@
 """The Admin CLI's eval commands (scripts/admin_cli_evals.py): wired into admin_cli's parser by
-`register` (docs/enhancements/model-ranch-prompt-assets-evals.md, E0), and `evals get|set|rollup|
-status|digest` (PR13), each sending what its Admin API route takes."""
+`register` (docs/enhancements/model-ranch-prompt-assets-evals.md, E0), `evals get|set|rollup|
+status|digest` (PR13) and `evals forgive|punish|ungate|revoke` (PR13b), each sending what its Admin
+API route takes."""
 
 from __future__ import annotations
 
@@ -57,7 +58,9 @@ def test_register_adds_the_evals_group_and_its_commands():
     admin_cli_evals.register(subparsers, {"do_request": None, "CliError": Exception})
     assert set(subparsers.choices) == {"evals"}
     commands = _subparsers(subparsers.choices["evals"]).choices
-    assert set(commands) == {"get", "set", "rollup", "status", "digest"}
+    assert set(commands) == {
+        "get", "set", "rollup", "status", "digest", "forgive", "punish", "ungate", "revoke",
+    }  # fmt: skip
 
 
 def test_admin_cli_imports_the_eval_module_only_inside_build_parser():
@@ -138,3 +141,73 @@ def test_rollup_runs_from_the_watermark_or_for_the_days_named():
     ]
     with pytest.raises(admin_cli.CliError):
         cli("rollup", "--to", "2026-10-03")
+
+
+# --- forgive, punish, ungate, revoke --------------------------------------------------------------
+
+
+def test_forgive_and_punish_send_a_models_adjustment():
+    assert cli("forgive", "--model", "maker.alpha-v1:0", "--amount", "30") == [
+        (
+            "POST",
+            "/evals/adjust",
+            {
+                "target": "model", "model_id": "maker.alpha-v1:0", "direction": "forgive", "amount": 30,
+                "allow_cull": False,
+            },
+        )
+    ]  # fmt: skip
+    [(_, _, body)] = cli("punish", "--model", "maker.alpha-v1:0", "--amount", "250", "--allow-cull")
+    assert (body["direction"], body["amount"], body["allow_cull"]) == ("punish", 250, True)
+
+
+def test_forgive_and_punish_send_a_prompt_versions_adjustment():
+    assert cli("punish", "--prompt", "daily_cycle/draft", "--version", "v2", "--amount", "5") == [
+        (
+            "POST",
+            "/evals/adjust",
+            {
+                "target": "prompt", "prompt_id": "daily_cycle/draft", "version": "v2", "direction": "punish",
+                "amount": 5, "allow_cull": False,
+            },
+        )
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--amount", "5"],
+        ["--model", "maker.alpha-v1:0", "--prompt", "daily_cycle/draft", "--version", "v2", "--amount", "5"],
+        ["--prompt", "daily_cycle/draft", "--amount", "5"],
+        ["--model", "maker.alpha-v1:0", "--version", "v2", "--amount", "5"],
+    ],
+)
+def test_an_adjustment_names_exactly_one_model_or_one_prompt_version(argv):
+    with pytest.raises(admin_cli.CliError):
+        cli("forgive", *argv)
+
+
+def test_an_adjustment_needs_a_whole_amount():
+    with pytest.raises(SystemExit):
+        cli("punish", "--model", "maker.alpha-v1:0")
+    with pytest.raises(SystemExit):
+        cli("punish", "--model", "maker.alpha-v1:0", "--amount", "lots")
+
+
+def test_ungate_holds_a_models_gates_open_for_some_hours():
+    assert cli("ungate", "--model", "maker.alpha-v1:0", "--hours", "48") == [
+        ("POST", "/evals/ungate", {"model_id": "maker.alpha-v1:0", "hours": 48})
+    ]
+    assert cli("ungate", "--model", "maker.alpha-v1:0", "--hours", "0")[0][2]["hours"] == 0
+    with pytest.raises(SystemExit):
+        cli("ungate", "--model", "maker.alpha-v1:0")
+
+
+def test_revoke_sends_the_source_and_its_time_when_given():
+    assert cli("revoke", "--source", "judge", "--since", "2026-10-27T00:00:00Z") == [
+        ("POST", "/evals/revoke", {"source": "judge", "since": "2026-10-27T00:00:00Z"})
+    ]
+    assert cli("revoke", "--source", "run:r-1") == [("POST", "/evals/revoke", {"source": "run:r-1"})]
+    with pytest.raises(SystemExit):
+        cli("revoke")

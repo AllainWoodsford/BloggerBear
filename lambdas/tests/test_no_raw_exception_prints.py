@@ -30,6 +30,7 @@ GUARDED = sorted(
         "common/evals_rollup.py",
         "common/evals_settings.py",
         "common/evals_status.py",
+        "common/evals_adjust.py",
         # The rotation guard, which every pipeline Lambda that picks a model imports.
         "common/model_ranch.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
