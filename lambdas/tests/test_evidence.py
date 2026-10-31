@@ -88,6 +88,9 @@ SAMPLES = {
         "model_id": "au.maker.alpha-v1:0", "role": "default", "slot": "model",
         "windows": ["daily", "weekly"], "caller": "routing",
     },
+    "model_cull": {
+        "job": "apply", "status": "applied", "proposed": 5, "culled": 3, "kept": 1, "left": 1, "cap": 3,
+    },
 }  # fmt: skip
 
 

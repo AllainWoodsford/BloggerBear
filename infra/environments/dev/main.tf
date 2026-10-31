@@ -1138,16 +1138,19 @@ module "admin_api" {
     "PUT /model-rotation",
     # The model catalog (docs/enhancements/archive/model-catalog-refresh.md): run the reprice, discover
     # or classify job now, and its settings and pause flags. See admin_api_handler.py's model catalog
-    # routes and `admin_cli models reprice|discover|classify`, `admin_cli model-catalog`.
+    # routes and `admin_cli models reprice|discover|classify`, `admin_cli model-catalog`. Restore
+    # puts a culled or pruned model back from the archive (`admin_cli models restore`).
     "POST /models/reprice",
     "POST /models/discover",
     "POST /models/classify",
+    "POST /models/{model_id}/restore",
     "GET /model-catalog-config",
     "PUT /model-catalog-config",
     # Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md): the evals settings row,
     # starting a rollup now, what evals are doing, a digest of the day totals, and an operator's
-    # forgive or punish, gate override and revoked source. See admin_api_handler.py's evals routes
-    # and `admin_cli evals get|set|rollup|status|digest|forgive|punish|ungate|revoke`.
+    # forgive or punish, gate override and revoked source, and applying the weekly cull proposal. See
+    # admin_api_handler.py's evals routes and `admin_cli evals
+    # get|set|rollup|status|digest|forgive|punish|ungate|revoke|cull`.
     "GET /evals-config",
     "PUT /evals-config",
     "POST /evals/rollup",
@@ -1156,6 +1159,7 @@ module "admin_api" {
     "POST /evals/adjust",
     "POST /evals/ungate",
     "POST /evals/revoke",
+    "POST /evals/cull/apply",
     "GET /reviewer-config",
     "PUT /reviewer-config",
     # Pipeline-wide settings (today: the default research interval). See

@@ -1,7 +1,8 @@
 """The admin API's evals routes (admin_api_handler.py; docs/enhancements/model-ranch-prompt-assets-evals.md,
 PR13 and PR13b): GET/PUT /evals-config, POST /evals/rollup, GET /evals/status, GET /evals/digest, the
 perf fields on GET /models, POST /evals/adjust, /evals/ungate and /evals/revoke
-(common/evals_adjust.py), and the routes' place in both environments' Terraform.
+(common/evals_adjust.py), and the routes' place in both environments' Terraform. Culling's routes
+and its part of the status (PR16) are test_model_cull.py's.
 
 What is held: the settings route sets and clears what the CLI may, `timezone` (a DynamoDB reserved
 word) included, and refuses the DynamoDB-only settings; a rollup starts in eval-jobs, or is refused
@@ -44,7 +45,7 @@ QUEUE_URL = "https://sqs.ap-southeast-2.amazonaws.com/123456789012/acme-dev-eval
 WORK_QUEUE_URL = "https://sqs.ap-southeast-2.amazonaws.com/123456789012/acme-dev-work.fifo"
 ROUTES = {
     "GET /evals-config", "PUT /evals-config", "POST /evals/rollup", "GET /evals/status", "GET /evals/digest",
-    "POST /evals/adjust", "POST /evals/ungate", "POST /evals/revoke",
+    "POST /evals/adjust", "POST /evals/ungate", "POST /evals/revoke", "POST /evals/cull/apply",
 }  # fmt: skip
 
 
@@ -299,7 +300,7 @@ def test_status_answers_every_part(aws, queue):
     assert gated["gated"][0]["windows"] == ["daily"]
     assert [model["windows"] for model in gated["held_open"]] == [["daily"]]
     assert gated["gates"] == {"daily_gate": -50, "weekly_gate": -100, "total_gate": -1000, "min_events": 10}
-    assert body["cull"] == {"proposal": None, "detail": "no cull proposal yet"}
+    assert body["cull"] == {"proposal": None, "last_apply": None, "detail": "no cull proposal yet"}
     assert body["queue_depth"]["eval-work"] == {
         "queue": "acme-dev-eval-work", "waiting": 3, "in_flight": 1, "delayed": 2,
     }  # fmt: skip
@@ -432,11 +433,15 @@ def test_an_idle_queue_with_no_datapoint_is_said_to_be_one(aws, queue):
 
 
 def test_status_shows_the_cull_proposal_in_place_and_could_not_check_when_it_cannot_be_read(aws, queue):
-    proposal = {"ids": ["maker.poor-v1:0"], "scores": [-1200], "expires_at": "2026-11-02T00:00:00Z"}
+    proposal = {
+        "proposed_at": "2026-10-23T04:00:00+00:00", "expires_at": "2099-11-02T00:00:00+00:00",
+        "total_gate": -1000, "min_events": 10,
+        "models": [{"model_id": "maker.poor-v1:0", "total_perf": -1200, "events": 40, "reason": "below"}],
+    }  # fmt: skip
     aws.Table("ModelConfig").put_item(Item={"config_id": "model-catalog-state", "cull_proposal": proposal})
 
     _, body = call("GET /evals/status")
-    assert body["cull"] == {"proposal": proposal}
+    assert body["cull"] == {"proposal": proposal, "last_apply": None, "expired": False}
 
     with patch.object(evals_status.model_catalog, "get_state", side_effect=RuntimeError("no row")):
         _, body = call("GET /evals/status")

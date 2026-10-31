@@ -2161,6 +2161,23 @@ def archive_models(entries: dict[str, dict]) -> None:
         put_config_row({"config_id": _MODEL_ARCHIVE_ID, "models": {**get_model_archive(), **entries}})
 
 
+def unarchive_model(model_id: str) -> bool:
+    """Remove one model's entry from the archive (`models restore` put it back in the registry).
+    One REMOVE of that key, so an entry another writer adds meanwhile is kept. False, and nothing
+    written, when the archive holds no entry under `model_id`."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.update_item(
+            Key={"config_id": _MODEL_ARCHIVE_ID},
+            UpdateExpression="REMOVE #m.#k",
+            ConditionExpression="attribute_exists(#m.#k)",
+            ExpressionAttributeNames={"#m": "models", "#k": model_id},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
 def list_priced_models() -> list[dict]:
     """list_models(), plus the archived price of every pruned model the registry no longer holds
     (as a row with `archived: true`): what the Stats page prices past articles with."""

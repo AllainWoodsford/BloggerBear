@@ -4,12 +4,13 @@ GET /evals/digest (docs/enhancements/model-ranch-prompt-assets-evals.md, PR13).
 **status** answers "are evals working, and what are they holding back?" in parts, each read on its
 own: the switches, the rollup (its watermark and last run), `late_dropped`, the judge (its agreement
 with people, pairs and whether it is calibrated), the gated models (as the rotation guard decides it,
-PR15, with the protected and the held-open ones apart), the cull proposal in place, each queue's
+PR15, with the protected and the held-open ones apart), culling (the proposal in place, whether it
+has expired, and the last `evals cull --apply`: when, and which models it culled), each queue's
 depth and the age of its oldest job (eval-work's, and the queue platform's work.fifo), and the
 topics by dispatch mode. A part that cannot be read says "could not check" (COULD_NOT_CHECK) and
 the others still answer, so one missing grant or one slow service never hides the rest. The prompt
 release in place and the prompt fallbacks of the last 24 hours join it where prompts as assets meet
-evals (PR14); the last cull applied with culling (PR16), which writes the proposal too.
+evals (PR14).
 
 **digest** adds the day rows up from a day (`since`, a week ago by default) to today, per model and
 per prompt version: perf, events, good and bad with the Wilson interval of good/(good + bad)
@@ -26,7 +27,16 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Key
 
-from common import dynamo, evals, evals_rollup, evals_settings, evidence, model_catalog, model_ranch
+from common import (
+    dynamo,
+    evals,
+    evals_rollup,
+    evals_settings,
+    evidence,
+    model_catalog,
+    model_fleet,
+    model_ranch,
+)
 from common.model_pricing import canonical_model_id
 
 COULD_NOT_CHECK = "could not check"
@@ -199,13 +209,20 @@ def _gated_models(settings: dict, now: datetime) -> dict:
     return {"gated": gated, "held_open": held_open, "protected": protected, "gates": gates}
 
 
-def _cull() -> dict:
-    """The cull proposal in place: model-catalog-state's `cull_proposal` as stored, which culling's
-    weekly proposal writes (PR16); None until there is one."""
-    proposal = _number(model_catalog.get_state().get("cull_proposal"))
+def _cull(now: datetime) -> dict:
+    """Culling (PR16), from model-catalog-state: the proposal in place as stored (`cull_proposal`,
+    which the weekly cycle writes; None until there is one) and whether it has expired (an apply
+    refuses it then), and the last `evals cull --apply` as it recorded itself (`last_cull_apply`:
+    when, the ids it culled, those it kept and why; None until one has run)."""
+    state = model_catalog.get_state()
+    proposal = _number(state.get(model_fleet.CULL_PROPOSAL_FIELD))
+    part = {"proposal": proposal, "last_apply": _number(state.get(model_fleet.LAST_CULL_FIELD))}
     if proposal is None:
-        return {"proposal": None, "detail": "no cull proposal yet"}
-    return {"proposal": proposal}
+        part["detail"] = "no cull proposal yet"
+    else:
+        expires = evals_settings._parse(proposal.get("expires_at")) if isinstance(proposal, dict) else None
+        part["expired"] = expires is None or now >= expires
+    return part
 
 
 def _judge(settings: dict, index: dict) -> dict:
@@ -251,7 +268,7 @@ def status(now: datetime | None = None) -> dict:
         "late_dropped": _part("late_dropped", lambda: {"late_dropped": _late_dropped(index())}),
         "judge": _part("judge", lambda: _judge(settings(), index())),
         "gated_models": _part("gated_models", lambda: _gated_models(settings(), now)),
-        "cull": _part("cull", _cull),
+        "cull": _part("cull", lambda: _cull(now)),
         # One part per queue, so one that cannot be read never hides the other.
         "queue_depth": {
             queue: _part(f"queue_depth/{queue}", lambda queue=queue: _queue_depth(queue)) for queue in QUEUES

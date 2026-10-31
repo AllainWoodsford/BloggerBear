@@ -52,6 +52,7 @@ from common import (
     feedback_limits,
     gear,
     model_catalog,
+    model_cull,
     model_fleet,
     model_ranch,
     reviewer,
@@ -2997,6 +2998,40 @@ def _evals_revoke_route(event: dict) -> dict:
         return _error(exc.status, str(exc))
 
 
+# Culling in proposal mode (common/model_cull.py, PR16): applying the weekly cycle's proposal, and
+# putting a culled (or pruned) model back. Both are refused while evals are off, as an adjustment
+# is: a cull acts on the scores the rollup keeps, and a restore writes an Admin Forgive event.
+_EVALS_OFF_CULL = (
+    "evals are off (EVALS_ENABLED): the scores a cull reads are not being kept, so nothing was culled"
+)
+_EVALS_OFF_RESTORE = (
+    "evals are off (EVALS_ENABLED): a restore's Admin Forgive could not be written, so nothing was restored"
+)
+
+
+def _evals_cull_apply_route(event: dict) -> dict:
+    """Archive, then delete, up to cull_max_per_run of the current cull proposal's models, each
+    checked again first; refused while culling is off (cull_enabled), and when there is no proposal
+    or it has expired (common/model_cull.apply)."""
+    if os.environ.get("EVALS_ENABLED") != "true":
+        return _error(409, _EVALS_OFF_CULL)
+    try:
+        return _response(200, model_cull.apply(datetime.now(UTC)))
+    except evals_adjust.Refused as exc:
+        return _error(exc.status, str(exc))
+
+
+def _restore_model_route(event: dict) -> dict:
+    """Put an archived model back in the registry, forgive its total to zero and hold its gates
+    open for 7 days (common/model_cull.restore)."""
+    if os.environ.get("EVALS_ENABLED") != "true":
+        return _error(409, _EVALS_OFF_RESTORE)
+    try:
+        return _response(200, model_cull.restore(_path_param(event, "model_id"), datetime.now(UTC)))
+    except evals_adjust.Refused as exc:
+        return _error(exc.status, str(exc))
+
+
 # --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/archive/reviewer-bear.md) -----
 #
 # The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
@@ -3510,6 +3545,7 @@ _ROUTES = {
     "POST /models/reprice": _reprice_models_route,
     "POST /models/discover": _discover_models_route,
     "POST /models/classify": _classify_models_route,
+    "POST /models/{model_id}/restore": _restore_model_route,
     "GET /model-catalog-config": _get_model_catalog_config_route,
     "PUT /model-catalog-config": _put_model_catalog_config_route,
     "GET /evals-config": _get_evals_config_route,
@@ -3520,6 +3556,7 @@ _ROUTES = {
     "POST /evals/adjust": _evals_adjust_route,
     "POST /evals/ungate": _evals_ungate_route,
     "POST /evals/revoke": _evals_revoke_route,
+    "POST /evals/cull/apply": _evals_cull_apply_route,
     "GET /reviewer-config": _get_reviewer_config_route,
     "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /pipeline-config": _get_pipeline_config_route,

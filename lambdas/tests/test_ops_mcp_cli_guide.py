@@ -478,8 +478,8 @@ DESTRUCTIVE = [
 
 def test_the_destructive_commands_are_the_ones_the_reference_marks():
     assert DESTRUCTIVE == [
-        "topics delete", "articles unpublish", "moderation reject", "backup restore", "refinements reject",
-        "equipment delete", "evals punish",
+        "topics delete", "articles unpublish", "moderation reject", "backup restore", "models restore",
+        "refinements reject", "equipment delete", "evals punish", "evals cull",
     ]  # fmt: skip
 
 
@@ -492,8 +492,10 @@ def test_a_destructive_command_is_a_template_whatever_values_are_given(path, par
         "version": "2026-10-01T00:00:00",
         "key": "backup/bloggerbear-dev/snapshots/20261019T000000Z-manual.jsonl.gz",
         "amount": "37",
+        "model_id": "maker.poor-v1:0",
     }
-    # Its positionals, and any option it cannot run without (evals punish's --amount).
+    # Its positionals, and any option it cannot run without (evals punish's --amount). `evals cull`
+    # has neither: its card is the bare command, marked and warned about all the same.
     arguments = cli_guide.reference()["commands"][path]["arguments"]
     wanted = [a for a in arguments if not a["flags"] or a["required"]]
 
@@ -503,10 +505,10 @@ def test_a_destructive_command_is_a_template_whatever_values_are_given(path, par
     command = found["suggestion"]["command"]
     assert found["destructive"] is True and found["warning"] == cli_guide.DESTRUCTIVE_WARNING
     words = [f"{a['flags'][0]} <{a['dest']}>" if a["flags"] else f"<{a['dest']}>" for a in wanted]
-    assert command == f"{PROGRAM} {path} " + " ".join(words)
+    assert command == " ".join([PROGRAM, path, *words])
     for value in real.values():
         assert value not in json.dumps(result)  # no real id anywhere in what goes to the page
-    assert "<" in command and result["destructive"] is True
+    assert ("<" in command) == bool(wanted) and result["destructive"] is True
     assert "not filled it in" in result["spoken"]
     # Still a real command once each placeholder is filled in.
     for argument in wanted:
@@ -549,7 +551,9 @@ def test_no_built_command_ever_deletes_with_an_id_in_it():
         arguments = cli_guide.reference()["commands"][path]["arguments"]
         options = {a["name"]: (True if a["kind"] == "flag" else "crypto") for a in arguments}
         command = cli_guide.cli_command(path, options)["findings"][0]["suggestion"]["command"]
-        assert "crypto" not in command and "<" in command
+        # A command whose every argument is a flag (`evals cull`) has nothing to hold a placeholder.
+        takes_values = any(a["kind"] != "flag" for a in arguments)
+        assert "crypto" not in command and ("<" in command) == takes_values, path
 
 
 # --- memory: a how-to is not a suggestion to follow up -------------------------------------------

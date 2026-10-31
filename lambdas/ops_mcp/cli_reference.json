@@ -5,6 +5,7 @@
   "help_columns": 100,
   "destructive_verbs": [
     "clear",
+    "cull",
     "delete",
     "destroy",
     "drop",
@@ -54,7 +55,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,evals} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,evals}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    model-rotation      The shared rotation pool: the models the daily cycle moves a topic's\n                        model_id to\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n    evals               Continuous evals and the Model Ranch: settings, the rollup, status, a\n                        digest, and an operator's forgive, punish, gate override and revoked\n                        source\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,evals} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,backup,failed-executions,security,sign-ins,musings,models,reviewer,model-catalog,model-config,model-rotation,refinements,equipment,evals}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    backup              Snapshot this deployment's content and configuration to one file, restore\n                        one, or copy every article to another bucket\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    reviewer            Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag\n                        (no deploy)\n    model-catalog       The model discover and reprice jobs (every second day): pause flags,\n                        sizes, reviews\n    model-config        Manage the global default/fallback model\n    model-rotation      The shared rotation pool: the models the daily cycle moves a topic's\n                        model_id to\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n    evals               Continuous evals and the Model Ranch: settings, the rollup, status, a\n                        digest, an operator's forgive, punish, gate override and revoked source,\n                        and culling\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -2629,9 +2630,10 @@
         "disable",
         "reprice",
         "discover",
-        "classify"
+        "classify",
+        "restore"
       ],
-      "help_text": "usage: admin_cli.py models [-h] {list,add,disable,reprice,discover,classify} ...\n\npositional arguments:\n  {list,add,disable,reprice,discover,classify}\n    list                List the supported-models registry as a table: each model's purpose (text,\n                        image, embedding, ...; unclassified until `models classify`), whether it\n                        is enabled, its access and its prices\n    add                 Add or update a model in the registry\n    disable             Disable a model: every topic's rotation, model and fallback, and the\n                        shared rotation pool, stop using it (asks first if it is the application's\n                        default or fallback)\n    reprice             Look up model prices now, as the scheduled reprice does: up to 50, longest\n                        unchecked first, a few every 5 minutes; changed prices apply at once and\n                        are reviewed 1 and 2 hours later, and put back if a review is not\n                        confident\n    discover            Add up to 5 models the account can call that the registry lacks now\n                        (disabled, unpriced: the next reprice prices them); none once the registry\n                        holds 50\n    classify            Record each registered model's purpose (text, image, embedding, video,\n                        speech) and inputs from what Bedrock lists now, so models from before\n                        purposes were recorded are judged by them; a model Bedrock no longer lists\n                        is marked unknown\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py models [-h] {list,add,disable,reprice,discover,classify,restore} ...\n\npositional arguments:\n  {list,add,disable,reprice,discover,classify,restore}\n    list                List the supported-models registry as a table: each model's purpose (text,\n                        image, embedding, ...; unclassified until `models classify`), whether it\n                        is enabled, its access and its prices\n    add                 Add or update a model in the registry\n    disable             Disable a model: every topic's rotation, model and fallback, and the\n                        shared rotation pool, stop using it (asks first if it is the application's\n                        default or fallback)\n    reprice             Look up model prices now, as the scheduled reprice does: up to 50, longest\n                        unchecked first, a few every 5 minutes; changed prices apply at once and\n                        are reviewed 1 and 2 hours later, and put back if a review is not\n                        confident\n    discover            Add up to 5 models the account can call that the registry lacks now\n                        (disabled, unpriced: the next reprice prices them); none once the registry\n                        holds 50\n    classify            Record each registered model's purpose (text, image, embedding, video,\n                        speech) and inputs from what Bedrock lists now, so models from before\n                        purposes were recorded are judged by them; a model Bedrock no longer lists\n                        is marked unknown\n    restore             Put a culled (or pruned) model back from the archive: an Admin Forgive\n                        brings its total to zero and its gates are held open for 7 days; a pruned\n                        one comes back disabled\n\noptions:\n  -h, --help            show this help message and exit\n"
     },
     "models list": {
       "help": "List the supported-models registry as a table: each model's purpose (text, image, embedding, ...; unclassified until `models classify`), whether it is enabled, its access and its prices",
@@ -2859,6 +2861,28 @@
       "arguments": [],
       "destructive": false,
       "help_text": "usage: admin_cli.py models classify [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "models restore": {
+      "help": "Put a culled (or pruned) model back from the archive: an Admin Forgive brings its total to zero and its gates are held open for 7 days; a pruned one comes back disabled",
+      "group": false,
+      "arguments": [
+        {
+          "name": "model_id",
+          "dest": "model_id",
+          "kind": "positional",
+          "flags": [],
+          "help": "The model to put back (its id, as `evals cull` or the archive names it)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py models restore [-h] model_id\n\npositional arguments:\n  model_id    The model to put back (its id, as `evals cull` or the archive names it)\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "reviewer": {
       "help": "Professor Grizzlewick, the reviewer bear: his tasks, limits and pause flag (no deploy)",
@@ -4289,7 +4313,7 @@
       "help_text": "usage: admin_cli.py equipment unequip [-h] topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "evals": {
-      "help": "Continuous evals and the Model Ranch: settings, the rollup, status, a digest, and an operator's forgive, punish, gate override and revoked source",
+      "help": "Continuous evals and the Model Ranch: settings, the rollup, status, a digest, an operator's forgive, punish, gate override and revoked source, and culling",
       "group": true,
       "subcommands": [
         "get",
@@ -4300,9 +4324,10 @@
         "forgive",
         "punish",
         "ungate",
-        "revoke"
+        "revoke",
+        "cull"
       ],
-      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest,forgive,punish,ungate,revoke} ...\n\npositional arguments:\n  {get,set,rollup,status,digest,forgive,punish,ungate,revoke}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the rollup, late events, the judge, gated models, the cull\n                        proposal, the eval-work and work.fifo queues and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n    forgive             Raise a model's total by N, and no window, or record a forgive of a prompt\n                        version (an Admin Forgive event): a model's total, which the total gate\n                        and culling read, moves at the next hourly rollup; nothing adds up a\n                        prompt version's adjustments yet\n    punish              Lower a model's total by N, and no window, or record a punish of a prompt\n                        version (an Admin Punish event): a model's total, which the total gate and\n                        culling read, moves at the next hourly rollup; nothing adds up a prompt\n                        version's adjustments yet\n    ungate              Hold a model's gates open for some hours, whatever its scores\n                        (ungated_until)\n    revoke              Leave a source's events out of the rollup (added to excluded_sources); the\n                        days already final that hold them are added up again, by a rollup it\n                        starts or the `evals rollup` command it gives\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py evals [-h]\n                          {get,set,rollup,status,digest,forgive,punish,ungate,revoke,cull} ...\n\npositional arguments:\n  {get,set,rollup,status,digest,forgive,punish,ungate,revoke,cull}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the rollup, late events, the judge, gated models, the cull\n                        proposal and the last cull applied, the eval-work and work.fifo queues and\n                        topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n    forgive             Raise a model's total by N, and no window, or record a forgive of a prompt\n                        version (an Admin Forgive event): a model's total, which the total gate\n                        and culling read, moves at the next hourly rollup; nothing adds up a\n                        prompt version's adjustments yet\n    punish              Lower a model's total by N, and no window, or record a punish of a prompt\n                        version (an Admin Punish event): a model's total, which the total gate and\n                        culling read, moves at the next hourly rollup; nothing adds up a prompt\n                        version's adjustments yet\n    ungate              Hold a model's gates open for some hours, whatever its scores\n                        (ungated_until)\n    revoke              Leave a source's events out of the rollup (added to excluded_sources); the\n                        days already final that hold them are added up again, by a rollup it\n                        starts or the `evals rollup` command it gives\n    cull                Show the weekly cull proposal (models below the total gate that play no\n                        role) and the last cull applied; --apply archives then deletes up to\n                        cull_max_per_run of them, while culling is on\n\noptions:\n  -h, --help            show this help message and exit\n"
     },
     "evals get": {
       "help": "Show the evals settings, the values in effect and the judge's model",
@@ -4548,7 +4573,7 @@
       "help_text": "usage: admin_cli.py evals rollup [-h] [--from DAY] [--to DAY]\n\noptions:\n  -h, --help  show this help message and exit\n  --from DAY  First day to add up again, YYYY-MM-DD (118 days back at most)\n  --to DAY    Last day to add up again, YYYY-MM-DD (default today)\n"
     },
     "evals status": {
-      "help": "Switches, the rollup, late events, the judge, gated models, the cull proposal, the eval-work and work.fifo queues and topics by dispatch mode",
+      "help": "Switches, the rollup, late events, the judge, gated models, the cull proposal and the last cull applied, the eval-work and work.fifo queues and topics by dispatch mode",
       "group": false,
       "arguments": [],
       "destructive": false,
@@ -4835,6 +4860,48 @@
       ],
       "destructive": false,
       "help_text": "usage: admin_cli.py evals revoke [-h] --source SOURCE [--since TIME]\n\noptions:\n  -h, --help       show this help message and exit\n  --source SOURCE  human, judge or system (who decided), run:<run id> (an offline run), or a\n                   Lambda's code\n  --since TIME     Only its events from this ISO time on, e.g. 2026-10-27T00:00:00Z (default: all\n                   of them)\n"
+    },
+    "evals cull": {
+      "help": "Show the weekly cull proposal (models below the total gate that play no role) and the last cull applied; --apply archives then deletes up to cull_max_per_run of them, while culling is on",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--apply",
+          "dest": "apply",
+          "kind": "flag",
+          "flags": [
+            "--apply"
+          ],
+          "help": "Cull now: each proposed model is checked again first, and `models restore` puts one back",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--yes",
+          "dest": "yes",
+          "kind": "flag",
+          "flags": [
+            "--yes"
+          ],
+          "help": "With --apply: do not show the proposal or ask first",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py evals cull [-h] [--apply] [--yes]\n\noptions:\n  -h, --help  show this help message and exit\n  --apply     Cull now: each proposed model is checked again first, and `models restore` puts one\n              back\n  --yes       With --apply: do not show the proposal or ask first\n"
     }
   }
 }

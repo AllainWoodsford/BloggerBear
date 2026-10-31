@@ -11,8 +11,9 @@ on its own weekly cron:
   Finding nothing new is a normal result.
 * **reprice** queues up to `reprice_max_queued` (50) token-priced models, the ones looked up
   longest ago first (so new, unpriced ones lead), and checks them a few at a time.
-* **cycle** (weekly, Fridays) refreshes the topics' model rotations (common/model_fleet.py), and
-  discover prunes the registry once it is full (model_fleet.prune).
+* **cycle** (weekly, Fridays) refreshes the topics' model rotations (common/model_fleet.py), then,
+  while evals are on, proposes the models to cull (model_fleet.cull_proposal, which deletes
+  nothing); and discover prunes the registry once it is full (model_fleet.prune).
 * **classify** (on demand only, `models classify`) records each registry model's purpose
   (`model_purpose`: text, image, embedding, ...) and inputs (`model_inputs`) from what Bedrock
   lists, as discover does for the models it adds, so rows from before purposes were recorded are
@@ -61,13 +62,14 @@ from datetime import UTC, datetime, timedelta
 
 import boto3
 
-from common import dynamo, evidence, model_fleet
+from common import dynamo, evals_settings, evidence, model_fleet
 from common.model_pricing import canonical_model_id
 from common.model_routing import resolve_model
 from common.naming import environment_prefix
 
 CONFIG_ID = "model-catalog"
-STATE_ID = "model-catalog-state"
+# The state row is the fleet's too: the weekly cycle's cull proposal is kept on it.
+STATE_ID = model_fleet.STATE_ID
 RUN_PREFIX = "pricing-run#"
 ACTIVE_RUN_FIELD = "active_run_id"
 FAILURE_KIND = "model_pricing"
@@ -1410,6 +1412,7 @@ def run_job(job: str, trigger: str, settings: dict, now: datetime) -> dict:
         result = discover(trigger, settings, now)
     elif job == "cycle":
         result = model_fleet.cycle(settings, now)
+        result["cull"] = _cull_proposal(now)
     elif job == CLASSIFY_JOB:
         result = classify(trigger, now)
     else:
@@ -1419,6 +1422,17 @@ def run_job(job: str, trigger: str, settings: dict, now: datetime) -> dict:
         {f"last_{job}_at": _now_iso(now), f"last_{job}_result": {"trigger": trigger, **result}},
     )
     return result
+
+
+def _cull_proposal(now: datetime) -> dict:
+    """The weekly cycle's cull proposal, after the rotations are refreshed (so the roles it reads are
+    the ones the cycle left). One that fails leaves the rotations' result standing: the proposal in
+    place expires at this cycle's time, and nothing can be culled until the next one proposes."""
+    try:
+        return model_fleet.cull_proposal(evals_settings.get_settings(), now)
+    except Exception as exc:  # noqa: BLE001 - the rotations are refreshed whatever the proposal does
+        print(f"model_catalog: could not propose models to cull: {exc!r}")
+        return {"status": "error", "error": type(exc).__name__}
 
 
 # A run's slot is claimed just before its row is written. Past this, a slot naming a run with no

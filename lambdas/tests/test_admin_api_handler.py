@@ -2108,7 +2108,10 @@ def test_the_model_catalog_job_routes_are_in_the_environments_terraform(env):
         encoding="utf-8"
     )
     admin_routes = main[: main.index('"GET /articles/{article_id}/feedback-status"')]
-    routes = [route for route in admin_api_handler._ROUTES if route.startswith("POST /models/")]
+    # A model's own routes (restore, test_model_cull.py's) are not jobs.
+    routes = [
+        route for route in admin_api_handler._ROUTES if route.startswith("POST /models/") and "{" not in route
+    ]
     assert set(routes) == {"POST /models/reprice", "POST /models/discover", "POST /models/classify"}
     for route in routes:
         assert f'"{route}",' in admin_routes, route

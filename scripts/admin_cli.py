@@ -1038,6 +1038,10 @@ def _post_model(args: argparse.Namespace, body: dict, *, assume_yes: bool) -> No
     _print_response_and_exit_on_error(response)
 
 
+def _cmd_models_restore(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", f"/models/{urllib.parse.quote(args.model_id, safe='')}/restore")
+
+
 def _cmd_models_disable(args: argparse.Namespace) -> None:
     response = signed_request("GET", _resolve_api_url(args), "/models", _resolve_region(args))
     if not 200 <= response.status_code < 300:
@@ -2530,6 +2534,17 @@ def build_parser() -> argparse.ArgumentParser:
             "judged by them; a model Bedrock no longer lists is marked unknown"
         ),
     ).set_defaults(func=_cmd_models_classify)
+    models_restore_parser = models_sub.add_parser(
+        "restore",
+        help=(
+            "Put a culled (or pruned) model back from the archive: an Admin Forgive brings its total to "
+            "zero and its gates are held open for 7 days; a pruned one comes back disabled"
+        ),
+    )
+    models_restore_parser.add_argument(
+        "model_id", help="The model to put back (its id, as `evals cull` or the archive names it)"
+    )
+    models_restore_parser.set_defaults(func=_cmd_models_restore)
 
     reviewer_parser = subparsers.add_parser(
         "reviewer",
@@ -2844,7 +2859,9 @@ def build_parser() -> argparse.ArgumentParser:
     # otherwise).
     from admin_cli_evals import register as register_eval_commands
 
-    register_eval_commands(subparsers, {"do_request": _do_request, "CliError": CliError})
+    register_eval_commands(
+        subparsers, {"do_request": _do_request, "fetch_json": _fetch_json, "CliError": CliError}
+    )
 
     return parser
 

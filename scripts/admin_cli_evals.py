@@ -23,8 +23,13 @@ which admin_cli.build_parser calls. Today's commands:
 - `evals revoke --source SOURCE [--since TIME]`: leave a source's events out of the rollup from a
   time on, or all of them (POST /evals/revoke). The days already final that hold them are added up
   again by a rollup the route starts, or by the `evals rollup` command its answer gives.
+- `evals cull [--apply [--yes]]`: the weekly cull proposal and the last cull applied (the `cull`
+  part of GET /evals/status); with --apply, archive then delete up to cull_max_per_run of the
+  proposal's models, each checked again first (POST /evals/cull/apply), only while culling is on.
+  It shows the proposal and asks first, as the other commands that delete do, unless --yes.
+  `models restore` (scripts/admin_cli.py) puts a culled model back.
 
-cull, score and runs follow with their routes. After any change to these commands run
+score and runs follow with their routes. After any change to these commands run
 `python scripts/generate_cli_reference.py`, so the assistant's CLI reference
 (lambdas/ops_mcp/cli_reference.json) matches.
 """
@@ -32,6 +37,8 @@ cull, score and runs follow with their routes. After any change to these command
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from urllib.parse import quote
 
 # `evals set`'s flags: (flag, the setting it sets, what it takes, its help). "switch" takes on, off
@@ -93,11 +100,12 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
     """Add the `evals` commands to admin_cli's top-level subparsers.
 
     `helpers` is what admin_cli lends this module, by name: "do_request" (its signed call to the
-    Admin API, which prints the answer) and "CliError" (what a command raises to stop with a
-    message). They are passed in rather than imported because admin_cli imports this module, and
-    an import back would be a cycle.
+    Admin API, which prints the answer), "fetch_json" (the same call, whose answer the command reads
+    itself) and "CliError" (what a command raises to stop with a message). They are passed in
+    rather than imported because admin_cli imports this module, and an import back would be a cycle.
     """
     do_request = helpers["do_request"]
+    fetch_json = helpers["fetch_json"]
     cli_error = helpers["CliError"]
 
     def cmd_set(args: argparse.Namespace) -> None:
@@ -150,10 +158,47 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
             body["since"] = args.since
         do_request(args, "POST", "/evals/revoke", body=body)
 
+    def cmd_cull(args: argparse.Namespace) -> None:
+        if args.yes and not args.apply:
+            raise cli_error("--yes goes with --apply")
+        if args.apply and args.yes:
+            do_request(args, "POST", "/evals/cull/apply", body={})
+            return
+        cull = (fetch_json(args, "GET", "/evals/status") or {}).get("cull") or {}
+        if not args.apply:
+            print(json.dumps(cull, indent=2))
+            return
+        proposal = cull.get("proposal")
+        if cull.get("status") is not None:
+            raise cli_error(
+                "could not read the cull proposal (`evals status` says why); --yes applies it unseen"
+            )
+        if not isinstance(proposal, dict) or not proposal.get("models"):
+            raise cli_error("there is no cull proposal with models in it to apply (`evals cull` shows it)")
+        if cull.get("expired"):
+            expired = proposal.get("expires_at")
+            raise cli_error(f"the cull proposal expired at {expired}: the next weekly cycle proposes again")
+        print(f"The cull proposal of {proposal.get('proposed_at')} (until {proposal.get('expires_at')}):")
+        for entry in proposal["models"]:
+            total, events = entry.get("total_perf"), entry.get("events")
+            print(f"  {entry.get('model_id')}: total {total} over {events} events")
+        question = (
+            "Archive and delete up to cull_max_per_run of these, each checked again first "
+            "(`models restore <id>` puts one back)? [y/N] "
+        )
+        try:
+            sure = input(question).strip().lower() in ("y", "yes")
+        except EOFError:
+            sure = False
+        if not sure:
+            print("Nothing was culled.", file=sys.stderr)
+            raise SystemExit(1)
+        do_request(args, "POST", "/evals/cull/apply", body={})
+
     evals_parser = subparsers.add_parser(
         "evals",
-        help="Continuous evals and the Model Ranch: settings, the rollup, status, a digest, and an "
-        "operator's forgive, punish, gate override and revoked source",
+        help="Continuous evals and the Model Ranch: settings, the rollup, status, a digest, an "
+        "operator's forgive, punish, gate override and revoked source, and culling",
     )
     evals_sub = evals_parser.add_subparsers(dest="action", required=True)
 
@@ -196,8 +241,8 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
 
     evals_sub.add_parser(
         "status",
-        help="Switches, the rollup, late events, the judge, gated models, the cull proposal, the eval-work "
-        "and work.fifo queues and topics by dispatch mode",
+        help="Switches, the rollup, late events, the judge, gated models, the cull proposal and the last "
+        "cull applied, the eval-work and work.fifo queues and topics by dispatch mode",
     ).set_defaults(func=lambda args: do_request(args, "GET", "/evals/status"))
 
     digest_parser = evals_sub.add_parser(
@@ -279,3 +324,22 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
         help="Only its events from this ISO time on, e.g. 2026-10-27T00:00:00Z (default: all of them)",
     )
     revoke_parser.set_defaults(func=cmd_revoke)
+
+    cull_parser = evals_sub.add_parser(
+        "cull",
+        help="Show the weekly cull proposal (models below the total gate that play no role) and the last "
+        "cull applied; --apply archives then deletes up to cull_max_per_run of them, while culling is on",
+    )
+    cull_parser.add_argument(
+        "--apply",
+        action="store_true",
+        default=False,
+        help="Cull now: each proposed model is checked again first, and `models restore` puts one back",
+    )
+    cull_parser.add_argument(
+        "--yes",
+        action="store_true",
+        default=False,
+        help="With --apply: do not show the proposal or ask first",
+    )
+    cull_parser.set_defaults(func=cmd_cull)
