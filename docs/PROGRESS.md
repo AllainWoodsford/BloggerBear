@@ -1007,7 +1007,7 @@ owner decisions say (an agreed override of "check off in the same PR" for this f
 - [ ] **PR21** — bug sweep
 - [ ] **PR22** — documentation sweep: configuration, models, observability, runsheets, two architecture pages, README, this checklist ticked; the spec archived
 
-#### Where it is up to (updated 2026-10-27)
+#### Where it is up to (updated 2026-10-31)
 
 A hand-off note for the next agent session: read this, then the spec. The spec is the brief: its
 section 6 holds the working rules (tools, tests, Terraform offline, attribution), section 7 the PR
@@ -1042,23 +1042,30 @@ rebased (spec section 6).
 | E0 evals wiring | #391 | `claude/ranch-41-evals-wiring` | PR1b |
 | PR12 evals core and module [B] | #395 | `claude/ranch-42-evals-core` | E0 |
 | PR13 rollup, settings, status | #400 | `claude/ranch-43-evals-rollup` | PR12 |
+| rail test date fix (not in the spec) | #401 | `claude/fix-rail-access-date-bomb` | dev |
 
 **Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
 #390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
 bundle them: the new policies are ordered after #393's shrinks.
 
 **Being built now:** PR13b (`claude/ranch-44-evals-adjust`) and PR15
-(`claude/ranch-46-rotation-guard`), both from PR13: they need only the evals stack. And
-`claude/ranch-55-stacks-meet`, the branch where the stacks meet: PR13's tip with #393, Q2, PR10
-and PR17 merged in and their conflicts resolved. It gets no PR of its own. PR14, PR11b and PR18
-need the evals and prompts stacks together, so they are built on it, and their PRs take it as
-their base. Once the stacks reach `dev`, those PRs are retargeted to `dev` and rebased like any
-other. PR12 (#395) merges only after the owner says "bootstrap applied", and after #393. A branch
-that is not on `origin` lived only in the old session's container: start it again from its parent
-with the per-PR workflow.
+(`claude/ranch-46-rotation-guard`), both from PR13: they need only the evals stack. PR14
+(`claude/ranch-45-emission`), PR18 (`claude/ranch-49-judge`) and PR11b
+(`claude/ranch-31-dashboards`) need the evals and prompts stacks together, so they are built on
+`claude/ranch-55-stacks-meet`, the branch where the stacks meet, and their PRs take it as their
+base. That branch is PR13's tip with #393, Q2, PR10, PR17, PR4, PR5, PR2 and #401 merged in and
+their conflicts resolved (PR2, PR4 and PR5 sit beside PR6 to PR10, not under them, so each is
+merged on its own). It gets no PR of its own. Once the stacks reach `dev`, the PRs built on it are
+retargeted to `dev` and rebased like any other. PR12 (#395) merges only after the owner says
+"bootstrap applied", and after #393. A branch that is not on `origin` lived only in the old
+session's container: start it again from its parent with the per-PR workflow.
 
-**Then:** PR16 from PR15; PR14, PR11b and PR18 from the meeting branch, then PR18b, PR18c, PR19
-and PR20 after them; PR21 bug sweep; PR22 docs sweep.
+**#401** fixes a test whose fixed date went stale on 2026-10-31
+(`test_rail_access_adapter.py`): until it reaches `dev`, CI fails that one test on any branch
+without it. PR13b, PR15 and the meeting branch carry it.
+
+**Then:** PR16 from PR15; PR18b, PR18c, PR19 and PR20 after PR14 and PR18; PR21 bug sweep;
+PR22 docs sweep.
 
 **Owner actions waiting.**
 
