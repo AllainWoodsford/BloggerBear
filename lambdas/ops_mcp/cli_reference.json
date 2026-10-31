@@ -4,6 +4,7 @@
   "help_python": "3.13",
   "help_columns": 100,
   "destructive_verbs": [
+    "cancel",
     "clear",
     "delete",
     "destroy",
@@ -4580,9 +4581,11 @@
         "set",
         "rollup",
         "status",
-        "digest"
+        "digest",
+        "score",
+        "runs"
       ],
-      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest} ...\n\npositional arguments:\n  {get,set,rollup,status,digest}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the rollup, late events, the judge, gated models, the cull\n                        proposal, the eval-work and work.fifo queues and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest,score,runs} ...\n\npositional arguments:\n  {get,set,rollup,status,digest,score,runs}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the rollup, late events, the judge, gated models, the cull\n                        proposal, the eval-work and work.fifo queues and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n    score               Score models and prompt versions on past articles against the live\n                        version, judged by a model that is none of them; shows the estimate and\n                        asks first\n    runs                The judge's and the offline scoring runs: list, progress and results,\n                        cancel, resume\n\noptions:\n  -h, --help            show this help message and exit\n"
     },
     "evals get": {
       "help": "Show the evals settings, the values in effect and the judge's model",
@@ -4857,6 +4860,247 @@
       ],
       "destructive": false,
       "help_text": "usage: admin_cli.py evals digest [-h] [--since DAY]\n\noptions:\n  -h, --help   show this help message and exit\n  --since DAY  The first day, YYYY-MM-DD, or an ISO time (120 days back at most)\n"
+    },
+    "evals score": {
+      "help": "Score models and prompt versions on past articles against the live version, judged by a model that is none of them; shows the estimate and asks first",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--judge",
+          "dest": "judge",
+          "kind": "option",
+          "flags": [
+            "--judge"
+          ],
+          "help": "The model that compares the drafts: none of --models",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": "MODEL_ID",
+          "destructive": false
+        },
+        {
+          "name": "--models",
+          "dest": "models",
+          "kind": "option",
+          "flags": [
+            "--models"
+          ],
+          "help": "Comma-separated models to score, 1 to 5",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": "MODEL_IDS",
+          "destructive": false
+        },
+        {
+          "name": "--prompt",
+          "dest": "prompt",
+          "kind": "option",
+          "flags": [
+            "--prompt"
+          ],
+          "help": "The prompt and its versions to score, e.g. daily_cycle/draft=v2,v3: each live in the prompt-hash table, or vanilla (the copy in the code)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": "PROMPT_ID=VERSIONS",
+          "destructive": false
+        },
+        {
+          "name": "--sample",
+          "dest": "sample",
+          "kind": "option",
+          "flags": [
+            "--sample"
+          ],
+          "help": "Past articles to score, 1 to 50 (default 10)",
+          "type": "int",
+          "choices": null,
+          "default": 10,
+          "required": false,
+          "nargs": null,
+          "metavar": "N",
+          "destructive": false
+        },
+        {
+          "name": "--record",
+          "dest": "record",
+          "kind": "flag",
+          "flags": [
+            "--record"
+          ],
+          "help": "Write each verdict as an Offline Review event, which counts towards the gates while the judge is calibrated (needs --yes)",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--yes",
+          "dest": "yes",
+          "kind": "flag",
+          "flags": [
+            "--yes"
+          ],
+          "help": "Do not ask; needed over score_max_cost_aud and with --record",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--no-wait",
+          "dest": "wait",
+          "kind": "flag",
+          "flags": [
+            "--no-wait"
+          ],
+          "help": "Return once the run is started instead of following its progress",
+          "type": "str",
+          "choices": null,
+          "default": true,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals score [-h] --judge MODEL_ID --models MODEL_IDS\n                                --prompt PROMPT_ID=VERSIONS [--sample N] [--record] [--yes]\n                                [--no-wait]\n\noptions:\n  -h, --help            show this help message and exit\n  --judge MODEL_ID      The model that compares the drafts: none of --models\n  --models MODEL_IDS    Comma-separated models to score, 1 to 5\n  --prompt PROMPT_ID=VERSIONS\n                        The prompt and its versions to score, e.g. daily_cycle/draft=v2,v3: each\n                        live in the prompt-hash table, or vanilla (the copy in the code)\n  --sample N            Past articles to score, 1 to 50 (default 10)\n  --record              Write each verdict as an Offline Review event, which counts towards the\n                        gates while the judge is calibrated (needs --yes)\n  --yes                 Do not ask; needed over score_max_cost_aud and with --record\n  --no-wait             Return once the run is started instead of following its progress\n"
+    },
+    "evals runs": {
+      "help": "The judge's and the offline scoring runs: list, progress and results, cancel, resume",
+      "group": true,
+      "subcommands": [
+        "list",
+        "get",
+        "cancel",
+        "resume"
+      ],
+      "help_text": "usage: admin_cli.py evals runs [-h] {list,get,cancel,resume} ...\n\npositional arguments:\n  {list,get,cancel,resume}\n    list                The newest runs, judge and scoring, with their status\n    get                 One run's progress, read from its item rows, and each combination's\n                        results\n    cancel              Cancel a queued, running or paused run: its items still on the queue are\n                        dropped\n    resume              Send a scoring run's items that have no result again (a paused or\n                        cancelled run's, or ones that failed), under today's spend cap\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "evals runs list": {
+      "help": "The newest runs, judge and scoring, with their status",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--limit",
+          "dest": "limit",
+          "kind": "option",
+          "flags": [
+            "--limit"
+          ],
+          "help": "How many, 1 to 100 (default 20)",
+          "type": "int",
+          "choices": null,
+          "default": 20,
+          "required": false,
+          "nargs": null,
+          "metavar": "N",
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals runs list [-h] [--limit N]\n\noptions:\n  -h, --help  show this help message and exit\n  --limit N   How many, 1 to 100 (default 20)\n"
+    },
+    "evals runs get": {
+      "help": "One run's progress, read from its item rows, and each combination's results",
+      "group": false,
+      "arguments": [
+        {
+          "name": "run_id",
+          "dest": "run_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--wait",
+          "dest": "wait",
+          "kind": "flag",
+          "flags": [
+            "--wait"
+          ],
+          "help": "Follow its progress until it finishes or pauses",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals runs get [-h] [--wait] run_id\n\npositional arguments:\n  run_id\n\noptions:\n  -h, --help  show this help message and exit\n  --wait      Follow its progress until it finishes or pauses\n"
+    },
+    "evals runs cancel": {
+      "help": "Cancel a queued, running or paused run: its items still on the queue are dropped",
+      "group": false,
+      "arguments": [
+        {
+          "name": "run_id",
+          "dest": "run_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py evals runs cancel [-h] run_id\n\npositional arguments:\n  run_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "evals runs resume": {
+      "help": "Send a scoring run's items that have no result again (a paused or cancelled run's, or ones that failed), under today's spend cap",
+      "group": false,
+      "arguments": [
+        {
+          "name": "run_id",
+          "dest": "run_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals runs resume [-h] run_id\n\npositional arguments:\n  run_id\n\noptions:\n  -h, --help  show this help message and exit\n"
     }
   }
 }

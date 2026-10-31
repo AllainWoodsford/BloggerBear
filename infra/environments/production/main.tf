@@ -1314,6 +1314,14 @@ module "admin_api" {
     "POST /evals/rollup",
     "GET /evals/status",
     "GET /evals/digest",
+    # Offline scoring runs: start one (or only price it), list them, one run's progress and results,
+    # cancel one, and send a scoring run's unscored items again. See admin_api_handler.py's evals runs
+    # routes and `admin_cli evals score|runs`.
+    "POST /evals/runs",
+    "GET /evals/runs",
+    "GET /evals/runs/{run_id}",
+    "DELETE /evals/runs/{run_id}",
+    "POST /evals/runs/{run_id}/resume",
     "GET /reviewer-config",
     "PUT /reviewer-config",
     # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): each registered

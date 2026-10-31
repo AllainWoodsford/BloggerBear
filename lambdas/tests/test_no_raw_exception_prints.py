@@ -33,6 +33,8 @@ GUARDED = sorted(
         "common/evals_status.py",
         # eval-jobs' judge, which prints what it could not read or send.
         "common/eval_judge.py",
+        # Offline scoring runs (eval-jobs and the admin API), which print what they could not read or send.
+        "common/eval_score.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
     ]
 )

@@ -34,6 +34,9 @@ QUEUE_URL = "https://sqs.ap-southeast-2.amazonaws.com/123456789012/acme-dev-eval
 WORK_QUEUE_URL = "https://sqs.ap-southeast-2.amazonaws.com/123456789012/acme-dev-work.fifo"
 ROUTES = {
     "GET /evals-config", "PUT /evals-config", "POST /evals/rollup", "GET /evals/status", "GET /evals/digest",
+    # Offline scoring runs (PR18b; test_admin_eval_runs.py).
+    "POST /evals/runs", "GET /evals/runs", "GET /evals/runs/{run_id}", "DELETE /evals/runs/{run_id}",
+    "POST /evals/runs/{run_id}/resume",
 }  # fmt: skip
 
 

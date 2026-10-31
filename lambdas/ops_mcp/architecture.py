@@ -394,8 +394,10 @@ CATALOGUE: tuple[Component, ...] = (
             ),
             (
                 "Written by",
-                "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), and "
-                "its judge (runs, pairs, spend)",
+                "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), its "
+                "judge (runs, pairs, spend) and its offline scoring jobs (run items, the live drafts they "
+                "compare with, spend); the admin API's offline runs (`evals score`, `evals runs cancel|"
+                "resume`: run headers)",
             ),
             ("Expires", "never: no TTL"),
         ),
@@ -663,8 +665,8 @@ CATALOGUE: tuple[Component, ...] = (
         "eval-jobs",
         "Continuous evals' jobs: the hourly rollup of the evals log group into the evals table, the "
         "judge's selector, and the judge and offline scoring jobs from the eval-work queue. The judge "
-        "reviews recent Findings and articles with a model that wrote none of them; offline scoring "
-        "jobs are dropped until offline runs land.",
+        "reviews recent Findings and articles with a model that wrote none of them; an offline scoring "
+        "job redrafts a past article with a candidate model and prompt, judged against the live draft.",
         "hourly at five past (the rollup) and hourly (the judge's selector), EventBridge Scheduler; "
         f"on each job on {PREFIX}{ENV}-eval-work, two at most at once",
         details=(("Exists", "only while evals are switched on (evals_enabled)"),),

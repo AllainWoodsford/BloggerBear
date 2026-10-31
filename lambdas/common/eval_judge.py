@@ -54,7 +54,7 @@ off (`judge_enabled = false`, and `judge_paused_reason` says why) and prints a `
 evidence line: a judge that finds nearly everything bad is more likely broken than right. `evals set
 --judge on` turns it back on; `evals revoke --source judge` leaves its events out of the rollup.
 
-**Cancelled runs** (`DELETE /evals/runs/{id}`) are dropped: the consumer reads the run's status before
+**Cancelled runs** (`DELETE /evals/runs/{run_id}`) are dropped: the consumer reads the run's status before
 anything else. A message retried after a crash is dropped too once its item has a judge pair, so a
 verdict is never counted twice; the run's progress is kept as sets of item numbers for the same reason.
 
@@ -83,7 +83,7 @@ from common.model_pricing import canonical_model_id
 from common.relevance import topic_label
 
 JUDGE_JOB = "judge"
-# Offline scoring runs' job (section 5.3), whose consumer is PR18b's.
+# Offline scoring runs' job (section 5.3), whose consumer is common/eval_score.py.
 SCORE_JOB = "score"
 # The events' `source`, and the role code the judge writes as `by` and into a Finding's reviewed_by.
 SOURCE = "eval_jobs"
@@ -621,28 +621,30 @@ def _finish(table, run_id: str, n: int, now: datetime, *, judged: bool = False, 
 
 def _close_if_finished(table, run_id: str, attributes: dict, now: datetime) -> None:
     """Close the run once every item it sent has finished (its header's `attributes`), and check the
-    tripwire; only the call that closes it does."""
+    tripwire; only the call that closes it does. An offline scoring run (common/eval_score.py, whose
+    items finish here too) closes without the tripwire: its verdicts say which of two drafts is
+    better, not whether the judge works, and a candidate worse nearly every time is a result."""
     if len(attributes.get("finished_items") or ()) < _count(attributes.get("items")):
         return
+    judge_run = attributes.get("job") != SCORE_JOB
     judged_count = len(attributes.get("judged_items") or ())
     bad_count = len(attributes.get("bad_items") or ())
+    counts = ", judged = :judged, bad = :bad" if judge_run else ""
+    values = {":done": DONE, ":cancelled": CANCELLED, ":now": _iso(now)}
+    if judge_run:
+        values.update({":judged": judged_count, ":bad": bad_count})
     try:
         table.update_item(
             Key=_run_key(run_id),
-            UpdateExpression="SET #s = :done, finished_at = :now, judged = :judged, bad = :bad",
+            UpdateExpression=f"SET #s = :done, finished_at = :now{counts}",
             ConditionExpression="#s <> :done AND #s <> :cancelled",
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":done": DONE,
-                ":cancelled": CANCELLED,
-                ":now": _iso(now),
-                ":judged": judged_count,
-                ":bad": bad_count,
-            },
+            ExpressionAttributeValues=values,
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         return  # closed already, or cancelled
-    _tripwire(run_id, judged_count, bad_count)
+    if judge_run:
+        _tripwire(run_id, judged_count, bad_count)
 
 
 def _set_status(table, run_id: str, status: str, allowed: tuple[str, ...]) -> bool:
@@ -804,8 +806,9 @@ def _judge(body: str, run_id: str, item: dict, now: datetime, sqs) -> dict:
 
 
 def consume(record: dict, *, now: datetime | None = None, sqs=None) -> dict:
-    """One eval-work record: a `judge` job is judged, a `score` job (offline scoring, PR18b) is passed
-    over, anything else ignored. Only codes and ids from the body are ever printed."""
+    """One eval-work record: a `judge` job is judged, a `score` job goes to the offline scoring runs'
+    consumer (common/eval_score.py), anything else is ignored. Only codes and ids from the body are
+    ever printed."""
     now = now or datetime.now(UTC)
     raw = record.get("body") if isinstance(record, dict) else None
     try:
@@ -817,8 +820,10 @@ def consume(record: dict, *, now: datetime | None = None, sqs=None) -> dict:
         return {"status": "refused"}
     job = evidence.check("code", body.get("job")) or "unknown"
     if job == SCORE_JOB:
-        print("eval_judge: a score job arrived; offline scoring runs are not built yet, so it is dropped")
-        return {"status": "skipped", "job": job}
+        # Imported here: eval_score builds on this module (the run's header, spend and pause).
+        from common import eval_score
+
+        return eval_score.consume(raw, body, now=now, sqs=sqs)
     if job != JUDGE_JOB:
         print(f"eval_judge: job {job} is not one eval-work carries; dropped")
         return {"status": "ignored", "job": job}

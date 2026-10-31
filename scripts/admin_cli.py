@@ -2956,14 +2956,25 @@ def build_parser() -> argparse.ArgumentParser:
     register_prompt_commands(subparsers, _prompt_helpers())
 
     # The eval commands (continuous evals, the Model Ranch) live in scripts/admin_cli_evals.py. It is
-    # handed this module's request helper and error type rather than importing them, and is imported
+    # handed this module's request helpers and error type rather than importing them, and is imported
     # here rather than at the top, so the two modules never import each other at load time (a cycle
     # otherwise).
     from admin_cli_evals import register as register_eval_commands
 
-    register_eval_commands(subparsers, {"do_request": _do_request, "CliError": CliError})
+    register_eval_commands(subparsers, _eval_helpers())
 
     return parser
+
+
+def _eval_helpers() -> dict:
+    """What admin_cli_evals.register is lent, by name. Looked up when a command runs, not when the
+    parser is built, so a test that patches one of them here reaches the eval commands too."""
+    return {
+        "do_request": lambda *args, **kwargs: _do_request(*args, **kwargs),
+        "fetch_json": lambda *args, **kwargs: _fetch_json(*args, **kwargs),
+        "get_json_or_none": lambda *args, **kwargs: _get_json_or_none(*args, **kwargs),
+        "CliError": CliError,
+    }
 
 
 def _prompt_helpers() -> dict:

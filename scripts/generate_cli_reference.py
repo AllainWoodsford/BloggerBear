@@ -53,11 +53,12 @@ HELP_COLUMNS = 100
 # commands that exist today (delete, unpublish, reject, restore, which writes over what is there,
 # and pause, which stops something being served or run), so one added later under another of
 # these names is covered without anyone remembering this list. `pause` makes `topics pause` a
-# template as well as `prompts pause`: both stop something the operator then has to resume.
+# template as well as `prompts pause`: both stop something the operator then has to resume. `cancel`
+# (`evals runs cancel`) stops a run whose items still on the queue are then dropped.
 DESTRUCTIVE_VERBS = frozenset(
     {
         "delete", "unpublish", "reject", "remove", "purge", "destroy", "drop", "wipe", "clear",
-        "restore", "pause",
+        "restore", "pause", "cancel",
     }
 )  # fmt: skip
 # A flag that makes any command skip a safeguard.

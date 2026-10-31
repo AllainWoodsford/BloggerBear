@@ -282,7 +282,7 @@ def _strip_disclaimer(body: str) -> tuple[str, bool]:
     return compliance.strip_financial_disclaimer(body)
 
 
-def _findings_for(article: dict, topic: dict) -> list[dict]:
+def findings_for(article: dict, topic: dict) -> list[dict]:
     """The findings the article was most likely written from: those captured in the topic's
     findings window before it was created (newest first). That is the reach the daily cycle read
     it from (common/findings_window.py): a day, or more for a topic that writes on some days only,
@@ -421,7 +421,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
         stored_body = read_article_body(article["body_s3_key"])
         body, had_disclaimer = _strip_disclaimer(stored_body)
 
-        findings = _findings_for(article, topic)
+        findings = findings_for(article, topic)
         findings_text = "\n".join(f"- {f.get('summary', '')}" for f in findings)
         snapshot = _load_snapshot(findings)
         evidence = _evidence(topic, snapshot)

@@ -538,6 +538,77 @@ def get_prompt(prompt_id: str, values: dict | None = None, locked: dict | None =
     return _fallback(spec, values, locked, code, version)
 
 
+# --- offline scoring (common/eval_score.py) ---------------------------------------------------------
+#
+# An offline scoring run drafts with a version a person names, live or not served here at all, so it
+# never draws an arm and never writes a prompt_fallback line: the version is checked once, when the run
+# is asked for (live_version), and read by its sha256 from versions/, where the publisher writes each
+# file once and never deletes it (version_prompt). Both only read.
+
+
+def store_named() -> bool:
+    """Whether this deployment names a prompts bucket and a hash table (both roots set them whether or
+    not assets are served, so a version can be scored before the switch is turned on)."""
+    return bool(os.environ.get("PROMPTS_BUCKET")) and bool(os.environ.get("PROMPT_HASHES_TABLE"))
+
+
+def version_key(prompt_id: str, sha256: str) -> str:
+    """Where the publisher keeps a file of `prompt_id` for good: `<prompt_id>/versions/<sha256>.txt`."""
+    return f"{prompt_id}/versions/{sha256}.txt"
+
+
+def live_version(prompt_id: str, version: str) -> str | None:
+    """The sha256 of `version` (`v2`) of `prompt_id` while it is live: a file under latest/ tagged with
+    that version whose bytes hash to a hash row that says `live` for this prompt and this version. None
+    when there is no such file (never published, retired, or not approved). Read now, never from the
+    cache; raises when the bucket or the hash table cannot be read (store_named must hold)."""
+    if not _VERSION.fullmatch(version or ""):
+        return None
+    for key in _list_latest(prompt_id):
+        if _tags(key).get("version") != version:
+            continue
+        raw = _s3().get_object(Bucket=os.environ["PROMPTS_BUCKET"], Key=key)["Body"].read()
+        try:
+            sha = sha256_text(raw.decode("utf-8"))
+        except UnicodeDecodeError:
+            continue
+        row = _hash_row(sha) or {}
+        if (row.get("status"), row.get("prompt_id"), row.get("version")) == ("live", prompt_id, version):
+            return sha
+    return None
+
+
+def version_prompt(prompt_id: str, version: str, sha256: str, values: dict, locked: dict) -> Prompt | None:
+    """`version` of `prompt_id` rendered from its file under versions/ (`sha256`, recorded when the run
+    was asked for), checked again here: its bytes must hash to `sha256` and pass the spec's template
+    rules. None when it cannot be read or does not pass. A body is kept by its sha256 for the TTL, as
+    get_prompt keeps one: a versions/ file never changes."""
+    spec = spec_for(prompt_id)
+    template = _cache_get(("body", sha256))
+    if template is None:
+        try:
+            raw = _s3().get_object(Bucket=os.environ["PROMPTS_BUCKET"], Key=version_key(prompt_id, sha256))
+            template = raw["Body"].read().decode("utf-8").replace("\r\n", "\n")
+        except Exception as exc:  # noqa: BLE001 - a version that cannot be read is not scored
+            print(f"prompts: {prompt_id}: could not read {version} from versions/: {exc!r}")
+            return None
+        if sha256_text(template) != sha256:
+            print(f"prompts: {prompt_id}: the versions/ file of {version} does not hash to its name")
+            return None
+        _cache_put(("body", sha256), template)
+    code = validate(spec, template)
+    if code is not None:
+        print(f"prompts: {prompt_id}: {version} fails its template rules: {code}")
+        return None
+    return Prompt(render(spec, template, values, locked), prompt_id, version, SOURCE_ASSET, None)
+
+
+def vanilla_render(prompt_id: str, values: dict, locked: dict) -> Prompt:
+    """The code's own template for `prompt_id`, rendered, as `vanilla:<version>` with no fallback code:
+    the vanilla asked for by name, not served in an asset's place."""
+    return _vanilla(spec_for(prompt_id), values, locked, None)
+
+
 # --- what is published (the admin API's listings) -----------------------------------------------------
 
 RELEASES_PREFIX = "releases/"
