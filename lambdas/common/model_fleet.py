@@ -32,14 +32,25 @@ working and fresh (docs/enhancements/archive/model-catalog-refresh.md, "Pruning 
 * **Deactivation** (deactivated, when the admin API disables a model): the model leaves every
   topic's rotation (replaced by the cycler's pick when there is one), model and fallback, and the
   shared rotation pool.
+* **Culling, in proposal mode** (cull_proposal, run by the weekly `cycle` job after the rotations
+  are refreshed, while evals are on): a model is proposed when its `total_perf` is below the evals
+  settings' `total_gate` with at least `min_events` events behind it, it plays no role as the roles
+  stand now (cull_roles: the models row's `model_roles` are for display and drift, deviation 7), its
+  price is not locked and no `ungated_until` holds its gates open (cull_check). The proposal (each
+  model's id, total, events and why) is written to the catalog's state row as `cull_proposal`, with
+  the time it expires: the next cycle's (next_cycle_at). Nothing is deleted here: an operator
+  applies a proposal (common/model_cull.py, `evals cull --apply`), which takes the models through
+  the prune path (retire: archived, then deleted), so discovery never adds one back (deviation 8).
 
-Settings are the model catalog's (common/model_catalog.SETTINGS, the `model-catalog` row).
+Settings are the model catalog's (common/model_catalog.SETTINGS, the `model-catalog` row), and
+culling's the evals settings (common/evals_settings.SETTINGS, the `evals` row).
 """
 
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from common import dynamo, evals_settings, evidence, model_ranch
 from common.model_pricing import canonical_model_id
@@ -67,6 +78,32 @@ JUDGE_FIELD = "judge_model_id"
 # names). Protection reads `judge_model_id` as stored, because the default judge is protected as
 # `fallback` or `default` already.
 ROLES = ("default", "fallback", "topic_model", "topic_fallback", "rotation", "pool", "price_locked", "judge")
+
+# The model catalog's state row (model_catalog.STATE_ID is this one): what each job last did, the
+# cull proposal in place and the last cull an operator applied.
+STATE_ID = "model-catalog-state"
+CULL_PROPOSAL_FIELD = "cull_proposal"
+LAST_CULL_FIELD = "last_cull_apply"
+# When the weekly cycle runs: the model_catalog_cycle schedule in both roots, cron(0 4 ? * FRI *) in
+# Sydney time. A cull proposal expires when the next one is due, as the next one replaces it.
+CYCLE_ZONE = "Australia/Sydney"
+CYCLE_WEEKDAY = 4  # Friday (Monday is 0)
+CYCLE_HOUR = 4
+# What the evals rollup keeps on a models row (model_catalog.RANCH_FIELDS less the purpose and the
+# inputs) and the gate override. A culled model's archive entry keeps its row without them, for
+# `models restore`: the next rollup puts its scores back, and a restore sets its own override.
+SCORE_FIELDS = (
+    "daily_perf",
+    "weekly_perf",
+    "monthly_perf",
+    "total_perf",
+    "perf_events",
+    "perf_good",
+    "perf_bad",
+    "perf_updated_at",
+    "model_roles",
+    "ungated_until",
+)
 
 
 def _key(model_id) -> str | None:
@@ -222,6 +259,32 @@ def prune_order(models: list[dict], mode: str) -> list[dict]:
     return sorted(models, key=key)
 
 
+def retire(models: list[dict], now: datetime, *, culled: bool = False) -> None:
+    """Take registry rows out by the prune path: archive each model's price first (the
+    `model-archive` row, so the Stats page still prices the articles that used it, and discovery
+    never adds it back), then delete its row. A culled model's entry also keeps its row, less the
+    rollup's scores and any gate override (SCORE_FIELDS), for `models restore` to put back."""
+    if not models:
+        return
+    at = now.astimezone(UTC).isoformat()
+    entries = {}
+    for model in models:
+        entry = {
+            "display_name": model.get("display_name") or model["model_id"],
+            "provider": model.get("provider"),
+            "input_price_usd_per_1k_tokens": model.get("input_price_usd_per_1k_tokens"),
+            "output_price_usd_per_1k_tokens": model.get("output_price_usd_per_1k_tokens"),
+            "pruned_at": at,
+        }
+        if culled:
+            entry["culled"] = True
+            entry["row"] = {name: value for name, value in model.items() if name not in SCORE_FIELDS}
+        entries[model["model_id"]] = entry
+    dynamo.archive_models(entries)
+    for model in models:
+        dynamo.delete_model(model["model_id"])
+
+
 def prune(settings: dict, now: datetime) -> dict:
     """Prune the registry down to `max_models - discover_max_added` (room for the next discover),
     at most `prune_max_per_run` models, never a protected one. Archives each pruned model's price
@@ -243,21 +306,7 @@ def prune(settings: dict, now: datetime) -> dict:
         if _key(model["model_id"]) not in protected and not model.get("price_locked")
     ]
     chosen = candidates[:wanted]
-    pruned_at = now.astimezone(UTC).isoformat()
-    dynamo.archive_models(
-        {
-            model["model_id"]: {
-                "display_name": model.get("display_name") or model["model_id"],
-                "provider": model.get("provider"),
-                "input_price_usd_per_1k_tokens": model.get("input_price_usd_per_1k_tokens"),
-                "output_price_usd_per_1k_tokens": model.get("output_price_usd_per_1k_tokens"),
-                "pruned_at": pruned_at,
-            }
-            for model in chosen
-        }
-    )
-    for model in chosen:
-        dynamo.delete_model(model["model_id"])
+    retire(chosen, now)
     print(f"model_fleet: pruned {len(chosen)} of {len(models)} models ({settings['prune_mode']})")
     result = {
         "status": "pruned",
@@ -404,3 +453,126 @@ def deactivated(model_id: str, settings: dict) -> dict:
     if pool_updated:
         dynamo.put_model_rotation_candidates([c for c in pool if _key(c) != key])
     return {"topics_updated": updated_topics, "rotation_pool_updated": pool_updated}
+
+
+# --- culling, in proposal mode (PR16) -------------------------------------------------------------
+
+
+def next_cycle_at(now: datetime) -> datetime:
+    """When the weekly cycle is next due after `now` (CYCLE_WEEKDAY at CYCLE_HOUR, Sydney time), in
+    UTC: when a cull proposal made now expires."""
+    zone = ZoneInfo(CYCLE_ZONE)
+    local = now.astimezone(zone)
+    day = local.date() + timedelta(days=(CYCLE_WEEKDAY - local.weekday()) % 7)
+    due = datetime.combine(day, time(CYCLE_HOUR), tzinfo=zone)
+    if due <= local:
+        due = datetime.combine(day + timedelta(days=7), time(CYCLE_HOUR), tzinfo=zone)
+    return due.astimezone(UTC)
+
+
+def cull_roles(settings: dict, models: list[dict]) -> dict[str, list[str]]:
+    """{canonical id: roles} as they stand now, which culling acts on rather than the models row's
+    `model_roles` (written for display; they drift as topics change, deviation 7): model_roles over
+    the topics, the model-config default row, the shared pool and the evals `settings` in effect,
+    and protected_models' role for any model only it names (it reads the judge as the evals row
+    stores it), so culling never takes a model pruning would keep. `models` are the registry's
+    rows, whose locked prices are a role too."""
+    topics = dynamo.list_topics()
+    config = dynamo.get_model_config()
+    pool = dynamo.get_model_rotation_candidates()
+    roles = model_roles(topics, config, pool, settings, models)
+    for key, role in protected_models(topics, config, pool).items():
+        roles.setdefault(key, [role])
+    return roles
+
+
+def _score(value) -> int | float | None:
+    """A score or count as stored (a plain number, or DynamoDB's Decimal), whole ones as int; None
+    for anything else."""
+    number = evals_settings._as_number(value)
+    if number is None:
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def scores(row: dict) -> tuple[int | float | None, int | float | None]:
+    """(the models row's `total_perf`, the events behind it: `perf_events.total`), each None when it
+    is not a number."""
+    events = row.get("perf_events") if isinstance(row.get("perf_events"), dict) else {}
+    return _score(row.get("total_perf")), _score(events.get("total"))
+
+
+def cull_check(row: dict, roles: dict[str, list[str]], settings: dict, now: datetime) -> str | None:
+    """Why the models row `row` may not be culled, in words, or None when it may (section 4.5 and
+    PR16): it plays no role in `roles` (cull_roles: as the roles stand now), its price is not locked,
+    no `ungated_until` holds its gates open (model_ranch.held_open: a time still ahead, or one that
+    cannot be read), and its total is below the evals `settings`' `total_gate` with at least
+    `min_events` events behind it. A row whose scores are not numbers is never culled."""
+    played = roles.get(_key(row.get("model_id"))) or []
+    if played:
+        return f"it plays a role: {', '.join(played)}"
+    if row.get("price_locked"):
+        return "its price is locked"
+    held = model_ranch.held_open(row, now)
+    if held == model_ranch.HELD_OPEN_UNTIL:
+        return f"its gates are held open until {row.get('ungated_until')}"
+    if held == model_ranch.HELD_OPEN_UNREADABLE:
+        return "its ungated_until cannot be read, which holds its gates open"
+    total, events = scores(row)
+    if total is None or events is None:
+        return "it has no total score yet"
+    if events < settings["min_events"]:
+        return f"its total rests on {events} events, fewer than min_events ({settings['min_events']})"
+    if total >= settings["total_gate"]:
+        return f"its total ({total}) is not below the total gate ({settings['total_gate']})"
+    return None
+
+
+def cull_proposal(settings: dict, now: datetime) -> dict:
+    """The weekly cycle's cull proposal: every registry model cull_check lets through under the evals
+    `settings` in effect, worst total first, each with its total, the events behind it and why. It is
+    written to the state row as `cull_proposal`, with `expires_at` the next cycle's time, an empty one
+    too (so `evals status` tells "nothing to cull" from "never looked"); nothing is deleted. While
+    evals are off nothing is proposed, as the scores are not being kept, and the last proposal
+    expires on its own at the time this cycle was due. It is made whatever `cull_enabled` says: that
+    switch gates only the apply that deletes (common/model_cull.apply), so proposals can be read for
+    a few cycles before anything can be deleted, and culling takes `evals set --cull on` first."""
+    if not model_ranch.enabled():
+        evidence.emit("model_cull", job="propose", status="off")
+        return {"status": "off"}
+    models = dynamo.list_models()
+    roles = cull_roles(settings, models)
+    proposed = []
+    for row in models:
+        if cull_check(row, roles, settings, now) is not None:
+            continue
+        total, events = scores(row)
+        proposed.append(
+            {
+                "model_id": row["model_id"],
+                "total_perf": total,
+                "events": events,
+                "reason": (
+                    f"its total ({total}) is below the total gate ({settings['total_gate']}) over {events} "
+                    "events, and it plays no role"
+                ),
+            }
+        )
+    proposed.sort(key=lambda entry: (entry["total_perf"], entry["model_id"]))
+    expires_at = next_cycle_at(now).isoformat()
+    proposal = {
+        "proposed_at": now.astimezone(UTC).isoformat(),
+        "expires_at": expires_at,
+        "total_gate": settings["total_gate"],
+        "min_events": settings["min_events"],
+        "models": proposed,
+    }
+    dynamo.update_config_row(STATE_ID, {CULL_PROPOSAL_FIELD: proposal})
+    print(f"model_fleet: proposed {len(proposed)} of {len(models)} models for culling")
+    evidence.emit("model_cull", job="propose", status="proposed", models=len(models), proposed=len(proposed))
+    return {
+        "status": "proposed",
+        "proposed": len(proposed),
+        "proposed_ids": [entry["model_id"] for entry in proposed][:RESULT_IDS_MAX],
+        "expires_at": expires_at,
+    }

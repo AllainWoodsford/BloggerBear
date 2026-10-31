@@ -1787,15 +1787,19 @@ def list_models() -> list[dict]:
     return items
 
 
-def get_model(model_id: str) -> dict | None:
+def get_model(model_id: str, *, consistent: bool = False) -> dict | None:
     """Fetch a single Models item by model_id, or None if it isn't registered.
 
     Same Decimal -> float conversion as list_models, for the same reason
     (json.dumps can't serialize Decimal) -- needed by common/costing.py's
     per-model pricing lookup (PR 2 of 5).
+
+    `consistent` makes it a strongly consistent read, for an operator's route that must see a row
+    written just before (common/evals_adjust._registry_row, after `models restore` puts one back);
+    routing and pricing keep the cheaper eventually consistent read.
     """
     table = get_table(os.environ["MODELS_TABLE"])
-    response = table.get_item(Key={"model_id": model_id})
+    response = table.get_item(Key={"model_id": model_id}, ConsistentRead=consistent)
     item = response.get("Item")
     if item is None:
         return None
@@ -2006,6 +2010,31 @@ def update_config_row(config_id: str, updates: dict) -> dict:
     return get_config_row(config_id) or {"config_id": config_id}
 
 
+def replace_config_field(config_id: str, name: str, value, *, expected) -> bool:
+    """Set one attribute of a config row to `value`, but only while it still holds `expected`, the
+    value it was read with (None: not set). False, and nothing written, when it has changed since:
+    two edits of one list at once must not lose either."""
+    names = {"#f": name}
+    values = {":v": _floats_to_decimal(value)}
+    if expected is None:
+        condition = "attribute_not_exists(#f)"
+    else:
+        condition = "#f = :e"
+        values[":e"] = _floats_to_decimal(expected)
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.update_item(
+            Key={"config_id": config_id},
+            UpdateExpression="SET #f = :v",
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
 def put_config_row(item: dict) -> None:
     """Write (create or overwrite) one config row."""
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])
@@ -2134,6 +2163,23 @@ def archive_models(entries: dict[str, dict]) -> None:
     """Add (or replace) entries in the pruned-model archive."""
     if entries:
         put_config_row({"config_id": _MODEL_ARCHIVE_ID, "models": {**get_model_archive(), **entries}})
+
+
+def unarchive_model(model_id: str) -> bool:
+    """Remove one model's entry from the archive (`models restore` put it back in the registry).
+    One REMOVE of that key, so an entry another writer adds meanwhile is kept. False, and nothing
+    written, when the archive holds no entry under `model_id`."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.update_item(
+            Key={"config_id": _MODEL_ARCHIVE_ID},
+            UpdateExpression="REMOVE #m.#k",
+            ConditionExpression="attribute_exists(#m.#k)",
+            ExpressionAttributeNames={"#m": "models", "#k": model_id},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
 
 
 def list_priced_models() -> list[dict]:

@@ -331,6 +331,24 @@ EVENTS: dict[str, dict[str, str]] = {
         "windows": "codes",
         "caller": "code",
     },
+    # Culling in proposal mode (common/model_fleet.py, common/model_cull.py, PR16): one line when the
+    # weekly cycle proposes (`job` propose: `status` proposed, or off while evals are), when an
+    # operator applies a proposal (apply: the models proposed, culled, kept by the checks at apply
+    # time and left over the cap, and the cap) and when one restores a model (restore: `status`
+    # restored, or in_registry when it was back already; the model and the forgive's amount, whose
+    # Admin Forgive is its own event in the evals log). Counts only for the first two, never their ids.
+    "model_cull": {
+        "job": "code",
+        "status": "code",
+        "models": "int",
+        "proposed": "int",
+        "culled": "int",
+        "kept": "int",
+        "left": "int",
+        "cap": "int",
+        "model_id": "model",
+        "forgiven": "int",
+    },
 }
 
 # The invocation this process is in: {"fields": {...}, "counts": {event: n}}, or None outside one.

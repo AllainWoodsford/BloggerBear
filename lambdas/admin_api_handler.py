@@ -44,6 +44,7 @@ import boto3
 from common import (
     backup,
     equipment,
+    evals_adjust,
     evals_rollup,
     evals_settings,
     evals_status,
@@ -51,6 +52,7 @@ from common import (
     feedback_limits,
     gear,
     model_catalog,
+    model_cull,
     model_fleet,
     model_ranch,
     reviewer,
@@ -2902,13 +2904,19 @@ def _start_evals_rollup_route(event: dict) -> dict:
         if isinstance(days, str):
             return _error(400, days)
         payload.update({"from": days[0].isoformat(), "to": days[1].isoformat()})
+    _invoke_rollup(payload)
+    days_asked = {key: payload[key] for key in ("from", "to") if key in payload}
+    return _response(202, {"triggered": "rollup", **days_asked})
+
+
+def _invoke_rollup(payload: dict) -> None:
+    """Start a rollup in eval-jobs without waiting for it: `payload` is its event (job, trigger, and
+    `from`/`to` for days added up again). Raises when Lambda refuses."""
     _get_lambda_client().invoke(
         FunctionName=evals_rollup.function_name(),
         InvocationType="Event",
         Payload=json.dumps(payload).encode("utf-8"),
     )
-    days_asked = {key: payload[key] for key in ("from", "to") if key in payload}
-    return _response(202, {"triggered": "rollup", **days_asked})
 
 
 def _evals_status_route(event: dict) -> dict:
@@ -2920,6 +2928,108 @@ def _evals_digest_route(event: dict) -> dict:
     if isinstance(result, str):
         return _error(400, result)
     return _response(200, result)
+
+
+# An operator's forgive or punish, gate override and revoked source (common/evals_adjust.py, PR13b).
+# An adjustment is refused while evals are off, as a rollup is: its event could not be written, so
+# its row would move a total with nothing in the evals log to say why. An override and a revoked
+# source are answered either way: neither writes an event, and like PUT /evals-config they can be
+# set before evals are switched on (or kept while they are off, for when they are on again). A
+# revoked source also starts a rollup of the days already final that hold its events, while evals
+# are on; when none can start, the answer gives the command that adds those days up again.
+
+
+def _evals_body(event: dict) -> dict | None:
+    """The request's JSON object, or None when it is not one."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _evals_adjust_route(event: dict) -> dict:
+    """Forgive or punish one model or prompt version: {target: model|prompt, model_id | prompt_id
+    and version, direction: forgive|punish, amount, allow_cull}."""
+    if os.environ.get("EVALS_ENABLED") != "true":
+        return _error(409, "evals are off (EVALS_ENABLED): an adjustment's event could not be written")
+    body = _evals_body(event)
+    if body is None:
+        return _error(400, "request body must be a JSON object")
+    try:
+        return _response(201, evals_adjust.adjust(body, datetime.now(UTC)))
+    except evals_adjust.Refused as exc:
+        return _error(exc.status, str(exc))
+
+
+def _evals_ungate_route(event: dict) -> dict:
+    """Hold a model's gates open: {model_id, hours} sets ungated_until (0 hours ends it)."""
+    body = _evals_body(event)
+    if body is None:
+        return _error(400, "request body must be a JSON object")
+    try:
+        return _response(200, evals_adjust.ungate(body, datetime.now(UTC)))
+    except evals_adjust.Refused as exc:
+        return _error(exc.status, str(exc))
+
+
+def _start_revoke_rollup(first: str, last: str) -> str | None:
+    """Add the days `first` to `last` up again in eval-jobs, after a revoke: None when the rollup
+    started, else why not, in words. Never raises: the revoke is written whatever happens here."""
+    if os.environ.get("EVALS_ENABLED") != "true":
+        return "evals are off (EVALS_ENABLED), so no rollup runs until they are on"
+    try:
+        _invoke_rollup({"job": "rollup", "trigger": "admin", "from": first, "to": last})
+    except Exception as exc:  # noqa: BLE001 - the revoke is written; the answer gives the command
+        print(f"admin_api_handler: could not start the rollup after a revoke: {exc!r}")
+        return "the rollup could not be started (the admin API's log says why)"
+    return None
+
+
+def _evals_revoke_route(event: dict) -> dict:
+    """Leave a source's events out of the rollup: {source, since} appended to excluded_sources, and
+    the days already final that hold them added up again (common/evals_adjust.revoke)."""
+    body = _evals_body(event)
+    if body is None:
+        return _error(400, "request body must be a JSON object")
+    try:
+        return _response(200, evals_adjust.revoke(body, datetime.now(UTC), _start_revoke_rollup))
+    except evals_adjust.Refused as exc:
+        return _error(exc.status, str(exc))
+
+
+# Culling in proposal mode (common/model_cull.py, PR16): applying the weekly cycle's proposal, and
+# putting a culled (or pruned) model back. Both are refused while evals are off, as an adjustment
+# is: a cull acts on the scores the rollup keeps, and a restore writes an Admin Forgive event.
+_EVALS_OFF_CULL = (
+    "evals are off (EVALS_ENABLED): the scores a cull reads are not being kept, so nothing was culled"
+)
+_EVALS_OFF_RESTORE = (
+    "evals are off (EVALS_ENABLED): a restore's Admin Forgive could not be written, so nothing was restored"
+)
+
+
+def _evals_cull_apply_route(event: dict) -> dict:
+    """Archive, then delete, up to cull_max_per_run of the current cull proposal's models, each
+    checked again first; refused while culling is off (cull_enabled), and when there is no proposal
+    or it has expired (common/model_cull.apply)."""
+    if os.environ.get("EVALS_ENABLED") != "true":
+        return _error(409, _EVALS_OFF_CULL)
+    try:
+        return _response(200, model_cull.apply(datetime.now(UTC)))
+    except evals_adjust.Refused as exc:
+        return _error(exc.status, str(exc))
+
+
+def _restore_model_route(event: dict) -> dict:
+    """Put an archived model back in the registry, forgive its total to zero and hold its gates
+    open for 7 days (common/model_cull.restore)."""
+    if os.environ.get("EVALS_ENABLED") != "true":
+        return _error(409, _EVALS_OFF_RESTORE)
+    try:
+        return _response(200, model_cull.restore(_path_param(event, "model_id"), datetime.now(UTC)))
+    except evals_adjust.Refused as exc:
+        return _error(exc.status, str(exc))
 
 
 # --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/archive/reviewer-bear.md) -----
@@ -3435,6 +3545,7 @@ _ROUTES = {
     "POST /models/reprice": _reprice_models_route,
     "POST /models/discover": _discover_models_route,
     "POST /models/classify": _classify_models_route,
+    "POST /models/{model_id}/restore": _restore_model_route,
     "GET /model-catalog-config": _get_model_catalog_config_route,
     "PUT /model-catalog-config": _put_model_catalog_config_route,
     "GET /evals-config": _get_evals_config_route,
@@ -3442,6 +3553,10 @@ _ROUTES = {
     "POST /evals/rollup": _start_evals_rollup_route,
     "GET /evals/status": _evals_status_route,
     "GET /evals/digest": _evals_digest_route,
+    "POST /evals/adjust": _evals_adjust_route,
+    "POST /evals/ungate": _evals_ungate_route,
+    "POST /evals/revoke": _evals_revoke_route,
+    "POST /evals/cull/apply": _evals_cull_apply_route,
     "GET /reviewer-config": _get_reviewer_config_route,
     "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /pipeline-config": _get_pipeline_config_route,
