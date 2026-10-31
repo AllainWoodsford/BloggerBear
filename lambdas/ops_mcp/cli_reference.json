@@ -4583,7 +4583,7 @@
         "digest",
         "trace"
       ],
-      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest,trace} ...\n\npositional arguments:\n  {get,set,rollup,status,digest,trace}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the prompt release and the last 24 hours' prompt fallbacks, the\n                        rollup, late events, the judge, gated models, the cull proposal, the eval-\n                        work and work.fifo queues and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n    trace               One article's call traces: each model call's prompt and reply as stored\n                        while trace_calls was on (outside text as its sha256), and those of the\n                        research behind it\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest,trace} ...\n\npositional arguments:\n  {get,set,rollup,status,digest,trace}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the prompt release and the last 24 hours' prompt fallbacks, the\n                        rollup, late events, the judge, gated models, the cull proposal, the eval-\n                        work and work.fifo queues and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n    trace               One article's call traces: each model call's prompt and reply as stored\n                        while trace_calls was on (the gear's guidance and the operator's note as\n                        their sha256), and those of the research behind it\n\noptions:\n  -h, --help            show this help message and exit\n"
     },
     "evals get": {
       "help": "Show the evals settings, the values in effect and the judge's model",
@@ -4860,7 +4860,7 @@
       "help_text": "usage: admin_cli.py evals digest [-h] [--since DAY]\n\noptions:\n  -h, --help   show this help message and exit\n  --since DAY  The first day, YYYY-MM-DD, or an ISO time (120 days back at most)\n"
     },
     "evals trace": {
-      "help": "One article's call traces: each model call's prompt and reply as stored while trace_calls was on (outside text as its sha256), and those of the research behind it",
+      "help": "One article's call traces: each model call's prompt and reply as stored while trace_calls was on (the gear's guidance and the operator's note as their sha256), and those of the research behind it",
       "group": false,
       "arguments": [
         {

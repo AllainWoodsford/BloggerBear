@@ -15,8 +15,8 @@ which admin_cli.build_parser calls. Today's commands:
 - `evals digest [--since DAY]`: the day totals per model and prompt version since a day, a week by
   default (GET /evals/digest).
 - `evals trace ARTICLE_ID`: one article's call traces, each model call's prompt and reply as stored
-  while `trace_calls` was on, outside text as its sha256, and those of the research behind it
-  (GET /evals/traces/{article_id}; lambdas/common/call_traces.py).
+  while `trace_calls` was on, the gear's guidance and the operator's note as their sha256, and those
+  of the research behind it (GET /evals/traces/{article_id}; lambdas/common/call_traces.py).
 
 forgive, punish, ungate, revoke, cull, score and runs follow with their routes. After any change to
 these commands run `python scripts/generate_cli_reference.py`, so the assistant's CLI reference
@@ -186,7 +186,8 @@ def _register_trace(evals_sub: argparse._SubParsersAction, do_request) -> None:
     trace_parser = evals_sub.add_parser(
         "trace",
         help="One article's call traces: each model call's prompt and reply as stored while trace_calls "
-        "was on (outside text as its sha256), and those of the research behind it",
+        "was on (the gear's guidance and the operator's note as their sha256), and those of the research "
+        "behind it",
     )
     trace_parser.add_argument(
         "article_id", help="The article's id, or the id a run that stored no article traced its calls under"

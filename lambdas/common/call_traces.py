@@ -8,7 +8,14 @@ article's id for the daily cycle's calls and a Re-Write's, `<topic_id>#<captured
 research call that wrote a Finding. The stage is the lineage call's (`ideation`, `draft`, `title`,
 `adversarial_review`, `revision`, `compliance_review`, `research`, `rewrite`); a Re-Write's reviews
 are `rewrite_adversarial_review` and `rewrite_compliance_review`, so they never overwrite the reviews
-of the text the article was first written with. A later Re-Write's traces replace an earlier one's.
+of the text the article was first written with.
+
+**Which run stored it.** Each object also carries the id of the run that stored it, as its `run`
+metadata (a Re-Write's is its rewrite_id; any other run's a new uuid), outside the trace itself. A
+later Re-Write overwrites only the stages it reaches: one cut off at its rewrite, or run with the
+fresh-data review off, leaves an earlier Re-Write's reviews in place. So `read` marks `superseded`
+every one of a Re-Write's stages whose run is not that of the `rewrite` beside it, which is always
+the first call a Re-Write traces; the admin route never shows them as the later attempt's.
 
 **Who may read them.** Traces hold whole prompts and replies, so only the admin API reads them
 (GET /evals/traces/{article_id}, `admin_cli evals trace`). The content bucket has no public path:
@@ -16,13 +23,15 @@ no CloudFront origin, no bucket policy, every public access blocked, and the pub
 an article row's own `body_s3_key` (test_terraform_wiring.py and test_call_traces.py hold all
 four). The bucket's lifecycle drops `traces/` after 14 days in both environments.
 
-**Outside text is stored as its sha256.** Every value the call site treats as untrusted (what it
-sets down as data in a delimited block or defangs; in the daily cycle's ideation and draft, the
-findings, which its reviews defang, and the gear's guidance, which is written from reader comments)
-is replaced, wherever it appears in the prompt or the reply, by the hex sha256 of its UTF-8 bytes.
-The trace then shows where each one went and which one it was, never its text. A research prompt
-sets its source's data down as plain values and is stored whole. Comment screening
-(common/comment_screening.py) builds no lineage call and is never traced.
+**Untrusted text is stored as its sha256.** The values marked untrusted are replaced, wherever they
+appear in the prompt or the reply, by the hex sha256 of their UTF-8 bytes: the gear's guidance in
+the daily cycle's ideation and draft, which is written from reader comments (common/gear.py), and
+the topic's operator note in the fresh-data review, which PR17 marks untrusted. The trace then
+shows where each one went and which one it was, never its text. Everything else a prompt is given
+is the pipeline's own material (the findings and the research, the drafts, the fresh data, the
+claims and issues, the editor's note) and is stored as sent, since what a prompt version was given
+is what a trace is for. Comment screening (common/comment_screening.py) builds no lineage call and
+is never traced.
 
 **Never in the way.** A trace is written only inside `bind` (the daily cycle's run, a Re-Write,
 the research tick's Finding), only while `trace_calls` is on (read once per bound run, from the
@@ -39,6 +48,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -56,6 +66,10 @@ CLIENT_CONFIG = Config(connect_timeout=1, read_timeout=2, retries={"total_max_at
 _STAGE = re.compile(r"[a-z][a-z0-9_]{0,39}")
 # An article id, or a Finding's `<topic_id>#<captured_at>`: one key segment, so never a `/`.
 _SUBJECT = re.compile(r"[A-Za-z0-9_.:#+-]{1,200}")
+# The object metadata that names the run that stored a trace (`bind`), and the ids it may hold: plain
+# ASCII, as S3 metadata must be.
+RUN_METADATA = "run"
+_RUN = re.compile(r"[A-Za-z0-9_.:-]{1,100}")
 _client = None
 
 
@@ -65,6 +79,7 @@ class _Run:
 
     subject: str
     stage_prefix: str
+    run: str  # stored with each trace (RUN_METADATA)
     on: bool | None = None  # read on the run's first call
     stopped: bool = False  # a put failed: the run writes no more
     said: bool = False  # the log has named where its traces go
@@ -94,12 +109,16 @@ def valid_subject(subject) -> bool:
 
 
 @contextlib.contextmanager
-def bind(subject: str | None, *, stage_prefix: str = ""):
+def bind(subject: str | None, *, stage_prefix: str = "", run: str | None = None):
     """The subject every trace inside this block is stored under (None traces nothing).
     `stage_prefix` names a run that is not the article's first (a Re-Write: `rewrite`): its calls'
-    stages are prefixed with it, all but the one already named so. Reset on exit, like
-    prompts.bind_run, so a warm container never carries one run's subject into the next."""
-    token = _run.set(_Run(subject, stage_prefix) if subject else None)
+    stages are prefixed with it, all but the one already named so, and that one must be the first
+    it traces, since `read` tells a later run's stages from an earlier one's by it. `run` is the
+    run's id (a Re-Write's rewrite_id), stored with each trace; a new uuid when none is given or it
+    is not a plain id. Reset on exit, like prompts.bind_run, so a warm container never carries one
+    run's subject into the next."""
+    run_id = run if isinstance(run, str) and _RUN.fullmatch(run) else uuid.uuid4().hex
+    token = _run.set(_Run(subject, stage_prefix, run_id) if subject else None)
     try:
         yield
     finally:
@@ -192,6 +211,7 @@ def record(
             Key=key(run.subject, name),
             Body=json.dumps(trace, ensure_ascii=False).encode("utf-8"),
             ContentType="application/json",
+            Metadata={RUN_METADATA: run.run},
         )
         if not run.said:
             # Once a run: how a run that stored no article (and so names no id) is found again.
@@ -208,8 +228,11 @@ def record(
 
 
 def read(subject: str, client=None) -> list[dict]:
-    """Every trace stored under `subject`, by stage: `{stage, key, stored_at, trace}`. Raises what
-    S3 raises; the admin route answers it."""
+    """Every trace stored under `subject`, oldest first: `{stage, key, stored_at, run, trace}`, `run`
+    being the id of the run that stored it (`bind`). A run with a stage prefix overwrites only the
+    stages it reaches, so each of its stages (`<prefix>_<stage>`) whose run is not that of the
+    prefix's own stage beside it was left by an earlier run, and is marked `superseded: True`.
+    Raises what S3 raises; the admin route answers it."""
     client = client or boto3.client("s3")
     bucket = os.environ["CONTENT_BUCKET"]
     prefix = f"{PREFIX}{subject}/"
@@ -219,28 +242,32 @@ def read(subject: str, client=None) -> list[dict]:
             name = obj["Key"][len(prefix) :]
             if not name.endswith(".json") or "/" in name:
                 continue
-            body = client.get_object(Bucket=bucket, Key=obj["Key"])["Body"].read()
-            found.append(
-                {
-                    "stage": name[: -len(".json")],
-                    "key": obj["Key"],
-                    "stored_at": obj["LastModified"].isoformat(),
-                    "trace": json.loads(body),
-                }
-            )
-    return sorted(found, key=lambda entry: entry["stored_at"])
+            response = client.get_object(Bucket=bucket, Key=obj["Key"])
+            found.append((obj["LastModified"], _entry(name[: -len(".json")], obj["Key"], response)))
+    entries = [entry for _, entry in sorted(found, key=lambda pair: pair[0])]
+    by_stage = {entry["stage"]: entry for entry in entries}
+    for entry in entries:
+        for stage, named in by_stage.items():
+            if entry["stage"].startswith(f"{stage}_") and entry["run"] != named["run"]:
+                entry["superseded"] = True
+    return entries
 
 
 def read_one(subject: str, stage: str, client=None) -> dict | None:
-    """One trace, `{stage, key, stored_at, trace}`, or None when there is none."""
+    """One trace, `{stage, key, stored_at, run, trace}`, or None when there is none."""
     client = client or boto3.client("s3")
     try:
         response = client.get_object(Bucket=os.environ["CONTENT_BUCKET"], Key=key(subject, stage))
     except client.exceptions.NoSuchKey:
         return None
+    return _entry(stage, key(subject, stage), response)
+
+
+def _entry(stage: str, object_key: str, response: dict) -> dict:
     return {
         "stage": stage,
-        "key": key(subject, stage),
+        "key": object_key,
         "stored_at": response["LastModified"].isoformat(),
+        "run": (response.get("Metadata") or {}).get(RUN_METADATA),
         "trace": json.loads(response["Body"].read()),
     }

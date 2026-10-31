@@ -488,8 +488,8 @@ def _run_research_tick(topic_id: str, force: bool = False, due_checked_at: datet
     captured_at = new_state.get("fetched_at") or datetime.now(UTC).isoformat()
     snapshot_key = _snapshot_key(topic_id, captured_at)
     # The call is traced under the Finding it writes (common/call_traces.py, while trace_calls is
-    # on), whole: the summary prompts set the source's data down as plain values, never as a
-    # delimited or defanged block, and the raw snapshot sits beside it under snapshots/ anyway.
+    # on), whole: it is given the source's data and no reader text, and the raw snapshot sits beside
+    # it under snapshots/ anyway.
     with call_traces.bind(call_traces.finding_subject(topic_id, captured_at)):
         call_traces.record(research_call, prompt, summary, stage="research")
 

@@ -1079,11 +1079,10 @@ def _financial_guidance_block(topic: dict) -> str:
     return f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
 
 
-# The values of the ideation and draft prompts that a call trace stores as their sha256
-# (common/call_traces.py): the findings, which the fresh-data review and the compliance review set
-# down as data and defang, and the gear's guidance, which is written from reader comments
-# (common/gear.py defangs it). Each is the string exactly as the prompt renders it.
-_TRACE_UNTRUSTED = ("summaries", "guidance_block")
+# The value of the ideation and draft prompts that a call trace stores as its sha256
+# (common/call_traces.py): the gear's guidance, which is written from reader comments (common/gear.py
+# defangs it), as the prompt renders it. The findings are the run's own research, stored as sent.
+_TRACE_UNTRUSTED = ("guidance_block",)
 
 
 def _untrusted(values: dict) -> list[str]:
@@ -1342,7 +1341,7 @@ def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tu
     if attempts > 1:
         lineage_call["attempts"] = attempts
     # The prompt and reply of the call that counted (a retry's, when there was one), as lineage
-    # records its version. The angle is the ideation's own reply: nothing here is outside text.
+    # records its version. The angle is the ideation's own reply: nothing here is reader text.
     call_traces.record(lineage_call, prompt.text, result["text"])
     return title, lineage_call, _is_plausible_reply(title, max_words=_MAX_TITLE_WORDS)
 

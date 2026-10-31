@@ -3229,9 +3229,11 @@ TRACE_ANSWER_MAX_CHARS = 5_000_000
 
 def _evals_traces_route(event: dict) -> dict:
     """Every trace of one article, by stage, and those of the research behind it, each with the
-    trace as stored ({prompt_id, version, model_id, rendered_prompt, reply, tokens}). 404 when there
-    is neither an article nor a trace under the id: a run that stored no article keeps its traces
-    under the id it chose, so they are still found by it."""
+    trace as stored ({prompt_id, version, model_id, rendered_prompt, reply, tokens}) and the run that
+    stored it; a Re-Write's stage that an earlier Re-Write left is marked `superseded`
+    (call_traces.read), never shown as the later one's. 404 when there is neither an article nor a
+    trace under the id: a run that stored no article keeps its traces under the id it chose, so they
+    are still found by it."""
     article_id = _path_param(event, "article_id")
     if not call_traces.valid_subject(article_id) or "#" in article_id:
         return _error(400, "article_id must be an article's id")

@@ -142,15 +142,12 @@ def rewrite_prompt(
     as_of: str,
     instructions: str = "",
     writing_guidance: str = "",
-    trace_values: dict | None = None,
 ) -> prompts.Prompt:
     """The rewrite's prompt, rewrite/rewrite (common/prompts_registry.py), with the version that
     rendered it. `writing_guidance` is how the topic's adapter wants its articles written (how to
     state figures that move: Adapter.figure_guidance), so a rewrite does not put back the exact
     figures that got the article flagged. Ours, not data, and it lifts none of the rules. Every
-    piece of material, the person's note included, is defanged here, before it is rendered.
-    `trace_values`, when given, is filled with the values the template is rendered with, for the
-    call's trace."""
+    piece of material, the person's note included, is defanged here, before it is rendered."""
     house_style = (
         f"\n\nHow articles on this topic are written (within the rules above):\n{writing_guidance}"
         if writing_guidance
@@ -184,15 +181,7 @@ def rewrite_prompt(
         "length_proviso": " unless the editor_note asks otherwise" if instructions else "",
         "house_style": house_style,
     }
-    if trace_values is not None:
-        trace_values.update(values)
     return prompts.get_prompt("rewrite/rewrite", values, {"reply_rule": _REPLY_RULE})
-
-
-# The rewrite's values that hold its material (the person's note, the draft, the issues, the
-# research and the fresh data), every one defanged in `rewrite_prompt`: a call trace stores each as
-# its sha256 (common/call_traces.py).
-REWRITE_UNTRUSTED = ("editor_note_block", "draft_block", "issues_block", "findings_block", "fresh_data_block")
 
 
 def build_rewrite_prompt(
@@ -425,8 +414,10 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
         return {"status": "skipped", "queue_id": queue_id, "reason": "no longer waiting for this rewrite"}
     # Its model calls are traced under the article (common/call_traces.py, while trace_calls is on),
     # its reviews as rewrite_adversarial_review and rewrite_compliance_review, so they never replace
-    # the reviews of the text the article was written with.
-    with call_traces.bind(item.get("article_id"), stage_prefix=REWRITE_STAGE):
+    # the reviews of the text the article was written with. A Re-Write overwrites only the stages it
+    # reaches, so each trace carries this rewrite_id, and the reader marks an earlier Re-Write's
+    # reviews that a later one did not reach as superseded: the rewrite call is always traced first.
+    with call_traces.bind(item.get("article_id"), stage_prefix=REWRITE_STAGE, run=rewrite_id):
         return _rewrite(item, queue_id, rewrite_id)
 
 
@@ -455,7 +446,6 @@ def _rewrite(item: dict, queue_id: str, rewrite_id: str) -> dict:
         as_of = datetime.now(UTC).isoformat()
         rules = fresh_review.writing_rules(topic)
         closing_rule = _CLOSING_SECTIONS_RULE if rules["drafting_guidance"] else ""
-        values: dict = {}
         prompt = rewrite_prompt(
             topic_label(topic),
             original_title,
@@ -466,7 +456,6 @@ def _rewrite(item: dict, queue_id: str, rewrite_id: str) -> dict:
             as_of,
             instructions,
             writing_guidance="\n".join(filter(None, [rules["figure_guidance"], closing_rule])),
-            trace_values=values,
         )
         try:
             result = invoke_model_tracked(prompt.text, model_id, max_tokens=REWRITE_MAX_TOKENS)
@@ -483,8 +472,9 @@ def _rewrite(item: dict, queue_id: str, rewrite_id: str) -> dict:
                 **prompts.lineage_fields(prompt),
             }
         )
-        untrusted = call_traces.named(values, REWRITE_UNTRUSTED, prompt.text)
-        call_traces.record(calls[-1], prompt.text, result["text"], untrusted=untrusted)
+        # Stored as sent: the draft, the issues, the research, the fresh data and the editor's note
+        # are the material the rewrite was given, and none of it is reader text (common/call_traces.py).
+        call_traces.record(calls[-1], prompt.text, result["text"])
         if result.get("stop_reason") == "max_tokens":
             return _fail(item, rewrite_id, "the rewrite was cut off before it finished", article, calls)
         parsed = fresh_review.parse_revision(result["text"])

@@ -213,10 +213,10 @@ def steering_block(steering: str | None) -> str:
     )
 
 
-# The review's values that hold its material (the draft, the research, the fresh data and the
-# operator's note), every one defanged in `review_prompt`: a call trace stores each as its sha256
-# (common/call_traces.py).
-REVIEW_UNTRUSTED = ("draft_block", "findings_block", "fresh_data_block", "steering_block")
+# The review's value that a call trace stores as its sha256 (common/call_traces.py): the topic's
+# operator note, which PR17 marks untrusted. The draft, the research and the fresh data are the
+# material under review, and are stored as sent.
+REVIEW_UNTRUSTED = ("steering_block",)
 
 
 def review_prompt(
@@ -578,11 +578,6 @@ TITLE_LENGTH_BOUNDS = (0.4, 2.5)
 MAX_TITLE_CHARS = 200
 
 
-# The revision's values that hold its material (the draft, the claims to fix, the research and the
-# fresh data), every one defanged in `revision_prompt`: a call trace stores each as its sha256.
-REVISION_UNTRUSTED = ("draft_block", "claims_block", "findings_block", "fresh_data_block")
-
-
 def revision_prompt(
     topic_name: str,
     title: str,
@@ -592,12 +587,10 @@ def revision_prompt(
     evidence: str,
     as_of: str,
     figure_guidance: str = "",
-    trace_values: dict | None = None,
 ) -> prompts.Prompt:
     """The reviser's prompt, reviews/revision (common/prompts_registry.py), with the version that
     rendered it. The claims carry the review's evidence, which quotes the web, so they are defanged
-    with the rest of the material before it is rendered. `trace_values`, when given, is filled with
-    the values the template is rendered with, for the call's trace."""
+    with the rest of the material before it is rendered."""
     figures = f" How to write figures: {figure_guidance}" if figure_guidance else ""
     listed = json.dumps(
         [
@@ -615,8 +608,6 @@ def revision_prompt(
         "fresh_data_block": f'<fresh_data as_of="{as_of}">\n{_defang(evidence)}\n</fresh_data>',
         "figure_rule": figures,
     }
-    if trace_values is not None:
-        trace_values.update(values)
     return prompts.get_prompt("reviews/revision", values, {"reply_rule": _REVISION_REPLY_RULE})
 
 
@@ -795,7 +786,6 @@ def run_revision(
     """
     as_of = datetime.now(UTC).isoformat()
     rules = writing_rules(topic)
-    values: dict = {}
     prompt = revision_prompt(
         topic_label(topic),
         title,
@@ -805,7 +795,6 @@ def run_revision(
         evidence,
         as_of,
         figure_guidance=rules["figure_guidance"],
-        trace_values=values,
     )
     try:
         result = invoke_model_tracked(
@@ -823,8 +812,9 @@ def run_revision(
         "stop_reason": result.get("stop_reason"),
         **prompts.lineage_fields(prompt),
     }
-    untrusted = call_traces.named(values, REVISION_UNTRUSTED, prompt.text)
-    call_traces.record(lineage_call, prompt.text, result["text"], untrusted=untrusted)
+    # Stored as sent: the draft, the claims, the research and the fresh data are the material the
+    # revision was given, and none of it is reader text (common/call_traces.py).
+    call_traces.record(lineage_call, prompt.text, result["text"])
 
     def rejected(reason: str, violations: list[str] | None = None) -> dict:
         print(f"fresh_review: revision rejected ({reason})")

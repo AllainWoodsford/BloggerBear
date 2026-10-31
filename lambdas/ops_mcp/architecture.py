@@ -1065,9 +1065,10 @@ CATALOGUE: tuple[Component, ...] = (
             ("Also", "pricing/<date>-<run>.json: old model prices a reprice replaced, once checked"),
             (
                 "Call traces",
-                "traces/<article or finding>/<stage>.json: each model call's prompt and reply, outside "
-                "text as its sha256, while the evals setting trace_calls is on (on by default in dev "
-                "only); expire after 14 days; read by `admin_cli evals trace`, never by anything public",
+                "traces/<article or finding>/<stage>.json: each model call's prompt and reply, the "
+                "gear's guidance and the review's operator note as their sha256, while the evals setting "
+                "trace_calls is on (on by default in dev only); expire after 14 days; read by "
+                "`admin_cli evals trace`, never by anything public",
             ),
         ),
         aliases=("content-bucket", "s3"),
