@@ -51,7 +51,7 @@ from datetime import UTC, date, datetime
 
 import boto3
 
-from common import compliance, equipment, fresh_review, goal_rotation, model_fleet, prompts
+from common import compliance, equipment, evals_emission, fresh_review, goal_rotation, model_fleet, prompts
 from common.adapters.base import DaySubject
 from common.attribution import sources_for_topic
 from common.bedrock import invoke_model_tracked
@@ -720,6 +720,10 @@ def _run_daily_cycle(topic_id: str, force: bool = False, run_id: str | None = No
     def _stored(article_id: str) -> None:
         stored["article_id"] = article_id
         _record_article_written(topic_id, run_started, subject_key, rotation, run_id, article_id)
+        # Continuous evals: the article exists, held or published, so its model and every prompt in
+        # its lineage earn an Article Completion each (common/evals_emission.py). Never raises, and
+        # writes nothing while evals are off.
+        evals_emission.completion(article_id=article_id, topic_id=topic_id, lineage=lineage)
 
     try:
         result = _publish_or_moderate(

@@ -5,7 +5,8 @@ docs/enhancements/model-ranch-prompt-assets-evals.md, sections 4.3 and 4.9. Ever
 says a model or a prompt did well or badly (an article was completed, an operator rewrote one, a
 reader voted, a person or the judge reviewed one), the code that knows writes one event to the
 `<prefix>-<env>-evals` log group, and the hourly rollup (common/evals_rollup.py, PR13) adds the
-events up into the evals table. Nothing emits yet: the emission points are PR14's.
+events up into the evals table. An article stored, a person's approve, reject or rewrite and a
+reader's vote emit through common/evals_emission.py.
 
 **The event is a schema, not text.** Every field has a kind, and the kinds are evidence.py's (code,
 id, model id, ISO time, number) or narrower ones built here (a prompt id, a prompt version, a
