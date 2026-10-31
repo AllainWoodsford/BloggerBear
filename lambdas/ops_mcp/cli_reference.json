@@ -1649,12 +1649,13 @@
           "flags": [
             "--source"
           ],
-          "help": "Only articles (moderation) or only prompt changes (refinements). Default: both",
+          "help": "Only articles (moderation) or only prompt changes (refinements). Default: both. findings: research Findings to mark good (y) or bad (r), the judge's reviewed ones first and never with its verdict; each scores its model and calibrates the judge",
           "type": "str",
           "choices": [
             "all",
             "moderation",
-            "refinements"
+            "refinements",
+            "findings"
           ],
           "default": "all",
           "required": false,
@@ -1748,7 +1749,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py approve [-h] [--limit LIMIT] [--source {all,moderation,refinements}]\n                            [--skip-hours SKIP_HOURS] [--include-skipped] [--reset-skipped]\n                            [--dry-run] [--mock]\n\noptions:\n  -h, --help            show this help message and exit\n  --limit LIMIT         How many to go through this time (default 30)\n  --source {all,moderation,refinements}\n                        Only articles (moderation) or only prompt changes (refinements). Default:\n                        both\n  --skip-hours SKIP_HOURS\n                        A skipped item is hidden from your next reviews for this many hours\n                        (default 24; 0 = until cleared)\n  --include-skipped     Show items you skipped earlier too\n  --reset-skipped       Forget everything you skipped before starting\n  --dry-run             Go through the motions but change nothing\n  --mock                Practise the keys on made-up items: no AWS, nothing sent (or set\n                        BLOGGERBEAR_REVIEW_MOCK=1)\n"
+      "help_text": "usage: admin_cli.py approve [-h] [--limit LIMIT] [--source {all,moderation,refinements,findings}]\n                            [--skip-hours SKIP_HOURS] [--include-skipped] [--reset-skipped]\n                            [--dry-run] [--mock]\n\noptions:\n  -h, --help            show this help message and exit\n  --limit LIMIT         How many to go through this time (default 30)\n  --source {all,moderation,refinements,findings}\n                        Only articles (moderation) or only prompt changes (refinements). Default:\n                        both. findings: research Findings to mark good (y) or bad (r), the judge's\n                        reviewed ones first and never with its verdict; each scores its model and\n                        calibrates the judge\n  --skip-hours SKIP_HOURS\n                        A skipped item is hidden from your next reviews for this many hours\n                        (default 24; 0 = until cleared)\n  --include-skipped     Show items you skipped earlier too\n  --reset-skipped       Forget everything you skipped before starting\n  --dry-run             Go through the motions but change nothing\n  --mock                Practise the keys on made-up items: no AWS, nothing sent (or set\n                        BLOGGERBEAR_REVIEW_MOCK=1)\n"
     },
     "pipeline-config": {
       "help": "Pipeline-wide settings (the default research interval, the draft review mode, who may reach the assistant, the stagger between topics, the dispatcher's shadow mode and start cap)",

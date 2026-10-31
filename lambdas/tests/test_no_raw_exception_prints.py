@@ -41,6 +41,8 @@ GUARDED = sorted(
         "common/model_ranch.py",
         # Culling's apply and restore, which the admin API's routes call.
         "common/model_cull.py",
+        # The admin API's review of Findings by a person, which prints a claim it could not let go.
+        "common/human_review.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
     ]
 )

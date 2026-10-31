@@ -2165,9 +2165,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review_parser_cli.add_argument(
         "--source",
-        choices=["all", "moderation", "refinements"],
+        choices=["all", "moderation", "refinements", "findings"],
         default="all",
-        help="Only articles (moderation) or only prompt changes (refinements). Default: both",
+        help=(
+            "Only articles (moderation) or only prompt changes (refinements). Default: both. "
+            "findings: research Findings to mark good (y) or bad (r), the judge's reviewed ones first "
+            "and never with its verdict; each scores its model and calibrates the judge"
+        ),
     )
     review_parser_cli.add_argument(
         "--skip-hours",

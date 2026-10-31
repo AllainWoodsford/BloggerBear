@@ -200,13 +200,14 @@ CATALOGUE: tuple[Component, ...] = (
                 "data), raw_snapshot_s3_key, source_refs, research_call (model, tokens, fallback, "
                 "stop reason), figures (maps, from the vision adapters), planner_notes (rail: flags "
                 "and simulations), subjects (the subject keys it reports, for a topic that rotates "
-                "through subjects); once the evals judge has reviewed it, review_count, reviewed_by "
-                "(the roles that reviewed it) and last_reviewed_at",
+                "through subjects); once the evals judge or a person has reviewed it, review_count, "
+                "reviewed_by (the roles that reviewed it: judge, human) and last_reviewed_at",
             ),
             (
                 "Written by",
                 "research-tick, only when a tick's diff is material (diff-first): a quiet source "
-                "writes none; eval-jobs' judge marks the ones it reviews",
+                "writes none; eval-jobs' judge marks the ones it reviews, and the Admin API the ones a "
+                "person reviews (`approve --source findings`)",
             ),
             (
                 "Read by",
@@ -396,7 +397,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "Written by",
                 "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), and "
                 "its judge (runs, pairs, spend); the admin API, its adjust# rows (`evals forgive` and "
-                "`evals punish`)",
+                "`evals punish`) and a person's verdicts as pairs (a Finding reviewed with `approve "
+                "--source findings`, an article approved or rejected)",
             ),
             ("Expires", "never: no TTL"),
         ),

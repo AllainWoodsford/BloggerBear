@@ -7,7 +7,20 @@ are (docs/enhancements/model-ranch-prompt-assets-evals.md, sections 4.3 and 5.4)
 - **Admin Review** (+2 approved, -2 rejected), from the admin API's approve and reject when a person
   decided: one event per prompt, `admin:<queue_id>:<decision>:<prompt_id>`. Professor Grizzlewick's
   decisions take the same routes and the caller leaves them out: an AI reviewer's verdict is not a
-  person's, and only the calibrated judge's verdicts may count towards the gates.
+  person's, and only the calibrated judge's verdicts may count towards the gates. The decision is
+  also the person's verdict on the article (good approved, bad rejected), kept as the evals table's
+  `pair#<article_id>` row `human` (section 4.4): the rollup measures the judge's agreement with people
+  from the subjects that have both a judge's row and a person's (common/evals_rollup.judge_agreement),
+  so calibration accrues from the decisions people make anyway. The latest decision on an article is
+  the one kept while the text is the one the judge judged: a held article that comes back to the
+  inbox is decided again on what it says then. A decision on text the judge never saw keeps no pair
+  (human_article_pair): once a rewrite was saved after the judge's mark (`eval_judged_at`), the
+  person's verdict would be paired with the judge's on the text before, so it is skipped, and a human
+  row already there, given on the text the judge saw, stays. That narrows the spec entry's "also write
+  pair#human" on purpose, so agreement is only ever measured on one text. With no mark yet the
+  decision is kept: the judge judges the text as it stands when it runs, which is the text decided
+  unless a rewrite is saved first (the pair rows do not yet record which text each judged, so that
+  order still pairs two texts).
 - **Article Rewrite** (-2), from the admin API's rewrite routes when a person sent an article back:
   one event, `rewrite:<rewrite_id>`, for the model whose text it was, naming the prompt that wrote
   the text. His rewrites are left out like his decisions.
@@ -49,7 +62,10 @@ one per prompt, and an approve in the admin API still answers well inside API Ga
 
 from __future__ import annotations
 
-from common import evals
+import os
+from datetime import UTC, datetime
+
+from common import dynamo, evals
 from common.model_pricing import canonical_model_id
 
 # The lineage stages that write an article's text: daily_cycle_handler's draft, and a rewrite's
@@ -73,6 +89,13 @@ VOTES = ("up", "down")
 HUMAN = "human"
 # Each event's `source`: the code of the Lambda that writes it.
 DAILY_CYCLE, ADMIN_API, PUBLIC_API = "daily_cycle", "admin_api", "public_api"
+# The evals table's pair rows (section 4.4): entity `pair#<subject>`, one row per role (`judge`,
+# `human`) holding that role's verdict on the subject. The prefix is the rollup's evals_rollup.PAIR,
+# spelled here because this module is imported by the public API, which needs nothing else of the
+# rollup's.
+PAIR = "pair#"
+# A person's decision on a queue item as their verdict on the article.
+VERDICTS = {"approved": "good", "rejected": "bad"}
 
 
 # --- what an article's lineage says -----------------------------------------------------------------
@@ -208,12 +231,13 @@ def completion(*, article_id: str, topic_id: str, lineage: dict) -> int:
 
 def admin_review(article: dict | None, *, article_id: str, queue_id: str, decision: str, topic_id) -> int:
     """One Admin Review per prompt of `article` (the Articles item of `article_id`) for a person's
-    `decision` on queue item `queue_id`: +2 `approved`, -2 `rejected`. The caller leaves Professor
-    Grizzlewick's decisions out. Never raises."""
+    `decision` on queue item `queue_id`: +2 `approved`, -2 `rejected`; and the person's verdict on
+    the article as its `pair#<article_id>` row `human` (human_article_pair). The caller leaves
+    Professor Grizzlewick's decisions out, so he never writes a person's verdict. Never raises."""
     try:
         if not evals.enabled() or decision not in ADMIN_DELTAS or not isinstance(article, dict):
             return 0
-        return _per_prompt(
+        written = _per_prompt(
             ADMIN_REVIEW,
             article,
             lambda prompt_id: evals.event_id(
@@ -227,7 +251,80 @@ def admin_review(article: dict | None, *, article_id: str, queue_id: str, decisi
         )
     except Exception as exc:  # noqa: BLE001
         print(f"evals_emission: could not emit queue_id={queue_id}'s admin review events: {exc!r}")
-        return 0
+        written = 0
+    human_article_pair(article, article_id=article_id, queue_id=queue_id, decision=decision)
+    return written
+
+
+# --- a person's verdict, for the judge's calibration -------------------------------------------------
+
+
+def evals_table():
+    return dynamo.get_table(os.environ["EVALS_TABLE"])
+
+
+def pair_key(subject: str, role: str) -> dict:
+    return {"entity": f"{PAIR}{subject}", "sk": role}
+
+
+def pair_row(subject: str, role: str, verdict: str, ts: str) -> dict:
+    """A pair row as the rollup reads it: `verdict` (good or bad), its `delta` (section 4.3's two
+    either way) and when it was given (`ts`)."""
+    return {**pair_key(subject, role), "verdict": verdict, "delta": 2 if verdict == "good" else -2, "ts": ts}
+
+
+def pair_time(now: datetime) -> str:
+    """A pair row's `ts`: UTC to the second, as the judge writes its own (common/eval_judge.py)."""
+    return now.astimezone(UTC).isoformat(timespec="seconds")
+
+
+def _moment(value) -> datetime | None:
+    """An ISO time as an aware datetime; None when it is missing or not one. Parsed rather than
+    compared as text: the judge's mark is to the second (common/eval_judge.py), a saved rewrite's
+    `finished_at` carries microseconds (common/rewrite.py)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _rewritten_since_judged(article) -> bool:
+    """Whether a rewrite of `article` was saved after the judge's mark (`eval_judged_at`), so the text
+    a person decides now is not the one the judge judged. False when either time is missing or does
+    not parse: the decision is then kept, as it was before the check."""
+    judged = _moment(article.get("eval_judged_at")) if isinstance(article, dict) else None
+    rewrites = article.get("rewrites") if judged is not None else None
+    if not isinstance(rewrites, list):
+        return False
+    finished = (_moment(entry.get("finished_at")) for entry in rewrites if isinstance(entry, dict))
+    return any(moment is not None and moment > judged for moment in finished)
+
+
+def human_article_pair(article: dict | None, *, article_id: str, queue_id: str, decision: str) -> bool:
+    """A person's decision on `article` as their verdict, the `pair#<article_id>` row `human`: good for
+    `approved`, bad for `rejected`, with the queue item it was decided on. Written over the row already
+    there, so the latest decision is the one kept, but never on text the judge never saw
+    (_rewritten_since_judged): that verdict is not kept as a pair, and the row already there is left
+    alone (see the module's docstring). Only while evals are on, and only from admin_review, which is
+    called for a person's decisions alone. True when it was written. Never raises."""
+    try:
+        if not evals.enabled() or decision not in VERDICTS:
+            return False
+        if _rewritten_since_judged(article):
+            print(
+                f"evals_emission: queue_id={queue_id} decided article_id={article_id} after a rewrite "
+                "the judge has not judged: no human verdict kept"
+            )
+            return False
+        row = pair_row(article_id, HUMAN, VERDICTS[decision], pair_time(datetime.now(UTC)))
+        evals_table().put_item(Item={**row, "queue_id": queue_id})
+        return True
+    except Exception as exc:  # noqa: BLE001 - bookkeeping never fails the work
+        print(f"evals_emission: could not keep queue_id={queue_id}'s decision as a human verdict: {exc!r}")
+        return False
 
 
 def article_rewrite(load_article, *, article_id: str, rewrite_id: str, topic_id) -> int:

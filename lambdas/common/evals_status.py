@@ -4,12 +4,13 @@ GET /evals/digest (docs/enhancements/model-ranch-prompt-assets-evals.md, PR13).
 **status** answers "are evals working, and what are they holding back?" in parts, each read on its
 own: the switches, the prompt release in place and the prompt fallbacks of the last 24 hours, the
 rollup (its watermark and last run), `late_dropped`, the judge (its agreement with people, pairs and
-whether it is calibrated), the gated models (as the rotation guard decides it, PR15, with the
-protected and the held-open ones apart), culling (the proposal in place, whether it has expired,
-and the last `evals cull --apply`: when, and which models it culled), each queue's depth and the
-age of its oldest job (eval-work's, and the queue platform's work.fifo), and the topics by dispatch
-mode. A part that cannot be read says "could not check" (COULD_NOT_CHECK) and the others still
-answer, so one missing grant or one slow service never hides the rest.
+whether it is calibrated, when it last ran, and why its tripwire paused it), the gated models
+(as the rotation guard decides it, PR15, with the protected and the held-open ones apart),
+culling (the proposal in place, whether it has expired, and the last `evals cull --apply`:
+when, and which models it culled), each queue's depth and the age of its oldest job
+(eval-work's, and the queue platform's work.fifo), and the topics by dispatch mode. A part that
+cannot be read says "could not check" (COULD_NOT_CHECK) and the others still answer, so one
+missing grant or one slow service never hides the rest.
 
 **The prompt parts** are where prompts as assets meet evals. The release is the publisher's
 `releases/current.json` in the prompts bucket (common/prompts.current_release), read by its two
@@ -39,6 +40,7 @@ from boto3.dynamodb.conditions import Key
 
 from common import (
     dynamo,
+    eval_judge,
     evals,
     evals_rollup,
     evals_settings,
@@ -307,6 +309,16 @@ def _judge(settings: dict, index: dict) -> dict:
     }
 
 
+def _judge_run(index: dict, row: dict) -> dict:
+    """When the judge's selector last took a run (`last_judge_at` on the index row,
+    common/eval_judge.py) and, while the tripwire holds the judge off, why (`judge_paused_reason` on
+    the settings row as stored, which PUT /evals-config clears whenever a person sets the switch)."""
+    return {
+        eval_judge.LAST_JUDGE_AT: index.get(eval_judge.LAST_JUDGE_AT),
+        evals_settings.PAUSED_REASON_FIELD: row.get(evals_settings.PAUSED_REASON_FIELD),
+    }
+
+
 def _late_dropped(index: dict) -> int:
     return _number(index.get("late_dropped")) or 0
 
@@ -324,6 +336,7 @@ def status(now: datetime | None = None) -> dict:
     now = now or datetime.now(UTC)
     settings = _Once(evals_settings.get_settings)
     index = _Once(evals_rollup.get_index)
+    row = _Once(evals_settings.get_row)
     return {
         "switches": _part(
             "switches",
@@ -336,7 +349,7 @@ def status(now: datetime | None = None) -> dict:
         "prompt_fallbacks": _part("prompt_fallbacks", lambda: _prompt_fallbacks(now)),
         "rollup": _part("rollup", lambda: _rollup(index())),
         "late_dropped": _part("late_dropped", lambda: {"late_dropped": _late_dropped(index())}),
-        "judge": _part("judge", lambda: _judge(settings(), index())),
+        "judge": _part("judge", lambda: {**_judge(settings(), index()), **_judge_run(index(), row())}),
         "gated_models": _part("gated_models", lambda: _gated_models(settings(), now)),
         "cull": _part("cull", lambda: _cull(now)),
         # One part per queue, so one that cannot be read never hides the other.

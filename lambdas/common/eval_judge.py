@@ -8,12 +8,14 @@ Two halves, both run by eval-jobs (eval_jobs_handler.py):
   once `judge_interval_hours` have passed since the last run: `last_judge_at` on the evals table's
   index row, claimed with a conditional write, so two invocations never both run. It picks up to
   `judge_max_items` items no judge has reviewed: recent Findings without a `pair#<subject>` judge row,
-  and recent articles without `eval_judged_at`, taken in turn (an article, a Finding, ...), and the
-  Findings one topic after another, so no busy topic takes every place. The topics take turns across
-  runs too: each run starts with the topic after the one its last Finding came from the run before
-  (`last_judge_topic` on the index row), so a topic late in name order is never passed over every
-  run. It writes the run's header (`run#<run_id>`, `meta`) and sends one `judge` message per item to
-  eval-work, never more than the day's remaining spend pays for (below).
+  and recent articles without `eval_judged_at`, held, published or rejected alike (a person's reject
+  must not take an article out of the judge's reach while an approval keeps it in: unjudged_articles),
+  taken in turn (an article, a Finding, ...), and the Findings one topic after another, so no busy
+  topic takes every place. The topics take turns across runs too: each run starts with the topic
+  after the one its last Finding came from the run before (`last_judge_topic` on the index row), so a
+  topic late in name order is never passed over every run. It writes the run's header
+  (`run#<run_id>`, `meta`) and sends one `judge` message per item to eval-work, never more than the
+  day's remaining spend pays for (below).
 * **The consumer** (`consume`, one eval-work record) judges one item. It picks the judge's model,
   renders the item's rubric (`eval_judge/research_review` or `eval_judge/article_review`, code-only
   prompts in common/prompts_registry.py), calls the model once, and reads its reply against the
@@ -23,8 +25,9 @@ Two halves, both run by eval-jobs (eval_jobs_handler.py):
   `last_reviewed_at`) or the Article (`eval_judged_at`), each conditional, the run's item row, and one
   Research Review or Article Review event (+2 or -2, `by: judge`, event id `judge:<subject>:<run_id>`)
   for the model that wrote the item and the prompt it wrote it with (`credit`: an article's text is
-  its draft's until a rewrite is saved, then its newest saved rewrite's). A reply that is not exactly
-  the contract is ignored: no verdict, no mark, no event (its spend is still counted).
+  its draft's until a rewrite is saved, then its newest saved rewrite's, never a failed rewrite's: the
+  writer common/evals_emission.writer names for every other event of the article). A reply that is
+  not exactly the contract is ignored: no verdict, no mark, no event (its spend is still counted).
 
 **Judge is never author** (section 3, deviation 9). The judge's model is the first of the chain
 (section 4.5): `judge_model_id`, else the model-config default row's `fallback_model_id`, else
@@ -74,7 +77,17 @@ from fractions import Fraction
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
 
-from common import dynamo, evals, evals_rollup, evals_settings, evidence, model_fleet, prompts, stats_tracking
+from common import (
+    dynamo,
+    evals,
+    evals_emission,
+    evals_rollup,
+    evals_settings,
+    evidence,
+    model_fleet,
+    prompts,
+    stats_tracking,
+)
 from common.adapters.base import SEEN_KEY
 from common.bedrock import invoke_model_tracked
 from common.costing import USD_TO_AUD_RATE, call_cost_usd, pricing_for
@@ -89,8 +102,9 @@ SCORE_JOB = "score"
 SOURCE = "eval_jobs"
 ROLE = "judge"
 
-# The lineage stages credit reads (common/rewrite.py's REWRITE_STAGE, common/compliance.py's call).
-DRAFT_STAGE, REWRITE_STAGE, COMPLIANCE_STAGE = "draft", "rewrite", "compliance_review"
+# The lineage stages the fallback of credit reads (common/rewrite.py's REWRITE_STAGE, common/compliance.py's
+# call); the draft's is evals_emission.writer's.
+REWRITE_STAGE, COMPLIANCE_STAGE = "rewrite", "compliance_review"
 
 # What is judged: a Finding's summary (a research review) or an article (an article review).
 RESEARCH = "research_review"
@@ -137,7 +151,9 @@ INTERVAL_SLACK = timedelta(minutes=10)
 # person reviewing would; articles come a day at a time, so a week of them.
 FINDINGS_LOOKBACK = timedelta(days=2)
 ARTICLES_LOOKBACK = timedelta(days=7)
-ARTICLE_STATUSES = ("pending_moderation", "published")
+# Every status an article the judge may still read can have: a rejected article keeps its row (no TTL)
+# and its body in the content bucket, so it is judged like a held or published one (unjudged_articles).
+ARTICLE_STATUSES = ("pending_moderation", "published", "rejected")
 QUERY_PAGES = 3
 
 TRIPWIRE_MIN_ITEMS = 10
@@ -214,27 +230,43 @@ def credit(record: dict, kind: str) -> dict | None:
     names them}. A Finding's summary is its `research_call`'s. An article's text is its draft's until a
     rewrite is saved (rewrite.py then replaces the whole text and adds an entry to `rewrites`), and
     then its newest saved rewrite's: the fresh-data review's revision only corrects claims in a draft.
-    A rewrite that failed leaves its call in the lineage as well, but its text never reached the
-    article, so a rewrite call is credited only when the saved rewrite names its model (_saved_rewrite).
-    None when the item records no such call."""
+    That is the writer every other event of the article names (common/evals_emission.writer, with the
+    call it wrote with), so the judge credits the same model a person's decision does: a rewrite that
+    failed leaves its calls in the lineage for their cost, marked `failed` (common/rewrite.py), and
+    writer() leaves them out. A lineage stored before that mark existed carries none, and there the
+    rewrite call is found by its compliance review instead (_saved_rewrite). That fallback runs on
+    every article with a saved rewrite and no failed mark, so also on one stored since whose rewrites
+    never failed, where both ways find the same call. None when the item records no such call."""
     if kind == RESEARCH:
         call = record.get("research_call")
     else:
-        lineage = record.get("lineage")
-        calls = lineage.get("calls") if isinstance(lineage, dict) else None
-        calls = [c for c in calls if isinstance(c, dict)] if isinstance(calls, list) else []
+        model_id, call = evals_emission.writer(record)
         saved = record.get("rewrites")
         saved = [entry for entry in saved if isinstance(entry, dict)] if isinstance(saved, list) else []
-        if saved:
-            call = _saved_rewrite(calls, saved[-1].get("model_id"))
-        else:
-            call = ([c for c in calls if c.get("stage") == DRAFT_STAGE] or [None])[-1]
+        if saved and not _carries_failed_mark(record):
+            call = _saved_rewrite(_lineage_calls(record), saved[-1].get("model_id"))
+        elif call is None and model_id:
+            # The saved rewrite's call is not in the lineage: the text is still that rewrite's, so its
+            # model is credited, never the draft's.
+            call = {"model_id": model_id}
     if not isinstance(call, dict) or not isinstance(call.get("model_id"), str) or not call["model_id"]:
         return None
     found = {"model_id": canonical_model_id(call["model_id"])}
     if isinstance(call.get("prompt_id"), str) and isinstance(call.get("prompt_version"), str):
         found.update(prompt_id=call["prompt_id"], prompt_version=call["prompt_version"])
     return found
+
+
+def _lineage_calls(record: dict) -> list[dict]:
+    lineage = record.get("lineage")
+    calls = lineage.get("calls") if isinstance(lineage, dict) else None
+    return [c for c in calls if isinstance(c, dict)] if isinstance(calls, list) else []
+
+
+def _carries_failed_mark(record: dict) -> bool:
+    """Whether any of the article's own calls carries the failed-rewrite mark, so the marks are there
+    to be read."""
+    return any(call.get(evals_emission.FAILED) for call in _lineage_calls(record))
 
 
 def _saved_rewrite(calls: list[dict], model_id) -> dict | None:
@@ -536,30 +568,42 @@ def _material(kind: str, record: dict) -> dict | None:
     return {"title": title if isinstance(title, str) else "", "body": body}
 
 
-def _mark(kind: str, record: dict, now: datetime) -> bool:
-    """The judge's mark on the item, once: a Finding's `review_count`, `reviewed_by` (a set of role
-    codes) and `last_reviewed_at`; an article's `eval_judged_at`. Conditional on the item still being
-    there (a mark never makes a row) and not already marked by the judge. False when it was not
+def mark_finding(record: dict, role: str, now: datetime) -> bool:
+    """A reviewer's mark on a Finding, once per role: `review_count` up by one, `role` added to
+    `reviewed_by` (a string set of role codes, section 3's deviation 10: `judge` or `human`, never a
+    person) and `last_reviewed_at`. Conditional on the Finding still being there (a mark never makes a
+    row) and not already marked by `role`, so the same reviewer's second mark counts nothing. The
+    judge marks with it, and so does a person's review (common/human_review.py). False when it was not
     written."""
-    if kind == RESEARCH:
-        table = _findings_table()
-        kwargs = {
-            "Key": {"topic_id": record["topic_id"], "captured_at": record["captured_at"]},
-            "UpdateExpression": "ADD review_count :one, reviewed_by :roles SET last_reviewed_at = :now",
-            "ConditionExpression": (
+    table = _findings_table()
+    try:
+        table.update_item(
+            Key={"topic_id": record["topic_id"], "captured_at": record["captured_at"]},
+            UpdateExpression="ADD review_count :one, reviewed_by :roles SET last_reviewed_at = :now",
+            ConditionExpression=(
                 "attribute_exists(topic_id) AND "
                 "(attribute_not_exists(reviewed_by) OR NOT contains(reviewed_by, :role))"
             ),
-            "ExpressionAttributeValues": {":one": 1, ":roles": {ROLE}, ":role": ROLE, ":now": _iso(now)},
-        }
-    else:
-        table = _articles_table()
-        kwargs = {
-            "Key": {"article_id": record["article_id"]},
-            "UpdateExpression": "SET eval_judged_at = :now",
-            "ConditionExpression": "attribute_exists(article_id) AND attribute_not_exists(eval_judged_at)",
-            "ExpressionAttributeValues": {":now": _iso(now)},
-        }
+            ExpressionAttributeValues={":one": 1, ":roles": {role}, ":role": role, ":now": _iso(now)},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def _mark(kind: str, record: dict, now: datetime) -> bool:
+    """The judge's mark on the item, once: a Finding's (mark_finding, as `judge`); an article's
+    `eval_judged_at`, conditional on the article still being there and not already marked. False when
+    it was not written."""
+    if kind == RESEARCH:
+        return mark_finding(record, ROLE, now)
+    table = _articles_table()
+    kwargs = {
+        "Key": {"article_id": record["article_id"]},
+        "UpdateExpression": "SET eval_judged_at = :now",
+        "ConditionExpression": "attribute_exists(article_id) AND attribute_not_exists(eval_judged_at)",
+        "ExpressionAttributeValues": {":now": _iso(now)},
+    }
     try:
         table.update_item(**kwargs)
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -856,8 +900,11 @@ def unjudged_findings(topic_id: str, now: datetime, limit: int) -> list[dict]:
 
 
 def unjudged_articles(now: datetime, limit: int) -> list[dict]:
-    """Articles of the last ARTICLES_LOOKBACK, awaiting moderation or published, the judge has not
-    marked, newest first."""
+    """Articles of the last ARTICLES_LOOKBACK, awaiting moderation, published or rejected, the judge has
+    not marked, newest first. Rejected ones too: a person's approve and reject both keep their verdict
+    as the article's human pair row (common/evals_emission.human_article_pair), and if a reject took
+    the article out of the judge's reach while an approval (published) kept it in, the pairs would
+    complete mostly for approvals and the judge's agreement with people would lean towards good."""
     since = _iso(now - ARTICLES_LOOKBACK)
     found = []
     for status in ARTICLE_STATUSES:
