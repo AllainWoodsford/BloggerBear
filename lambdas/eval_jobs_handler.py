@@ -11,8 +11,11 @@ schedules and its queue's mapping only then):
 * by the event source mapping on the eval-work queue, with one judge or scoring job per batch
   (`{"Records": [...]}`).
 
-`rollup` runs common/evals_rollup.py. The judge's selector and the queue's consumer are PR18's: until
-then each logs that it arrived and returns, and nothing sends to the queue.
+`rollup` runs common/evals_rollup.py. `judge_select` runs the judge's selector, and each queued record
+goes to its consumer (common/eval_judge.py: `select` and `consume`). A record is answered by returning,
+whatever became of it, so the mapping deletes it: a judge item the day's spend cap holds back is sent
+to the queue again with a delay by the consumer itself, and one that failed stays unjudged for a later
+run to pick.
 
 Never raises unhandled, like every other scheduled handler here, with one exception that section 6
 of the spec allows: a rollup that cannot read the evals log or read and write its tables
@@ -25,7 +28,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from common import evals_rollup, evals_settings, evidence
+from common import eval_judge, evals_rollup, evals_settings, evidence
 
 ROLLUP_JOB = "rollup"
 JUDGE_SELECT_JOB = "judge_select"
@@ -48,27 +51,35 @@ def _rollup(event: dict) -> dict:
     return {"status": "ran", ROLLUP_JOB: summary}
 
 
+def _consume(record) -> dict:
+    """One queued record through the judge's consumer. The mapping's batch is one record, but a record
+    that fails never takes another down with it."""
+    try:
+        return eval_judge.consume(record if isinstance(record, dict) else {})
+    except Exception as exc:  # noqa: BLE001 - the item stays unjudged; a later run picks it again
+        print(f"eval_jobs_handler: a queued job failed: {exc!r}")
+        return {"status": "error"}
+
+
 def handle(event: dict) -> dict:
     """One invocation's job, by the event's shape (see the module's docstring)."""
     records = event.get("Records")
     if isinstance(records, list):
-        # A queue batch: no job body is read or printed, only how many there were. Returning
-        # deletes them; nothing sends any until the consumer arrives.
-        print(f"eval_jobs_handler: {len(records)} queued job(s) received; nothing consumes them yet")
-        return {"status": "skipped", "records": len(records)}
+        return {"status": "consumed", "results": [_consume(record) for record in records]}
     # Only a job name that is a code is printed: never what the event carried otherwise.
     job = evidence.check("code", event.get("job")) or "unknown"
     if job == ROLLUP_JOB:
         return _rollup(event)
     if job == JUDGE_SELECT_JOB:
-        print(f"eval_jobs_handler: job {job} received; the judge is not built yet, so nothing ran")
-        return {"status": "skipped", "job": job}
+        trigger = "schedule" if event.get("trigger") == "schedule" else "admin"
+        return {"status": "ran", JUDGE_SELECT_JOB: eval_judge.select(trigger=trigger)}
     print(f"eval_jobs_handler: job {job} is not one of this function's; nothing ran")
     return {"status": "ignored", "job": job}
 
 
 def handler(event, context) -> dict:
-    # The invocation's id joins the rollup's `rollup_done` evidence line (common/evidence.py).
+    # The invocation's id joins its evidence lines (common/evidence.py): the rollup's `rollup_done`, the
+    # judge's `judge_skipped` and `judge_tripwire`.
     with evidence.bind(tick=getattr(context, "aws_request_id", None)):
         try:
             return handle(event if isinstance(event, dict) else {})

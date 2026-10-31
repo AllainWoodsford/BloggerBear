@@ -200,12 +200,13 @@ CATALOGUE: tuple[Component, ...] = (
                 "data), raw_snapshot_s3_key, source_refs, research_call (model, tokens, fallback, "
                 "stop reason), figures (maps, from the vision adapters), planner_notes (rail: flags "
                 "and simulations), subjects (the subject keys it reports, for a topic that rotates "
-                "through subjects)",
+                "through subjects); once the evals judge has reviewed it, review_count, reviewed_by "
+                "(the roles that reviewed it) and last_reviewed_at",
             ),
             (
                 "Written by",
                 "research-tick, only when a tick's diff is material (diff-first): a quiet source "
-                "writes none",
+                "writes none; eval-jobs' judge marks the ones it reviews",
             ),
             (
                 "Read by",
@@ -249,7 +250,8 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             (
                 "Written by",
-                "daily-cycle; the Admin API on approve, reject, rewrite and unpublish",
+                "daily-cycle; the Admin API on approve, reject, rewrite and unpublish; eval-jobs' judge "
+                "marks the ones it reviews (eval_judged_at)",
             ),
             ("Read by", "the public API (home, topic pages, RSS), the Admin API, the assistant"),
             ("Bodies", "in the content bucket under articles/, not in the table"),
@@ -384,11 +386,17 @@ CATALOGUE: tuple[Component, ...] = (
                 "Holds",
                 "model#<id>, prompt#<prompt_id>#<version> and cell#<model>#<prompt_id>#<version> rows "
                 "by day#<date> (perf, events, good, bad, by_reason, rolled_up_at); adjust#... rows by "
-                "ts#<time>; run#<run_id> (an offline run and its items); pair#<subject> (a judge's and "
-                "a person's verdicts on one subject); the index row (the rollup's watermark, late "
-                "events, the judge's agreement) and its day#<date> rows (the entities each day has)",
+                "ts#<time>; run#<run_id> (a judge or offline run and its items); pair#<subject> (a "
+                "judge's and a person's verdicts on one subject); spend by day#<date> (what the judge "
+                "and offline runs spent that day, held to the daily cap); the index row (the rollup's "
+                "watermark, late events, the judge's agreement, the judge's last run) and its "
+                "day#<date> rows (the entities each day has)",
             ),
-            ("Written by", "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now)"),
+            (
+                "Written by",
+                "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), and "
+                "its judge (runs, pairs, spend)",
+            ),
             ("Expires", "never: no TTL"),
         ),
         aliases=("evals-table", "eval-totals", "model-ranch"),
@@ -654,9 +662,9 @@ CATALOGUE: tuple[Component, ...] = (
     _lambda(
         "eval-jobs",
         "Continuous evals' jobs: the hourly rollup of the evals log group into the evals table, the "
-        "judge's selector, and the judge and offline scoring jobs from the eval-work queue. The "
-        "rollup runs; the judge's selector and the queue's jobs only log that they arrived until the "
-        "judge lands.",
+        "judge's selector, and the judge and offline scoring jobs from the eval-work queue. The judge "
+        "reviews recent Findings and articles with a model that wrote none of them; offline scoring "
+        "jobs are dropped until offline runs land.",
         "hourly at five past (the rollup) and hourly (the judge's selector), EventBridge Scheduler; "
         f"on each job on {PREFIX}{ENV}-eval-work, two at most at once",
         details=(("Exists", "only while evals are switched on (evals_enabled)"),),

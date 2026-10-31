@@ -61,6 +61,9 @@ SETTINGS: dict[str, object] = {
 DYNAMODB_ONLY = frozenset(
     {"daily_gate", "weekly_gate", "total_gate", "min_events", "judge_min_agreement", "judge_min_pairs"}
 )
+# Not a setting: why the judge's tripwire turned `judge_enabled` off (common/eval_judge.py), written
+# beside it on the row and shown by `summary`.
+PAUSED_REASON_FIELD = "judge_paused_reason"
 
 # The whole-number settings and their ranges.
 _WHOLE = {
@@ -273,8 +276,8 @@ def _as_number(value) -> float | None:
 
 
 def summary() -> dict:
-    """The row as stored, every setting in effect and the judge's model, for the admin API's
-    GET /evals-config."""
+    """The row as stored, every setting in effect, the judge's model and, when the judge's tripwire
+    turned it off (common/eval_judge.py), why: for the admin API's GET /evals-config."""
     row = get_row()
     effective = effective_settings(row)
     return {
@@ -282,5 +285,6 @@ def summary() -> dict:
         "settings": {name: row.get(name) for name in SETTINGS},
         "effective": effective,
         "judge_model": judge_model(effective),
+        PAUSED_REASON_FIELD: row.get(PAUSED_REASON_FIELD),
         "dynamodb_only": sorted(DYNAMODB_ONLY),
     }

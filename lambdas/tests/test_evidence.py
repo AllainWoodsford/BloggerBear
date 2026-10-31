@@ -92,6 +92,11 @@ SAMPLES = {
         "topic_id": "rail-sydney", "lambda_id": "daily_cycle", "prompt_name": "draft", "version": "v2",
         "code": "locked_order",
     },
+    "judge_skipped": {
+        "topic_id": "rail-sydney", "run_id": "judge-20261027T030000", "kind": "research_review",
+        "captured_at": "2026-10-27T02:14:09.512330+00:00", "code": "author_only",
+    },
+    "judge_tripwire": {"run_id": "judge-20261027T030000", "judged": 10, "bad": 9, "share": 0.9},
 }  # fmt: skip
 
 

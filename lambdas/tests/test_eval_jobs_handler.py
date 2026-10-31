@@ -1,8 +1,9 @@
 """The eval jobs handler (eval_jobs_handler.py): `rollup` runs the rollup (from its watermark, or for
-the days an admin asked for), `judge_select` and queue batches only log that they arrived until the
-judge lands, an unknown job is ignored, and it never raises but for a rollup's infrastructure failure,
-which section 6 lets raise so eval-jobs' Errors alarm fires. It never prints what an event carried
-beyond a job name that is a code."""
+the days an admin asked for), `judge_select` runs the judge's selector, a queue batch goes record by
+record to the judge's consumer (common/eval_judge.py, whose own tests are test_eval_judge.py), an
+unknown job is ignored, and it never raises but for a rollup's infrastructure failure, which section 6
+lets raise so eval-jobs' Errors alarm fires. It never prints what an event carried beyond a job name
+that is a code."""
 
 from __future__ import annotations
 
@@ -60,23 +61,37 @@ def test_days_that_are_not_a_range_are_refused_in_the_handlers_own_words(ran, ca
     assert "instructions" not in out
 
 
-def test_the_judges_selector_only_logs_that_it_arrived_until_the_judge_lands(ran, capsys):
-    result = eval_jobs_handler.handler({"job": "judge_select", "trigger": "schedule"}, CONTEXT)
+def test_the_hourly_judge_schedule_runs_the_judges_selector(ran):
+    with patch.object(eval_jobs_handler.eval_judge, "select", return_value={"status": "not_due"}) as select:
+        result = eval_jobs_handler.handler({"job": "judge_select", "trigger": "schedule"}, CONTEXT)
 
-    assert result == {"status": "skipped", "job": "judge_select"}
-    out = capsys.readouterr().out
-    assert out == "eval_jobs_handler: job judge_select received; the judge is not built yet, so nothing ran\n"
+    assert result == {"status": "ran", "judge_select": {"status": "not_due"}}
+    select.assert_called_once_with(trigger="schedule")
     ran.assert_not_called()
 
 
-def test_a_queue_batch_is_counted_and_its_bodies_never_printed(ran, capsys):
+def test_a_queue_batch_goes_record_by_record_to_the_judges_consumer(ran, capsys):
+    records = [{"body": '{"job": "judge"}'}, {"body": '{"job": "score"}'}]
+    answers = [{"status": "judged"}, {"status": "x"}]
+    with patch.object(eval_jobs_handler.eval_judge, "consume", side_effect=answers) as consume:
+        result = eval_jobs_handler.handler({"Records": records}, CONTEXT)
+
+    assert result == {"status": "consumed", "results": [{"status": "judged"}, {"status": "x"}]}
+    assert [call.args[0] for call in consume.call_args_list] == records
+    assert capsys.readouterr().out == ""
+    ran.assert_not_called()
+
+
+def test_a_record_that_fails_is_printed_by_its_repr_and_never_takes_the_next_down(capsys):
     body = '{"job": "judge", "run_id": "r1", "item": {"summary": "a Finding\'s text"}}'
-    result = eval_jobs_handler.handler({"Records": [{"body": body}]}, CONTEXT)
+    failure = RuntimeError("table\ngone")
+    with patch.object(eval_jobs_handler.eval_judge, "consume", side_effect=[failure, {"status": "judged"}]):
+        result = eval_jobs_handler.handler({"Records": [{"body": body}, {"body": body}]}, CONTEXT)
 
-    assert result == {"status": "skipped", "records": 1}
+    assert result == {"status": "consumed", "results": [{"status": "error"}, {"status": "judged"}]}
     out = capsys.readouterr().out
-    assert out == "eval_jobs_handler: 1 queued job(s) received; nothing consumes them yet\n"
-    ran.assert_not_called()
+    assert out == "eval_jobs_handler: a queued job failed: RuntimeError('table\\ngone')\n"
+    assert "Finding" not in out
 
 
 @pytest.mark.parametrize("event", [None, "rollup", [], {}, {"job": "Delete Everything"}, {"job": 7}])

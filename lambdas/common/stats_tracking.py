@@ -14,7 +14,7 @@ belong to any one article. There were four at first; there are nine now (BEDROCK
     reviewer           reviewer_handler.py  (the reviewer bear judging articles, common/reviewer.py)
     assistant          ops_agent/agent.py   (one assistant run of several calls: record_assistant_run)
     vision_triage      common/vision_triage.py  (one triage decision's calls: record_model_usage)
-    evals              the evals judge and offline scoring runs (none yet: they arrive with the evals jobs)
+    evals              common/eval_judge.py (the evals judge), and offline scoring runs to come
 
 `tracked_claude` below is what most of those now call instead of `common.bedrock.invoke_claude`
 directly -- same signature, same return (just the text), but the call's tokens and cost are also
