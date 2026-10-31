@@ -26,9 +26,10 @@ A held article also has w (Re-Write): pick one of the registered models and the 
 in the background to fix what it was held for (lambdas/common/rewrite.py), while you move on to the
 next item. It comes back to this inbox when it is done -- to approve, reject or rewrite again -- with
 the model and what the rewrite cost. If the rewrite fails, the original comes back with the reason.
-The models offered (rewrite_models) are the enabled text models the Model Ranch has not gated, best
-first by how their work has been judged (section 4.9 of
-docs/enhancements/model-ranch-prompt-assets-evals.md), each with its score, n and interval.
+The models offered (rewrite_models) are the enabled text models the account can call (not
+`access: denied`) and the Model Ranch has not gated, best first by how their work has been judged
+(section 4.9 of docs/enhancements/model-ranch-prompt-assets-evals.md), each with its score, n and
+interval.
 
 A skipped item is left exactly as it is, and hidden from your next reviews for a while (a small local
 file, never sent anywhere) so a rerun gives you the next batch instead of the same ones.
@@ -358,6 +359,13 @@ def _rewrite_fact(rewrite: dict) -> str:
 # --- the rewrite picker -----------------------------------------------------------------------
 
 
+def _usable(model: dict) -> bool:
+    """lambdas/common/model_fleet.is_usable, which the CLI cannot import: an enabled model (rows
+    from before the flag are) that an access probe has not found uncallable (`access: denied`); a
+    model whose access is unknown or never checked counts as usable."""
+    return model.get("enabled") is not False and model.get("access") != "denied"
+
+
 def _writes_text(model: dict) -> bool:
     """lambdas/common/model_fleet.suitable(model, TEXT), which the CLI cannot import: a model whose
     recorded purpose is text, or, for a row from before purposes were recorded, one billed by
@@ -396,19 +404,18 @@ def _good_and_bad(model: dict) -> tuple[int, int]:
 
 
 def rank_rewrite_models(models: list[dict], gated=(), min_events: int | None = None) -> list[dict]:
-    """The models a Re-Write may use, best first (section 4.9): the enabled text models not in
-    `gated` (what the Model Ranch holds back). With `min_events` (evals are on), the models with at
-    least that many good and bad events come first, by the Wilson lower bound of good / (good +
-    bad), then blended price, then id; the rest follow by blended price, then id. Each is then
-    returned with its `ranking`: score (the good share), n, the interval's low and high, and
-    whether it was ranked by them. Without `min_events` every model is ordered by price alone."""
+    """The models a Re-Write may use, best first (section 4.9): the usable text models (enabled,
+    not `access: denied`: _usable, _writes_text) not in `gated` (what the Model Ranch holds back).
+    With `min_events` (evals are on), the models with at least that many good and bad events come
+    first, by the Wilson lower bound of good / (good + bad), then blended price, then id; the rest
+    follow by blended price, then id. Each is then returned with its `ranking`: score (the good
+    share), n, the interval's low and high, and whether it was ranked by them. Without
+    `min_events` every model is ordered by price alone."""
     held_back = set(gated)
     usable = [
         model
         for model in models
-        if model.get("enabled") is not False
-        and _writes_text(model)
-        and model.get("model_id") not in held_back
+        if _usable(model) and _writes_text(model) and model.get("model_id") not in held_back
     ]
     if min_events is None:
         return sorted(usable, key=_by_price)
@@ -425,9 +432,10 @@ def rank_rewrite_models(models: list[dict], gated=(), min_events: int | None = N
 
 
 def rewrite_models(api: Api) -> list[dict]:
-    """GET /models, ranked for a Re-Write (rank_rewrite_models) by what its `ranch` says while evals
-    are on: the models gated, and `min_events`. With evals off there is no `ranch`: nothing is held
-    back and no score is in effect, so the models come cheapest first."""
+    """GET /models' usable (enabled, callable) text models, ranked for a Re-Write
+    (rank_rewrite_models) by what its `ranch` says while evals are on: the models gated, and
+    `min_events`. With evals off there is no `ranch`: nothing is held back and no score is in
+    effect, so the models come cheapest first, and none carries a `ranking`."""
     listed = api.get("/models")
     ranch = listed.get("ranch") if isinstance(listed.get("ranch"), dict) else {}
     min_events = ranch.get("min_events")
@@ -458,8 +466,9 @@ def choose_model(models: list[dict], key_reader: Callable[[], str], out) -> str 
     (or there is no model to choose)."""
     if not models:
         _emit(
-            "  ! No enabled models can rewrite it: none is a registered text model the Model Ranch "
-            "has not gated (admin_cli models list, evals status).",
+            "  ! No enabled models can rewrite it: none is a registered text model the account can "
+            "call (not access: denied) and the Model Ranch has not gated (admin_cli models list, "
+            "evals status).",
             out,
         )
         return None

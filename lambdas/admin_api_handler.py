@@ -29,11 +29,13 @@ name, no operator text (rule 1).
 from __future__ import annotations
 
 import contextvars
+import functools
 import json
 import math
 import os
 import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -1509,7 +1511,7 @@ def _rewrite_moderation_item(event: dict) -> dict:
     model_id = body.get("model_id")
     if not isinstance(model_id, str) or not model_id.strip():
         return _error(400, "'model_id' is required: one of the models from GET /models")
-    model_error = _rewrite_model_error(model_id)
+    model_error, served = _rewrite_model_check(model_id)
     if model_error:
         return _error(400, model_error)
     instructions, instructions_error = _rewrite_instructions(body, required=False)
@@ -1528,27 +1530,37 @@ def _rewrite_moderation_item(event: dict) -> dict:
             "it, or say what is wrong with 'instructions' (admin_cli articles rewrite)",
         )
 
-    return _start_rewrite(item, model_id, instructions, from_status="pending_moderation")
+    return _start_rewrite(item, model_id, instructions, from_status="pending_moderation", served=served)
 
 
-def _rewrite_model_error(model_id: str) -> str | None:
-    """Why `model_id` cannot rewrite, or None: it must be registered and enabled, write text
-    (model_fleet.suitable) and not be held back by the Model Ranch's gates (common/model_ranch.py,
-    while evals are on). The default, the fallback and the judge are never gated: one of them the
-    gates would hold back may rewrite, with a `model_gated_protected` line."""
+# Called once a Re-Write has started (_invoke_rewrite), with the queue item's topic_id: it prints the
+# `model_gated_protected` line when the gates would have held the model back (model_ranch.Guard.served).
+_Served = Callable[..., None]
+
+
+def _rewrite_model_check(model_id: str) -> tuple[str | None, _Served | None]:
+    """Why `model_id` cannot rewrite (None when it can), and what to call once the rewrite has
+    really started. It must be registered and enabled, write text (model_fleet.suitable), be one
+    the account can call (not `access: denied`, model_fleet.is_usable: such a rewrite would only
+    fail) and not be held back by the Model Ranch's gates (common/model_ranch.py, while evals are
+    on). The default, the fallback and the judge are never gated: one of them the gates would hold
+    back may rewrite, and the call returned says so with a `model_gated_protected` line. Nothing
+    is printed here: a request refused after this check (an unknown or busy item, a lost claim, an
+    invoke that fails) served nothing."""
     model = get_model(model_id)
     problem = _registered_model_error(model_id, model) or _not_a_text_model_error(model_id, model)
     if problem:
-        return problem
+        return problem, None
+    if not model_fleet.is_usable(model):
+        return f"model '{model_id}' cannot be called by this account (access: denied)", None
     guard = model_ranch.load_guard()
     if guard.gated(model):
         windows = ", ".join(model_ranch.gated_windows(model, guard.settings))
         return (
             f"model '{model_id}' is gated by the Model Ranch (its {windows} score is below the gate); "
             "pick another, or see admin_cli evals status"
-        )
-    guard.served(model_id, model, caller="rewrite")
-    return None
+        ), None
+    return None, functools.partial(guard.served, model_id, model, caller="rewrite")
 
 
 def _registered_model_error(model_id: str, model: dict | None) -> str | None:
@@ -1598,12 +1610,19 @@ def _rewrite_instructions(body: dict, *, required: bool) -> tuple[str, str | Non
 
 
 def _start_rewrite(
-    item: dict, model_id: str, instructions: str, extra: dict | None = None, *, from_status: str | None = None
+    item: dict,
+    model_id: str,
+    instructions: str,
+    extra: dict | None = None,
+    *,
+    from_status: str | None = None,
+    served: _Served | None = None,
 ) -> dict:
     """Claim a pending queue item for a Re-Write and start it in the background (the daily-cycle
     Lambda, asynchronously). 202, or 409 if someone else claimed it first, or 502 (and the item
     back to pending) if the Lambda could not be invoked. `from_status` is the article's status
-    before (a pending item's article is `pending_moderation`), for the evidence line."""
+    before (a pending item's article is `pending_moderation`), for the evidence line; `served` is
+    _rewrite_model_check's call, made only once the rewrite has started (_invoke_rewrite)."""
     queue_id = item["queue_id"]
     rewrite_id = str(uuid.uuid4())
     requested_at = datetime.now(UTC).isoformat()
@@ -1615,7 +1634,7 @@ def _start_rewrite(
         instructions=instructions or None,
     ):
         return _error(409, f"moderation queue item '{queue_id}' is not pending")
-    return _invoke_rewrite(item, rewrite_id, model_id, extra, from_status=from_status)
+    return _invoke_rewrite(item, rewrite_id, model_id, extra, from_status=from_status, served=served)
 
 
 def _invoke_rewrite(
@@ -1626,12 +1645,14 @@ def _invoke_rewrite(
     *,
     still_published: bool = False,
     from_status: str | None = None,
+    served: _Served | None = None,
 ) -> dict:
     """Start the Re-Write that owns `item` (already `rewriting` under `rewrite_id`). 202, or 502
     with the item released if the Lambda could not be invoked: back to the inbox, or, when the
     article is `still_published` (it stays up while it is rewritten), closed as `rewrite_failed`.
     `from_status` is the article's status before, for the evidence line (`published` when it is
-    still up, or was taken down for this rewrite)."""
+    still up, or was taken down for this rewrite). `served` (_rewrite_model_check's, for a model the
+    request named) is called once the rewrite has started, with the item's topic_id."""
     queue_id = item["queue_id"]
     try:
         _get_lambda_client().invoke(
@@ -1658,6 +1679,8 @@ def _invoke_rewrite(
         "sent_back", topic_id=item.get("topic_id"), article_id=item["article_id"], queue_id=queue_id,
         from_status=from_status,
     )  # fmt: skip
+    if served is not None:
+        served(topic_id=item.get("topic_id"))
     return _response(
         202,
         {"rewriting": queue_id, "article_id": item["article_id"], "model_id": model_id, **(extra or {})},
@@ -1699,21 +1722,23 @@ def _rewrite_article(event: dict) -> dict:
     if status not in ("published", "pending_moderation", "rejected"):
         return _error(409, f"article '{article_id}' is '{status}' and cannot be rewritten")
 
+    item = get_moderation_item_by_article_id(article_id)
+    # Whatever the article's status: a published one being rewritten while it stays up has a
+    # `rewriting` item too. Answered before a model is chosen, so this refusal serves none.
+    if item is not None and item.get("status") == "rewriting":
+        return _error(409, f"article '{article_id}' is already being rewritten")
+
     model_id = body.get("model_id")
+    served = None
     if model_id is not None:
         if not isinstance(model_id, str) or not model_id.strip():
             return _error(400, "'model_id' must be one of the models from GET /models, if given")
-        model_error = _rewrite_model_error(model_id)
+        model_error, served = _rewrite_model_check(model_id)
         if model_error:
             return _error(400, model_error)
     else:
+        # resolve_model prints its own model_gated_protected line (caller=routing): no second one.
         model_id, _ = resolve_model(get_topic(article["topic_id"]))
-
-    item = get_moderation_item_by_article_id(article_id)
-    # Whatever the article's status: a published one being rewritten while it stays up has a
-    # `rewriting` item too.
-    if item is not None and item.get("status") == "rewriting":
-        return _error(409, f"article '{article_id}' is already being rewritten")
 
     extra = {}
     still_published = status == "published" and not force
@@ -1740,7 +1765,7 @@ def _rewrite_article(event: dict) -> dict:
         )
         extra = {"unpublished": False, "stays_published_until_rewritten": True}
         return _invoke_rewrite(
-            item, rewrite_id, model_id, extra, still_published=True, from_status="published"
+            item, rewrite_id, model_id, extra, still_published=True, from_status="published", served=served
         )
     if status == "published":
         # Forced. Off the site first (page, then status), so a failure part-way leaves it down,
@@ -1759,7 +1784,7 @@ def _rewrite_article(event: dict) -> dict:
             reasons=[SENT_BACK_REASON],
             created_at=datetime.now(UTC).isoformat(),
         )
-    return _start_rewrite(item, model_id, instructions, extra, from_status=status)
+    return _start_rewrite(item, model_id, instructions, extra, from_status=status, served=served)
 
 
 _STATS_RECENT_LIMIT = 20

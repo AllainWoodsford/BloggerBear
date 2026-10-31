@@ -114,6 +114,24 @@ def test_a_row_that_cannot_be_read_fails_open(found):
     assert model_ranch.gate(found, SETTINGS, NOW) is False
 
 
+@pytest.mark.parametrize(
+    ("until", "held"),
+    [
+        ("2026-10-28T00:00:00Z", model_ranch.HELD_OPEN_UNTIL),
+        ("2026-10-27T03:00:01", model_ranch.HELD_OPEN_UNTIL),  # no zone: UTC
+        ("soon", model_ranch.HELD_OPEN_UNREADABLE),
+        (20261028, model_ranch.HELD_OPEN_UNREADABLE),
+        ("2026-10-27T03:00:00Z", None),  # passed (it is now)
+        (None, None),
+    ],
+)
+def test_held_open_says_whether_and_why_an_override_holds_a_gate_open(until, held):
+    """The one rule the guard and `evals status` both apply to `ungated_until`."""
+    found = scored(daily=-80, **({} if until is None else {"ungated_until": until}))
+    assert model_ranch.held_open(found, NOW) == held
+    assert model_ranch.gate(found, SETTINGS, NOW) is (held is None)
+
+
 def test_settings_or_a_clock_that_cannot_be_read_fail_open():
     found = scored(daily=-80)
     assert model_ranch.gate(found, None, NOW) is False
@@ -168,8 +186,11 @@ def test_an_arn_naming_a_protected_profile_is_protected_too(evals_on):
 
 def test_with_evals_off_nothing_is_filtered_and_nothing_is_read(monkeypatch):
     monkeypatch.setenv("EVALS_ENABLED", "false")
+    reads = []
 
     def refuse(*args, **kwargs):
+        # Recorded first: load_guard's fail-open `except Exception` would swallow the raise alone.
+        reads.append(args)
         raise AssertionError("read while evals are off")
 
     monkeypatch.setattr(evals_settings, "get_settings", refuse)
@@ -179,6 +200,7 @@ def test_with_evals_off_nothing_is_filtered_and_nothing_is_read(monkeypatch):
     assert model_ranch.filter_healthy(models) == models
     guard = model_ranch.load_guard()
     assert guard.on is False and guard.gated(models[0]) is False
+    assert reads == []
 
 
 def test_the_guard_reads_the_evals_row_and_the_default_row_once_and_takes_a_row_it_is_given(evals_on):

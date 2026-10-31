@@ -3985,7 +3985,7 @@ def _protected_lines(capsys):
     return [line for line in found if line and line["event"] == "model_gated_protected"]
 
 
-def test_a_rewrite_refuses_a_model_that_writes_no_text_or_is_gated_with_a_plain_400(
+def test_a_rewrite_refuses_a_model_that_writes_no_text_cannot_be_called_or_is_gated_with_a_plain_400(
     aws_resources, monkeypatch
 ):
     monkeypatch.setenv("EVALS_ENABLED", "true")
@@ -3993,8 +3993,15 @@ def test_a_rewrite_refuses_a_model_that_writes_no_text_or_is_gated_with_a_plain_
     _put_article(status="published")
     _put_scored_model("embed", model_purpose="embedding")
     _put_scored_model("low", model_purpose="text", **GATED_SCORES)
+    # An access probe found it uncallable: the rewrite could only fail. Protected or not, as the
+    # rotation pool's route refuses it.
+    _put_scored_model(os.environ["BEDROCK_MODEL_ID"], model_purpose="text", access="denied")
 
-    refusals = {"embed": "does not write text", "low": "is gated by the Model Ranch (its daily"}
+    refusals = {
+        "embed": "does not write text",
+        "low": "is gated by the Model Ranch (its daily",
+        os.environ["BEDROCK_MODEL_ID"]: "cannot be called by this account (access: denied)",
+    }
     for model_id, words in refusals.items():
         result, body, client = _rewrite(body={"model_id": model_id})
         assert (result["statusCode"], words in body["error"]) == (400, True), body
@@ -4016,6 +4023,54 @@ def test_a_gated_default_may_still_rewrite_and_its_serving_says_so(aws_resources
 
     [line] = _protected_lines(capsys)
     assert (line["model_id"], line["role"], line["caller"]) == (default, "default", "rewrite")
+    assert line["topic_id"] == "github-trending"  # the queue item's
+
+
+def test_an_article_rewrite_says_once_that_a_gated_default_was_served(aws_resources, monkeypatch, capsys):
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    default = os.environ["BEDROCK_MODEL_ID"]
+    _put_scored_model(default, model_purpose="text", **GATED_SCORES)
+    _put_article(article_id="named", status="published")
+    _put_article(article_id="chosen", status="published")
+
+    named = _rewrite_article("named", body={"instructions": "x", "model_id": default})
+    assert named[0]["statusCode"] == 202
+    [line] = _protected_lines(capsys)
+    assert (line["caller"], line["topic_id"]) == ("rewrite", "github-trending")
+
+    # No model named: routing picks the default and says so itself; the route adds no second line.
+    chosen = _rewrite_article("chosen", body={"instructions": "x"})
+    assert (chosen[0]["statusCode"], chosen[1]["model_id"]) == (202, default)
+    assert [line["caller"] for line in _protected_lines(capsys)] == ["routing"]
+
+
+def test_a_rewrite_refused_or_never_started_says_no_gated_model_was_served(
+    aws_resources, monkeypatch, capsys
+):
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    default = os.environ["BEDROCK_MODEL_ID"]
+    _put_scored_model(default, model_purpose="text", **GATED_SCORES)
+    named = {"model_id": default}
+    _put_article(status="published")
+    _put_moderation_item(queue_id="busy", status="rewriting")  # article-1 is being rewritten
+    _put_moderation_item(queue_id="done", article_id="article-2", status="approved")
+    _put_moderation_item(queue_id="clean", article_id="article-3", reasons=[])
+    _put_moderation_item(queue_id="fails", article_id="article-4", reasons=["Fabricated claim: x"])
+    failing = MagicMock()
+    failing.invoke.side_effect = RuntimeError("throttled")
+
+    answers = [
+        _rewrite("nowhere", body=named)[0],  # 404: no such item
+        _rewrite("fails", body={**named, "instructions": 7})[0],  # 400: instructions not a string
+        _rewrite("done", body=named)[0],  # 409: not pending
+        _rewrite("clean", body=named)[0],  # 400: nothing to fix
+        _rewrite("fails", body=named, client=failing)[0],  # 502: the invoke failed
+        _rewrite_article(body={"instructions": "x", **named})[0],  # 409: already being rewritten
+        _rewrite_article(body={"instructions": "x"})[0],  # the same, with no model named
+    ]
+
+    assert [answer["statusCode"] for answer in answers] == [404, 400, 409, 400, 502, 409, 409]
+    assert _protected_lines(capsys) == []
 
 
 def test_with_evals_off_a_model_with_low_scores_may_rewrite(aws_resources, monkeypatch):

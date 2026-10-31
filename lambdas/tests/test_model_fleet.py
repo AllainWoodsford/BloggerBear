@@ -857,3 +857,22 @@ def test_the_pool_never_rolls_a_topic_to_a_gated_model_unless_it_is_protected(aw
     put_config(aws)
     monkeypatch.setenv("EVALS_ENABLED", "false")
     assert model_fleet.rotation_pool(["gated", "fine"]) == ["gated", "fine"]
+
+
+def test_with_no_pool_configured_the_pool_reads_nothing(evals_on, monkeypatch):
+    """Every publish asks for the pool, and most topics have none. An empty pool reads neither the
+    two settings rows the guard would (the evals row and the model-config default row, PR15) nor
+    the Models Scan the code before PR15 already ran on every such publish."""
+    calls = []
+
+    def recorded(name, answer):
+        return lambda *args, **kwargs: calls.append(name) or answer
+
+    # The modules model_ranch reads through too, so the guard's reads are covered.
+    monkeypatch.setattr(model_fleet.dynamo, "list_models", recorded("list_models", []))
+    monkeypatch.setattr(model_fleet.dynamo, "get_model_config", recorded("get_model_config", {}))
+    settings = evals_settings.effective_settings(None)
+    monkeypatch.setattr(model_fleet.evals_settings, "get_settings", recorded("get_settings", settings))
+
+    assert model_fleet.rotation_pool([]) == []
+    assert calls == []

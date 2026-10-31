@@ -7,7 +7,7 @@ import pytest
 from moto import mock_aws
 
 import common.model_routing as model_routing
-from common import dynamo, evals_settings, evidence, model_ranch
+from common import dynamo, evals_settings, evidence, model_fleet, model_ranch
 
 REGION = "ap-southeast-2"
 
@@ -365,15 +365,39 @@ def test_a_malformed_models_row_fails_open(ranch):
 
 def test_with_evals_off_nothing_is_filtered_and_no_settings_row_is_read(ranch, monkeypatch, capsys):
     monkeypatch.setenv("EVALS_ENABLED", "false")
-
-    def refuse(*args, **kwargs):
-        raise AssertionError("the evals row was read while evals are off")
-
-    monkeypatch.setattr(evals_settings, "get_settings", refuse)
-    monkeypatch.setattr(dynamo, "get_config_row", refuse)
     for model_id in ("model-a", "model-b"):
         _model(ranch, model_id, gated=True)
     topic = _topic(ranch, model_id_candidates=["model-a", "model-b"])
+    reads = []
+
+    def refuse(*args, **kwargs):
+        # Recorded first: the guard's fail-open `except Exception` would swallow the raise alone.
+        reads.append(args)
+        raise AssertionError("read while evals are off")
+
+    monkeypatch.setattr(evals_settings, "get_settings", refuse)
+    monkeypatch.setattr(dynamo, "get_config_row", refuse)
+    # The rotation guard's registry listing too: fit models need none while evals are off.
+    monkeypatch.setattr(dynamo, "list_models", refuse)
 
     assert {model_routing.resolve_model(topic)[0] for _ in range(100)} == {"model-a", "model-b"}
     assert _protected_lines(capsys) == []
+    assert reads == []
+
+
+def test_routing_the_triage_around_a_text_only_default_never_picks_a_gated_model(ranch):
+    """The stricter need's route-around (the default cannot take an image) draws from the registry
+    models the guard has not gated, as the topic's does."""
+    _put_config(model_id="cfg-default", fallback_model_id="cfg-fallback")
+    for model_id in ("cfg-default", "cfg-fallback", "env-default-model"):
+        _model(ranch, model_id, model_inputs=["TEXT"])
+    _model(ranch, "seer", model_inputs=["TEXT", "IMAGE"])
+    # Neither the default, the fallback nor the judge (the fallback, by its chain): not protected.
+    _model(ranch, "gated-seer", gated=True, model_inputs=["TEXT", "IMAGE"])
+
+    seen = set()
+    for seed in range(60):
+        random.seed(seed)
+        seen.add(model_routing.resolve_model(None, model_fleet.TEXT_WITH_IMAGE_INPUT)[0])
+
+    assert seen == {"seer"}

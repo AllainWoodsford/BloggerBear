@@ -10,7 +10,8 @@ rotation may gain (model_fleet.rotation_picks, before prune_mode orders them), t
 roll forward (model_fleet.rotation_pool, which daily_cycle_handler._assign_rotated_model draws
 from), and the rewrite picker (GET /models says which are gated; scripts/review_inbox.py ranks the
 rest). Nothing is taken out of a rotation or a pool: a model whose windows recover is a candidate
-again at the next draw.
+again at the next draw. `evals status` (common/evals_status.py) lists the gated models by the same
+rule (Guard.gated, gate and held_open), with the protected and the held-open ones apart.
 
 **Never gated** (Guard.protected): the default (the model-config default row's model, and
 BEDROCK_MODEL_ID), the fallback (that row's fallback) and the judge (evals_settings.judge_model's
@@ -39,6 +40,10 @@ from common.model_pricing import canonical_model_id
 
 # The roles the gate never applies to, in the order a model playing several is named by.
 PROTECTED_ROLES = ("default", "fallback", "judge")
+# Why an operator's `ungated_until` holds a gate open (held_open): a time still ahead, or a value
+# that is not a time (the row cannot be read, and a gate never holds a model back on a guess).
+HELD_OPEN_UNTIL = "until"
+HELD_OPEN_UNREADABLE = "unreadable"
 
 
 def enabled() -> bool:
@@ -51,15 +56,22 @@ def _key(model_id) -> str | None:
     return canonical_model_id(model_id) if isinstance(model_id, str) and model_id else None
 
 
-def _time(value) -> datetime | None:
-    """An ISO time, aware (a time without a zone is UTC); None when it is not one."""
-    if not isinstance(value, str):
+def held_open(row: dict, now: datetime) -> str | None:
+    """Whether the models row's `ungated_until`, an operator's override, holds its gate open at
+    `now`, and why: HELD_OPEN_UNTIL while it is a time still ahead; HELD_OPEN_UNREADABLE when it is
+    not a time (read as evals_settings reads one), or `now` has no zone to compare it with, since a
+    row that cannot be read is never gated; None when there is none, or it has passed. The one rule
+    both the guard (gate) and `evals status` (common/evals_status.py) apply."""
+    until = row.get("ungated_until")
+    if until is None:
         return None
+    parsed = evals_settings._parse(until)
+    if parsed is None:
+        return HELD_OPEN_UNREADABLE
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        return HELD_OPEN_UNTIL if parsed > now else None
+    except TypeError:  # a `now` without a zone cannot be compared: no gate on a guess
+        return HELD_OPEN_UNREADABLE
 
 
 def gated_windows(row, settings) -> list[str]:
@@ -78,18 +90,10 @@ def gate(row, settings, now) -> bool:
     override that cannot be read, so a malformed row is never held back."""
     if not isinstance(row, dict) or not isinstance(settings, dict) or not isinstance(now, datetime):
         return False
-    until = row.get("ungated_until")
-    if until is not None:
-        held_open_until = _time(until)
-        if held_open_until is None:
-            print(f"model_ranch: {row.get('model_id')!r} has an ungated_until that is not a time; not gated")
-            return False
-        try:
-            if held_open_until > now:
-                return False
-        except TypeError:  # a `now` without a zone cannot be compared: no gate on a guess
-            return False
-    return bool(gated_windows(row, settings))
+    held = held_open(row, now)
+    if held == HELD_OPEN_UNREADABLE:
+        print(f"model_ranch: {row.get('model_id')!r} has an ungated_until that cannot be read; not gated")
+    return held is None and bool(gated_windows(row, settings))
 
 
 def never_gated(settings: dict, config: dict) -> dict[str, str]:

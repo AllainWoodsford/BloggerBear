@@ -1442,13 +1442,15 @@ def scored(model_id, good=0, bad=0, price=None, **extra):
 RANKED = [
     scored("few-dear", 1, 0, price=0.01),
     scored("b", 9, 1, price=0.001),
-    scored("d", 18, 2, price=0.003),
+    # Ties a and c on the bound, sorts before both by id, and costs more: price must come first.
+    scored("0-dear", 18, 2, price=0.003),
     scored("none"),
     scored("c", 18, 2, price=0.002),
     scored("few-cheap", 5, 0, price=0.0005),
     scored("a", 18, 2, price=0.002),
     scored("gated", 20, 0, price=0.0001),
     scored("off", 20, 0, price=0.0001, enabled=False),
+    scored("denied", 20, 0, price=0.0001, access="denied"),  # an access probe found it uncallable
     scored("embed", 20, 0, price=0.0001, model_purpose="embedding"),
     scored("image", 20, 0, price=0.0001, pricing_unit="other"),
     scored("words", 2, 2, price=0.0001, model_purpose="text", pricing_unit="other"),
@@ -1458,18 +1460,21 @@ RANKED = [
 def test_the_picker_ranks_by_the_wilson_lower_bound_then_price_then_id_and_the_rest_by_price():
     ranked = ri.rank_rewrite_models(RANKED, gated=["gated"], min_events=10)
 
-    # a, c and d tie on 18 of 20 (lower bound 0.699): a and c on price too, so by id; b's 9 of 10 is
-    # lower (0.5958). few-cheap's 5 of 5 is better still, but under min_events: after, by price,
-    # with the unscored and unpriced model last. A purpose of text wins over a pricing unit.
-    assert [m["model_id"] for m in ranked] == ["a", "c", "d", "b", "words", "few-cheap", "few-dear", "none"]
+    # a, c and 0-dear tie on 18 of 20 (lower bound 0.699): 0-dear sorts first by id but costs more,
+    # so price puts it after a and c, which tie on price too and go by id; b's 9 of 10 is lower
+    # (0.5958). few-cheap's 5 of 5 is better still, but under min_events: after, by price, with the
+    # unscored and unpriced model last. A purpose of text wins over a pricing unit.
+    expected = ["a", "c", "0-dear", "b", "words", "few-cheap", "few-dear", "none"]
+    assert [m["model_id"] for m in ranked] == expected
     assert ranked[0]["ranking"] == {"score": 0.9, "n": 20, "low": 0.699, "high": 0.9721, "ranked": True}
     assert ranked[-1]["ranking"] == {"score": None, "n": 0, "low": None, "high": None, "ranked": False}
 
 
-def test_the_picker_offers_only_enabled_text_models_the_model_ranch_has_not_gated():
+def test_the_picker_offers_only_callable_text_models_the_model_ranch_has_not_gated():
     offered = {m["model_id"] for m in ri.rank_rewrite_models(RANKED, gated=["gated"], min_events=10)}
 
-    assert not offered & {"gated", "off", "embed", "image"}
+    assert not offered & {"gated", "off", "denied", "embed", "image"}
+    assert {m["model_id"] for m in ri.rank_rewrite_models(RANKED)} & {"off", "denied"} == set()
 
 
 def test_each_model_line_shows_its_score_n_and_interval():
@@ -1500,8 +1505,8 @@ def test_with_evals_on_the_api_says_what_is_gated_and_the_events_a_rank_needs():
 
     models = ri.rewrite_models(api)
 
-    # Only c and d have 20 events; a is gated.
-    assert [m["model_id"] for m in models][:3] == ["c", "d", "words"]
+    # Only c and 0-dear have 20 events (a is gated): c is cheaper, though 0-dear sorts first by id.
+    assert [m["model_id"] for m in models][:3] == ["c", "0-dear", "words"]
     assert "a" not in {m["model_id"] for m in models}
 
 
@@ -1527,14 +1532,24 @@ def test_w_offers_the_best_ranked_model_first(store):
         {},
         {"input_price_usd_per_1k_tokens": 0.001, "output_price_usd_per_1k_tokens": 0.004},
         {"input_price_usd_per_1k_tokens": 0.001},
+        *(
+            {**enabled, **access}
+            for enabled in ({}, {"enabled": True}, {"enabled": False})
+            for access in ({}, {"access": "denied"}, {"access": "granted"}, {"access": "unknown"})
+        ),
+        {"model_purpose": "embedding", "access": "granted"},
     ],
 )
 def test_the_pickers_copies_of_the_lambdas_rules_agree_with_them(row, monkeypatch):
-    """The CLI cannot import lambdas/common, so it keeps copies of model_fleet.suitable(TEXT) and
-    blended_price; these hold them to the originals."""
+    """The CLI cannot import lambdas/common, so it keeps copies of model_fleet.is_usable,
+    suitable(TEXT) and blended_price; these hold them, and the picker's whole filter, to the
+    originals."""
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "lambdas"))
     from common import model_fleet
 
     model = {"model_id": "m", **row}
+    assert ri._usable(model) is model_fleet.is_usable(model)
     assert ri._writes_text(model) is model_fleet.suitable(model, model_fleet.TEXT)
     assert ri._blended_price(model) == model_fleet.blended_price(model)
+    offered = bool(ri.rank_rewrite_models([model], min_events=10))
+    assert offered is (model_fleet.is_usable(model) and model_fleet.suitable(model, model_fleet.TEXT))
