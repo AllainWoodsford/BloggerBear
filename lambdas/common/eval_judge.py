@@ -572,6 +572,12 @@ def _finish(table, run_id: str, n: int, now: datetime, *, judged: bool = False, 
         ExpressionAttributeValues={":n": {n}},
         ReturnValues="ALL_NEW",
     )["Attributes"]
+    _close_if_finished(table, run_id, attributes, now)
+
+
+def _close_if_finished(table, run_id: str, attributes: dict, now: datetime) -> None:
+    """Close the run once every item it sent has finished (its header's `attributes`), and check the
+    tripwire; only the call that closes it does."""
     if len(attributes.get("finished_items") or ()) < _count(attributes.get("items")):
         return
     judged_count = len(attributes.get("judged_items") or ())
@@ -939,13 +945,15 @@ def select(now: datetime | None = None, *, sqs=None, trigger: str = "schedule") 
             break
         sent += 1
     if sent < len(items):
-        # The run is what was sent, so its last item still closes it.
-        status = {":items": sent, ":done": DONE} if sent == 0 else {":items": sent}
-        table.update_item(
+        # The run is what was sent. Its sent items may all have finished already, so this closes it
+        # then (a run that sent none closes at once).
+        attributes = table.update_item(
             Key=_run_key(run_id),
-            UpdateExpression="SET #i = :items" + (", #s = :done" if sent == 0 else ""),
-            ExpressionAttributeNames={"#i": "items", **({"#s": "status"} if sent == 0 else {})},
-            ExpressionAttributeValues=status,
-        )
+            UpdateExpression="SET #i = :items",
+            ExpressionAttributeNames={"#i": "items"},
+            ExpressionAttributeValues={":items": sent},
+            ReturnValues="ALL_NEW",
+        )["Attributes"]
+        _close_if_finished(table, run_id, attributes, now)
     print(f"eval_judge: run {run_id} sent {sent} item(s) to the judge ({skipped} skipped)")
     return {"status": "enqueued", "run_id": run_id, "items": sent, "skipped": skipped}

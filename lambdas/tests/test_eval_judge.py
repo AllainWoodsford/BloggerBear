@@ -671,6 +671,38 @@ def test_the_selector_picks_unjudged_findings_and_recent_unjudged_articles_in_tu
     assert evals_rollup.get_index()["last_judge_at"] == "2026-10-27T03:00:05+00:00"
 
 
+def test_a_send_that_fails_part_way_leaves_a_run_of_what_was_sent_which_its_last_item_closes(aws, model):
+    for minute in range(3):
+        put_finding(aws, captured_at=f"2026-10-27T01:0{minute}:00+00:00")
+
+    class Flaky(FakeQueue):
+        def send_message(self, **kwargs):
+            if len(self.sent) == 2:
+                raise RuntimeError("queue gone")
+            return super().send_message(**kwargs)
+
+    queue = Flaky()
+    summary = eval_judge.select(NOW, sqs=queue)
+
+    assert summary["items"] == 2 and meta(aws, summary["run_id"])["items"] == 2
+    for body in queue.bodies():
+        consume({"body": json.dumps(body)}, run_id=summary["run_id"])
+    assert meta(aws, summary["run_id"])["status"] == "done"
+
+
+def test_a_run_whose_every_send_fails_is_closed_at_once(aws):
+    put_finding(aws)
+
+    class Down(FakeQueue):
+        def send_message(self, **kwargs):
+            raise RuntimeError("queue gone")
+
+    summary = eval_judge.select(NOW, sqs=Down())
+
+    assert summary["items"] == 0
+    assert meta(aws, summary["run_id"])["status"] == "done"
+
+
 def test_the_selector_skips_an_item_every_option_wrote_without_taking_its_place(aws, monkeypatch, capsys):
     monkeypatch.setenv("BEDROCK_MODEL_ID", FALLBACK)
     put_finding(aws, captured_at="2026-10-27T02:00:00+00:00", author=FALLBACK)
