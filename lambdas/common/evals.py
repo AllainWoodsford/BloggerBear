@@ -27,7 +27,7 @@ attempt of a second, reads for a second, and retries once (section 4.3), so a sl
 caller seconds, not its timeout. Each container writes to one stream of its own a day,
 `<function>/<yyyy-mm-dd>/<container id>`, made the first time it is needed.
 
-**author_of** is who wrote an item, for the judge (PR18), which never judges its own work.
+**author_of** is who wrote an item, for the judge (common/eval_judge.py), which never judges its own work.
 **wilson** is the interval the picker and the reports rank by (section 4.9), copied from
 scripts/vision_eval_scoring.py because scripts/ is not in the Lambda package.
 """

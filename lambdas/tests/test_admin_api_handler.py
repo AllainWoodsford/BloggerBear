@@ -13,7 +13,7 @@ from table_schemas import create_table
 
 import admin_api_handler
 import daily_cycle_handler
-from common import evidence
+from common import eval_judge, evidence
 from common.adapters import MANUAL_REVIEW_ADAPTERS
 from common.adapters.base import DaySubject
 from common.adapters.github_trending import GitHubTrendingAdapter
@@ -1161,6 +1161,30 @@ def test_list_findings_drops_the_oldest_items_when_the_body_would_be_too_large(a
     kept = [f["captured_at"] for f in body["findings"]]
     assert 0 < len(kept) < 4 and kept == sorted(kept, reverse=True)  # the newest stayed
     assert len(json.dumps(body).encode()) <= 1_500 + 200  # the envelope is what is left over
+
+
+def test_a_finding_the_evals_judge_has_marked_lists_and_reads_as_latest_with_reviewed_by_as_a_list(
+    aws_resources,
+):
+    """The judge marks a Finding's reviewed_by as a string set, which DynamoDB hands back as a set."""
+    _put_topic()
+    item = _put_finding(1)
+    assert eval_judge._mark(eval_judge.RESEARCH, item, datetime.now(UTC))
+
+    status, body = _list_findings()
+
+    assert status == 200
+    [listed] = body["findings"]
+    assert (listed["reviewed_by"], listed["review_count"]) == (["judge"], 1)
+    event = _event("GET /topics/{topic_id}/findings/latest", path_params={"topic_id": "github-trending"})
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["reviewed_by"] == ["judge"]
+
+
+def test_a_stored_set_of_numbers_comes_back_as_a_sorted_list_of_json_numbers():
+    body = json.dumps({"items": {Decimal("2"), Decimal("1.5")}}, default=admin_api_handler._json_number)
+    assert json.loads(body) == {"items": [1.5, 2]}
 
 
 def test_list_findings_calls_only_query_on_the_findings_table(aws_resources):

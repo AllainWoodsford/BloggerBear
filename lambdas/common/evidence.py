@@ -336,6 +336,23 @@ EVENTS: dict[str, dict[str, str]] = {
     # `code` says why (s3_error, no_files, missing_placeholder, hash_unapproved, paused, ...);
     # `version` is the asset's version tag when one was read. The prompt's text is never here.
     "prompt_fallback": {"lambda_id": "code", "prompt_name": "code", "version": "id", "code": "code"},
+    # The evals judge (common/eval_judge.py) passed an item over. `kind` is research_review (a Finding,
+    # named by its topic and `captured_at`) or article_review (named by `article_id`); `code` says why:
+    # author_only (every model in the judge's chain wrote it, and the judge never judges its author),
+    # no_judge (no model in the chain is fit to judge), no_author (the item records no author for a
+    # verdict to score) or no_source (its snapshot or body could not be read). `run_id` is the judge's
+    # run. Never a model's id.
+    "judge_skipped": {
+        "run_id": "id",
+        "kind": "code",
+        "article_id": "id",
+        "captured_at": "iso",
+        "code": "code",
+    },
+    # The judge's tripwire: a finished run marked more than 80% of at least 10 items bad, so the judge
+    # was turned off (`judge_enabled` false, with `judge_paused_reason`, on the evals settings row).
+    # `judged` and `bad` are the run's counts, `share` the bad share.
+    "judge_tripwire": {"run_id": "id", "judged": "int", "bad": "int", "share": "num"},
 }
 
 # The invocation this process is in: {"fields": {...}, "counts": {event: n}}, or None outside one.

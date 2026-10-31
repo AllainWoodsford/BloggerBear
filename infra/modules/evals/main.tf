@@ -38,8 +38,10 @@
 # evals statement (PR2) covers it, and has to be applied by hand before this module's first apply.
 #
 # eval-jobs (lambdas/eval_jobs_handler.py) runs the rollup (common/evals_rollup.py), which prints the
-# rollup_done line the heartbeat counts; its judge's selector and queue consumer are PR18's, and
-# until then only log that they arrived.
+# rollup_done line the heartbeat counts, and the judge (common/eval_judge.py): the hourly selector
+# sends judge jobs to eval-work, and the queue's mapping hands each one back to eval-jobs. The judge
+# reads Findings, articles and their content-bucket snapshots and bodies through lambda_exec's own
+# grants on the app tables and the content bucket, so it needs no right of its own here.
 # -----------------------------------------------------------------------
 
 terraform {

@@ -3,7 +3,8 @@ PR13): GET/PUT /evals-config, POST /evals/rollup, GET /evals/status, GET /evals/
 fields on GET /models, and the routes' place in both environments' Terraform.
 
 What is held: the settings route sets and clears what the CLI may, `timezone` (a DynamoDB reserved
-word) included, and refuses the DynamoDB-only settings; a rollup starts in eval-jobs, or is refused
+word) included, and refuses the DynamoDB-only settings; setting the judge's switch clears why the
+tripwire turned it off, and nothing else does; a rollup starts in eval-jobs, or is refused
 while evals are off; status answers every part, each queue on its own, and a part that cannot be
 read says "could not check" without hiding the others; the digest adds the day rows up from a day,
 in the settings' time zone; GET /models shows what the rollup put on a row.
@@ -182,6 +183,30 @@ def test_put_refuses_the_settings_kept_to_dynamodb(aws, name):
 
     assert status == 400 and "DynamoDB only" in body["error"]
     assert dynamo.get_config_row("evals") is None
+
+
+TRIPPED = "tripwire: run judge-20261027T030000 marked 9 of 10 items bad"
+
+
+@pytest.mark.parametrize("switch", [True, None, False], ids=["on", "default", "off"])
+def test_setting_the_judges_switch_by_hand_clears_the_tripwires_reason(aws, switch):
+    """`evals set --judge on` resumes it, `--judge ''` puts the default (on) back, and a manual off is
+    the operator's own, which an old tripwire run must not be blamed for."""
+    dynamo.update_config_row("evals", {"judge_enabled": False, evals_settings.PAUSED_REASON_FIELD: TRIPPED})
+
+    status, body = call("PUT /evals-config", {"judge_enabled": switch})
+
+    assert status == 200 and body["judge_paused_reason"] is None
+    assert evals_settings.PAUSED_REASON_FIELD not in dynamo.get_config_row("evals")
+
+
+def test_changing_another_setting_leaves_the_tripwires_reason_in_place(aws):
+    dynamo.update_config_row("evals", {"judge_enabled": False, evals_settings.PAUSED_REASON_FIELD: TRIPPED})
+
+    status, body = call("PUT /evals-config", {"judge_max_items": 5})
+
+    assert status == 200 and body["judge_paused_reason"] == TRIPPED
+    assert body["effective"]["judge_enabled"] is False
 
 
 def test_put_refuses_a_judge_that_does_not_write_text(aws):
