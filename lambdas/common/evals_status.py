@@ -17,8 +17,9 @@ reads assets at all. The fallbacks are the observability module's PromptFallback
 metric filter counts from every pipeline log group's prompt_fallback evidence lines; read with
 `cloudwatch:GetMetricStatistics`, which lambda_exec already holds for the queues' age (the evals
 module's EvalWorkAge statement: a metric read takes no resource), so the part needs no grant of its
-own. Each is "off", and nothing is read, while its deployment has no bucket or does not read assets:
-a Lambda then uses the code's copy of every prompt and has nothing to fall back from.
+own. The release is "off" while the deployment has no prompts bucket, and the fallbacks while it does
+not read assets (its Lambdas then use the code's copy of every prompt and have nothing to fall back
+from); neither reads anything then.
 
 **digest** adds the day rows up from a day (`since`, a week ago by default) to today, per model and
 per prompt version: perf, events, good and bad with the Wilson interval of good/(good + bad)

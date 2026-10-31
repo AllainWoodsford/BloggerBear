@@ -339,10 +339,14 @@ def test_a_vote_is_one_event_for_the_articles_model_and_no_prompt(events, vote, 
     ]
 
 
-def test_a_vote_on_a_rewritten_article_is_the_rewriters():
-    article = {"lineage": LINEAGE, "rewrites": [{"model_id": BETA}]}
+def test_a_vote_on_a_rewritten_article_is_for_the_model_that_rewrote_it(events):
+    article = {"topic_id": TOPIC_ID, "lineage": LINEAGE, "rewrites": [{"number": 1, "model_id": BETA}]}
 
-    assert evals_emission.writer(article)[0] == BETA
+    evals_emission.user_feedback(
+        article, article_id=ARTICLE_ID, feedback_id="fb-2", vote="down", comment_kept=False
+    )
+
+    assert [event["model_id"] for event in events] == [BETA]
 
 
 def test_nothing_is_read_or_written_while_evals_are_off(evals_off):
