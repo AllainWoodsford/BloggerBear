@@ -122,6 +122,16 @@ def redact(text: str, untrusted: Iterable[str]) -> str:
     return text
 
 
+def named(values: dict, names: Iterable[str], text: str) -> list[str]:
+    """The untrusted values a prompt builder rendered (`names` of its `values`, as it filled them in
+    through `trace_values`). When any is missing, the prompt was built some other way, so the whole
+    `text` is the untrusted value: nothing is stored unhashed that was not checked."""
+    names = list(names)
+    if any(name not in values for name in names):
+        return [text]
+    return [values[name] for name in names]
+
+
 def _trace_calls_on() -> bool:
     """`trace_calls` in effect (the evals row's, else the deployment's default)."""
     return bool(evals_settings.get_settings()[SETTING])

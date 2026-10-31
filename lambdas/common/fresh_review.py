@@ -214,7 +214,7 @@ def steering_block(steering: str | None) -> str:
 
 
 # The review's values that hold its material (the draft, the research, the fresh data and the
-# operator's note), every one defanged in `_review_values`: a call trace stores each as its sha256
+# operator's note), every one defanged in `review_prompt`: a call trace stores each as its sha256
 # (common/call_traces.py).
 REVIEW_UNTRUSTED = ("draft_block", "findings_block", "fresh_data_block", "steering_block")
 
@@ -228,30 +228,16 @@ def review_prompt(
     title: str | None = None,
     figure_tolerance: float = 0.0,
     steering: str | None = None,
+    trace_values: dict | None = None,
 ) -> prompts.Prompt:
     """The reviewer's prompt, reviews/adversarial_review (common/prompts_registry.py), with the
     version that rendered it. `title`, if given, is reviewed with the body: a headline states
     claims too, and it is written by a separate call that never sees the article.
     `figure_tolerance` (a fraction) is how far a figure may sit from fresh_data's before it is
     worth flagging. `steering` is the topic's operator note (`resolve_review_steering`), or None.
-    Every piece of material, the note included, is defanged here, before it is rendered."""
-    values = _review_values(
-        topic_name, draft, findings_text, evidence, as_of, title, figure_tolerance, steering
-    )
-    return prompts.get_prompt("reviews/adversarial_review", values, {"reply_rule": _REVIEW_REPLY_RULE})
-
-
-def _review_values(
-    topic_name: str,
-    draft: str,
-    findings_text: str,
-    evidence: str,
-    as_of: str,
-    title: str | None,
-    figure_tolerance: float,
-    steering: str | None,
-) -> dict:
-    """What `review_prompt` renders its template with."""
+    Every piece of material, the note included, is defanged here, before it is rendered.
+    `trace_values`, when given, is filled with the values the template is rendered with, for the
+    call's trace."""
     tolerance_rule = ""
     if figure_tolerance > 0:
         tolerance_rule = (
@@ -276,7 +262,9 @@ def _review_values(
         "tolerance_rule": tolerance_rule,
         "steering_block": steering_block(steering),
     }
-    return values
+    if trace_values is not None:
+        trace_values.update(values)
+    return prompts.get_prompt("reviews/adversarial_review", values, {"reply_rule": _REVIEW_REPLY_RULE})
 
 
 def build_review_prompt(
@@ -497,17 +485,18 @@ def run_review(
 
     as_of = datetime.now(UTC).isoformat()
     tolerance = writing_rules(topic)["figure_tolerance"]
-    values = _review_values(
+    values: dict = {}
+    prompt = review_prompt(
         topic_label(topic),
         draft,
         findings_text,
         evidence,
         as_of,
-        title,
-        tolerance,
-        resolve_review_steering(topic),
+        title=title,
+        figure_tolerance=tolerance,
+        steering=resolve_review_steering(topic),
+        trace_values=values,
     )
-    prompt = prompts.get_prompt("reviews/adversarial_review", values, {"reply_rule": _REVIEW_REPLY_RULE})
     try:
         result = invoke_model_tracked(
             prompt.text, model_id, fallback_model_id=fallback_model_id, max_tokens=REVIEW_MAX_TOKENS
@@ -523,9 +512,8 @@ def run_review(
         "used_fallback": result["used_fallback"],
         **prompts.lineage_fields(prompt),
     }
-    call_traces.record(
-        lineage_call, prompt.text, result["text"], untrusted=[values[name] for name in REVIEW_UNTRUSTED]
-    )
+    untrusted = call_traces.named(values, REVIEW_UNTRUSTED, prompt.text)
+    call_traces.record(lineage_call, prompt.text, result["text"], untrusted=untrusted)
     claims = parse_review(result["text"])
     if claims is None:
         return _unavailable("the reviewer's reply was not the expected JSON", mode, lineage_call)
@@ -590,6 +578,11 @@ TITLE_LENGTH_BOUNDS = (0.4, 2.5)
 MAX_TITLE_CHARS = 200
 
 
+# The revision's values that hold its material (the draft, the claims to fix, the research and the
+# fresh data), every one defanged in `revision_prompt`: a call trace stores each as its sha256.
+REVISION_UNTRUSTED = ("draft_block", "claims_block", "findings_block", "fresh_data_block")
+
+
 def revision_prompt(
     topic_name: str,
     title: str,
@@ -599,32 +592,12 @@ def revision_prompt(
     evidence: str,
     as_of: str,
     figure_guidance: str = "",
+    trace_values: dict | None = None,
 ) -> prompts.Prompt:
     """The reviser's prompt, reviews/revision (common/prompts_registry.py), with the version that
     rendered it. The claims carry the review's evidence, which quotes the web, so they are defanged
-    with the rest of the material before it is rendered."""
-    values = _revision_values(
-        topic_name, title, body, claims, findings_text, evidence, as_of, figure_guidance
-    )
-    return prompts.get_prompt("reviews/revision", values, {"reply_rule": _REVISION_REPLY_RULE})
-
-
-# The revision's values that hold its material (the draft, the claims to fix, the research and the
-# fresh data), every one defanged in `_revision_values`: a call trace stores each as its sha256.
-REVISION_UNTRUSTED = ("draft_block", "claims_block", "findings_block", "fresh_data_block")
-
-
-def _revision_values(
-    topic_name: str,
-    title: str,
-    body: str,
-    claims: list[dict],
-    findings_text: str,
-    evidence: str,
-    as_of: str,
-    figure_guidance: str,
-) -> dict:
-    """What `revision_prompt` renders its template with."""
+    with the rest of the material before it is rendered. `trace_values`, when given, is filled with
+    the values the template is rendered with, for the call's trace."""
     figures = f" How to write figures: {figure_guidance}" if figure_guidance else ""
     listed = json.dumps(
         [
@@ -642,7 +615,9 @@ def _revision_values(
         "fresh_data_block": f'<fresh_data as_of="{as_of}">\n{_defang(evidence)}\n</fresh_data>',
         "figure_rule": figures,
     }
-    return values
+    if trace_values is not None:
+        trace_values.update(values)
+    return prompts.get_prompt("reviews/revision", values, {"reply_rule": _REVISION_REPLY_RULE})
 
 
 def build_revision_prompt(
@@ -820,7 +795,8 @@ def run_revision(
     """
     as_of = datetime.now(UTC).isoformat()
     rules = writing_rules(topic)
-    values = _revision_values(
+    values: dict = {}
+    prompt = revision_prompt(
         topic_label(topic),
         title,
         body,
@@ -828,9 +804,9 @@ def run_revision(
         findings_text,
         evidence,
         as_of,
-        rules["figure_guidance"],
+        figure_guidance=rules["figure_guidance"],
+        trace_values=values,
     )
-    prompt = prompts.get_prompt("reviews/revision", values, {"reply_rule": _REVISION_REPLY_RULE})
     try:
         result = invoke_model_tracked(
             prompt.text, model_id, fallback_model_id=fallback_model_id, max_tokens=REVISION_MAX_TOKENS
@@ -847,9 +823,8 @@ def run_revision(
         "stop_reason": result.get("stop_reason"),
         **prompts.lineage_fields(prompt),
     }
-    call_traces.record(
-        lineage_call, prompt.text, result["text"], untrusted=[values[name] for name in REVISION_UNTRUSTED]
-    )
+    untrusted = call_traces.named(values, REVISION_UNTRUSTED, prompt.text)
+    call_traces.record(lineage_call, prompt.text, result["text"], untrusted=untrusted)
 
     def rejected(reason: str, violations: list[str] | None = None) -> dict:
         print(f"fresh_review: revision rejected ({reason})")

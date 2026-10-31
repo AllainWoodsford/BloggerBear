@@ -237,6 +237,16 @@ def test_a_value_that_holds_another_is_replaced_whole():
     assert redacted == f"[{sha(outer)}] and [{sha(inner)}]"
 
 
+def test_a_prompt_whose_values_are_unknown_is_stored_as_the_sha256_of_its_whole_text():
+    """A builder fills `trace_values`; a prompt built some other way (a stand-in) leaves names out,
+    and then nothing of it is stored as sent."""
+    names = ("draft_block", "findings_block")
+
+    assert call_traces.named({"draft_block": "d", "findings_block": "f"}, names, "all") == ["d", "f"]
+    assert call_traces.named({"draft_block": "d"}, names, "the whole prompt") == ["the whole prompt"]
+    assert call_traces.redact("the whole prompt", ["the whole prompt"]) == sha("the whole prompt")
+
+
 def test_nothing_is_traced_outside_a_bound_run_and_bind_lets_go(bucket, tracing):
     assert call_traces.record(CALL, "p", "r") is False
     with call_traces.bind("a1"):
