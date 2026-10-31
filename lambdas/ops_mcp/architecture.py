@@ -382,7 +382,11 @@ CATALOGUE: tuple[Component, ...] = (
                 "a person's verdicts on one subject); the index row (the rollup's watermark, late "
                 "events, the judge's agreement) and its day#<date> rows (the entities each day has)",
             ),
-            ("Written by", "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now)"),
+            (
+                "Written by",
+                "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now); the "
+                "admin API, its adjust# rows (`evals forgive` and `evals punish`)",
+            ),
             ("Expires", "never: no TTL"),
         ),
         aliases=("evals-table", "eval-totals", "model-ranch"),
@@ -865,7 +869,11 @@ CATALOGUE: tuple[Component, ...] = (
         "evals are on.",
         details=(
             ("Kept for", "120 days"),
-            ("Written by", "common/evals.py emit(), from any pipeline Lambda, only while evals are on"),
+            (
+                "Written by",
+                "common/evals.py emit(), from any pipeline Lambda and the admin API (`evals forgive` "
+                "and `evals punish`), only while evals are on",
+            ),
             ("Read by", "eval-jobs' hourly rollup (Logs Insights)"),
         ),
         aliases=("evals-log", "eval-events"),

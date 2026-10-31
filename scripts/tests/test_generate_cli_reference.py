@@ -131,6 +131,7 @@ def test_which_commands_are_destructive_is_read_from_the_parser(fresh):
         "articles unpublish",
         "backup restore",
         "equipment delete",
+        "evals punish",
         "moderation reject",
         "refinements reject",
         "topics delete",
