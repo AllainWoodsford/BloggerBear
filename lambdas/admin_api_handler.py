@@ -243,9 +243,14 @@ def _get_sfn_client():
 def _json_number(value):
     """json.dumps' fallback: DynamoDB hands every number back as a Decimal, which JSON cannot carry.
     Whole numbers become ints and the rest floats, so no route can fail with a 500 because some stored
-    item happens to hold a number (a topic's research_interval_hours did exactly that on GET /topics)."""
+    item happens to hold a number (a topic's research_interval_hours did exactly that on GET /topics).
+    A DynamoDB set comes back as a Python set, which JSON cannot carry either (a Finding's `reviewed_by`,
+    the role codes the evals judge marks it with, is a string set): it becomes a sorted list, whose
+    members come back through here."""
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, set | frozenset):
+        return sorted(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
@@ -3150,6 +3155,10 @@ def _put_evals_config_route(event: dict) -> dict:
     unsuitable = _unsuitable_model_error(body.get("judge_model_id"))
     if unsuitable:
         return _error(400, unsuitable)
+    if "judge_enabled" in body:
+        # A person setting the judge's switch, to any value, supersedes why the tripwire turned it off:
+        # the reason goes (None is a REMOVE), so a later manual off is never blamed on an old run.
+        body = {**body, evals_settings.PAUSED_REASON_FIELD: None}
     update_config_row(evals_settings.CONFIG_ID, body)
     return _get_evals_config_route(event)
 

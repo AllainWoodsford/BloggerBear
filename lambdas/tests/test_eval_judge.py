@@ -3,16 +3,19 @@
 keeps what is sent, and a stand-in model that answers what each test tells it to.
 
 What is held: the judge never judges an item any of its models wrote, and passes over one every
-option wrote with a `judge_skipped` line; its model is the first fit option of the chain
-(`judge_model_id`, the default row's fallback, BEDROCK_MODEL_ID); a verdict writes the pair row, the
-item's marks, the run's item row and one event for the author's model and prompt, and its spend goes
-to the day, the run and the Stats page's evals category; a reply that is not the contract is ignored;
-the judge's events are logged while it is uncalibrated and count towards the gates only once it is
-calibrated; the selector runs once an interval, picks unjudged Findings and articles in turn, and
-sends no more than the day's cap pays for; at the cap the consumer pauses the run and sends its item
-back with a delay; a cancelled run's item is dropped; a retried message counts once; a run that marks
-more than 80% of at least 10 items bad turns the judge off; the two rubrics are code-only specs
-pinned at v1.
+option wrote with a `judge_skipped` line, as it does one with no author, no readable material or no
+fit judge; its model is the first fit option of the chain (`judge_model_id`, the default row's
+fallback, BEDROCK_MODEL_ID); a verdict writes the pair row, the item's marks, the run's item row and
+one event for the author's model and prompt (an article's draft until a rewrite is saved, then its
+newest saved rewrite, never one that failed), and its spend goes to the day in the settings' time
+zone, the run and the Stats page's evals category, at five cents a call on a model nothing prices; a
+reply that is not the contract is ignored; the judge's events are logged while it is uncalibrated and
+count towards the gates only once it is calibrated; the selector runs once an interval, picks
+unjudged, unexpired Findings of two days and articles of a week in turn, starts each run's turn of
+topics after the last run's, and sends no more than the day's cap pays for; at the cap the consumer
+pauses the run and sends its item back with a delay, or counts it finished when it cannot; a
+cancelled run's item is dropped; a retried message counts once; a run that marks more than 80% of at
+least 10 judged items bad turns the judge off, once; the two rubrics are code-only specs pinned at v1.
 """
 
 from __future__ import annotations
@@ -224,23 +227,44 @@ def put_finding(aws, *, topic_id=TOPIC, captured_at=CAPTURED, author=AUTHOR, sum
     return item
 
 
-def put_article(aws, *, article_id="a1b2", drafter=AUTHOR, titler=None, rewriter=None, **extra) -> dict:
-    calls = [
+def compliance_call() -> dict:
+    return {"stage": "compliance_review", "model_id": JUDGE, "input_tokens": 1, "output_tokens": 1}
+
+
+def drafted(drafter=AUTHOR, titler=None) -> list[dict]:
+    """An article's lineage calls as the daily cycle records them."""
+    return [
         {"stage": "ideation", "model_id": drafter, "input_tokens": 1, "output_tokens": 1},
         {
             "stage": "draft", "model_id": drafter, "input_tokens": 1, "output_tokens": 1,
             "prompt_id": "daily_cycle/draft", "prompt_version": "v2",
         },
         {"stage": "title", "model_id": titler or drafter, "input_tokens": 1, "output_tokens": 1},
-        {"stage": "compliance_review", "model_id": JUDGE, "input_tokens": 1, "output_tokens": 1},
+        compliance_call(),
     ]  # fmt: skip
+
+
+def rewrite_call(model_id, *, version="vanilla:v1", **more) -> dict:
+    """A rewrite's lineage call, as rewrite.py records it whether the rewrite is saved or fails."""
+    return {
+        "stage": "rewrite", "model_id": model_id, "input_tokens": 1, "output_tokens": 1,
+        "prompt_id": "rewrite/rewrite", "prompt_version": version, **more,
+    }  # fmt: skip
+
+
+def saved_rewrite(number, model_id) -> dict:
+    """An entry of an article's `rewrites`, as rewrite._save adds it once a rewrite's text is saved."""
+    return {"number": number, "model_id": model_id, "finished_at": "2026-10-26T23:00:00+00:00"}
+
+
+def put_article(aws, *, article_id="a1b2", drafter=AUTHOR, titler=None, rewriter=None, **extra) -> dict:
+    """An article as the daily cycle writes it; with `rewriter`, once a rewrite by that model is saved
+    (its call and its compliance review in the lineage, its entry in `rewrites`)."""
+    calls = drafted(drafter, titler)
+    rewrites = []
     if rewriter:
-        calls.append(
-            {
-                "stage": "rewrite", "model_id": rewriter, "input_tokens": 1, "output_tokens": 1,
-                "prompt_id": "rewrite/rewrite", "prompt_version": "vanilla:v1",
-            }
-        )  # fmt: skip
+        calls += [rewrite_call(rewriter), compliance_call()]
+        rewrites.append(saved_rewrite(1, rewriter))
     item = {
         "article_id": article_id,
         "topic_id": TOPIC,
@@ -249,6 +273,7 @@ def put_article(aws, *, article_id="a1b2", drafter=AUTHOR, titler=None, rewriter
         "status": "published",
         "created_at": "2026-10-26T21:00:00+00:00",
         "lineage": {"calls": calls},
+        **({"rewrites": rewrites} if rewrites else {}),
         **extra,
     }
     aws.Table("Articles").put_item(Item=item)
@@ -397,6 +422,95 @@ def test_a_rewritten_articles_verdict_scores_the_rewrite_that_replaced_its_text(
     assert model.models == [FALLBACK]
 
 
+def test_an_article_rewritten_twice_credits_its_newest_rewrite(aws, model, written):
+    set_evals(aws, judge_model_id=JUDGE)
+    calls = drafted() + [rewrite_call(JUDGE), compliance_call(), rewrite_call(FALLBACK, version="v3")]
+    calls.append(compliance_call())
+    put_article(aws, lineage={"calls": calls}, rewrites=[saved_rewrite(1, JUDGE), saved_rewrite(2, FALLBACK)])
+    start_run(aws)
+
+    consume(article_item())
+
+    [event] = events(written)
+    scored = (event["model_id"], event["prompt_id"], event["prompt_version"])
+    assert scored == (FALLBACK, "rewrite/rewrite", "v3")
+    # The draft's model and both rewriters wrote some of it: the one option that wrote none judges it.
+    assert model.models == [DEFAULT]
+
+
+DRAFT_CREDIT = {"model_id": AUTHOR, "prompt_id": "daily_cycle/draft", "prompt_version": "v2"}
+
+
+def credited(calls: list[dict], rewrites: list[dict]) -> dict | None:
+    return eval_judge.credit({"lineage": {"calls": calls}, "rewrites": rewrites}, eval_judge.ARTICLE)
+
+
+def test_a_rewrite_that_failed_leaves_the_credit_with_the_draft_whose_text_the_article_kept():
+    """rewrite._fail adds the failed call to the lineage but keeps the draft's text and `rewrites`."""
+    failed = rewrite_call(FALLBACK, stop_reason="max_tokens")
+
+    assert credited(drafted() + [failed], []) == DRAFT_CREDIT
+
+
+def test_a_rewrite_saved_and_then_one_that_failed_credits_the_saved_one():
+    calls = drafted() + [rewrite_call(JUDGE, version="v3"), compliance_call()]
+    calls.append(rewrite_call(FALLBACK, version="v4", stop_reason="max_tokens"))
+
+    found = credited(calls, [saved_rewrite(1, JUDGE)])
+
+    assert found == {"model_id": JUDGE, "prompt_id": "rewrite/rewrite", "prompt_version": "v3"}
+
+
+def test_a_later_failed_rewrite_on_the_same_model_leaves_the_credit_with_the_saved_ones_prompt():
+    """A saved rewrite's call is followed by its compliance review; a failed one's never is."""
+    calls = drafted() + [rewrite_call(JUDGE, version="v3"), compliance_call()]
+    calls.append(rewrite_call(JUDGE, version="v4", stop_reason="max_tokens"))
+
+    assert credited(calls, [saved_rewrite(1, JUDGE)])["prompt_version"] == "v3"
+
+
+def test_a_saved_rewrite_named_by_its_inference_profile_arn_still_credits_its_call():
+    """rewrite._save keeps the model as the rewrite was asked for; the lineage keeps bedrock's id."""
+    arn = f"arn:aws:bedrock:{REGION}:123456789012:inference-profile/{JUDGE}"
+    calls = drafted() + [rewrite_call(JUDGE, version="v3"), compliance_call()]
+
+    found = credited(calls, [saved_rewrite(1, arn)])
+
+    assert found == {"model_id": JUDGE, "prompt_id": "rewrite/rewrite", "prompt_version": "v3"}
+
+
+def test_a_saved_rewrite_whose_call_the_lineage_lacks_is_credited_to_its_model_which_never_judges_it(
+    aws, model, written
+):
+    """The text is that rewrite's, so the draft is not credited; and its model, which author_of cannot
+    see without the call, is still not the judge."""
+    put_article(aws, rewrites=[saved_rewrite(1, FALLBACK)])
+    start_run(aws)
+
+    consume(article_item())
+
+    [event] = events(written)
+    assert event["model_id"] == FALLBACK and "prompt_id" not in event and "prompt_version" not in event
+    assert model.models == [DEFAULT]
+
+
+def test_a_prompt_id_of_another_shape_is_left_out_and_the_verdicts_event_kept(aws, model, written):
+    research_call = {
+        "model_id": AUTHOR, "input_tokens": 1, "output_tokens": 1,
+        "prompt_id": "Not A Prompt", "prompt_version": "vanilla:v1",
+    }  # fmt: skip
+    put_finding(aws, author=None, research_call=research_call)
+    start_run(aws)
+
+    assert consume(finding_item()) == {"status": "judged", "verdict": "good"}
+
+    [event] = events(written)
+    assert (event["reason"], event["model_id"]) == ("Research Review", AUTHOR)
+    assert "prompt_id" not in event and "prompt_version" not in event
+    assert evals_item(aws, f"pair#{SUBJECT}", "judge")["verdict"] == "good"
+    assert finding(aws)["reviewed_by"] == {"judge"}
+
+
 # --- judge is never author ------------------------------------------------------------------------------
 
 
@@ -454,6 +568,85 @@ def test_an_item_with_no_recorded_author_is_skipped_for_there_is_no_model_to_sco
     assert consume(finding_item()) == {"status": "skipped", "reason": "no_author"}
     assert model.calls == []
     assert evidence_lines(capsys.readouterr().out, "judge_skipped")[0]["code"] == "no_author"
+
+
+def _delete_object(key: str) -> None:
+    boto3.client("s3", region_name=REGION).delete_object(Bucket=BUCKET, Key=key)
+
+
+def _snapshot_gone(aws) -> dict:
+    put_finding(aws)
+    _delete_object(f"snapshots/{TOPIC}/{CAPTURED}.json")
+    return finding_item()
+
+
+def _summary_blank(aws) -> dict:
+    put_finding(aws)
+    aws.Table("Findings").update_item(
+        Key={"topic_id": TOPIC, "captured_at": CAPTURED},
+        UpdateExpression="SET summary = :blank",
+        ExpressionAttributeValues={":blank": "  \n"},
+    )
+    return finding_item()
+
+
+def _body_gone(aws) -> dict:
+    put_article(aws)
+    _delete_object("articles/a1b2.md")
+    return article_item()
+
+
+def _body_blank(aws) -> dict:
+    put_article(aws)
+    put_object("articles/a1b2.md", "  \n")
+    return article_item()
+
+
+@pytest.mark.parametrize("unreadable", [_snapshot_gone, _summary_blank, _body_gone, _body_blank])
+def test_an_item_whose_material_cannot_be_read_is_skipped_as_no_source_without_a_call(
+    aws, model, written, capsys, unreadable
+):
+    item = unreadable(aws)
+    start_run(aws)
+
+    with evidence.bind(tick="req-1"):
+        result = consume(item)
+
+    assert result == {"status": "skipped", "reason": "no_source"}
+    assert model.calls == [] and written == []
+    subject = f"{TOPIC}#{CAPTURED}" if "captured_at" in item else "a1b2"
+    assert evals_item(aws, f"pair#{subject}", "judge") is None
+    if "captured_at" in item:
+        assert "reviewed_by" not in finding(aws)
+    else:
+        assert "eval_judged_at" not in aws.Table("Articles").get_item(Key={"article_id": "a1b2"})["Item"]
+    assert evals_item(aws, "spend", "day#2026-10-27") is None
+    [line] = evidence_lines(capsys.readouterr().out, "judge_skipped")
+    assert (line["code"], line["run_id"], line["kind"]) == ("no_source", RUN_ID, item["kind"])
+    assert meta(aws)["status"] == "done"
+
+
+def test_with_no_option_fit_to_judge_an_item_is_skipped_as_no_judge_and_the_selector_sends_nothing(
+    aws, model, written, monkeypatch, capsys
+):
+    """Every option is a registered model that is disabled or writes no text (one with no row is fit)."""
+    monkeypatch.setenv("BEDROCK_MODEL_ID", EMBEDDER)
+    put_model(aws, "maker.off-v1:0", enabled=False)
+    set_evals(aws, judge_model_id="maker.off-v1:0")
+    config = {"config_id": "default", "model_id": DEFAULT, "fallback_model_id": EMBEDDER}
+    aws.Table("ModelConfig").put_item(Item=config)
+    put_finding(aws)
+    queue = FakeQueue()
+
+    assert eval_judge.select(NOW, sqs=queue) == {"status": "no_judge"}
+    assert queue.sent == [] and "last_judge_at" not in evals_rollup.get_index()
+
+    start_run(aws)
+    assert consume(finding_item()) == {"status": "skipped", "reason": "no_judge"}
+    assert model.calls == [] and written == []
+    [line] = evidence_lines(capsys.readouterr().out, "judge_skipped")
+    assert (line["code"], line["run_id"]) == ("no_judge", RUN_ID)
+    assert meta(aws)["status"] == "done"
 
 
 # --- the chain ------------------------------------------------------------------------------------------
@@ -632,19 +825,54 @@ def test_with_the_cap_spent_the_selector_sends_nothing_and_leaves_the_interval_t
     assert "today's spend cap leaves A$0.0000" in capsys.readouterr().out
 
 
+def test_the_days_spend_is_counted_on_the_settings_time_zones_day_not_utcs(aws, model):
+    later = datetime(2026, 10, 27, 14, 0, 5, tzinfo=UTC)  # 01:00 on the 28th in Sydney
+    put_finding(aws)
+    start_run(aws)
+    aws.Table("Evals").put_item(Item={"entity": "spend", "sk": "day#2026-10-27", "spent_aud": Decimal("2")})
+
+    # The 27th's cap is spent, but it is the 28th in Sydney: the item is judged on the 28th's.
+    assert consume(finding_item(), now=later)["status"] == "judged"
+    assert evals_item(aws, "spend", "day#2026-10-28")["calls"] == 1
+    assert evals_item(aws, "spend", "day#2026-10-27")["spent_aud"] == 2
+    # And the selector reads the same day.
+    put_finding(aws, captured_at="2026-10-27T13:00:00+00:00")
+    assert eval_judge.select(later, sqs=FakeQueue())["status"] == "enqueued"
+
+
+# A model id with no registry row and no built-in price: nothing prices it.
+UNPRICED = "maker.unpriced-v1:0"
+
+
+def test_a_call_on_a_model_nothing_prices_is_counted_at_five_cents_never_as_free(aws, model):
+    set_evals(aws, judge_model_id=UNPRICED)
+    put_finding(aws)
+    start_run(aws)
+
+    assert consume(finding_item())["status"] == "judged"
+
+    assert model.models == [UNPRICED]
+    assert evals_item(aws, f"run#{RUN_ID}", "item#0#judge")["cost_aud"] == pytest.approx(0.05)
+    assert evals_item(aws, "spend", "day#2026-10-27")["spent_aud"] == pytest.approx(0.05)
+
+
+def test_the_selector_sends_no_more_unpriced_calls_than_the_cap_pays_for_at_five_cents_each(aws):
+    set_evals(aws, judge_model_id=UNPRICED)
+    for minute in range(5):
+        put_finding(aws, captured_at=f"2026-10-27T01:0{minute}:00+00:00")
+    spend(aws, 2 - 0.12)
+
+    assert eval_judge.select(NOW, sqs=FakeQueue())["items"] == 2
+
+
 # --- the selector ---------------------------------------------------------------------------------------
 
 
-def test_the_selector_picks_unjudged_findings_and_recent_unjudged_articles_in_turn(aws):
+def test_the_selector_passes_over_marked_unauthored_judged_old_and_rejected_items_and_sends_the_rest(aws):
     aws.Table("Topics").put_item(Item={"topic_id": "crypto", "name": "Crypto"})
-    put_finding(aws, captured_at="2026-10-27T01:00:00+00:00")  # paired already: passed over
-    aws.Table("Evals").put_item(
-        Item={"entity": f"pair#{TOPIC}#2026-10-27T01:00:00+00:00", "sk": "judge", "verdict": "good"}
-    )
     put_finding(aws, captured_at="2026-10-27T01:30:00+00:00", reviewed_by={"judge"}, review_count=1)
     put_finding(aws, captured_at="2026-10-27T02:00:00+00:00")
     put_finding(aws, captured_at="2026-10-27T02:10:00+00:00", author=None)  # no author: skipped
-    put_finding(aws, captured_at="2026-10-24T02:00:00+00:00")  # older than the judge looks
     put_finding(aws, topic_id="crypto", captured_at="2026-10-27T00:30:00+00:00")
     put_finding(aws, topic_id="crypto", captured_at="2026-10-26T23:30:00+00:00")
     put_article(aws, article_id="fresh")
@@ -658,9 +886,8 @@ def test_the_selector_picks_unjudged_findings_and_recent_unjudged_articles_in_tu
 
     run_id = "judge-20261027T030005"
     assert summary == {"status": "enqueued", "run_id": run_id, "items": 4, "skipped": 1}
-    # In turn: an article, then the topics' Findings one topic after the other, newest first (crypto's,
-    # rail-sydney's unauthored one, crypto's next, rail-sydney's next), passing over what cannot be
-    # judged.
+    # The one article not judged, recent and published, then the Findings no judge has marked:
+    # rail-sydney's newest has no author to score, so it is skipped without taking a place.
     assert queue.bodies() == [
         {"job": "judge", "run_id": run_id, "item": article_item(0, "fresh")},
         {"job": "judge", "run_id": run_id, "item": finding_item(1, "2026-10-27T00:30:00+00:00", "crypto")},
@@ -668,7 +895,102 @@ def test_the_selector_picks_unjudged_findings_and_recent_unjudged_articles_in_tu
         {"job": "judge", "run_id": run_id, "item": finding_item(3, "2026-10-27T02:00:00+00:00")},
     ]
     assert all(sent["QueueUrl"] == QUEUE_URL and "DelaySeconds" not in sent for sent in queue.sent)
-    assert evals_rollup.get_index()["last_judge_at"] == "2026-10-27T03:00:05+00:00"
+    index = evals_rollup.get_index()
+    assert index["last_judge_at"] == "2026-10-27T03:00:05+00:00"
+    # The last Finding sent was rail-sydney's: the next run's turn of topics starts after it.
+    assert index["last_judge_topic"] == TOPIC
+
+
+def test_the_selector_takes_articles_and_findings_in_turn_and_gives_a_quiet_topic_a_place(aws):
+    aws.Table("Topics").put_item(Item={"topic_id": "crypto", "name": "Crypto"})  # sorts first
+    for hour in ("02", "01", "00"):
+        put_finding(aws, topic_id="crypto", captured_at=f"2026-10-27T{hour}:00:00+00:00")
+    put_finding(aws, captured_at="2026-10-26T20:00:00+00:00")
+    put_article(aws, article_id="newer", created_at="2026-10-26T22:00:00+00:00")
+    put_article(aws, article_id="older", created_at="2026-10-26T21:00:00+00:00")
+    set_evals(aws, judge_max_items=4)
+    queue = FakeQueue()
+
+    eval_judge.select(NOW, sqs=queue)
+
+    # An article, a Finding, an article, a Finding; and the Findings one topic after the other, so
+    # rail-sydney's one Finding comes before crypto's second.
+    assert [body["item"] for body in queue.bodies()] == [
+        article_item(0, "newer"),
+        finding_item(1, "2026-10-27T02:00:00+00:00", "crypto"),
+        article_item(2, "older"),
+        finding_item(3, "2026-10-26T20:00:00+00:00"),
+    ]
+
+
+def test_the_selector_looks_two_days_back_at_unexpired_findings_and_includes_articles_awaiting_moderation(
+    aws,
+):
+    put_finding(aws, captured_at="2026-10-27T01:00:00+00:00")
+    put_finding(aws, captured_at="2026-10-25T02:00:00+00:00")  # two days and an hour ago: too old
+    # Inside the two days but expired, not yet deleted by the TTL (research-tick's 14-day expiry cannot
+    # make one, but a hand-set or shortened TTL can).
+    put_finding(aws, captured_at="2026-10-27T00:00:00+00:00", expires_at=int(NOW.timestamp()) - 1)
+    put_finding(aws, captured_at="2026-10-27T00:30:00+00:00")  # paired already: passed over
+    pair = {"entity": f"pair#{TOPIC}#2026-10-27T00:30:00+00:00", "sk": "judge", "verdict": "good"}
+    aws.Table("Evals").put_item(Item=pair)
+    put_article(aws, article_id="held", status="pending_moderation")
+    queue = FakeQueue()
+
+    summary = eval_judge.select(NOW, sqs=queue)
+
+    assert (summary["items"], summary["skipped"]) == (2, 0)
+    assert [body["item"] for body in queue.bodies()] == [
+        article_item(0, "held"),
+        finding_item(1, "2026-10-27T01:00:00+00:00"),
+    ]
+
+
+def topic_findings(aws, topics: list[str]) -> None:
+    """One fresh Finding for each of `topics`."""
+    for topic_id in topics:
+        aws.Table("Topics").put_item(Item={"topic_id": topic_id, "name": topic_id})
+        put_finding(aws, topic_id=topic_id, captured_at="2026-10-27T01:00:00+00:00")
+
+
+def first_topics(queue: FakeQueue) -> list[str]:
+    return [body["item"]["topic_id"] for body in queue.bodies()]
+
+
+def test_each_run_starts_its_turn_of_topics_after_the_last_runs_so_every_busy_topic_gets_a_place(aws):
+    """Five topics with a Finding each (rail-sydney, which sorts first, has none) and two places a run."""
+    topic_findings(aws, ["t1", "t2", "t3", "t4", "t5"])
+    set_evals(aws, judge_max_items=2)
+    runs = []
+
+    for n in range(3):
+        queue = FakeQueue()
+        eval_judge.select(NOW + timedelta(hours=4 * n), sqs=queue)
+        runs.append(first_topics(queue))
+
+    # Nothing was judged, so every Finding is still there to pick: only where each run starts moves.
+    assert runs == [["t1", "t2"], ["t3", "t4"], ["t5", "t1"]]
+    assert evals_rollup.get_index()["last_judge_topic"] == "t1"
+
+
+def test_a_turn_whose_last_topic_has_gone_starts_at_the_topic_after_where_it_was(aws):
+    topic_findings(aws, ["t1", "t2", "t3"])
+    aws.Table("Evals").put_item(Item={**evals_rollup.INDEX_KEY, "last_judge_topic": "t2-gone"})
+    set_evals(aws, judge_max_items=2)
+    queue = FakeQueue()
+
+    eval_judge.select(NOW, sqs=queue)
+
+    assert first_topics(queue) == ["t3", "t1"]
+
+
+def test_a_run_that_sends_no_finding_leaves_where_the_next_run_starts(aws):
+    aws.Table("Evals").put_item(Item={**evals_rollup.INDEX_KEY, "last_judge_topic": "t2"})
+    put_article(aws)
+
+    eval_judge.select(NOW, sqs=FakeQueue())
+
+    assert evals_rollup.get_index()["last_judge_topic"] == "t2"
 
 
 def test_a_send_that_fails_part_way_leaves_a_run_of_what_was_sent_which_its_last_item_closes(aws, model):
@@ -882,9 +1204,76 @@ def test_a_run_short_of_the_tripwire_leaves_the_judge_on(aws, model, capsys, ver
     assert meta(aws)["status"] == "done"
 
 
-def test_the_tripwire_counts_judged_items_only():
+def test_the_tripwire_trips_above_80_percent_of_at_least_10_judged_items():
     assert eval_judge.tripped(10, 9) and eval_judge.tripped(15, 13)
     assert not eval_judge.tripped(10, 8) and not eval_judge.tripped(15, 12) and not eval_judge.tripped(9, 9)
+
+
+def test_a_malformed_reply_and_a_skipped_item_do_not_count_towards_the_tripwire(aws, model, capsys):
+    """Nine bad verdicts of eleven items would trip a wire that counted every item; of nine judged
+    items, too few to judge the judge by, it does not."""
+    start_run(aws, items=11)
+    model.replies = [BAD] * 9 + ["not the contract"]
+    for n in range(10):
+        captured_at = f"2026-10-27T01:{n:02d}:00+00:00"
+        put_finding(aws, captured_at=captured_at)
+        consume(finding_item(n, captured_at))
+    put_finding(aws, captured_at="2026-10-27T01:30:00+00:00", author=None)
+    assert consume(finding_item(10, "2026-10-27T01:30:00+00:00"))["status"] == "skipped"
+
+    assert aws.Table("ModelConfig").get_item(Key={"config_id": "evals"}).get("Item") is None
+    assert evidence_lines(capsys.readouterr().out, "judge_tripwire") == []
+    assert (meta(aws)["status"], meta(aws)["judged"], meta(aws)["bad"]) == ("done", 9, 9)
+
+
+def test_a_finished_runs_last_item_delivered_again_never_closes_it_or_trips_the_wire_twice(
+    aws, model, capsys
+):
+    """SQS delivers at least once: the last item of a tripped run can come again after the operator has
+    turned the judge back on."""
+    judge_run(aws, model, ["bad"] * 9 + ["good"])
+    closed = meta(aws)["finished_at"]
+    aws.Table("ModelConfig").update_item(
+        Key={"config_id": "evals"},
+        UpdateExpression="SET judge_enabled = :on",
+        ExpressionAttributeValues={":on": True},
+    )
+
+    again = consume(finding_item(9, "2026-10-27T01:09:00+00:00"), now=NOW + timedelta(minutes=5))
+
+    assert again == {"status": "dropped", "reason": "already_judged"}
+    assert aws.Table("ModelConfig").get_item(Key={"config_id": "evals"})["Item"]["judge_enabled"] is True
+    assert len(evidence_lines(capsys.readouterr().out, "judge_tripwire")) == 1
+    assert meta(aws)["finished_at"] == closed
+
+
+class Refusing(FakeQueue):
+    def send_message(self, **kwargs):
+        raise RuntimeError("throttled")
+
+
+@pytest.mark.parametrize("queue_url", [QUEUE_URL, ""], ids=["send_fails", "no_queue"])
+def test_a_capped_item_that_cannot_be_sent_back_still_lets_its_run_close_and_trip_the_wire(
+    aws, model, capsys, monkeypatch, queue_url
+):
+    start_run(aws, items=11)
+    model.replies = [BAD]
+    for n in range(10):
+        captured_at = f"2026-10-27T01:{n:02d}:00+00:00"
+        put_finding(aws, captured_at=captured_at)
+        assert consume(finding_item(n, captured_at))["status"] == "judged"
+    spend(aws, 2)
+    put_finding(aws, captured_at="2026-10-27T01:30:00+00:00")
+    monkeypatch.setenv("EVAL_WORK_QUEUE_URL", queue_url)
+
+    result = consume(finding_item(10, "2026-10-27T01:30:00+00:00"), queue=Refusing())
+
+    assert result == {"status": "paused", "run_id": RUN_ID, "resent": False}
+    # Nothing will deliver it again, so it is counted finished, unjudged, for a later run to pick.
+    assert "reviewed_by" not in finding(aws, "2026-10-27T01:30:00+00:00")
+    assert (meta(aws)["status"], meta(aws)["judged"], meta(aws)["bad"]) == ("done", 10, 10)
+    assert aws.Table("ModelConfig").get_item(Key={"config_id": "evals"})["Item"]["judge_enabled"] is False
+    assert len(evidence_lines(capsys.readouterr().out, "judge_tripwire")) == 1
 
 
 # --- the rubric -----------------------------------------------------------------------------------------

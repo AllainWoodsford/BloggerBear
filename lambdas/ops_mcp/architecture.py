@@ -389,8 +389,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "ts#<time>; run#<run_id> (a judge or offline run and its items); pair#<subject> (a "
                 "judge's and a person's verdicts on one subject); spend by day#<date> (what the judge "
                 "and offline runs spent that day, held to the daily cap); the index row (the rollup's "
-                "watermark, late events, the judge's agreement, the judge's last run) and its "
-                "day#<date> rows (the entities each day has)",
+                "watermark, late events, the judge's agreement, the judge's last run and the topic "
+                "its next run's turn starts after) and its day#<date> rows (the entities each day has)",
             ),
             (
                 "Written by",

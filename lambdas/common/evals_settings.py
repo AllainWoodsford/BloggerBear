@@ -62,7 +62,8 @@ DYNAMODB_ONLY = frozenset(
     {"daily_gate", "weekly_gate", "total_gate", "min_events", "judge_min_agreement", "judge_min_pairs"}
 )
 # Not a setting: why the judge's tripwire turned `judge_enabled` off (common/eval_judge.py), written
-# beside it on the row and shown by `summary`.
+# beside it on the row and shown by `summary`; PUT /evals-config removes it whenever a person sets
+# `judge_enabled`.
 PAUSED_REASON_FIELD = "judge_paused_reason"
 
 # The whole-number settings and their ranges.

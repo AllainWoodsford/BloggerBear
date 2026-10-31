@@ -9,9 +9,11 @@ Two halves, both run by eval-jobs (eval_jobs_handler.py):
   index row, claimed with a conditional write, so two invocations never both run. It picks up to
   `judge_max_items` items no judge has reviewed: recent Findings without a `pair#<subject>` judge row,
   and recent articles without `eval_judged_at`, taken in turn (an article, a Finding, ...), and the
-  Findings one topic after another, so no busy topic takes every place. It writes the run's header
-  (`run#<run_id>`, `meta`) and sends one `judge` message per item to eval-work, never more than the
-  day's remaining spend pays for (below).
+  Findings one topic after another, so no busy topic takes every place. The topics take turns across
+  runs too: each run starts with the topic after the one its last Finding came from the run before
+  (`last_judge_topic` on the index row), so a topic late in name order is never passed over every
+  run. It writes the run's header (`run#<run_id>`, `meta`) and sends one `judge` message per item to
+  eval-work, never more than the day's remaining spend pays for (below).
 * **The consumer** (`consume`, one eval-work record) judges one item. It picks the judge's model,
   renders the item's rubric (`eval_judge/research_review` or `eval_judge/article_review`, code-only
   prompts in common/prompts_registry.py), calls the model once, and reads its reply against the
@@ -20,16 +22,17 @@ Two halves, both run by eval-jobs (eval_jobs_handler.py):
   agreement from, the marks on the Finding (`review_count`, `reviewed_by`, a set of role codes,
   `last_reviewed_at`) or the Article (`eval_judged_at`), each conditional, the run's item row, and one
   Research Review or Article Review event (+2 or -2, `by: judge`, event id `judge:<subject>:<run_id>`)
-  for the model that wrote the item and the prompt it wrote it with. A reply that is not exactly the
-  contract is ignored: no verdict, no mark, no event (its spend is still counted).
+  for the model that wrote the item and the prompt it wrote it with (`credit`: an article's text is
+  its draft's until a rewrite is saved, then its newest saved rewrite's). A reply that is not exactly
+  the contract is ignored: no verdict, no mark, no event (its spend is still counted).
 
 **Judge is never author** (section 3, deviation 9). The judge's model is the first of the chain
 (section 4.5): `judge_model_id`, else the model-config default row's `fallback_model_id`, else
 BEDROCK_MODEL_ID, that is fit for text (model_fleet.suitable(TEXT), and not disabled; a model the
 registry has no row for is fit, as model_routing treats it) and wrote none of the item
-(evals.author_of). When every option wrote it, the item is skipped with a `judge_skipped` evidence
-line. So is an item whose author is not recorded (a Finding from before research tracking): there is
-no model for its verdict to score.
+(evals.author_of, and the model its verdict scores). When every option wrote it, the item is skipped
+with a `judge_skipped` evidence line. So is an item whose author is not recorded (a Finding from
+before research tracking): there is no model for its verdict to score.
 
 **Calibration** is the rollup's (common/evals_rollup.py): it computes the judge's agreement with
 people from the `pair#` rows, and counts the judge's events towards the gates only while the judge is
@@ -41,7 +44,8 @@ time zone: `spent_aud`, `calls`) and to the run's `spent_aud`. `evals_daily_spen
 day: the selector sends no more items than the remaining cap pays for at one estimated call each
 (ESTIMATE_INPUT_TOKENS in, JUDGE_MAX_TOKENS out), and the consumer checks again before each call. On a
 cap hit it marks the run `paused: spend cap`, sends the message back with DelaySeconds=900 and returns
-success, so the item waits for the next day rather than failing. A call on a model with no price is
+success, so the item waits for the next day rather than failing (an item it cannot send back is
+counted finished, unjudged, so its run still closes). A call on a model with no price is
 counted at UNPRICED_ITEM_AUD, never as free. Two items judged at once (eval-work's mapping runs two)
 can pass the check together, so a day can end one call over its cap.
 
@@ -84,6 +88,9 @@ SCORE_JOB = "score"
 # The events' `source`, and the role code the judge writes as `by` and into a Finding's reviewed_by.
 SOURCE = "eval_jobs"
 ROLE = "judge"
+
+# The lineage stages credit reads (common/rewrite.py's REWRITE_STAGE, common/compliance.py's call).
+DRAFT_STAGE, REWRITE_STAGE, COMPLIANCE_STAGE = "draft", "rewrite", "compliance_review"
 
 # What is judged: a Finding's summary (a research review) or an article (an article review).
 RESEARCH = "research_review"
@@ -141,6 +148,9 @@ RUN = "run#"
 META = "meta"
 SPEND = "spend"
 LAST_JUDGE_AT = "last_judge_at"
+# On the index row beside LAST_JUDGE_AT: the topic the last run's last Finding came from, where the next
+# run's turn of topics starts after.
+LAST_JUDGE_TOPIC = "last_judge_topic"
 QUEUED, RUNNING, PAUSED, DONE, CANCELLED = "queued", "running", "paused: spend cap", "done", "cancelled"
 
 # Every delimiter a rubric wraps material in: the material is untrusted (a model's text from the web,
@@ -201,24 +211,58 @@ def _count(value) -> int:
 
 def credit(record: dict, kind: str) -> dict | None:
     """The call whose work a verdict scores: {model_id, and prompt_id with prompt_version when the call
-    names them}. A Finding's summary is its `research_call`'s. An article's text is its newest rewrite's
-    (rewrite.py replaces the whole text), else its draft's: the fresh-data review's revision only
-    corrects claims in a draft. None when the item records no such call."""
+    names them}. A Finding's summary is its `research_call`'s. An article's text is its draft's until a
+    rewrite is saved (rewrite.py then replaces the whole text and adds an entry to `rewrites`), and
+    then its newest saved rewrite's: the fresh-data review's revision only corrects claims in a draft.
+    A rewrite that failed leaves its call in the lineage as well, but its text never reached the
+    article, so a rewrite call is credited only when the saved rewrite names its model (_saved_rewrite).
+    None when the item records no such call."""
     if kind == RESEARCH:
         call = record.get("research_call")
     else:
         lineage = record.get("lineage")
         calls = lineage.get("calls") if isinstance(lineage, dict) else None
         calls = [c for c in calls if isinstance(c, dict)] if isinstance(calls, list) else []
-        rewrites = [c for c in calls if c.get("stage") == "rewrite"]
-        drafts = [c for c in calls if c.get("stage") == "draft"]
-        call = (rewrites or drafts or [None])[-1]
+        saved = record.get("rewrites")
+        saved = [entry for entry in saved if isinstance(entry, dict)] if isinstance(saved, list) else []
+        if saved:
+            call = _saved_rewrite(calls, saved[-1].get("model_id"))
+        else:
+            call = ([c for c in calls if c.get("stage") == DRAFT_STAGE] or [None])[-1]
     if not isinstance(call, dict) or not isinstance(call.get("model_id"), str) or not call["model_id"]:
         return None
     found = {"model_id": canonical_model_id(call["model_id"])}
     if isinstance(call.get("prompt_id"), str) and isinstance(call.get("prompt_version"), str):
         found.update(prompt_id=call["prompt_id"], prompt_version=call["prompt_version"])
     return found
+
+
+def _saved_rewrite(calls: list[dict], model_id) -> dict | None:
+    """The lineage call of the article's newest saved rewrite, which names its model (`model_id`, as the
+    rewrite was asked for; the call has bedrock's canonical id): the newest rewrite call on that model,
+    preferring one its compliance review follows before the next rewrite call, since a saved rewrite
+    records that review (unless the topic is financial, whose review makes no call) and a failed one
+    never does. When the lineage holds no such call, the model alone: the text is still that rewrite's,
+    so the draft is never credited for it. None when the saved rewrite names no model."""
+    if not isinstance(model_id, str) or not model_id:
+        return None
+    wanted = canonical_model_id(model_id)
+    matching, reviewed = [], []
+    for index, call in enumerate(calls):
+        if call.get("stage") != REWRITE_STAGE or canonical_model_id(call.get("model_id")) != wanted:
+            continue
+        matching.append(call)
+        stages = (later.get("stage") for later in calls[index + 1 :])
+        if next((s for s in stages if s in (REWRITE_STAGE, COMPLIANCE_STAGE)), None) == COMPLIANCE_STAGE:
+            reviewed.append(call)
+    return (reviewed or matching or [{"model_id": wanted}])[-1]
+
+
+def judged_authors(record: dict, scored: dict) -> frozenset[str]:
+    """Every model the judge of `record` must not be: each that wrote any of it (evals.author_of), and
+    the one its verdict scores (`scored`, from credit), which a saved rewrite can name though the
+    lineage lacks its call."""
+    return evals.author_of(record) | {scored["model_id"]}
 
 
 def chain(settings: dict, config: dict | None = None) -> list[str]:
@@ -617,19 +661,24 @@ def _set_status(table, run_id: str, status: str, allowed: tuple[str, ...]) -> bo
     return True
 
 
-def _pause(table, run_id: str, body: str, sqs) -> dict:
-    """The day's cap is reached: mark the run paused and send the message back to wait 900 seconds."""
+def _pause(table, run_id: str, n: int, body: str, sqs, now: datetime) -> dict:
+    """The day's cap is reached: mark the run paused and send item `n`'s message back to wait 900
+    seconds; it finishes when it is delivered again. An item that cannot be sent back (no queue, or the
+    send fails) is counted finished, unjudged, since nothing will deliver it again: its run can still
+    close and check the tripwire, and a later run picks the item again."""
     if not _set_status(table, run_id, PAUSED, (QUEUED, RUNNING, PAUSED)):
         print(f"eval_judge: run {run_id} is no longer running; its capped item is dropped")
         return {"status": "dropped", "reason": "cancelled"}
     queue_url = os.environ.get("EVAL_WORK_QUEUE_URL") or ""
     if not queue_url:
         print(f"eval_judge: run {run_id} is paused by the spend cap and there is no queue to wait on")
+        _finish(table, run_id, n, now)
         return {"status": "paused", "run_id": run_id, "resent": False}
     try:
         (sqs or _sqs()).send_message(QueueUrl=queue_url, MessageBody=body, DelaySeconds=CAP_DELAY_SECONDS)
     except Exception as exc:  # noqa: BLE001 - the item stays unjudged; a later run picks it again
         print(f"eval_judge: could not send a capped item of run {run_id} back to the queue: {exc!r}")
+        _finish(table, run_id, n, now)
         return {"status": "paused", "run_id": run_id, "resent": False}
     print(
         f"eval_judge: the day's spend cap is reached; run {run_id} is paused, its item waits "
@@ -691,11 +740,11 @@ def _judge(body: str, run_id: str, item: dict, now: datetime, sqs) -> dict:
     if scored is None:
         return passed_over("no_author", "no_author")
     options = fit_options(settings)
-    model_id = pick_judge(options, evals.author_of(record))
+    model_id = pick_judge(options, judged_authors(record, scored))
     if model_id is None:
         return passed_over("author_only", "author_only" if options else "no_judge")
     if item_estimate_aud(model_id) > remaining_aud(table, now, settings):
-        return _pause(table, run_id, body, sqs)
+        return _pause(table, run_id, n, body, sqs, now)
     _set_status(table, run_id, RUNNING, (QUEUED, PAUSED))
     material = _material(kind, record)
     if material is None:
@@ -833,11 +882,25 @@ def _in_turn(lists: list[list]) -> list:
     return taken
 
 
-def _pick(table, now: datetime, count: int, options: list[str], run_id: str) -> tuple[list[dict], int]:
-    """Up to `count` items to judge, numbered: (items, skipped). An item already paired is passed over;
-    one with no recorded author, or whose every judge option wrote it, is skipped (the second with a
-    `judge_skipped` line), so it never takes a place a judgeable item could have."""
-    topics = sorted(dynamo.list_topics(), key=lambda topic: str(topic.get("topic_id", "")))
+def in_rotation(topics: list[dict], after) -> list[dict]:
+    """The topics in name order, starting with the first whose id sorts after `after` (the topic of the
+    last run's last Finding) and wrapping round to the start: so a topic whose id has gone since still
+    starts the turn at the topic after it. From the first topic when there is no `after`."""
+    ordered = sorted(topics, key=lambda topic: str(topic.get("topic_id", "")))
+    if not isinstance(after, str) or not after:
+        return ordered
+    start = next((i for i, topic in enumerate(ordered) if str(topic.get("topic_id", "")) > after), 0)
+    return ordered[start:] + ordered[:start]
+
+
+def _pick(
+    table, now: datetime, count: int, options: list[str], run_id: str, after: str | None = None
+) -> tuple[list[dict], int]:
+    """Up to `count` items to judge, numbered: (items, skipped). The topics' turn starts after `after`
+    (in_rotation). An item already paired is passed over; one with no recorded author, or whose every
+    judge option wrote it, is skipped (the second with a `judge_skipped` line), so it never takes a
+    place a judgeable item could have."""
+    topics = in_rotation(dynamo.list_topics(), after)
     per_topic = [
         [(RESEARCH, finding) for finding in unjudged_findings(topic["topic_id"], now, count)]
         for topic in topics
@@ -852,10 +915,11 @@ def _pick(table, now: datetime, count: int, options: list[str], run_id: str) -> 
         item = message_item(kind, record)
         if item is None or _has_judge_pair(table, item["subject"]):
             continue
-        if credit(record, kind) is None:
+        scored = credit(record, kind)
+        if scored is None:
             skipped += 1
             continue
-        if pick_judge(options, evals.author_of(record)) is None:
+        if pick_judge(options, judged_authors(record, scored)) is None:
             _skipped(item, run_id, "author_only")
             skipped += 1
             continue
@@ -882,6 +946,21 @@ def _claim(table, now: datetime, interval: timedelta, run_id: str) -> bool:
     return True
 
 
+def _keep_turn(table, topic_id: str) -> None:
+    """Keep the topic of the run's last Finding sent on the index row, so the next run's turn of topics
+    starts after it. The last sent, not the last picked: a send that fails part-way leaves the topics
+    after it their turn. A failure here costs only the rotation (the next run starts where this one
+    did), so it is a printed line."""
+    try:
+        table.update_item(
+            Key=evals_rollup.INDEX_KEY,
+            UpdateExpression=f"SET {LAST_JUDGE_TOPIC} = :topic",
+            ExpressionAttributeValues={":topic": topic_id},
+        )
+    except Exception as exc:  # noqa: BLE001 - the run is sent; only where the next one starts is lost
+        print(f"eval_judge: could not keep where the next run's turn of topics starts: {exc!r}")
+
+
 def select(now: datetime | None = None, *, sqs=None, trigger: str = "schedule") -> dict:
     """The `judge_select` job: when the judge is on and due, choose this run's items and send one
     `judge` message for each to eval-work, as many as the day's remaining spend pays for. A summary."""
@@ -896,7 +975,8 @@ def select(now: datetime | None = None, *, sqs=None, trigger: str = "schedule") 
         return {"status": "no_queue"}
     table = evals_rollup.evals_table()
     interval = timedelta(hours=settings["judge_interval_hours"])
-    last = _time(evals_rollup.get_index(table).get(LAST_JUDGE_AT))
+    index = evals_rollup.get_index(table)
+    last = _time(index.get(LAST_JUDGE_AT))
     if last is not None and now - last < interval - INTERVAL_SLACK:
         return {"status": "not_due", LAST_JUDGE_AT: _iso(last)}
     options = fit_options(settings)
@@ -916,7 +996,7 @@ def select(now: datetime | None = None, *, sqs=None, trigger: str = "schedule") 
     run_id = f"judge-{now.astimezone(UTC):%Y%m%dT%H%M%S}"
     if not _claim(table, now, interval, run_id):
         return {"status": "not_due"}
-    items, skipped = _pick(table, now, count, options, run_id)
+    items, skipped = _pick(table, now, count, options, run_id, after=index.get(LAST_JUDGE_TOPIC))
     if not items:
         print(f"eval_judge: run {run_id} found nothing to judge ({skipped} skipped)")
         return {"status": "nothing", "run_id": run_id, "skipped": skipped}
@@ -944,6 +1024,9 @@ def select(now: datetime | None = None, *, sqs=None, trigger: str = "schedule") 
             print(f"eval_judge: could not send item {item['n']} of run {run_id}: {exc!r}")
             break
         sent += 1
+    sent_topics = [item["topic_id"] for item in items[:sent] if item["kind"] == RESEARCH]
+    if sent_topics:
+        _keep_turn(table, sent_topics[-1])
     if sent < len(items):
         # The run is what was sent. Its sent items may all have finished already, so this closes it
         # then (a run that sent none closes at once).
