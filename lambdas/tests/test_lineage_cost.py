@@ -210,6 +210,20 @@ def test_a_window_of_only_untracked_findings_has_no_calls_and_says_why():
     assert "excludes 1 finding(s)" in research["cost_note"]
 
 
+def test_research_the_article_was_not_written_from_is_marked_set_aside_and_still_costed():
+    """A Finding in the window that the day's editorial goal set aside: its call still cost a Bedrock
+    call, and is marked, on the call, which the lineage backfill and a rewrite both keep whole."""
+    kept, set_aside = _finding(), _finding("2026-09-21T02:00:00+00:00")
+
+    research = costing.build_research_lineage([kept, set_aside], written_from=[kept])
+
+    assert [call.get(costing.SET_ASIDE) for call in research["calls"]] == [None, True]
+    assert research["cost_aud"] == costing.build_research_lineage([kept, set_aside])["cost_aud"]
+    assert research["tracked_findings"] == 2
+    recomputed = lineage_tools.recompute_lineage(costing.build_lineage([_call(PROFILE)], research=research))
+    assert [call.get(costing.SET_ASIDE) for call in recomputed["research"]["calls"]] == [None, True]
+
+
 def test_a_window_with_no_findings_is_an_empty_tally():
     research = costing.build_research_lineage([])
 

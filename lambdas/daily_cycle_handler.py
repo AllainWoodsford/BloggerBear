@@ -51,7 +51,7 @@ from datetime import UTC, date, datetime
 
 import boto3
 
-from common import compliance, equipment, fresh_review, goal_rotation, model_fleet, prompts
+from common import compliance, equipment, evals_emission, fresh_review, goal_rotation, model_fleet, prompts
 from common.adapters.base import DaySubject
 from common.attribution import sources_for_topic
 from common.bedrock import invoke_model_tracked
@@ -549,12 +549,14 @@ def _run_daily_cycle(topic_id: str, force: bool = False, run_id: str | None = No
     # subject and only the findings that report it; every other topic gets
     # (None, findings) back unchanged.
     #
-    # The research tally is taken from the whole window *before* that selection:
+    # The research tally is taken from the whole window, not only that selection:
     # a Finding the goal filter sets aside still cost a Bedrock call, and each
-    # window starts where the last one ended, so nothing is counted twice.
-    research = build_research_lineage(findings)
+    # window starts where the last one ended, so nothing is counted twice. Its
+    # call is marked set aside, so continuous evals credit the article with the
+    # research prompts of the Findings it is written from alone.
     window_findings = findings
     editorial_goal, findings = _select_subject_and_findings(topic, findings, day_subject)
+    research = build_research_lineage(window_findings, written_from=findings)
     if isinstance(editorial_goal, EditorialGoal):
         print(f"daily_cycle_handler: editorial_goal={editorial_goal.value} topic_id={topic_id}")
     if day_subject is not None:
@@ -720,6 +722,10 @@ def _run_daily_cycle(topic_id: str, force: bool = False, run_id: str | None = No
     def _stored(article_id: str) -> None:
         stored["article_id"] = article_id
         _record_article_written(topic_id, run_started, subject_key, rotation, run_id, article_id)
+        # Continuous evals: the article exists, held or published, so its model and every prompt in
+        # its lineage earn an Article Completion each (common/evals_emission.py). Never raises, and
+        # writes nothing while evals are off.
+        evals_emission.completion(article_id=article_id, topic_id=topic_id, lineage=lineage)
 
     try:
         result = _publish_or_moderate(

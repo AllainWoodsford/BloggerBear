@@ -1220,7 +1220,8 @@ def test_every_findings_route_is_in_the_environments_terraform(env):
         encoding="utf-8"
     )
     admin_routes = main[: main.index('"GET /articles/{article_id}/feedback-status"')]
-    routes = [route for route in admin_api_handler._ROUTES if "findings" in route]
+    # A topic's Findings; the evals routes that review them are test_human_review.py's.
+    routes = [route for route in admin_api_handler._ROUTES if "findings" in route and "/evals/" not in route]
     assert set(routes) == {"GET /topics/{topic_id}/findings/latest", "GET /topics/{topic_id}/findings"}
     for route in routes:
         assert f'"{route}",' in admin_routes, route

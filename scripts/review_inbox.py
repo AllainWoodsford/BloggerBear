@@ -29,6 +29,13 @@ the model and what the rewrite cost. If the rewrite fails, the original comes ba
 
 A skipped item is left exactly as it is, and hidden from your next reviews for a while (a small local
 file, never sent anywhere) so a rerun gives you the next batch instead of the same ones.
+
+`approve --source findings` goes through research Findings instead (FindingsSource): what a model made
+of a source's data, for you to mark good (y) or bad (r). Each verdict scores the model that wrote the
+summary, and when the evals judge has reviewed the same Finding it is paired with the judge's verdict,
+which is how the judge's agreement with people is measured (lambdas/common/human_review.py). So the
+Findings the judge has reviewed come first, and its verdict is never shown: the Admin API does not send
+it, so it cannot sway yours. They are not part of the default run (`--source all`).
 """
 
 from __future__ import annotations
@@ -55,6 +62,11 @@ _SENT_BACK_REASON = "sent back by a person for a rewrite"
 
 HELP_LINE = "[y] Approve | [r] Reject | [z] Skip | [v] View all | [q] Quit -> "
 REWRITE_HELP_LINE = "[y] Approve | [r] Reject | [w] Re-Write | [z] Skip | [v] View all | [q] Quit -> "
+FINDINGS_HELP_LINE = "[y] Good | [r] Bad | [z] Skip | [v] View all | [q] Quit -> "
+# GET /evals/findings answers at most this many (lambdas/common/human_review.py's COUNT_MAX), and
+# FindingsSource reads at most this many of its pages, so a run never asks past its OFFSET_MAX.
+FINDINGS_MAX_COUNT = 50
+FINDINGS_MAX_PAGES = 10
 # One keystroke picks a model, so the picker shows at most this many.
 MAX_MODEL_CHOICES = 9
 
@@ -111,7 +123,7 @@ class Api:
 class Item:
     """One thing waiting for a decision, in the same shape whatever it came from."""
 
-    source: str  # "moderation", "refinements" or "mock"
+    source: str  # "moderation", "refinements", "findings" or "mock"
     key: str  # unique within its source
     title: str
     topic: str | None = None
@@ -133,9 +145,11 @@ class Item:
     @property
     def kind(self) -> str:
         """What to call it on the card."""
-        return {"moderation": "ARTICLE", "refinements": "PROMPT CHANGE", "mock": "PRACTICE"}.get(
-            self.source, self.source.upper()
-        )
+        kinds = {
+            "moderation": "ARTICLE", "refinements": "PROMPT CHANGE", "findings": "RESEARCH FINDING",
+            "mock": "PRACTICE",
+        }  # fmt: skip
+        return kinds.get(self.source, self.source.upper())
 
 
 class ContentSource(ABC):
@@ -144,6 +158,15 @@ class ContentSource(ABC):
 
     name = ""
     label = ""
+    # The keys offered for an item that cannot be rewritten; what y and r do, with `{it}` where a
+    # failure names the item ("could not approve this one") and a dry run does not ("would approve");
+    # and what the session summary calls each.
+    help_line = HELP_LINE
+    verbs = ("approve{it}", "reject{it}")
+    decided = ("approved", "rejected")
+    # What the last fetch has to tell the person besides its items (FindingsSource: that more are
+    # waiting behind the ones they skipped), said in place of "Nothing is waiting" when it found none.
+    notes: tuple[str, ...] = ()
 
     @abstractmethod
     def fetch(self, limit: int, exclude: set[str]) -> list[Item]:
@@ -332,6 +355,85 @@ class RefinementSource(ContentSource):
     def reject(self, item: Item) -> str:
         self.api.post(f"/prompt-refinements/{item.ref['topic_id']}/{item.ref['version']}/reject")
         return "rejected"
+
+
+class FindingsSource(ContentSource):
+    """Research Findings for you to mark good or bad (`approve --source findings`), in the order the
+    Admin API gives them: the ones the evals judge has reviewed first, then the rest, oldest first,
+    a page at a time past the ones you skipped. The API never sends the judge's verdict, so nothing
+    here can show it."""
+
+    name = "findings"
+    label = "research findings"
+    help_line = FINDINGS_HELP_LINE
+    verbs = ("mark{it} good", "mark{it} bad")
+    decided = ("good", "bad")
+
+    def __init__(self, api: Api):
+        self.api = api
+
+    def fetch(self, limit: int, exclude: set[str]) -> list[Item]:
+        # Skipped ones are left out here, never sent to the API, so the queue is read a page at a time
+        # (`offset`) until the batch is full or the queue ends: otherwise Findings skipped at its head
+        # would hide every one behind them. A Finding reviewed between two pages shifts the rest, so
+        # one can come twice (kept once) or slip past a page's edge to the next run.
+        self.notes = ()
+        items: list[Item] = []
+        seen: set[str] = set()
+        for page in range(FINDINGS_MAX_PAGES):
+            offset = page * FINDINGS_MAX_COUNT
+            path = f"/evals/findings?count={FINDINGS_MAX_COUNT}" + (f"&offset={offset}" if offset else "")
+            answer = self.api.get(path)
+            rows = answer.get("findings") or []
+            for row in rows:
+                key = f"{row.get('topic_id')}|{row.get('captured_at')}"
+                if key in seen or f"{self.name}:{key}" in exclude:
+                    continue
+                seen.add(key)
+                items.append(_finding_item(self.name, key, row))
+                if len(items) >= limit:
+                    return items
+            if len(rows) < FINDINGS_MAX_COUNT or not answer.get("more"):
+                return items
+        self.notes = (
+            f"More {self.label} are waiting behind the ones you skipped; --reset-skipped forgets your "
+            "skips.",
+        )
+        return items
+
+    def _review(self, item: Item, verdict: str) -> str:
+        body = {"topic_id": item.ref["topic_id"], "captured_at": item.ref["captured_at"], "verdict": verdict}
+        answer = self.api.post("/evals/findings/review", body)
+        if answer.get("already_reviewed"):
+            return f"marked {verdict} (it already was: nothing new was written)"
+        return f"marked {verdict}"
+
+    def approve(self, item: Item) -> str:
+        return self._review(item, "good")
+
+    def reject(self, item: Item) -> str:
+        return self._review(item, "bad")
+
+
+def _finding_item(source: str, key: str, row: dict) -> Item:
+    """A Finding's card: the summary, with its sources' titles and links to check it against."""
+    refs = [ref for ref in row.get("source_refs") or [] if isinstance(ref, dict)]
+    why = ["Is this summary of the source's data accurate and supported? y if it is good, r if it is bad."]
+    if row.get("judged"):
+        why.append("The judge has reviewed it too: your verdict is compared with its hidden one.")
+    sources = [f"- {ref.get('title') or '(untitled)'} {ref.get('url') or ''}".rstrip() for ref in refs]
+    body = str(row.get("summary") or "") + ("\n\nSources:\n" + "\n".join(sources) if sources else "")
+    return Item(
+        source=source,
+        key=key,
+        title=f"What the research on {row.get('topic_id')} found",
+        topic=row.get("topic_id"),
+        created_at=row.get("captured_at"),
+        why=why,
+        facts=[f"Sources: {len(refs)}"],
+        body=body,
+        ref={"topic_id": row.get("topic_id"), "captured_at": row.get("captured_at")},
+    )
 
 
 def _rewrite_fact(rewrite: dict) -> str:
@@ -555,6 +657,46 @@ class MockSource(ContentSource):
         return f"would rewrite with {model_id} (practice: nothing was sent)"
 
 
+class MockFindingsSource(FindingsSource):
+    """Made-up Findings, for practising `approve --source findings` with no AWS and no network."""
+
+    label = "practice findings"
+
+    def __init__(self, count: int = 6, now: datetime | None = None):
+        now = now or datetime.now(UTC)
+        self.log: list[tuple[str, str]] = []
+        samples = [
+            ("rail-sydney", "On-time running on the T1 line fell to 91.2% this week, from 94.0% last week."),
+            ("github-trending", "Three of this week's ten most-starred repositories are terminal tools."),
+            ("finance-crypto-investing", "Bitcoin closed the day 2.1% higher at $81,000 on steady volume."),
+        ]
+        self._rows = []
+        for n in range(count):
+            topic, summary = samples[n % len(samples)]
+            captured_at = (now - timedelta(hours=5 * (count - n))).isoformat(timespec="seconds")
+            self._rows.append(
+                {
+                    "topic_id": topic,
+                    "captured_at": captured_at,
+                    "summary": f"{summary} (practice #{n + 1})",
+                    "source_refs": [{"title": "A practice source", "url": "https://example.com/practice"}],
+                    "judged": n < count // 2,
+                }
+            )
+
+    def fetch(self, limit: int, exclude: set[str]) -> list[Item]:
+        items = []
+        for row in self._rows:
+            key = f"{row['topic_id']}|{row['captured_at']}"
+            if f"{self.name}:{key}" not in exclude:
+                items.append(_finding_item(self.name, key, row))
+        return items[:limit]
+
+    def _review(self, item: Item, verdict: str) -> str:
+        self.log.append((verdict, item.key))
+        return f"marked {verdict} (practice: nothing was sent)"
+
+
 class SkipStore:
     """Remembers what you skipped, in a small local file, so a rerun moves on to the next batch.
 
@@ -741,6 +883,8 @@ class Summary:
     quit_early: bool = False
     interrupted: bool = False  # stopped with Ctrl+C, or by an error, rather than q
     dry_run: bool = False
+    # What an approval and a rejection are called: ContentSource.decided, when every source agrees.
+    decided: tuple[str, str] = ("approved", "rejected")
 
     @property
     def reviewed(self) -> int:
@@ -756,7 +900,8 @@ class Summary:
         return f"Session summary: reviewed {self.reviewed} of {self.fetched} {items}."
 
     def line(self) -> str:
-        parts = f"{self.approved} approved, {self.rejected} rejected, {self.skipped} skipped"
+        approved, rejected = self.decided
+        parts = f"{self.approved} {approved}, {self.rejected} {rejected}, {self.skipped} skipped"
         if self.rewritten:
             parts += f", {self.rewritten} sent for a Re-Write"
         if self.errors:
@@ -806,15 +951,18 @@ def review(
 ) -> Summary:
     """Go through what is waiting, one item at a time. Each choice is applied at once."""
     out = out or sys.stdout
-    summary = Summary(dry_run=dry_run)
+    words = {source.decided for source in sources}
+    summary = Summary(dry_run=dry_run, decided=words.pop() if len(words) == 1 else Summary.decided)
     exclude = set() if include_skipped else store.active(skip_hours)
     batch, problems = fetch_batch(sources, limit, exclude)
-    for problem in problems:
+    notes = [note for source in sources for note in source.notes]
+    for problem in problems + notes:
         _emit(f"! {problem}", out)
     summary.fetched = len(batch)
     if not batch:
-        hidden = " (Skipped items are hidden; --include-skipped shows them.)" if exclude else ""
-        _emit("Nothing is waiting for you." + hidden, out)
+        if not notes:
+            hidden = " (Skipped items are hidden; --include-skipped shows them.)" if exclude else ""
+            _emit("Nothing is waiting for you." + hidden, out)
         return summary
 
     dry_note = " (dry run: nothing will be changed)" if dry_run else ""
@@ -841,7 +989,7 @@ def review(
 def _decide(source, item, summary, store, dry_run, key_reader, out) -> None:
     """Ask what to do with one item until it is settled or the operator quits."""
     while True:
-        print(REWRITE_HELP_LINE if item.can_rewrite else HELP_LINE, end="", file=out, flush=True)
+        print(REWRITE_HELP_LINE if item.can_rewrite else source.help_line, end="", file=out, flush=True)
         try:
             key = key_reader()
         except KeyboardInterrupt:
@@ -932,9 +1080,9 @@ def _rewrite(source, item, summary, store, dry_run, key_reader, out) -> bool:
 
 def _apply(source, item, key, summary, store, dry_run, out) -> bool:
     """Apply an approve/reject. True when it is settled (done, or already handled elsewhere)."""
-    verb = "approve" if key == "y" else "reject"
+    verb = source.verbs[0] if key == "y" else source.verbs[1]
     if dry_run:
-        _emit(f"  (dry run) would {verb}.", out)
+        _emit(f"  (dry run) would {verb.format(it='')}.", out)
         summary.approved += key == "y"
         summary.rejected += key == "r"
         return True
@@ -946,7 +1094,7 @@ def _apply(source, item, key, summary, store, dry_run, out) -> bool:
             summary.already_handled += 1
             store.forget(item.skip_key)
             return True
-        _emit(f"  ! Could not {verb} this one: {exc.message}", out)
+        _emit(f"  ! Could not {verb.format(it=' this one')}: {exc.message}", out)
         summary.errors += 1
         return False
     _emit(f"  OK: {message}", out)
@@ -1039,11 +1187,14 @@ def mock_inbox_report() -> str:
 
 
 def build_sources(api: Api | None, which: str, mock: bool) -> list[ContentSource]:
-    """The sources for a run. `which` is "all", "moderation" or "refinements"."""
+    """The sources for a run. `which` is "all" (articles and prompt changes), "moderation",
+    "refinements" or "findings" (research Findings, never part of "all")."""
     if mock:
-        return [MockSource()]
+        return [MockFindingsSource()] if which == "findings" else [MockSource()]
     if api is None:
         raise ValueError("a live run needs the Admin API")
+    if which == "findings":
+        return [FindingsSource(api)]
     sources: list[ContentSource] = []
     if which in ("all", "moderation"):
         sources.append(ModerationSource(api))

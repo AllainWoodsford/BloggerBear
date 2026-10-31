@@ -33,6 +33,11 @@ from common.model_pricing import canonical_model_id, default_model_entry, model_
 # Update by hand if it drifts far enough to matter.
 USD_TO_AUD_RATE = 1.50
 
+# The mark on a research call whose Finding was in an article's window but not among the Findings
+# the article was written from (build_research_lineage's `written_from`). The call is in the cost
+# like every other; continuous evals leave its prompt out of the article's (common/evals_emission.py).
+SET_ASIDE = "set_aside"
+
 
 def call_cost_usd(call: dict, model: dict | None) -> float | None:
     """USD cost of one tracked call given its model's registry entry, or
@@ -102,7 +107,7 @@ def calculate_lineage_cost_aud(calls: list[dict]) -> tuple[float | None, str | N
     return total_usd * USD_TO_AUD_RATE, None
 
 
-def build_research_lineage(findings: list[dict]) -> dict:
+def build_research_lineage(findings: list[dict], written_from: list[dict] | None = None) -> dict:
     """Bundle the research spend behind a window of Findings.
 
     Each Finding written since research tracking began carries `research_call`
@@ -112,7 +117,14 @@ def build_research_lineage(findings: list[dict]) -> dict:
     that Finding's content. A call that names the prompt and version that wrote
     the summary (`prompt_id`, `prompt_version`: Findings since the prompts were
     registered) keeps them; an older one is carried without them.
+
+    `written_from`, when given, is the Findings the article is written from
+    (those of `findings` the day's editorial goal kept): the call of every other one
+    is marked SET_ASIDE. The mark is on the call, not the block, because a
+    rewrite carries the block through whole and the lineage backfill copies
+    each call whole but rebuilds the block.
     """
+    kept = None if written_from is None else {finding.get("captured_at") for finding in written_from}
     calls: list[dict] = []
     untracked = 0
     for finding in findings:
@@ -131,6 +143,8 @@ def build_research_lineage(findings: list[dict]) -> dict:
         for key in ("prompt_id", "prompt_version"):
             if research_call.get(key):
                 call[key] = research_call[key]
+        if kept is not None and finding.get("captured_at") not in kept:
+            call[SET_ASIDE] = True
         calls.append(call)
 
     return summarise_research(calls, findings=len(findings), untracked=untracked)

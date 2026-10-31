@@ -44,12 +44,14 @@ from common import (
     backup,
     dispatch,
     equipment,
+    evals_emission,
     evals_rollup,
     evals_settings,
     evals_status,
     evidence,
     feedback_limits,
     gear,
+    human_review,
     model_catalog,
     model_fleet,
     prompts,
@@ -1970,10 +1972,20 @@ def _invoke_rewrite(
         "sent_back", topic_id=item.get("topic_id"), article_id=item["article_id"], queue_id=queue_id,
         from_status=from_status,
     )  # fmt: skip
-    return _response(
+    response = _response(
         202,
         {"rewriting": queue_id, "article_id": item["article_id"], "model_id": model_id, **(extra or {})},
     )
+    # Continuous evals: a person sending an article back to be rewritten scores the model that wrote
+    # it (common/evals_emission.py), once the rewrite has started. Professor Grizzlewick's rewrites
+    # (_DECIDED_BY) are left out, like his approvals. Never raises; the article is read only while
+    # evals are on.
+    if _DECIDED_BY.get() == "human":
+        evals_emission.article_rewrite(
+            lambda: get_article(item["article_id"]), article_id=item["article_id"], rewrite_id=rewrite_id,
+            topic_id=item.get("topic_id"),
+        )  # fmt: skip
+    return response
 
 
 def _rewrite_article(event: dict) -> dict:
@@ -2174,7 +2186,20 @@ def _resolve_moderation_item(
     refresh_articles_snapshot()
 
     action_key = "approved" if new_status == "approved" else "rejected"
-    return _response(200, {action_key: queue_id, "article_id": article_id})
+    response = _response(200, {action_key: queue_id, "article_id": article_id})
+    # Continuous evals: a person's approve or reject scores the article's model and each prompt in
+    # its lineage, and is kept as their verdict on the article, its `pair#<article_id>` row `human`,
+    # which the judge's agreement with people is measured from (common/evals_emission.py).
+    # Professor Grizzlewick's decisions come through here too (_DECIDED_BY) and are left out: his
+    # verdict is an AI's, not a person's, and as a `human` row it would grade the judge against
+    # another AI. After the answer is built, and never raises, so it cannot change what the operator
+    # is told.
+    if _DECIDED_BY.get() == "human":
+        evals_emission.admin_review(
+            article, article_id=article_id, queue_id=queue_id, decision=new_status,
+            topic_id=item.get("topic_id") or (article or {}).get("topic_id"),
+        )  # fmt: skip
+    return response
 
 
 def _post_rejection_musing(topic_id: str | None) -> None:
@@ -3201,6 +3226,33 @@ def _evals_digest_route(event: dict) -> dict:
     return _response(200, result)
 
 
+# --- A person's review of research Findings (common/human_review.py, PR19) -----------------------------
+#
+# The Findings waiting for a person, the judge's first and never with its verdict, a page at a time
+# (`offset`, so what the CLI skips cannot hide the rest), and one person's verdict on one of them: a
+# Human Review event, the `pair#<subject>` row `human` the judge's agreement is measured from, and the
+# person's marks on the Finding. `admin_cli approve --source findings`.
+
+
+def _list_findings_to_review_route(event: dict) -> dict:
+    try:
+        count = _whole_number_param(event, "count", 1, human_review.COUNT_MAX, human_review.COUNT_DEFAULT)
+        offset = _whole_number_param(event, "offset", 0, human_review.OFFSET_MAX, 0)
+    except ValueError as exc:
+        return _error(400, str(exc))
+    findings, more = human_review.queue(count, offset)
+    return _response(200, {"findings": findings, "count": len(findings), "more": more})
+
+
+def _review_finding_route(event: dict) -> dict:
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    status, answer = human_review.review(body)
+    return _response(status, answer) if isinstance(answer, dict) else _error(status, answer)
+
+
 # --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/archive/reviewer-bear.md) -----
 #
 # The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
@@ -3968,6 +4020,9 @@ _ROUTES = {
     "POST /evals/rollup": _start_evals_rollup_route,
     "GET /evals/status": _evals_status_route,
     "GET /evals/digest": _evals_digest_route,
+    # A person's review of research Findings (common/human_review.py).
+    "GET /evals/findings": _list_findings_to_review_route,
+    "POST /evals/findings/review": _review_finding_route,
     "GET /reviewer-config": _get_reviewer_config_route,
     "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /prompts": _list_prompts_route,

@@ -35,7 +35,9 @@ is released the same way the next time the queue is listed (`release_stale_rewri
 **Cost is tracked.** Every call a rewrite makes -- the rewrite itself, and the reviews run on
 its result -- is added to the article's lineage (stage `rewrite`, with the chosen model and the
 prompt's id and version: rewrite/rewrite, common/prompts_registry.py) and to the week's Stats
-totals, including a rewrite whose result was rejected: those tokens were spent.
+totals, including a rewrite whose result was rejected: those tokens were spent. Every call of a
+rewrite that failed is marked `failed` (FAILED_MARK), because its text was thrown away: continuous
+evals leave those calls out of the article's prompts and its writer (common/evals_emission.py).
 """
 
 from __future__ import annotations
@@ -76,6 +78,10 @@ from common.static_pages import invalidate_article_page, read_article_body, remo
 from common.stats_tracking import record_article_lineage
 
 REWRITE_STAGE = "rewrite"
+# The mark on every call of a rewrite that failed (_fail). The calls stay in the lineage and the
+# Stats for their cost, but the text they wrote was thrown away, so continuous evals credit neither
+# their model nor their prompts with the article (common/evals_emission.py reads it).
+FAILED_MARK = "failed"
 # The reason on the queue item `articles rewrite` makes for an article that had none (one that was
 # published, or rejected): it says why the article is in the inbox, and is not an issue to fix.
 SENT_BACK_REASON = "sent back by a person for a rewrite"
@@ -377,7 +383,8 @@ def _fail(item: dict, rewrite_id: str, reason: str, article: dict | None, calls:
     print(f"rewrite: failed for queue_id={item['queue_id']}: {reason}")
     if article is not None and any(c is not None for c in calls):
         try:
-            lineage, _ = _record_calls(article, calls)
+            # All of them belong to the one failed attempt: the rewrite and any review of its text.
+            lineage, _ = _record_calls(article, [{**c, FAILED_MARK: True} for c in calls if c is not None])
             update_article_after_rewrite(
                 article["article_id"],
                 title=article.get("title") or "",
