@@ -1045,13 +1045,16 @@ rebased (spec section 6).
 | rail test date fix (not in the spec) | #401 | `claude/fix-rail-access-date-bomb` | dev |
 | PR13b forgive, punish, ungate, revoke | #402 | `claude/ranch-44-evals-adjust` | PR13 |
 | PR15 rotation guard and rewrite picker | #403 | `claude/ranch-46-rotation-guard` | PR13 |
+| PR16 culling, proposal mode | #404 | `claude/ranch-47-culling` | PR15 + PR13b |
 
 **Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
 #390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
 bundle them: the new policies are ordered after #393's shrinks.
 
-**Being built now:** PR16 (`claude/ranch-47-culling`), from PR15 with PR13b merged in: its
-`models restore` reuses PR13b's forgive. Its PR takes PR15's branch as its base. PR14
+**PR16** (#404) starts from PR15 with PR13b merged in (its `models restore` reuses PR13b's
+forgive), so its diff shows PR13b's commits until #402 merges.
+
+**Being built now:** PR14
 (`claude/ranch-45-emission`), PR18 (`claude/ranch-49-judge`) and PR11b
 (`claude/ranch-31-dashboards`) need the evals and prompts stacks together, so they are built on
 `claude/ranch-55-stacks-meet`, the branch where the stacks meet, and their PRs take it as their
