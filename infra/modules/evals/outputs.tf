@@ -26,6 +26,11 @@ output "function_names" {
   value       = aws_lambda_function.eval_jobs[*].function_name
 }
 
+output "function_timeouts" {
+  description = "The same functions, by name, with each one's timeout in seconds, for module.observability's lambda_timeouts (pipeline health's duration panel)."
+  value       = { for function in aws_lambda_function.eval_jobs : function.function_name => function.timeout }
+}
+
 output "alarm_names" {
   description = "The alarms this module makes while evals are on: the rollup's heartbeat and eval-work's oldest job."
   value = concat(

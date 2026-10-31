@@ -79,8 +79,9 @@ variables {
     EVALS_LOG_GROUP     = ""
     EVAL_WORK_QUEUE_URL = ""
   }
-  pipeline_dlq_arn = "arn:aws:sqs:eu-west-1:111111111111:acme-dev-pipeline-dlq"
-  alerts_topic_arn = "arn:aws:sns:eu-west-1:111111111111:acme-dev-alerts"
+  pipeline_dlq_arn       = "arn:aws:sqs:eu-west-1:111111111111:acme-dev-pipeline-dlq"
+  alerts_topic_arn       = "arn:aws:sns:eu-west-1:111111111111:acme-dev-alerts"
+  prompt_fallback_metric = { namespace = "BloggerBear/dev", name = "PromptFallback" }
 }
 
 run "switched_off_it_makes_the_table_the_log_group_and_the_rights_and_nothing_else" {
@@ -121,9 +122,10 @@ run "switched_off_it_makes_the_table_the_log_group_and_the_rights_and_nothing_el
       length(aws_cloudwatch_log_metric_filter.eval_events) == 0 &&
       length(aws_cloudwatch_log_metric_filter.rollups) == 0 &&
       length(aws_cloudwatch_metric_alarm.rollup_heartbeat) == 0 &&
-      length(aws_cloudwatch_metric_alarm.eval_work_age) == 0
+      length(aws_cloudwatch_metric_alarm.eval_work_age) == 0 &&
+      length(aws_cloudwatch_dashboard.ranch_and_prompts) == 0
     )
-    error_message = "nothing else: no queue, no function, no schedule, no mapping, no metric, no alarm"
+    error_message = "nothing else: no queue, no function, no schedule, no mapping, no metric, no alarm, no dashboard"
   }
 
   assert {
@@ -132,8 +134,8 @@ run "switched_off_it_makes_the_table_the_log_group_and_the_rights_and_nothing_el
   }
 
   assert {
-    condition     = output.work_queue_url == "" && output.function_names == [] && output.alarm_names == []
-    error_message = "and an empty queue URL, no function for observability, no alarm"
+    condition     = output.work_queue_url == "" && output.function_names == [] && output.function_timeouts == {} && output.alarm_names == []
+    error_message = "and an empty queue URL, no function or timeout for observability, no alarm"
   }
 }
 
@@ -260,7 +262,8 @@ run "switched_on_it_makes_everything" {
       length(aws_cloudwatch_log_metric_filter.eval_events) == 1 &&
       length(aws_cloudwatch_log_metric_filter.rollups) == 1 &&
       length(aws_cloudwatch_metric_alarm.rollup_heartbeat) == 1 &&
-      length(aws_cloudwatch_metric_alarm.eval_work_age) == 1
+      length(aws_cloudwatch_metric_alarm.eval_work_age) == 1 &&
+      length(aws_cloudwatch_dashboard.ranch_and_prompts) == 1
     )
     error_message = "one of everything"
   }
@@ -429,9 +432,72 @@ run "switched_on_it_makes_everything" {
     condition = (
       output.work_queue_url == "https://sqs.eu-west-1.amazonaws.com/111111111111/acme-dev-eval-work" &&
       output.function_names == ["acme-dev-eval-jobs"] &&
+      output.function_timeouts == { "acme-dev-eval-jobs" = 900 } &&
       output.alarm_names == ["acme-dev-eval-rollup-heartbeat", "acme-dev-eval-work-age"]
     )
     error_message = "what the roots read: the queue's URL for every Lambda, the function for observability, the alarms"
+  }
+}
+
+# The ranch-and-prompts dashboard: Logs Insights panels over the evals group, reading its events
+# only, and the prompt fallbacks from the metric the observability module's filters feed.
+run "switched_on_the_ranch_and_prompts_dashboard_reads_the_evals_group_and_the_fallback_metric" {
+  command = plan
+
+  variables {
+    enabled = true
+  }
+
+  assert {
+    condition     = aws_cloudwatch_dashboard.ranch_and_prompts[0].dashboard_name == "acme-dev-ranch-and-prompts"
+    error_message = "the dashboard is <prefix>-<env>-ranch-and-prompts"
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_cloudwatch_dashboard.ranch_and_prompts[0].dashboard_body).start == "-P7D" &&
+      jsondecode(aws_cloudwatch_dashboard.ranch_and_prompts[0].dashboard_body).periodOverride == "inherit"
+    )
+    error_message = "it opens on a week, at the period each widget asks for, as pipeline health does"
+  }
+
+  # The header, the fallbacks, events per hour, models, prompt versions, cells, reasons, recorded
+  # fallbacks and the latest bad events.
+  assert {
+    condition     = length(jsondecode(aws_cloudwatch_dashboard.ranch_and_prompts[0].dashboard_body).widgets) == 9
+    error_message = "nine widgets"
+  }
+
+  assert {
+    condition = sum([
+      for widget in jsondecode(aws_cloudwatch_dashboard.ranch_and_prompts[0].dashboard_body).widgets :
+      length(try(widget.properties.metrics, []))
+    ]) <= 50
+    error_message = "at most 50 metrics on the dashboard, counting every entry of every widget's metrics"
+  }
+
+  assert {
+    condition = [
+      for widget in jsondecode(aws_cloudwatch_dashboard.ranch_and_prompts[0].dashboard_body).widgets :
+      widget.properties.metrics if widget.type == "metric"
+    ] == [[["BloggerBear/dev", "PromptFallback", { stat = "Sum", label = "fallbacks" }]]]
+    error_message = "one metric panel: the fallback metric it was given"
+  }
+
+  assert {
+    condition = length([
+      for widget in jsondecode(aws_cloudwatch_dashboard.ranch_and_prompts[0].dashboard_body).widgets :
+      widget if widget.type == "log" && startswith(widget.properties.query, "SOURCE 'acme-dev-evals' | filter schema = \"evals/1\" | ")
+    ]) == 7
+    error_message = "seven Logs Insights panels, each over the evals group's events alone"
+  }
+
+  assert {
+    condition = toset([
+      for widget in jsondecode(aws_cloudwatch_dashboard.ranch_and_prompts[0].dashboard_body).widgets :
+      widget.properties.region if can(widget.properties.region)
+    ]) == toset(["eu-west-1"])
+    error_message = "every panel reads the home region"
   }
 }
 

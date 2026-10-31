@@ -150,16 +150,35 @@ def test_the_assistant_is_catalogued_where_it_is_deployed():
             assert architecture.exists_in(component, environment) is deployed, (environment, key)
 
 
-def test_every_dashboard_is_in_the_catalogue_and_the_edge_one_only_in_production():
-    observability = _read("modules", "observability", "main.tf") + _read(
-        "modules", "observability", "api_waf_dashboards.tf"
-    )
-    names = {_template(n) for n in re.findall(r'dashboard_name = "([^"]+)"', observability)}
+def test_every_dashboard_is_in_the_catalogue_and_every_catalogued_one_is_in_terraform():
+    """Both ways, over every .tf file: pipeline health (the observability module's) and the ranch
+    and prompts one (the evals module's), which replaced the pipeline, lambda-runs and edge ones."""
+    names = set()
+    for path in _terraform_files():
+        names |= {_template(n) for n in re.findall(r'dashboard_name\s*=\s*"([^"]+)"', read_terraform(path))}
 
     assert names == {c.name for c in _of_kind("dashboard").values()}
-    assert "edge_dashboard_enabled = true" in _read("environments", "production", "main.tf")
-    assert "edge_dashboard_enabled = true" not in _read("environments", "dev", "main.tf")
-    assert _of_kind("dashboard")["edge"].only_in == ("production",)
+    assert set(_of_kind("dashboard")) == {"pipeline-health", "ranch-and-prompts"}
+
+
+def test_pipeline_health_is_in_every_environment_and_the_ranch_one_only_while_evals_are_on():
+    dashboards = _of_kind("dashboard")
+    health = _blocks(_read("modules", "observability", "pipeline_health.tf"), "aws_cloudwatch_dashboard")
+    ranch = _blocks(_read("modules", "evals", "dashboard.tf"), "aws_cloudwatch_dashboard")
+
+    assert not re.search(r"^  count\s*=", health["pipeline_health"], re.M)
+    assert dashboards["pipeline-health"].only_in == () and dashboards["pipeline-health"].switch_env is None
+    assert re.search(r"^  count\s*=\s*var\.enabled \? 1 : 0$", ranch["ranch_and_prompts"], re.M)
+    assert dashboards["ranch-and-prompts"].switch_env == "EVALS_ENABLED"
+
+
+def test_every_dashboard_a_resource_names_is_one_the_catalogue_has():
+    """Where to look for a resource never names a dashboard that is gone."""
+    dashboards = {c.name for c in _of_kind("dashboard").values()}
+    named = {board for c in CATALOGUE for board in c.dashboards}
+
+    assert named and named <= dashboards
+    assert named == dashboards  # and each dashboard is where to look for something
 
 
 def _alarm_templates() -> set[str]:
@@ -407,7 +426,9 @@ def test_without_an_environment_names_keep_a_placeholder_and_no_data_is_allowed(
         ("aws-waf-logs-bloggerbear-dev-public-api", ["log_group:waf-public-api"]),
         ("aws-waf-logs-bloggerbear-shared", ["log_group:waf-shared"]),
         ("/aws/apigateway/bloggerbear-prod-public-api-access", ["log_group:public-api-access"]),
-        ("bloggerbear-dev-edge", ["dashboard:edge"]),
+        (f"{PREFIX}dev-pipeline-health", ["dashboard:pipeline-health"]),
+        # A dashboard pipeline health replaced finds it.
+        (f"{PREFIX}prod-lambda-runs", ["dashboard:pipeline-health"]),
         ("bloggerbear-prod-pipeline-dlq", ["queue:pipeline-dlq"]),
         ("arn:aws:lambda:ap-southeast-2:1:function:bloggerbear-dev-public-api", ["function:public-api"]),
     ],
@@ -425,7 +446,7 @@ def test_kind_narrows_a_name_that_means_several_things(dev):
 
 
 def test_a_resource_only_in_production_says_so_in_dev(dev):
-    answer = architecture.architecture("edge")
+    answer = architecture.architecture("waf-shared")
 
     assert answer["matches"][0]["exists_here"] is False
     assert "It isn't deployed in dev." in answer["spoken"]
@@ -924,7 +945,7 @@ def test_a_layer_nobody_has_gets_the_list(dev):
 def test_a_name_or_a_kind_still_wins_over_a_layer(dev):
     assert architecture.architecture("topics", layer="edge")["matches"][0]["key"] == "topics"
     by_kind = architecture.architecture(kind="dashboard", layer="edge")
-    assert by_kind["table"]["rows"][0][0] == "bloggerbear-dev-pipeline"
+    assert by_kind["table"]["rows"][0][0] == f"{PREFIX}dev-pipeline-health"
 
 
 def test_every_resource_is_still_listed_as_a_table_when_everything_is_asked_for(dev):
@@ -932,14 +953,15 @@ def test_every_resource_is_still_listed_as_a_table_when_everything_is_asked_for(
 
     assert answer["table"]["columns"] == ["Name", "Kind", "What it's for"]
     assert ["bloggerbear-dev-candidate-ideas", "DynamoDB table"] == answer["table"]["rows"][2][:2]
-    assert architecture.architecture(kind="dashboard")["table"]["rows"][0][0] == "bloggerbear-dev-pipeline"
+    rows = architecture.architecture(kind="dashboard")["table"]["rows"]
+    assert rows[0][0] == f"{PREFIX}dev-pipeline-health"
     assert "kinds" in architecture.architecture(kind="spaceship")
 
 
 def test_console_links_are_built_only_for_what_needs_no_account_id(dev):
-    assert architecture.console_url("dashboard", "bloggerbear-dev-pipeline") == (
+    assert architecture.console_url("dashboard", f"{PREFIX}dev-pipeline-health") == (
         "https://ap-southeast-2.console.aws.amazon.com/cloudwatch/home?region=ap-southeast-2"
-        "#dashboards:name=bloggerbear-dev-pipeline"
+        f"#dashboards:name={PREFIX}dev-pipeline-health"
     )
     assert architecture.console_url("log_group", "/aws/lambda/bloggerbear-dev-public-api").endswith(
         "#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fbloggerbear-dev-public-api"
@@ -967,14 +989,56 @@ def test_the_question_that_got_a_shrug_now_gets_the_api_runsheet(dev):
     assert answer["assistant_tools"] == ["api_errors", "alarms", "security_events"]
 
 
-def test_the_edge_dashboard_step_says_what_to_do_instead_in_dev(dev, monkeypatch):
-    in_dev = runsheets.investigate("api-errors")["steps"][0]
-    monkeypatch.setenv("ENVIRONMENT_NAME", "production")
-    in_production = runsheets.investigate("api-errors")["steps"][0]
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_api_errors_runsheet_opens_on_pipeline_health_in_either_environment(dev, monkeypatch, env):
+    """Pipeline health is made in every environment, so its step is "here" in both and links to it."""
+    monkeypatch.setenv("ENVIRONMENT_NAME", env)
+    first = runsheets.investigate("api-errors")["steps"][0]
 
-    assert in_dev["here"] is False and "not created in dev" in in_dev["look_for"]
-    assert in_production["here"] is True and in_production["where"] == "bloggerbear-production-edge"
-    assert in_production["console_url"].endswith("#dashboards:name=bloggerbear-production-edge")
+    assert first["here"] is True and first["where"] == f"{PREFIX}{env}-pipeline-health"
+    assert first["console_url"].endswith(f"#dashboards:name={PREFIX}{env}-pipeline-health")
+    assert "blocks per rule" in first["look_for"]
+
+
+def test_a_step_only_one_environment_has_says_what_to_do_instead_in_the_other(dev):
+    """No runsheet has such a step today; the mechanism stays for the next one that does."""
+    step = runsheets.Step(
+        f"{PREFIX}{ENV}-something",
+        "dashboard",
+        "What it shows.",
+        only_in=("production",),
+        instead="Use the logs.",
+    )
+
+    in_dev = runsheets._render(step, "dev")
+    in_production = runsheets._render(step, "production")
+
+    assert in_dev["here"] is False and in_dev["look_for"] == "Use the logs." and in_dev["console_url"] is None
+    assert in_production["here"] is True and in_production["look_for"] == "What it shows."
+    assert in_production["console_url"].endswith(f"#dashboards:name={PREFIX}production-something")
+
+
+def test_every_dashboard_the_assistant_points_to_is_one_the_catalogue_has():
+    """A runsheet step or a suggestion never sends the operator to a dashboard that is gone (the
+    pipeline, lambda-runs and edge ones went with PR11b), in either environment."""
+    from ops_mcp import suggestions
+
+    catalogued = {c.name for c in CATALOGUE}
+    dashboards = {c.name for c in _of_kind("dashboard").values()}
+    sheets = runsheets._runsheets(None, None)
+    pointed = [step.where for sheet in sheets for step in sheet.steps if step.kind == "dashboard"]
+    for env in ("dev", "production"):
+        made = {architecture.fill(name, env) for name in dashboards}
+        for where in pointed:
+            assert architecture.fill(where, env) in made, where
+    assert pointed
+    # A suggestion names a resource as <prefix>-<env>-<what>: each must be one the catalogue has.
+    named = re.compile(rf"{re.escape(PREFIX)}<env>-[a-z0-9-]+[a-z0-9]")
+    in_actions = [name for entry in suggestions.CATALOGUE.values() for name in named.findall(entry.action)]
+    assert in_actions and {name.replace("<env>", ENV) for name in in_actions} <= catalogued
+    for module in ("runsheets", "suggestions", "firewall", "architecture"):
+        text = (ROOT / "lambdas" / "ops_mcp" / f"{module}.py").read_text(encoding="utf-8")
+        assert "edge_dashboard_enabled" not in text, module
 
 
 @pytest.mark.parametrize(
@@ -1050,14 +1114,15 @@ def test_a_component_not_deployed_here_says_so_in_the_tables(dev, monkeypatch):
 # The evals module's switched parts (infra/modules/evals: count = var.enabled ? 1 : 0), and the two
 # it makes whether evals are on or off.
 EVALS_SWITCHED = [("function", "eval-jobs"), ("queue", "eval-work"), ("schedule", "eval-rollup"),
-                  ("schedule", "eval-judge")]  # fmt: skip
+                  ("schedule", "eval-judge"), ("dashboard", "ranch-and-prompts")]  # fmt: skip
 EVALS_ALWAYS = [("table", "evals"), ("log_group", "evals")]
 
 
 def test_the_evals_modules_switched_parts_exist_only_while_evals_are_on(dev, monkeypatch):
-    """eval-jobs, the eval-work queue and their schedules are made only while evals are on, which the
-    deployment tells the assistant as EVALS_ENABLED: until then they are not deployed here, so a log
-    review neither reads nor refuses eval-jobs' log group. The table and the log group always are."""
+    """eval-jobs, the eval-work queue, their schedules and the ranch-and-prompts dashboard are made
+    only while evals are on, which the deployment tells the assistant as EVALS_ENABLED: until then
+    they are not deployed here, so a log review neither reads nor refuses eval-jobs' log group. The
+    table and the log group always are."""
     assert {(c.kind, c.key) for c in CATALOGUE if c.switch_env} == set(EVALS_SWITCHED)
     switches = {c.switch_env for c in CATALOGUE if c.switch_env}
     assert switches == {"EVALS_ENABLED"} and switches <= set(architecture.SWITCHES)

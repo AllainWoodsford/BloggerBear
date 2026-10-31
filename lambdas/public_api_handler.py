@@ -679,7 +679,7 @@ def _submit_feedback(event: dict) -> dict:
     put_feedback(article_id, feedback_id, vote, final_comment, created_at)
     update_article_net_votes(article_id, 1 if vote == "up" else -1)
     # A tag only, never the comment, the vote or the article: a metric filter counts these for the
-    # Lambda runs dashboard, next to the rejections above (infra/modules/observability).
+    # pipeline health dashboard, next to the rejections above (infra/modules/observability).
     kept = "comment kept" if final_comment else "vote only"
     print(f"public_api_handler: accepted a feedback submission ({kept})")
     try:
