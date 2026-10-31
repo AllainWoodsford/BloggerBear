@@ -14,13 +14,15 @@ which admin_cli.build_parser calls. Today's commands:
   own (GET /evals/status).
 - `evals digest [--since DAY]`: the day totals per model and prompt version since a day, a week by
   default (GET /evals/digest).
-- `evals forgive|punish --model ID | --prompt ID --version V --amount N [--allow-cull]`: move one
-  model's or prompt version's total, and no window, by N (POST /evals/adjust). N is at most 100
-  without --allow-cull, and a punish that takes a model's total below the total gate needs it too.
+- `evals forgive|punish --model ID | --prompt ID --version V --amount N [--allow-cull]`: forgive or
+  punish one model or prompt version by N, in no window (POST /evals/adjust). A model's total moves
+  at the next hourly rollup; a prompt version's adjustment is kept, and nothing adds those up yet.
+  N is at most 100 without --allow-cull.
 - `evals ungate --model ID --hours N`: hold a model's gates open for N hours, 0 to end that now
   (POST /evals/ungate).
 - `evals revoke --source SOURCE [--since TIME]`: leave a source's events out of the rollup from a
-  time on, or all of them (POST /evals/revoke).
+  time on, or all of them (POST /evals/revoke). The days already final that hold them are added up
+  again by a rollup the route starts, or by the `evals rollup` command its answer gives.
 
 cull, score and runs follow with their routes. After any change to these commands run
 `python scripts/generate_cli_reference.py`, so the assistant's CLI reference
@@ -210,13 +212,14 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
     digest_parser.set_defaults(func=cmd_digest)
 
     for direction, what in (
-        ("forgive", "Raise a model's or a prompt version's total by N, and no window"),
-        ("punish", "Lower a model's or a prompt version's total by N, and no window"),
+        ("forgive", "Raise a model's total by N, and no window, or record a forgive of a prompt version"),
+        ("punish", "Lower a model's total by N, and no window, or record a punish of a prompt version"),
     ):
         adjust_parser = evals_sub.add_parser(
             direction,
-            help=f"{what} (an Admin {direction.capitalize()} event): the total, which the total gate and "
-            "culling read, moves at the next hourly rollup",
+            help=f"{what} (an Admin {direction.capitalize()} event): a model's total, which the total gate "
+            "and culling read, moves at the next hourly rollup; nothing adds up a prompt version's "
+            "adjustments yet",
         )
         adjust_parser.add_argument("--model", default=None, metavar="MODEL_ID", help="The model to adjust")
         adjust_parser.add_argument(
@@ -239,8 +242,8 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
             "--allow-cull",
             action="store_true",
             default=False,
-            help="Allow more than 100, or a punish that takes a model's total below the total gate, "
-            "where it is gated and may be culled",
+            help="Allow more than 100 (a punish that large can take a model below the total gate, where "
+            "it is gated and may be culled)",
         )
         adjust_parser.set_defaults(func=adjuster(direction))
 
@@ -259,8 +262,9 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
 
     revoke_parser = evals_sub.add_parser(
         "revoke",
-        help="Leave a source's events out of the rollup (added to excluded_sources); days already final "
-        "keep them until `evals rollup --from` adds them up again",
+        help="Leave a source's events out of the rollup (added to excluded_sources); the days already "
+        "final that hold them are added up again, by a rollup it starts or the `evals rollup` command it "
+        "gives",
     )
     revoke_parser.add_argument(
         "--source",

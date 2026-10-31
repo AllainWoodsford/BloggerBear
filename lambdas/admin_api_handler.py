@@ -2849,13 +2849,19 @@ def _start_evals_rollup_route(event: dict) -> dict:
         if isinstance(days, str):
             return _error(400, days)
         payload.update({"from": days[0].isoformat(), "to": days[1].isoformat()})
+    _invoke_rollup(payload)
+    days_asked = {key: payload[key] for key in ("from", "to") if key in payload}
+    return _response(202, {"triggered": "rollup", **days_asked})
+
+
+def _invoke_rollup(payload: dict) -> None:
+    """Start a rollup in eval-jobs without waiting for it: `payload` is its event (job, trigger, and
+    `from`/`to` for days added up again). Raises when Lambda refuses."""
     _get_lambda_client().invoke(
         FunctionName=evals_rollup.function_name(),
         InvocationType="Event",
         Payload=json.dumps(payload).encode("utf-8"),
     )
-    days_asked = {key: payload[key] for key in ("from", "to") if key in payload}
-    return _response(202, {"triggered": "rollup", **days_asked})
 
 
 def _evals_status_route(event: dict) -> dict:
@@ -2873,7 +2879,9 @@ def _evals_digest_route(event: dict) -> dict:
 # An adjustment is refused while evals are off, as a rollup is: its event could not be written, so
 # its row would move a total with nothing in the evals log to say why. An override and a revoked
 # source are answered either way: neither writes an event, and like PUT /evals-config they can be
-# set before evals are switched on (or kept while they are off, for when they are on again).
+# set before evals are switched on (or kept while they are off, for when they are on again). A
+# revoked source also starts a rollup of the days already final that hold its events, while evals
+# are on; when none can start, the answer gives the command that adds those days up again.
 
 
 def _evals_body(event: dict) -> dict | None:
@@ -2910,13 +2918,27 @@ def _evals_ungate_route(event: dict) -> dict:
         return _error(exc.status, str(exc))
 
 
+def _start_revoke_rollup(first: str, last: str) -> str | None:
+    """Add the days `first` to `last` up again in eval-jobs, after a revoke: None when the rollup
+    started, else why not, in words. Never raises: the revoke is written whatever happens here."""
+    if os.environ.get("EVALS_ENABLED") != "true":
+        return "evals are off (EVALS_ENABLED), so no rollup runs until they are on"
+    try:
+        _invoke_rollup({"job": "rollup", "trigger": "admin", "from": first, "to": last})
+    except Exception as exc:  # noqa: BLE001 - the revoke is written; the answer gives the command
+        print(f"admin_api_handler: could not start the rollup after a revoke: {exc!r}")
+        return "the rollup could not be started (the admin API's log says why)"
+    return None
+
+
 def _evals_revoke_route(event: dict) -> dict:
-    """Leave a source's events out of the rollup: {source, since} appended to excluded_sources."""
+    """Leave a source's events out of the rollup: {source, since} appended to excluded_sources, and
+    the days already final that hold them added up again (common/evals_adjust.revoke)."""
     body = _evals_body(event)
     if body is None:
         return _error(400, "request body must be a JSON object")
     try:
-        return _response(200, evals_adjust.revoke(body))
+        return _response(200, evals_adjust.revoke(body, datetime.now(UTC), _start_revoke_rollup))
     except evals_adjust.Refused as exc:
         return _error(exc.status, str(exc))
 

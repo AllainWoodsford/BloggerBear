@@ -4,38 +4,43 @@ hold a model's gates open for a while, and leave a source's events out of the ro
 POST /evals/adjust, POST /evals/ungate and POST /evals/revoke call these; `admin_cli evals forgive`,
 `punish`, `ungate` and `revoke` send them.
 
-**adjust** (Admin Forgive, Admin Punish) moves one model's or one prompt version's total by a whole
-number, and no window (section 4.3's "total only"): a forgive cannot hide a bad day or week from the
-daily and weekly gates, nor a punish put a model under them; the total moves, which the total gate
-and culling (PR16) read. It writes the `adjust#model#<id>` or `adjust#prompt#<prompt_id>#<version>`
-row of the evals table itself (`ts#<time>`: `delta`, `reason`, `by`), then emits the event, whose id
-is `adjust:<time>:<target>` with the same time and the row's entity (less `adjust#`) as the target.
-The rollup scores nothing for the event; it adds a model's adjust# rows to `total_perf` at its next
-run (common/evals_rollup.py).
+**adjust** (Admin Forgive, Admin Punish) writes a forgive or punish of one model or one prompt
+version, by a whole number, into no window (section 4.3's "total only"): a forgive cannot hide a bad
+day or week from the daily and weekly gates, nor a punish put a model under them. It writes the
+`adjust#model#<id>` or `adjust#prompt#<prompt_id>#<version>` row of the evals table itself
+(`ts#<time>`: `delta`, `reason`, `by`), then emits the event, whose id is `adjust:<time>:<target>`
+with the same time and the row's entity (less `adjust#`) as the target. The rollup scores nothing
+for the event. A model's adjust# rows count in its `total_perf` from the rollup's next run
+(common/evals_rollup.py), and the total gate and culling (PR16) read that total. A prompt version's
+row is kept, and nothing adds prompt versions' adjustments up yet: no total, window or gate of a
+prompt version moves.
 
-The amount is at most 100 either way (section 4.3) unless `allow_cull` is sent; and a punish that
-would take a model's total from at or above `total_gate` to below it, where the gates hold the model
-and culling may take it, needs `allow_cull` whatever its size. The total it is judged by is the one
-the next rollup would put on the models row: the model's day rows and adjust# rows, the judge's
-verdicts counted as the last rollup counted them. The adjustment is checked as the event it will be
-(evals.event) before anything is written, so a row never stands for an event the schema would
-refuse; a model must be in the registry. The row is written only where none is (the same target at
-the same microsecond), so one adjustment never replaces another.
+The amount is at most 100 either way (section 4.3) unless `allow_cull` is sent (then MAX_AMOUNT).
+For a model the answer shows its total before and after, as the next rollup would put it on the
+models row (the model's day rows and adjust# rows, the judge's verdicts counted as the last rollup
+counted them), and `total_gate` beside them: information only, which refuses nothing. The
+adjustment is checked as the event it will be (evals.event) before anything is written, so a row
+never stands for an event the schema would refuse. A model must be in the registry, whose row may be
+kept under the model's id or under an inference profile's ARN for it (_registry_row); its adjust#
+row and its event always name the canonical id, the key the rollup reads. The row is written only
+where none is (the same target at the same microsecond), so one adjustment never replaces another.
 
-**ungate** sets `ungated_until` on a models row for some hours (0 ends the override now): the
-model's gates are held open until then (evals_settings.ungated). The write is conditional on the row
-being there (dynamo.set_model_fields), so a culled model is never written back.
+**ungate** sets `ungated_until` on the model's registry row (found as an adjustment finds it) for
+some hours (0 ends the override now): the model's gates are held open until then
+(evals_settings.ungated). The write is conditional on the row being there
+(dynamo.set_model_fields), so a culled model is never written back.
 
 **revoke** appends `{source, since}` to the evals settings' `excluded_sources` (at most
 evals_settings.MAX_EXCLUDED_SOURCES): the rollup leaves that source's events out from `since` on, or
 all of them without it (evals_settings.excluded). The scheduled rollup adds up only the days after
-its watermark, so days already final keep those events until `evals rollup --from` adds them up
-again; the answer says so.
+its watermark, so the days already final would keep those events: the caller starts a rollup of the
+days from the one `since` falls on (readd_days) to today, and the answer says it was started, or
+gives the `evals rollup --from --to` command that does it.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from common import dynamo, evals, evals_rollup, evals_settings, evidence
 from common.model_pricing import canonical_model_id
@@ -54,6 +59,8 @@ SOURCE = "admin_api"
 BY = "human"
 ADJUST = "adjust#"
 TS = "ts#"
+# DynamoDB's longest partition key, in bytes: a longer id as sent is never looked up as it is.
+KEY_BYTES = 2048
 
 # Why an adjustment's event would be refused, for the fields an operator sends.
 _FIELD_ERRORS = {
@@ -64,13 +71,10 @@ _FIELD_ERRORS = {
 APPLIED = {
     "model": "total_perf on the models row moves at the next hourly rollup (`evals rollup` runs it now); "
     "the daily, weekly and monthly windows never do",
-    "prompt": "kept as this prompt version's adjustment: it counts in the version's total and in no window",
+    "prompt": "kept as this prompt version's adjust# row and its event; nothing adds prompt versions' "
+    "adjustments up yet (the rollup totals only a model's), so no total, window or gate moves",
 }
-REVOKED = (
-    "The hourly rollup leaves these events out of every day it adds up from now on. Days already final "
-    "(up to its watermark, `evals status`) keep them until `evals rollup --from <day>` adds those days "
-    "up again."
-)
+REVOKED = "The hourly rollup leaves these events out of every day it adds up from now on"
 
 
 class Refused(Exception):
@@ -86,12 +90,28 @@ def _whole(value) -> bool:
 
 
 def _model_id(value) -> str | None:
-    """A model id as the registry keys it (an inference profile's ARN gives its id), or None when
-    `value` is not one."""
+    """The canonical id `value` names (an inference profile's ARN gives its id): the one a model's
+    evals rows and events are kept under. None when `value` is not a model id. The registry may key
+    the model's row by either; _registry_row finds it."""
     value = canonical_model_id(value)
     if not isinstance(value, str) or value.endswith("\n") or evidence.check("model", value) is None:
         return None
     return value
+
+
+def _registry_row(given: str, model_id: str) -> dict | None:
+    """The registry row of the model whose canonical id is `model_id`: the row under the id as sent
+    (`given`, an inference profile's ARN or the id itself), else the row under `model_id`, else the
+    row whose own id is an ARN that names it (as the rollup and the digest match them). None when
+    the registry has no row for it."""
+    for key in dict.fromkeys((given, model_id)):
+        if len(key.encode("utf-8")) <= KEY_BYTES:
+            row = dynamo.get_model(key)
+            if row is not None:
+                return row
+    return next(
+        (row for row in dynamo.list_models() if canonical_model_id(row["model_id"]) == model_id), None
+    )
 
 
 def timestamp(now: datetime) -> str:
@@ -137,7 +157,7 @@ def adjust(body: dict, now: datetime | None = None) -> dict:
     now = now or datetime.now(UTC)
     key, fields = _target(body)
     direction = body.get("direction")
-    if direction not in DIRECTIONS:
+    if not isinstance(direction, str) or direction not in DIRECTIONS:
         raise Refused(400, "'direction' must be forgive or punish")
     allow_cull = body.get("allow_cull", False)
     if not isinstance(allow_cull, bool):
@@ -167,20 +187,15 @@ def adjust(body: dict, now: datetime | None = None) -> dict:
     totals = {}
     if "model_id" in fields:
         model_id = fields["model_id"]
-        if dynamo.get_model(model_id) is None:
+        if _registry_row(body["model_id"], model_id) is None:
             raise Refused(404, f"no model '{model_id}' in the registry (admin_cli models list)")
         settings = evals_settings.get_settings()
-        gate = settings["total_gate"]
         before = model_total(model_id, settings, now, table)
-        after = before + delta
-        if after < gate <= before and not allow_cull:
-            raise Refused(
-                400,
-                f"punishing '{model_id}' by {amount} would take its total from {before} to {after}, below "
-                f"total_gate ({gate}), where the gates hold a model and culling may take it: send "
-                "allow_cull: true (admin_cli: --allow-cull) to do it anyway",
-            )
-        totals = {"total_perf_before": before, "total_perf": after, "total_gate": gate}
+        totals = {
+            "total_perf_before": before,
+            "total_perf": before + delta,
+            "total_gate": settings["total_gate"],
+        }
 
     item = {"entity": f"{ADJUST}{key}", "sk": f"{TS}{ts}", "delta": delta, "reason": reason, "by": BY}
     try:
@@ -211,8 +226,9 @@ def adjust(body: dict, now: datetime | None = None) -> dict:
 
 
 def ungate(body: dict, now: datetime | None = None) -> dict:
-    """Hold a model's gates open for `hours` (0 ends an override now): `ungated_until` on its row,
-    never on a row that is not there. Raises Refused."""
+    """Hold a model's gates open for `hours` (0 ends an override now): `ungated_until` on its
+    registry row, never on a row that is not there. The answer names the row's own id, as `evals
+    status` does. Raises Refused."""
     now = now or datetime.now(UTC)
     model_id = _model_id(body.get("model_id"))
     if model_id is None:
@@ -223,9 +239,10 @@ def ungate(body: dict, now: datetime | None = None) -> dict:
             400, f"'hours' must be a whole number from 1 to {MAX_UNGATE_HOURS}, or 0 to end an override now"
         )
     until = (now + timedelta(hours=hours)).astimezone(UTC).isoformat(timespec="seconds") if hours else None
-    if not dynamo.set_model_fields(model_id, {"ungated_until": until}, expected={}):
+    row = _registry_row(body["model_id"], model_id)
+    if row is None or not dynamo.set_model_fields(row["model_id"], {"ungated_until": until}, expected={}):
         raise Refused(404, f"no model '{model_id}' in the registry (admin_cli models list)")
-    return {"model_id": model_id, "hours": hours, "ungated_until": until}
+    return {"model_id": row["model_id"], "hours": hours, "ungated_until": until}
 
 
 def _entry(entry) -> dict:
@@ -233,9 +250,53 @@ def _entry(entry) -> dict:
     return {"source": entry} if isinstance(entry, str) else dict(entry)
 
 
-def revoke(body: dict) -> dict:
-    """Append `{source, since}` to `excluded_sources` (an entry already there is not added twice).
-    The list in effect afterwards and the entry added (None when it was there). Raises Refused."""
+def readd_days(since: str | None, now: datetime, zone) -> tuple[date, date] | None:
+    """The days a revoke's events must be taken out of again, for the rollup's `from` and `to`:
+    from the day `since` falls on in `zone` (or the oldest day a rollup may add up again,
+    evals_rollup.OLDEST_DAY_BACK back, when that day is older or there is no `since`) to today.
+    None when `since` is after today: no day holds those events yet."""
+    today = evals_rollup.local_day(now, zone)
+    first = today - timedelta(days=evals_rollup.OLDEST_DAY_BACK)
+    if since is not None:
+        moment = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        day = evals_rollup.local_day(moment if moment.tzinfo else moment.replace(tzinfo=UTC), zone)
+        if day > today:
+            return None
+        first = max(first, day)
+    return first, today
+
+
+def _revoked(excluded: list, added: dict | None, days: tuple[date, date] | None, start_rollup) -> dict:
+    """revoke's answer, once the entry is in `excluded_sources`: the days already final are added up
+    again by the rollup `start_rollup(from, to)` starts (it returns None when it started one, else
+    why not, in words), or the answer gives the command that does it."""
+    answer = {"excluded_sources": excluded, "added": added}
+    if days is None:
+        applied = f"{REVOKED}; its 'since' is after today, so no day holds those events yet."
+        return {**answer, "rollup": None, "applied": applied}
+    first, last = (day.isoformat() for day in days)
+    why_not = start_rollup(first, last) if start_rollup else "no rollup was started"
+    answer["rollup"] = {"from": first, "to": last, "started": why_not is None}
+    if why_not is None:
+        applied = (
+            f"{REVOKED}, and the days {first} to {last} are being added up again now (in eval-jobs), so "
+            "the days already final leave them out too."
+        )
+    else:
+        applied = (
+            f"{REVOKED}. The days already final keep them until `evals rollup --from {first} --to {last}` "
+            f"adds those days up again: {why_not}."
+        )
+    return {**answer, "applied": applied}
+
+
+def revoke(body: dict, now: datetime | None = None, start_rollup=None) -> dict:
+    """Append `{source, since}` to `excluded_sources` (an entry already there is not added twice),
+    then have `start_rollup(from, to)` add up again the days already final that hold its events
+    (readd_days; also when the entry was there, so sending it again retries a start that failed).
+    The list in effect afterwards, the entry added (None when it was there) and the days asked
+    for. Raises Refused, and then starts nothing."""
+    now = now or datetime.now(UTC)
     source = body.get("source")
     if source is None:
         raise Refused(400, "'source' is required: human, judge, system, run:<run id>, or a source's code")
@@ -252,9 +313,11 @@ def revoke(body: dict) -> dict:
     row = evals_settings.get_row()
     stored = row.get("excluded_sources")
     # The list in effect: a stored list that is not valid is already being ignored (the default, []).
-    current = evals_settings.effective_settings(row)["excluded_sources"]
+    effective = evals_settings.effective_settings(row)
+    current = effective["excluded_sources"]
+    days = readd_days(since, now, evals_settings.zone(effective))
     if any(_entry(existing) == entry for existing in current):
-        return {"excluded_sources": current, "added": None, "applied": REVOKED}
+        return _revoked(current, None, days, start_rollup)
     updated = [*current, entry]
     if len(updated) > evals_settings.MAX_EXCLUDED_SOURCES:
         raise Refused(
@@ -270,4 +333,4 @@ def revoke(body: dict) -> dict:
     )
     if not replaced:
         raise Refused(409, "'excluded_sources' changed while this was being written: send it again")
-    return {"excluded_sources": updated, "added": entry, "applied": REVOKED}
+    return _revoked(updated, entry, days, start_rollup)
