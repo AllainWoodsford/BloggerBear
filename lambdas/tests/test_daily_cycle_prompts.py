@@ -422,7 +422,7 @@ def test_the_prompt_fields_survive_into_the_articles_lineage():
 def test_the_daily_run_binds_its_run_id_for_the_draw_and_lets_go_after(event, context, expected):
     seen = []
 
-    def run(topic_id, force=False, run_id=None):
+    def run(topic_id, force=False, run_id=None, article_id=None):
         seen.append((prompts.bound_run(), run_id))
         return {"status": "no_findings", "topic_id": topic_id}
 

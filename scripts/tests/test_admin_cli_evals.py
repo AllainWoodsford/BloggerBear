@@ -57,7 +57,7 @@ def test_register_adds_the_evals_group_and_its_commands():
     admin_cli_evals.register(subparsers, {"do_request": None, "CliError": Exception})
     assert set(subparsers.choices) == {"evals"}
     commands = _subparsers(subparsers.choices["evals"]).choices
-    assert set(commands) == {"get", "set", "rollup", "status", "digest"}
+    assert set(commands) == {"get", "set", "rollup", "status", "digest", "trace"}
 
 
 def test_admin_cli_imports_the_eval_module_only_inside_build_parser():
@@ -138,3 +138,11 @@ def test_rollup_runs_from_the_watermark_or_for_the_days_named():
     ]
     with pytest.raises(admin_cli.CliError):
         cli("rollup", "--to", "2026-10-03")
+
+
+def test_trace_reads_one_articles_call_traces():
+    """PR18c: GET /evals/traces/{article_id}, the id quoted so nothing in it can name another path."""
+    assert cli("trace", "0b7e4c1e-5d3a-4f8e-9c2b-1a2b3c4d5e6f") == [
+        ("GET", "/evals/traces/0b7e4c1e-5d3a-4f8e-9c2b-1a2b3c4d5e6f", None)
+    ]
+    assert cli("trace", "a/../b") == [("GET", "/evals/traces/a%2F..%2Fb", None)]

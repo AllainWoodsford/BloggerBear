@@ -8,7 +8,7 @@ than feedback (Feedback's own PII pipeline is Phase 5, out of scope here).
 
 import re
 
-from common import prompts
+from common import call_traces, prompts
 from common.bedrock import invoke_model_tracked
 
 # A handful of conservative, obvious-PII patterns -- not a PII-detection
@@ -351,6 +351,9 @@ def review_draft(
         "used_fallback": result["used_fallback"],
         **prompts.lineage_fields(prompt),
     }
+    # Stored as sent: the draft and its research are the material under review, already redacted of
+    # obvious PII above, and neither is reader text (common/call_traces.py).
+    call_traces.record(parsed["lineage_call"], prompt.text, result["text"])
     return parsed
 
 

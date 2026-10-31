@@ -14,6 +14,9 @@ which admin_cli.build_parser calls. Today's commands:
   and the topics by dispatch mode, each part on its own (GET /evals/status).
 - `evals digest [--since DAY]`: the day totals per model and prompt version since a day, a week by
   default (GET /evals/digest).
+- `evals trace ARTICLE_ID`: one article's call traces, each model call's prompt and reply as stored
+  while `trace_calls` was on, the gear's guidance and the operator's note as their sha256, and those
+  of the research behind it (GET /evals/traces/{article_id}; lambdas/common/call_traces.py).
 
 forgive, punish, ungate, revoke, cull, score and runs follow with their routes. After any change to
 these commands run `python scripts/generate_cli_reference.py`, so the assistant's CLI reference
@@ -46,7 +49,7 @@ SET_FLAGS = (
     ("--daily-spend-cap", "evals_daily_spend_cap_aud", "amount",
      "A-dollars the judge and scoring runs may spend a day, 0 to 100 (default 2)"),
     ("--trace-calls", "trace_calls", "switch",
-     "Store each model call's prompt and reply for review (default off)"),
+     "Store each model call's prompt and reply for 14 days, for `evals trace` (default off; on in dev)"),
     ("--timezone", "timezone", "text",
      "The IANA time zone whose days the rollup counts (default Australia/Sydney)"),
     ("--excluded-sources", "excluded_sources", "list",
@@ -174,3 +177,21 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
         help="The first day, YYYY-MM-DD, or an ISO time (120 days back at most)",
     )
     digest_parser.set_defaults(func=cmd_digest)
+
+    _register_trace(evals_sub, do_request)
+
+
+def _register_trace(evals_sub: argparse._SubParsersAction, do_request) -> None:
+    """`evals trace` (PR18c): one article's call traces, read back through the admin API."""
+    trace_parser = evals_sub.add_parser(
+        "trace",
+        help="One article's call traces: each model call's prompt and reply as stored while trace_calls "
+        "was on (the gear's guidance and the operator's note as their sha256), and those of the research "
+        "behind it",
+    )
+    trace_parser.add_argument(
+        "article_id", help="The article's id, or the id a run that stored no article traced its calls under"
+    )
+    trace_parser.set_defaults(
+        func=lambda args: do_request(args, "GET", f"/evals/traces/{quote(args.article_id, safe='')}")
+    )

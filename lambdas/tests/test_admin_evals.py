@@ -34,6 +34,8 @@ WORK_QUEUE_URL = "https://sqs.ap-southeast-2.amazonaws.com/123456789012/acme-dev
 ROUTES = {
     "GET /evals-config", "PUT /evals-config", "POST /evals/rollup", "GET /evals/status", "GET /evals/digest",
 }  # fmt: skip
+# PR18c's call traces (test_call_traces.py tests the route itself).
+ROUTES.add("GET /evals/traces/{article_id}")
 
 
 @pytest.fixture

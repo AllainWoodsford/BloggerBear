@@ -34,6 +34,8 @@ GUARDED = sorted(
         "common/evals_rollup.py",
         "common/evals_settings.py",
         "common/evals_status.py",
+        # Every traced call site's, which prints what it could not store.
+        "common/call_traces.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
     ]
 )

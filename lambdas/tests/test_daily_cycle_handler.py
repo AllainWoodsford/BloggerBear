@@ -13,7 +13,7 @@ from moto import mock_aws
 import common.dynamo as dynamo
 import daily_cycle_handler
 import research_tick_handler
-from common import compliance, editorial_resolver, findings_window
+from common import call_traces, compliance, editorial_resolver, findings_window
 from common.adapters.base import DaySubject
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.registry import ADAPTER_REGISTRY
@@ -565,6 +565,45 @@ def test_each_drafting_call_in_the_lineage_names_its_prompt_and_version(s3_bucke
     assert recorded["ideation"] == ("daily_cycle/ideation", "vanilla:v1")
     assert recorded["draft"] == ("daily_cycle/draft", "vanilla:v1")
     assert recorded["title"] == ("daily_cycle/title", "vanilla:v1")
+
+
+def test_a_whole_run_stores_its_article_under_the_id_its_model_calls_were_traced_under(s3_bucket):
+    """Call traces (common/call_traces.py): `_handle` chooses the article's id before the first model
+    call and binds the run's traces to it, and `_run_daily_cycle` hands it to `_publish_or_moderate`,
+    so `evals trace <article_id>` finds every call of the run that wrote the article."""
+    replies = iter(["Angle one\nAngle two\nAngle three", "# Draft body", "A Title"])
+    traced_under = []
+
+    def model(*args, **kwargs):
+        traced_under.append(call_traces._run.get().subject)
+        return _tracked_result(next(replies))
+
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.resolve_model", return_value=("m", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch("daily_cycle_handler.invoke_model_tracked", side_effect=model),
+        patch(
+            "daily_cycle_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
+        ),
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch("daily_cycle_handler.put_article") as put_article,
+        patch("daily_cycle_handler.put_moderation_item"),
+        patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
+        patch("daily_cycle_handler.set_topic_last_article_at"),
+    ):
+        result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+
+    assert result["status"] == "published"
+    assert len(traced_under) == 3
+    assert set(traced_under) == {put_article.call_args.kwargs["article_id"]} == {result["article_id"]}
+    s3_bucket.head_object(Bucket=ENV["CONTENT_BUCKET"], Key=f"articles/{result['article_id']}.md")
+    assert call_traces._run.get() is None
 
 
 def _research_finding(captured_at, input_tokens=400, output_tokens=100):

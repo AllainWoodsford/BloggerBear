@@ -4580,9 +4580,10 @@
         "set",
         "rollup",
         "status",
-        "digest"
+        "digest",
+        "trace"
       ],
-      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest} ...\n\npositional arguments:\n  {get,set,rollup,status,digest}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the prompt release and the last 24 hours' prompt fallbacks, the\n                        rollup, late events, the judge, gated models, the cull proposal, the eval-\n                        work and work.fifo queues and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py evals [-h] {get,set,rollup,status,digest,trace} ...\n\npositional arguments:\n  {get,set,rollup,status,digest,trace}\n    get                 Show the evals settings, the values in effect and the judge's model\n    set                 Change evals settings (a setting not sent is unchanged; '' clears one);\n                        the gates are edited in DynamoDB only\n    rollup              Run the hourly rollup now: from its watermark, or for the days --from to\n                        --to again\n    status              Switches, the prompt release and the last 24 hours' prompt fallbacks, the\n                        rollup, late events, the judge, gated models, the cull proposal, the eval-\n                        work and work.fifo queues and topics by dispatch mode\n    digest              Each model's and prompt version's day totals since a day (default: the\n                        last 7 days)\n    trace               One article's call traces: each model call's prompt and reply as stored\n                        while trace_calls was on (the gear's guidance and the operator's note as\n                        their sha256), and those of the research behind it\n\noptions:\n  -h, --help            show this help message and exit\n"
     },
     "evals get": {
       "help": "Show the evals settings, the values in effect and the judge's model",
@@ -4738,7 +4739,7 @@
           "flags": [
             "--trace-calls"
           ],
-          "help": "Store each model call's prompt and reply for review (default off)",
+          "help": "Store each model call's prompt and reply for 14 days, for `evals trace` (default off; on in dev)",
           "type": "str",
           "choices": [
             "on",
@@ -4785,7 +4786,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py evals set [-h] [--cull {on,off,}] [--cull-max-per-run N] [--judge {on,off,}]\n                              [--judge-interval-hours N] [--judge-max-items N]\n                              [--judge-model-id MODEL_ID] [--score-max-cost AUD]\n                              [--daily-spend-cap AUD] [--trace-calls {on,off,}] [--timezone ZONE]\n                              [--excluded-sources SOURCES]\n\noptions:\n  -h, --help            show this help message and exit\n  --cull {on,off,}      Turn culling on or off (default off; nothing is deleted until `evals cull\n                        --apply`)\n  --cull-max-per-run N  Models one cull may delete, 1 to 50 (default 3)\n  --judge {on,off,}     Run the LLM judge on new Findings and articles (default on)\n  --judge-interval-hours N\n                        Hours between judge runs, 1 to 24 (default 4)\n  --judge-max-items N   Items one judge run may review, 1 to 50 (default 10)\n  --judge-model-id MODEL_ID\n                        The judge's model (default: model-config's fallback, else the deployment's\n                        default model)\n  --score-max-cost AUD  A-dollars an offline scoring run may cost before it needs --yes, 0 to 100\n                        (default 5)\n  --daily-spend-cap AUD\n                        A-dollars the judge and scoring runs may spend a day, 0 to 100 (default 2)\n  --trace-calls {on,off,}\n                        Store each model call's prompt and reply for review (default off)\n  --timezone ZONE       The IANA time zone whose days the rollup counts (default Australia/Sydney)\n  --excluded-sources SOURCES\n                        Comma-separated sources the rollup leaves out: human, judge, system,\n                        run:<id>, or a Lambda's code\n"
+      "help_text": "usage: admin_cli.py evals set [-h] [--cull {on,off,}] [--cull-max-per-run N] [--judge {on,off,}]\n                              [--judge-interval-hours N] [--judge-max-items N]\n                              [--judge-model-id MODEL_ID] [--score-max-cost AUD]\n                              [--daily-spend-cap AUD] [--trace-calls {on,off,}] [--timezone ZONE]\n                              [--excluded-sources SOURCES]\n\noptions:\n  -h, --help            show this help message and exit\n  --cull {on,off,}      Turn culling on or off (default off; nothing is deleted until `evals cull\n                        --apply`)\n  --cull-max-per-run N  Models one cull may delete, 1 to 50 (default 3)\n  --judge {on,off,}     Run the LLM judge on new Findings and articles (default on)\n  --judge-interval-hours N\n                        Hours between judge runs, 1 to 24 (default 4)\n  --judge-max-items N   Items one judge run may review, 1 to 50 (default 10)\n  --judge-model-id MODEL_ID\n                        The judge's model (default: model-config's fallback, else the deployment's\n                        default model)\n  --score-max-cost AUD  A-dollars an offline scoring run may cost before it needs --yes, 0 to 100\n                        (default 5)\n  --daily-spend-cap AUD\n                        A-dollars the judge and scoring runs may spend a day, 0 to 100 (default 2)\n  --trace-calls {on,off,}\n                        Store each model call's prompt and reply for 14 days, for `evals trace`\n                        (default off; on in dev)\n  --timezone ZONE       The IANA time zone whose days the rollup counts (default Australia/Sydney)\n  --excluded-sources SOURCES\n                        Comma-separated sources the rollup leaves out: human, judge, system,\n                        run:<id>, or a Lambda's code\n"
     },
     "evals rollup": {
       "help": "Run the hourly rollup now: from its watermark, or for the days --from to --to again",
@@ -4857,6 +4858,28 @@
       ],
       "destructive": false,
       "help_text": "usage: admin_cli.py evals digest [-h] [--since DAY]\n\noptions:\n  -h, --help   show this help message and exit\n  --since DAY  The first day, YYYY-MM-DD, or an ISO time (120 days back at most)\n"
+    },
+    "evals trace": {
+      "help": "One article's call traces: each model call's prompt and reply as stored while trace_calls was on (the gear's guidance and the operator's note as their sha256), and those of the research behind it",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": "The article's id, or the id a run that stored no article traced its calls under",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py evals trace [-h] article_id\n\npositional arguments:\n  article_id  The article's id, or the id a run that stored no article traced its calls under\n\noptions:\n  -h, --help  show this help message and exit\n"
     }
   }
 }

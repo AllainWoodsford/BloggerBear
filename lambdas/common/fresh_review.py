@@ -57,7 +57,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
 from datetime import UTC, datetime
 
-from common import prompts
+from common import call_traces, prompts
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
 from common.relevance import topic_label
@@ -213,6 +213,12 @@ def steering_block(steering: str | None) -> str:
     )
 
 
+# The review's value that a call trace stores as its sha256 (common/call_traces.py): the topic's
+# operator note, which PR17 marks untrusted. The draft, the research and the fresh data are the
+# material under review, and are stored as sent.
+REVIEW_UNTRUSTED = ("steering_block",)
+
+
 def review_prompt(
     topic_name: str,
     draft: str,
@@ -222,13 +228,16 @@ def review_prompt(
     title: str | None = None,
     figure_tolerance: float = 0.0,
     steering: str | None = None,
+    trace_values: dict | None = None,
 ) -> prompts.Prompt:
     """The reviewer's prompt, reviews/adversarial_review (common/prompts_registry.py), with the
     version that rendered it. `title`, if given, is reviewed with the body: a headline states
     claims too, and it is written by a separate call that never sees the article.
     `figure_tolerance` (a fraction) is how far a figure may sit from fresh_data's before it is
     worth flagging. `steering` is the topic's operator note (`resolve_review_steering`), or None.
-    Every piece of material, the note included, is defanged here, before it is rendered."""
+    Every piece of material, the note included, is defanged here, before it is rendered.
+    `trace_values`, when given, is filled with the values the template is rendered with, for the
+    call's trace."""
     tolerance_rule = ""
     if figure_tolerance > 0:
         tolerance_rule = (
@@ -253,6 +262,8 @@ def review_prompt(
         "tolerance_rule": tolerance_rule,
         "steering_block": steering_block(steering),
     }
+    if trace_values is not None:
+        trace_values.update(values)
     return prompts.get_prompt("reviews/adversarial_review", values, {"reply_rule": _REVIEW_REPLY_RULE})
 
 
@@ -474,6 +485,7 @@ def run_review(
 
     as_of = datetime.now(UTC).isoformat()
     tolerance = writing_rules(topic)["figure_tolerance"]
+    values: dict = {}
     prompt = review_prompt(
         topic_label(topic),
         draft,
@@ -483,6 +495,7 @@ def run_review(
         title=title,
         figure_tolerance=tolerance,
         steering=resolve_review_steering(topic),
+        trace_values=values,
     )
     try:
         result = invoke_model_tracked(
@@ -499,6 +512,8 @@ def run_review(
         "used_fallback": result["used_fallback"],
         **prompts.lineage_fields(prompt),
     }
+    untrusted = call_traces.named(values, REVIEW_UNTRUSTED, prompt.text)
+    call_traces.record(lineage_call, prompt.text, result["text"], untrusted=untrusted)
     claims = parse_review(result["text"])
     if claims is None:
         return _unavailable("the reviewer's reply was not the expected JSON", mode, lineage_call)
@@ -797,6 +812,9 @@ def run_revision(
         "stop_reason": result.get("stop_reason"),
         **prompts.lineage_fields(prompt),
     }
+    # Stored as sent: the draft, the claims, the research and the fresh data are the material the
+    # revision was given, and none of it is reader text (common/call_traces.py).
+    call_traces.record(lineage_call, prompt.text, result["text"])
 
     def rejected(reason: str, violations: list[str] | None = None) -> dict:
         print(f"fresh_review: revision rejected ({reason})")

@@ -50,7 +50,7 @@ from datetime import UTC, datetime, timedelta
 
 import boto3
 
-from common import compliance, fresh_review, prompts
+from common import call_traces, compliance, fresh_review, prompts
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, pricing_for
@@ -412,7 +412,17 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
     item = get_moderation_item(queue_id)
     if item is None or item.get("status") != "rewriting" or item.get("rewrite_id") != rewrite_id:
         return {"status": "skipped", "queue_id": queue_id, "reason": "no longer waiting for this rewrite"}
+    # Its model calls are traced under the article (common/call_traces.py, while trace_calls is on),
+    # its reviews as rewrite_adversarial_review and rewrite_compliance_review, so they never replace
+    # the reviews of the text the article was written with. A Re-Write overwrites only the stages it
+    # reaches, so each trace carries this rewrite_id, and the reader marks an earlier Re-Write's
+    # reviews that a later one did not reach as superseded: the rewrite call is always traced first.
+    with call_traces.bind(item.get("article_id"), stage_prefix=REWRITE_STAGE, run=rewrite_id):
+        return _rewrite(item, queue_id, rewrite_id)
 
+
+def _rewrite(item: dict, queue_id: str, rewrite_id: str) -> dict:
+    """`run_rewrite`'s work, once the item is known to be waiting for this rewrite."""
     article = None
     calls: list[dict] = []
     try:
@@ -462,6 +472,9 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
                 **prompts.lineage_fields(prompt),
             }
         )
+        # Stored as sent: the draft, the issues, the research, the fresh data and the editor's note
+        # are the material the rewrite was given, and none of it is reader text (common/call_traces.py).
+        call_traces.record(calls[-1], prompt.text, result["text"])
         if result.get("stop_reason") == "max_tokens":
             return _fail(item, rewrite_id, "the rewrite was cut off before it finished", article, calls)
         parsed = fresh_review.parse_revision(result["text"])
