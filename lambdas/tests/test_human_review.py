@@ -4,14 +4,18 @@ GET /evals/findings and POST /evals/findings/review, and the person's verdict an
 reject keeps (common/evals_emission.py).
 
 What is held: the queue is the Findings no person has reviewed, alive, with a model to score, the
-judge's first and then the rest, oldest first within each, and it never returns the judge's verdict
-(nor the model that wrote the Finding); a verdict writes one Human Review event for the Finding's
-research call, the `pair#<subject>` row `human` and the person's marks, with the judge's string set and
+judge's first and then the rest, oldest first within each, read from a busy topic newest first and at
+most three pages, a page at a time by `offset` with `more` saying whether any are left, and it never
+returns the judge's verdict (nor the model that wrote the Finding); a verdict writes one Human Review
+event for the Finding's research call (without a prompt id of another shape, rather than losing the
+event), the `pair#<subject>` row `human` and the person's marks, with the judge's string set and
 condition; a retried POST writes no second event, pair row or review_count, and one whose event could
 not be written writes it later under the first POST's time; the other verdict on a reviewed Finding is
 refused; while evals are off the verdict and marks are kept and no event is written; a person's approve
-or reject keeps their verdict as the article's `pair#<article_id>` row `human`, and Professor
-Grizzlewick's decisions keep none; both routes are in both environments' Terraform.
+or reject keeps their verdict as the article's `pair#<article_id>` row `human`, a held article decided
+again keeps the latest, and a decision on text rewritten since the judge's mark keeps none and leaves
+the row already there; Professor Grizzlewick's decisions keep none; both routes are in both
+environments' Terraform.
 """
 
 from __future__ import annotations
@@ -27,9 +31,20 @@ import test_evals_emission as emission_tests
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 from table_schemas import KEYS, create_table
-from test_admin_api_handler import REGION, aws_env, aws_resources  # noqa: F401 - the fixtures, used by name
-from test_evals_emission import stamped
-from test_evals_emission_admin import ARTICLE_ID, _by_reviewer, _decide, held  # noqa: F401 - `held` by name
+from test_admin_api_handler import (  # noqa: F401 - the fixtures, used by name
+    REGION,
+    _put_moderation_item,
+    aws_env,
+    aws_resources,
+)
+from test_evals_emission import BETA, stamped
+from test_evals_emission_admin import (  # noqa: F401 - `held` by name
+    ARTICLE_ID,
+    _by_reviewer,
+    _decide,
+    _put_written_article,
+    held,
+)
 
 import admin_api_handler
 from common import dynamo, eval_judge, evals, evals_emission, evals_rollup, human_review
@@ -118,10 +133,11 @@ def pair_rows(subject: str) -> dict[str, dict]:
     return {item["sk"]: dynamo._plain_numbers(item) for item in items}
 
 
-def get_queue(count=None) -> tuple[int, dict]:
+def get_queue(count=None, offset=None) -> tuple[int, dict]:
     event = {"routeKey": "GET /evals/findings"}
-    if count is not None:
-        event["queryStringParameters"] = {"count": str(count)}
+    params = {name: str(value) for name, value in (("count", count), ("offset", offset)) if value is not None}
+    if params:
+        event["queryStringParameters"] = params
     result = admin_api_handler.handler(event, None)
     return result["statusCode"], json.loads(result["body"])
 
@@ -199,6 +215,63 @@ def test_count_bounds_the_queue_and_one_out_of_range_is_refused():
         assert status == 400 and "'count' must be a whole number from 1 to 50" in body["error"]
 
 
+def test_offset_pages_through_the_queue_in_its_order_and_more_says_whether_any_are_left():
+    judged = [ago(days=days) for days in (2, 1)]
+    rest = [ago(days=days) for days in (5, 4, 3)]
+    for captured_at in judged:
+        put_finding(captured_at, judged="good")
+    for captured_at in rest:
+        put_finding(captured_at)
+
+    pages = [get_queue(2, offset)[1] for offset in (0, 2, 4)]
+
+    assert [[item["captured_at"] for item in page["findings"]] for page in pages] == [
+        judged, rest[:2], rest[2:],
+    ]  # fmt: skip
+    assert [(page["count"], page["more"]) for page in pages] == [(2, True), (2, True), (1, False)]
+    assert get_queue(2, 5)[1] == {"findings": [], "count": 0, "more": False}
+
+
+def test_an_offset_out_of_range_is_refused():
+    for offset in (-1, human_review.OFFSET_MAX + 1, "two"):
+        status, body = get_queue(10, offset)
+        assert status == 400 and "'offset' must be a whole number from 0 to 1000" in body["error"]
+
+
+class OneAPage:
+    """The Findings table with every query read one item a page, so a topic's few Findings take as many
+    pages as a busy topic's hundreds; each query's arguments and page are kept."""
+
+    def __init__(self, table):
+        self._table = table
+        self.calls: list[dict] = []
+        self.pages: list[dict] = []
+
+    def query(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        self.pages.append(self._table.query(Limit=1, **kwargs))
+        return self.pages[-1]
+
+
+def test_the_queue_reads_a_busy_topic_newest_first_page_after_page_and_at_most_three_pages():
+    newest = [ago(hours=hours) for hours in (1, 2, 3)]
+    for captured_at in newest + [ago(days=days) for days in (4, 5, 6)]:
+        put_finding(captured_at)
+    table = OneAPage(human_review._findings_table())
+
+    with (
+        patch.object(human_review, "_findings_table", return_value=table),
+        patch.object(human_review.dynamo, "list_topics", return_value=[{"topic_id": TOPIC}]),
+    ):
+        _, body = get_queue()
+
+    # Three pages of one, newest first, each from where the last ended: the three newest, oldest first.
+    assert [item["captured_at"] for item in body["findings"]] == sorted(newest)
+    assert len(table.calls) == 3 and all(call["ScanIndexForward"] is False for call in table.calls)
+    handed = [call.get("ExclusiveStartKey") for call in table.calls]
+    assert handed == [None] + [page["LastEvaluatedKey"] for page in table.pages[:-1]]
+
+
 # --- a verdict ------------------------------------------------------------------------------------
 
 
@@ -239,6 +312,26 @@ def test_a_verdict_writes_one_human_review_event_the_human_pair_row_and_the_find
     assert marked["last_reviewed_at"] == ts
     # The rollup pairs the two: the judge said good, the person bad.
     assert evals_rollup.judge_agreement(evals_table_resource()) == (0.0, 1)
+
+
+def test_a_prompt_id_of_another_shape_is_left_out_and_the_verdicts_event_kept(events):
+    captured_at = ago(hours=5)
+    subject = f"{TOPIC}#{captured_at}"
+    research_call = {
+        "model_id": AUTHOR, "input_tokens": 1, "output_tokens": 1,
+        "prompt_id": "Not A Prompt", "prompt_version": "vanilla:v1",
+    }  # fmt: skip
+    put_finding(captured_at, author=None, research_call=research_call)
+
+    status, answer = post_review(verdict(captured_at, "good"))
+
+    assert (status, answer["event"]) == (200, "written")
+    [event] = events
+    assert (event["reason"], event["model_id"], event["subject"]) == ("Human Review", AUTHOR, subject)
+    assert "prompt_id" not in event and "prompt_version" not in event
+    human = pair_rows(subject)["human"]
+    assert (human["verdict"], human["event_id"]) == ("good", answer["event_id"])
+    assert finding(captured_at)["reviewed_by"] == {"human"}
 
 
 def test_a_retried_post_writes_one_event_one_pair_row_and_one_review_count(events):
@@ -388,6 +481,105 @@ def test_a_persons_approve_or_reject_keeps_their_verdict_as_the_articles_human_p
     assert abs((datetime.now(UTC) - datetime.fromisoformat(human["ts"])).total_seconds()) < 60
     # Its Admin Review events are written as before.
     assert events and {event["reason"] for event in events} == {"Admin Review"}
+
+
+def _decide_on(queue_id: str, decision: str):
+    """A person's `decision` on another queue item of the held article, as _decide makes it on
+    queue-1."""
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page"),
+        patch("admin_api_handler.generate_and_store_article_musing"),
+        patch("admin_api_handler.generate_and_store_rejection_musing"),
+    ):
+        event = {
+            "routeKey": f"POST /moderation-queue/{{queue_id}}/{decision}",
+            "pathParameters": {"queue_id": queue_id},
+        }
+        result = admin_api_handler.handler(event, None)
+    return result["statusCode"], json.loads(result["body"])
+
+
+@pytest.mark.usefixtures("held")
+def test_a_held_article_decided_again_keeps_the_latest_persons_verdict_and_queue_item(events):
+    _decide("approve")
+    first = pair_rows(ARTICLE_ID)["human"]
+    assert (first["verdict"], first["queue_id"]) == ("good", "queue-1")
+    # Back in the inbox on a new item, as a rewrite or a hold brings it.
+    _put_moderation_item(queue_id="queue-2", article_id=ARTICLE_ID, reasons=["Fabricated claim: y"])
+
+    status, _ = _decide_on("queue-2", "reject")
+
+    assert status == 200
+    human = pair_rows(ARTICLE_ID)["human"]
+    assert {key: human[key] for key in ("verdict", "delta", "queue_id")} == {
+        "verdict": "bad", "delta": -2, "queue_id": "queue-2",
+    }  # fmt: skip
+    assert human["ts"] >= first["ts"]
+
+
+# The judge's mark on the held article (eval_judge._iso, to the second), and a rewrite saved after it and
+# one saved before it (rewrite.py's finished_at, with microseconds).
+JUDGED_AT = "2026-10-30T02:00:00+00:00"
+REWRITTEN_AFTER = "2026-10-30T02:00:00.250000+00:00"
+REWRITTEN_BEFORE = "2026-10-30T01:59:59.750000+00:00"
+
+
+def _rewritten(finished_at: str, *, judged: str | None = "bad") -> None:
+    """The held article with a rewrite saved at `finished_at`; with `judged`, as the judge left it
+    before (its mark at JUDGED_AT and its pair row)."""
+    marked = {"eval_judged_at": JUDGED_AT} if judged else {}
+    _put_written_article(rewrites=[{"number": 1, "model_id": BETA, "finished_at": finished_at}], **marked)
+    if judged:
+        pair = evals_emission.pair_row(ARTICLE_ID, eval_judge.ROLE, judged, JUDGED_AT)
+        evals_table_resource().put_item(Item=pair)
+
+
+@pytest.mark.usefixtures("held")
+def test_a_decision_on_a_rewrite_the_judge_never_saw_keeps_no_human_pair_and_still_its_events(events, capsys):
+    _rewritten(REWRITTEN_AFTER)
+
+    status, _ = _decide("approve")
+
+    assert status == 200
+    assert list(pair_rows(ARTICLE_ID)) == ["judge"]
+    assert events and {event["reason"] for event in events} == {"Admin Review"}
+    assert evals_rollup.judge_agreement(evals_table_resource()) == (None, 0)
+    out = capsys.readouterr().out
+    assert f"queue_id=queue-1 decided article_id={ARTICLE_ID} after a rewrite the judge has not judged" in out
+
+
+@pytest.mark.usefixtures("held")
+def test_a_reject_paired_with_the_judge_stands_when_the_rewrite_after_it_is_approved(events):
+    _put_written_article(eval_judged_at=JUDGED_AT)
+    judge_said_bad = evals_emission.pair_row(ARTICLE_ID, eval_judge.ROLE, "bad", JUDGED_AT)
+    evals_table_resource().put_item(Item=judge_said_bad)
+    _decide("reject")
+    _rewritten(REWRITTEN_AFTER)
+    _put_moderation_item(queue_id="queue-2", article_id=ARTICLE_ID, reasons=["Fabricated claim: y"])
+
+    status, _ = _decide_on("queue-2", "approve")
+
+    assert status == 200
+    human = pair_rows(ARTICLE_ID)["human"]
+    assert (human["verdict"], human["queue_id"]) == ("bad", "queue-1")
+    assert evals_rollup.judge_agreement(evals_table_resource()) == (1.0, 1)
+
+
+@pytest.mark.usefixtures("held")
+@pytest.mark.parametrize(
+    "finished_at,judged",
+    [(REWRITTEN_BEFORE, "bad"), (REWRITTEN_AFTER, None)],
+    ids=["judged_after_the_rewrite", "not_judged_yet"],
+)
+def test_a_decision_on_the_text_the_judge_judged_or_will_judge_is_kept_as_the_human_pair(
+    events, finished_at, judged
+):
+    _rewritten(finished_at, judged=judged)
+
+    status, _ = _decide("approve")
+
+    assert status == 200 and pair_rows(ARTICLE_ID)["human"]["verdict"] == "good"
 
 
 @pytest.mark.usefixtures("held")

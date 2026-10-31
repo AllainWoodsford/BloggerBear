@@ -8,7 +8,10 @@ alive, captured in the last LOOKBACK (a Finding's whole life), with a summary an
 wrote it (a Finding from before research tracking names no model, so a verdict on it would score
 nothing). The ones the judge has reviewed come first: a person's verdict on those pairs with the
 judge's, and the pairs are what the judge's calibration is measured from. Then the rest. Oldest first
-within each, as the review inbox goes, since a Finding expires after 14 days.
+within each, as the review inbox goes, since a Finding expires after 14 days. `offset` (an addition to
+the spec's `?count=`) pages through it in that order, and `more` says whether anything is left after
+the page: the CLI hides what the person skipped on its own side (the skips never leave their machine),
+so without paging, skipped Findings at the head would hide every one behind them.
 
 **Nothing of the judge's verdict is shown.** The reviewer gets what they need to judge the summary, and
 no more: VIEW_FIELDS of the Finding (its topic, when it was captured, the summary, its sources' titles
@@ -58,9 +61,11 @@ REASON = "Human Review"
 VERDICTS = ("good", "bad")
 BODY_FIELDS = frozenset({"topic_id", "captured_at", "verdict"})
 
-# GET /evals/findings?count=: how many Findings one call returns.
+# GET /evals/findings?count=&offset=: how many Findings one call returns, and how far into the queue
+# it may start (far past what anyone skips; scripts/review_inbox.py stops paging well before it).
 COUNT_DEFAULT = 10
 COUNT_MAX = 50
+OFFSET_MAX = 1000
 # How far back the queue reads: a Finding's whole life (research_tick_handler's FINDING_TTL_DAYS).
 LOOKBACK = timedelta(days=14)
 # A topic's Findings are read newest first, at most this many pages of a Query (1 MB each, hundreds of
@@ -143,9 +148,12 @@ def view(finding: dict) -> dict:
     }
 
 
-def queue(count: int, now: datetime | None = None) -> list[dict]:
-    """Up to `count` Findings waiting for a person, as `view` shows them: the judge's first, then the
-    rest, oldest first within each."""
+def queue(count: int, offset: int = 0, now: datetime | None = None) -> tuple[list[dict], bool]:
+    """(page, more): up to `count` Findings waiting for a person, as `view` shows them, from `offset`
+    on in the queue's order (the judge's first, then the rest, oldest first within each), and whether
+    any are left after them. The whole queue is read and sorted on every call, so a page is a slice of
+    it: a Finding reviewed between two calls shifts the rest by one, and one that slips past a page's
+    edge that way is in the next run's."""
     now = now or datetime.now(UTC)
     waiting: list[dict] = []
     for topic in sorted(dynamo.list_topics(), key=lambda topic: str(topic.get("topic_id", ""))):
@@ -153,7 +161,8 @@ def queue(count: int, now: datetime | None = None) -> list[dict]:
         if isinstance(topic_id, str) and topic_id:
             waiting += [finding for finding in _waiting(topic_id, now) if _reviewable(finding)]
     waiting.sort(key=lambda finding: (not _judged(finding), finding["captured_at"], finding["topic_id"]))
-    return [view(finding) for finding in waiting[:count]]
+    end = offset + count
+    return [view(finding) for finding in waiting[offset:end]], len(waiting) > end
 
 
 # --- a verdict ----------------------------------------------------------------------------------------

@@ -1440,10 +1440,18 @@ def _finding(topic, captured_at, judged=False, **extra):
     }
 
 
-def _findings_api(rows, count=30, answer=None):
+FIRST_PAGE = f"/evals/findings?count={ri.FINDINGS_MAX_COUNT}"
+
+
+def _page(offset: int) -> str:
+    """The path FindingsSource asks for one page of the queue by."""
+    return FIRST_PAGE + (f"&offset={offset}" if offset else "")
+
+
+def _findings_api(rows, answer=None):
     return FakeApi(
         {
-            f"GET /evals/findings?count={count}": {"findings": rows, "count": len(rows)},
+            f"GET {FIRST_PAGE}": {"findings": rows, "count": len(rows), "more": False},
             "POST /evals/findings/review": answer or {"already_reviewed": False, "event": "written"},
         }
     )
@@ -1473,22 +1481,111 @@ def test_findings_come_in_the_apis_order_and_skipped_ones_are_made_up_for():
         _finding("a-topic", "2026-09-21T00:00:00+00:00", judged=True),
         _finding("c-topic", "2026-09-01T00:00:00+00:00"),
     ]
-    api = _findings_api(rows, count=4)
+    api = _findings_api(rows)
 
     items = ri.FindingsSource(api).fetch(3, {"findings:b-topic|2026-09-20T00:00:00+00:00", "moderation:q1"})
 
-    assert api.calls == [("GET", "/evals/findings?count=4")]
+    assert api.calls == [("GET", FIRST_PAGE)]
     keys = ["a-topic|2026-09-21T00:00:00+00:00", "c-topic|2026-09-01T00:00:00+00:00"]
     assert [item.key for item in items] == keys
     assert [any("judge has reviewed" in why for why in item.why) for item in items] == [True, False]
+
+
+def _full_page(day: int, more=True) -> dict:
+    """A whole page of GET /evals/findings: fifty rows of one topic, all captured on 2026-09-`day`."""
+    rows = [_finding("skipped", f"2026-09-{day:02d}T00:{n // 60:02d}:{n % 60:02d}+00:00") for n in range(50)]
+    return {"findings": rows, "count": len(rows), "more": more}
+
+
+def _skips(page: dict) -> set[str]:
+    return {f"findings:{row['topic_id']}|{row['captured_at']}" for row in page["findings"]}
+
+
+def test_findings_skipped_at_the_head_of_the_queue_never_hide_the_ones_behind_them():
+    head = _full_page(1)
+    behind = [_finding("rail-sydney", f"2026-09-2{n}T00:00:00+00:00") for n in range(3)]
+    api = FakeApi({f"GET {_page(0)}": head, f"GET {_page(50)}": {"findings": behind, "more": False}})
+
+    source = ri.FindingsSource(api)
+    items = source.fetch(30, _skips(head))
+
+    assert api.calls == [("GET", _page(0)), ("GET", _page(50))]
+    assert [item.created_at for item in items] == [row["captured_at"] for row in behind]
+    assert source.notes == ()
+
+
+def test_the_findings_queue_ends_at_a_short_page_or_when_the_api_says_none_are_left():
+    one = [_finding("t", "2026-09-21T00:00:00+00:00")]
+    short = FakeApi({f"GET {_page(0)}": {"findings": one, "more": True}})
+    last = _full_page(1, more=False)
+    finished = FakeApi({f"GET {_page(0)}": last})
+
+    assert len(ri.FindingsSource(short).fetch(30, set())) == 1
+    assert ri.FindingsSource(finished).fetch(30, _skips(last)) == []
+    assert short.calls == [("GET", _page(0))] and finished.calls == [("GET", _page(0))]
+
+
+def test_a_finding_that_shifts_onto_the_next_page_is_kept_once():
+    head = _full_page(1)
+    shifted, after = (_finding("rail-sydney", f"2026-09-2{n}T00:00:00+00:00") for n in (1, 2))
+    head["findings"][-1] = shifted
+    second = {"findings": [shifted, after], "more": False}
+    api = FakeApi({f"GET {_page(0)}": head, f"GET {_page(50)}": second})
+
+    exclude = _skips(head) - {f"findings:rail-sydney|{shifted['captured_at']}"}
+    items = ri.FindingsSource(api).fetch(30, exclude)
+
+    assert [item.created_at for item in items] == [shifted["captured_at"], after["captured_at"]]
+
+
+def test_when_every_page_it_may_read_is_skipped_it_says_more_wait_behind_them_not_that_nothing_does(store):
+    pages = {offset: _full_page(1 + offset // 50) for offset in range(0, 50 * ri.FINDINGS_MAX_PAGES, 50)}
+    api = FakeApi({f"GET {_page(offset)}": page for offset, page in pages.items()})
+    for page in pages.values():
+        for key in _skips(page):
+            store.add(key)
+
+    summary, out = _run([ri.FindingsSource(api)], store)
+
+    assert summary.fetched == 0 and len(api.calls) == ri.FINDINGS_MAX_PAGES
+    assert "! More research findings are waiting behind the ones you skipped; --reset-skipped" in out
+    assert "Nothing is waiting for you." not in out
+
+
+def test_findings_never_ask_the_admin_api_for_more_than_it_answers_however_many_are_skipped():
+    """--limit has no upper bound, and skips only make the run read on: every page asks for the most
+    the Admin API answers, never more (it refuses a larger count with a 400)."""
+    skipped = {f"findings:t|2026-09-{n:02d}T00:00:00+00:00" for n in range(1, 26)} | {"moderation:q1"}
+    for limit, exclude in ((30, skipped), (80, set())):
+        api = _findings_api([])
+        ri.FindingsSource(api).fetch(limit, exclude)
+        assert api.calls == [("GET", "/evals/findings?count=50")], limit
+
+
+def _human_review():
+    """lambdas/common/human_review.py, which answers GET /evals/findings (scripts/pyproject.toml puts
+    only scripts/ on the path when a scripts test runs on its own)."""
+    lambdas = str(Path(__file__).resolve().parents[2] / "lambdas")
+    if lambdas not in sys.path:
+        sys.path.insert(0, lambdas)
+    from common import human_review
+
+    return human_review
+
+
+def test_the_findings_page_is_the_admin_apis_largest_and_the_pages_never_pass_its_offset_cap():
+    human_review = _human_review()
+
+    assert ri.FINDINGS_MAX_COUNT == human_review.COUNT_MAX
+    assert (ri.FINDINGS_MAX_PAGES - 1) * ri.FINDINGS_MAX_COUNT <= human_review.OFFSET_MAX
 
 
 def test_a_finding_card_never_shows_the_judges_verdict_even_if_the_api_sent_one(store):
     row = _finding("rail-sydney", "2026-09-21T00:00:00+00:00", judged=True)
     leaky = {**row, "verdict": "bad", "judge_verdict": "bad", "reason_code": "unsupported", "delta": -2}
 
-    (clean,) = ri.FindingsSource(_findings_api([row], count=5)).fetch(5, set())
-    (leaked,) = ri.FindingsSource(_findings_api([leaky], count=5)).fetch(5, set())
+    (clean,) = ri.FindingsSource(_findings_api([row])).fetch(5, set())
+    (leaked,) = ri.FindingsSource(_findings_api([leaky])).fetch(5, set())
     _, out = _run([ri.FindingsSource(_findings_api([leaky]))], store, "v", "q")
 
     assert ri.render_item(leaked, 1, 1, NOW, width=90) == ri.render_item(clean, 1, 1, NOW, width=90)
@@ -1513,7 +1610,7 @@ def test_a_finding_already_reviewed_says_so_and_the_other_verdict_is_already_han
             raise answer
         return answer
 
-    api = FakeApi({"GET /evals/findings?count=30": {"findings": rows}, "POST /evals/findings/review": post})
+    api = FakeApi({f"GET {FIRST_PAGE}": {"findings": rows}, "POST /evals/findings/review": post})
 
     summary, out = _run([ri.FindingsSource(api)], store, "y", "r")
 
@@ -1558,5 +1655,5 @@ def test_a_live_approve_source_findings_goes_through_the_signed_admin_api(cli_en
         )
 
     body = {"topic_id": "rail-sydney", "captured_at": "2026-09-21T00:00:00+00:00", "verdict": "bad"}
-    assert calls == [("GET", "/evals/findings?count=30", None), ("POST", "/evals/findings/review", body)]
+    assert calls == [("GET", FIRST_PAGE, None), ("POST", "/evals/findings/review", body)]
     assert "0 good, 1 bad, 0 skipped." in capsys.readouterr().out

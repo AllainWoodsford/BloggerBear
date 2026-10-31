@@ -63,8 +63,10 @@ _SENT_BACK_REASON = "sent back by a person for a rewrite"
 HELP_LINE = "[y] Approve | [r] Reject | [z] Skip | [v] View all | [q] Quit -> "
 REWRITE_HELP_LINE = "[y] Approve | [r] Reject | [w] Re-Write | [z] Skip | [v] View all | [q] Quit -> "
 FINDINGS_HELP_LINE = "[y] Good | [r] Bad | [z] Skip | [v] View all | [q] Quit -> "
-# GET /evals/findings answers at most this many (lambdas/common/human_review.py's COUNT_MAX).
+# GET /evals/findings answers at most this many (lambdas/common/human_review.py's COUNT_MAX), and
+# FindingsSource reads at most this many of its pages, so a run never asks past its OFFSET_MAX.
 FINDINGS_MAX_COUNT = 50
+FINDINGS_MAX_PAGES = 10
 # One keystroke picks a model, so the picker shows at most this many.
 MAX_MODEL_CHOICES = 9
 
@@ -162,6 +164,9 @@ class ContentSource(ABC):
     help_line = HELP_LINE
     verbs = ("approve{it}", "reject{it}")
     decided = ("approved", "rejected")
+    # What the last fetch has to tell the person besides its items (FindingsSource: that more are
+    # waiting behind the ones they skipped), said in place of "Nothing is waiting" when it found none.
+    notes: tuple[str, ...] = ()
 
     @abstractmethod
     def fetch(self, limit: int, exclude: set[str]) -> list[Item]:
@@ -354,8 +359,9 @@ class RefinementSource(ContentSource):
 
 class FindingsSource(ContentSource):
     """Research Findings for you to mark good or bad (`approve --source findings`), in the order the
-    Admin API gives them: the ones the evals judge has reviewed first, then the rest, oldest first.
-    The API never sends the judge's verdict, so nothing here can show it."""
+    Admin API gives them: the ones the evals judge has reviewed first, then the rest, oldest first,
+    a page at a time past the ones you skipped. The API never sends the judge's verdict, so nothing
+    here can show it."""
 
     name = "findings"
     label = "research findings"
@@ -367,18 +373,32 @@ class FindingsSource(ContentSource):
         self.api = api
 
     def fetch(self, limit: int, exclude: set[str]) -> list[Item]:
-        # Skipped ones are left out here, so ask for enough more to fill the batch without them.
-        skipped = sum(1 for key in exclude if key.startswith(f"{self.name}:"))
-        count = max(1, min(FINDINGS_MAX_COUNT, limit + skipped))
-        rows = self.api.get(f"/evals/findings?count={count}").get("findings") or []
-        items = []
-        for row in rows:
-            key = f"{row.get('topic_id')}|{row.get('captured_at')}"
-            if f"{self.name}:{key}" in exclude:
-                continue
-            items.append(_finding_item(self.name, key, row))
-            if len(items) >= limit:
-                break
+        # Skipped ones are left out here, never sent to the API, so the queue is read a page at a time
+        # (`offset`) until the batch is full or the queue ends: otherwise Findings skipped at its head
+        # would hide every one behind them. A Finding reviewed between two pages shifts the rest, so
+        # one can come twice (kept once) or slip past a page's edge to the next run.
+        self.notes = ()
+        items: list[Item] = []
+        seen: set[str] = set()
+        for page in range(FINDINGS_MAX_PAGES):
+            offset = page * FINDINGS_MAX_COUNT
+            path = f"/evals/findings?count={FINDINGS_MAX_COUNT}" + (f"&offset={offset}" if offset else "")
+            answer = self.api.get(path)
+            rows = answer.get("findings") or []
+            for row in rows:
+                key = f"{row.get('topic_id')}|{row.get('captured_at')}"
+                if key in seen or f"{self.name}:{key}" in exclude:
+                    continue
+                seen.add(key)
+                items.append(_finding_item(self.name, key, row))
+                if len(items) >= limit:
+                    return items
+            if len(rows) < FINDINGS_MAX_COUNT or not answer.get("more"):
+                return items
+        self.notes = (
+            f"More {self.label} are waiting behind the ones you skipped; --reset-skipped forgets your "
+            "skips.",
+        )
         return items
 
     def _review(self, item: Item, verdict: str) -> str:
@@ -935,12 +955,14 @@ def review(
     summary = Summary(dry_run=dry_run, decided=words.pop() if len(words) == 1 else Summary.decided)
     exclude = set() if include_skipped else store.active(skip_hours)
     batch, problems = fetch_batch(sources, limit, exclude)
-    for problem in problems:
+    notes = [note for source in sources for note in source.notes]
+    for problem in problems + notes:
         _emit(f"! {problem}", out)
     summary.fetched = len(batch)
     if not batch:
-        hidden = " (Skipped items are hidden; --include-skipped shows them.)" if exclude else ""
-        _emit("Nothing is waiting for you." + hidden, out)
+        if not notes:
+            hidden = " (Skipped items are hidden; --include-skipped shows them.)" if exclude else ""
+            _emit("Nothing is waiting for you." + hidden, out)
         return summary
 
     dry_note = " (dry run: nothing will be changed)" if dry_run else ""

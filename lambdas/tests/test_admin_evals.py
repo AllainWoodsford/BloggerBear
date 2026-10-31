@@ -450,13 +450,17 @@ def test_the_judge_part_says_when_the_judge_last_ran_and_why_its_tripwire_paused
 
 
 def test_the_judge_part_says_could_not_check_when_the_settings_row_cannot_be_read(aws, queue, capsys):
-    """The paused reason is on the settings row, which every setting is read from too: the parts that
-    need it cannot be checked, and the rest still answer."""
-    with patch.object(evals_status.evals_settings, "get_row", side_effect=RuntimeError("no row")):
+    """The paused reason is read from the stored settings row on its own, so when only that read fails
+    the judge part cannot be checked, and the parts that read the effective settings still answer."""
+    settings = evals_settings.effective_settings({})
+    with (
+        patch.object(evals_status.evals_settings, "get_settings", return_value=settings),
+        patch.object(evals_status.evals_settings, "get_row", side_effect=RuntimeError("no row")),
+    ):
         _, body = call("GET /evals/status")
 
     assert body["judge"] == {"status": "could not check", "error": "RuntimeError"}
-    for part in ("rollup", "late_dropped", "cull", "topics_by_dispatch_mode"):
+    for part in ("switches", "gated_models", "rollup", "late_dropped", "cull", "topics_by_dispatch_mode"):
         assert "status" not in body[part], part
     assert "evals_status: could not check judge: RuntimeError('no row')" in capsys.readouterr().out
 

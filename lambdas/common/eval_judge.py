@@ -8,12 +8,14 @@ Two halves, both run by eval-jobs (eval_jobs_handler.py):
   once `judge_interval_hours` have passed since the last run: `last_judge_at` on the evals table's
   index row, claimed with a conditional write, so two invocations never both run. It picks up to
   `judge_max_items` items no judge has reviewed: recent Findings without a `pair#<subject>` judge row,
-  and recent articles without `eval_judged_at`, taken in turn (an article, a Finding, ...), and the
-  Findings one topic after another, so no busy topic takes every place. The topics take turns across
-  runs too: each run starts with the topic after the one its last Finding came from the run before
-  (`last_judge_topic` on the index row), so a topic late in name order is never passed over every
-  run. It writes the run's header (`run#<run_id>`, `meta`) and sends one `judge` message per item to
-  eval-work, never more than the day's remaining spend pays for (below).
+  and recent articles without `eval_judged_at`, held, published or rejected alike (a person's reject
+  must not take an article out of the judge's reach while an approval keeps it in: unjudged_articles),
+  taken in turn (an article, a Finding, ...), and the Findings one topic after another, so no busy
+  topic takes every place. The topics take turns across runs too: each run starts with the topic
+  after the one its last Finding came from the run before (`last_judge_topic` on the index row), so a
+  topic late in name order is never passed over every run. It writes the run's header
+  (`run#<run_id>`, `meta`) and sends one `judge` message per item to eval-work, never more than the
+  day's remaining spend pays for (below).
 * **The consumer** (`consume`, one eval-work record) judges one item. It picks the judge's model,
   renders the item's rubric (`eval_judge/research_review` or `eval_judge/article_review`, code-only
   prompts in common/prompts_registry.py), calls the model once, and reads its reply against the
@@ -149,7 +151,9 @@ INTERVAL_SLACK = timedelta(minutes=10)
 # person reviewing would; articles come a day at a time, so a week of them.
 FINDINGS_LOOKBACK = timedelta(days=2)
 ARTICLES_LOOKBACK = timedelta(days=7)
-ARTICLE_STATUSES = ("pending_moderation", "published")
+# Every status an article the judge may still read can have: a rejected article keeps its row (no TTL)
+# and its body in the content bucket, so it is judged like a held or published one (unjudged_articles).
+ARTICLE_STATUSES = ("pending_moderation", "published", "rejected")
 QUERY_PAGES = 3
 
 TRIPWIRE_MIN_ITEMS = 10
@@ -896,8 +900,11 @@ def unjudged_findings(topic_id: str, now: datetime, limit: int) -> list[dict]:
 
 
 def unjudged_articles(now: datetime, limit: int) -> list[dict]:
-    """Articles of the last ARTICLES_LOOKBACK, awaiting moderation or published, the judge has not
-    marked, newest first."""
+    """Articles of the last ARTICLES_LOOKBACK, awaiting moderation, published or rejected, the judge has
+    not marked, newest first. Rejected ones too: a person's approve and reject both keep their verdict
+    as the article's human pair row (common/evals_emission.human_article_pair), and if a reject took
+    the article out of the judge's reach while an approval (published) kept it in, the pairs would
+    complete mostly for approvals and the judge's agreement with people would lean towards good."""
     since = _iso(now - ARTICLES_LOOKBACK)
     found = []
     for status in ARTICLE_STATUSES:

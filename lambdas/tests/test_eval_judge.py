@@ -11,7 +11,9 @@ newest saved rewrite, never one that failed), and its spend goes to the day in t
 zone, the run and the Stats page's evals category, at five cents a call on a model nothing prices; a
 reply that is not the contract is ignored; the judge's events are logged while it is uncalibrated and
 count towards the gates only once it is calibrated; the selector runs once an interval, picks
-unjudged, unexpired Findings of two days and articles of a week in turn, starts each run's turn of
+unjudged, unexpired Findings of two days and articles of a week in turn (a rejected article as well
+as an approved one, so a person's verdict never decides whether the judge can reach it), starts each
+run's turn of
 topics after the last run's, and sends no more than the day's cap pays for; at the cap the consumer
 pauses the run and sends its item back with a delay, or counts it finished when it cannot; a
 cancelled run's item is dropped; a retried message counts once; a run that marks more than 80% of at
@@ -526,6 +528,15 @@ def test_a_failed_marked_rewrite_alone_leaves_the_credit_with_the_draft():
     assert credited(drafted() + failed_attempt(FALLBACK, "v4"), []) == DRAFT_CREDIT
 
 
+def test_a_saved_rewrite_the_lineage_lacks_beside_a_failed_marked_attempt_is_credited_to_its_model():
+    """The failed attempt is on the saved rewrite's own model, so its mark is all that keeps that call
+    out: the text is still the saved rewrite's, so its model is credited, with no prompt, never the
+    draft's and never no one."""
+    calls = drafted() + failed_attempt(FALLBACK, "v4")
+
+    assert credited(calls, [saved_rewrite(1, FALLBACK)]) == {"model_id": FALLBACK}
+
+
 def test_a_prompt_id_of_another_shape_is_left_out_and_the_verdicts_event_kept(aws, model, written):
     research_call = {
         "model_id": AUTHOR, "input_tokens": 1, "output_tokens": 1,
@@ -900,7 +911,7 @@ def test_the_selector_sends_no_more_unpriced_calls_than_the_cap_pays_for_at_five
 # --- the selector ---------------------------------------------------------------------------------------
 
 
-def test_the_selector_passes_over_marked_unauthored_judged_old_and_rejected_items_and_sends_the_rest(aws):
+def test_the_selector_passes_over_marked_unauthored_judged_and_old_items_and_sends_the_rest(aws):
     aws.Table("Topics").put_item(Item={"topic_id": "crypto", "name": "Crypto"})
     put_finding(aws, captured_at="2026-10-27T01:30:00+00:00", reviewed_by={"judge"}, review_count=1)
     put_finding(aws, captured_at="2026-10-27T02:00:00+00:00")
@@ -910,7 +921,6 @@ def test_the_selector_passes_over_marked_unauthored_judged_old_and_rejected_item
     put_article(aws, article_id="fresh")
     put_article(aws, article_id="judged", eval_judged_at="2026-10-26T22:00:00+00:00")
     put_article(aws, article_id="old", created_at="2026-10-15T21:00:00+00:00")
-    put_article(aws, article_id="rejected", status="rejected")
     set_evals(aws, judge_max_items=4)
     queue = FakeQueue()
 
@@ -931,6 +941,28 @@ def test_the_selector_passes_over_marked_unauthored_judged_old_and_rejected_item
     assert index["last_judge_at"] == "2026-10-27T03:00:05+00:00"
     # The last Finding sent was rail-sydney's: the next run's turn of topics starts after it.
     assert index["last_judge_topic"] == TOPIC
+
+
+def test_an_article_a_person_rejected_before_any_judge_run_is_still_picked_as_an_approved_one_is(
+    aws, model, written
+):
+    """Both decisions kept the person's verdict as a human pair row; were a reject to take the article
+    out of the judge's reach, only approvals' pairs would complete and agreement would lean to good."""
+    put_article(aws, article_id="approved", created_at="2026-10-26T22:00:00+00:00")
+    put_article(aws, article_id="rejected", status="rejected", created_at="2026-10-26T21:00:00+00:00")
+    for article_id, given in (("approved", "good"), ("rejected", "bad")):
+        row = evals_emission.pair_row(article_id, evals_emission.HUMAN, given, "2026-10-27T01:00:00+00:00")
+        aws.Table("Evals").put_item(Item=row)
+    queue = FakeQueue()
+
+    summary = eval_judge.select(NOW, sqs=queue)
+
+    sent = [body["item"] for body in queue.bodies()]
+    assert sent == [article_item(0, "approved"), article_item(1, "rejected")]
+    for item in sent:
+        assert consume(item, run_id=summary["run_id"])["status"] == "judged"
+    # The judge said good to both: one pair agrees, one does not, and both are counted.
+    assert evals_rollup.judge_agreement(aws.Table("Evals")) == (0.5, 2)
 
 
 def test_the_selector_takes_articles_and_findings_in_turn_and_gives_a_quiet_topic_a_place(aws):

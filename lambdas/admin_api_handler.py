@@ -2188,9 +2188,12 @@ def _resolve_moderation_item(
     action_key = "approved" if new_status == "approved" else "rejected"
     response = _response(200, {action_key: queue_id, "article_id": article_id})
     # Continuous evals: a person's approve or reject scores the article's model and each prompt in
-    # its lineage (common/evals_emission.py). Professor Grizzlewick's decisions come through here
-    # too (_DECIDED_BY) and are left out: his verdict is an AI's, not a person's. After the answer is
-    # built, and never raises, so it cannot change what the operator is told.
+    # its lineage, and is kept as their verdict on the article, its `pair#<article_id>` row `human`,
+    # which the judge's agreement with people is measured from (common/evals_emission.py).
+    # Professor Grizzlewick's decisions come through here too (_DECIDED_BY) and are left out: his
+    # verdict is an AI's, not a person's, and as a `human` row it would grade the judge against
+    # another AI. After the answer is built, and never raises, so it cannot change what the operator
+    # is told.
     if _DECIDED_BY.get() == "human":
         evals_emission.admin_review(
             article, article_id=article_id, queue_id=queue_id, decision=new_status,
@@ -3225,18 +3228,20 @@ def _evals_digest_route(event: dict) -> dict:
 
 # --- A person's review of research Findings (common/human_review.py, PR19) -----------------------------
 #
-# The Findings waiting for a person, the judge's first and never with its verdict, and one person's
-# verdict on one of them: a Human Review event, the `pair#<subject>` row `human` the judge's agreement
-# is measured from, and the person's marks on the Finding. `admin_cli approve --source findings`.
+# The Findings waiting for a person, the judge's first and never with its verdict, a page at a time
+# (`offset`, so what the CLI skips cannot hide the rest), and one person's verdict on one of them: a
+# Human Review event, the `pair#<subject>` row `human` the judge's agreement is measured from, and the
+# person's marks on the Finding. `admin_cli approve --source findings`.
 
 
 def _list_findings_to_review_route(event: dict) -> dict:
     try:
         count = _whole_number_param(event, "count", 1, human_review.COUNT_MAX, human_review.COUNT_DEFAULT)
+        offset = _whole_number_param(event, "offset", 0, human_review.OFFSET_MAX, 0)
     except ValueError as exc:
         return _error(400, str(exc))
-    findings = human_review.queue(count)
-    return _response(200, {"findings": findings, "count": len(findings)})
+    findings, more = human_review.queue(count, offset)
+    return _response(200, {"findings": findings, "count": len(findings), "more": more})
 
 
 def _review_finding_route(event: dict) -> dict:
