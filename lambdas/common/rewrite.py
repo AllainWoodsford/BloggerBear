@@ -50,7 +50,7 @@ from datetime import UTC, datetime, timedelta
 
 import boto3
 
-from common import compliance, fresh_review, prompts
+from common import call_traces, compliance, fresh_review, prompts
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, pricing_for
@@ -148,6 +148,30 @@ def rewrite_prompt(
     state figures that move: Adapter.figure_guidance), so a rewrite does not put back the exact
     figures that got the article flagged. Ours, not data, and it lifts none of the rules. Every
     piece of material, the person's note included, is defanged here, before it is rendered."""
+    values = _rewrite_values(
+        topic_name, title, body, issues, findings_text, evidence, as_of, instructions, writing_guidance
+    )
+    return prompts.get_prompt("rewrite/rewrite", values, {"reply_rule": _REPLY_RULE})
+
+
+# The rewrite's values that hold its material (the person's note, the draft, the issues, the
+# research and the fresh data), every one defanged in `_rewrite_values`: a call trace stores each as
+# its sha256 (common/call_traces.py).
+REWRITE_UNTRUSTED = ("editor_note_block", "draft_block", "issues_block", "findings_block", "fresh_data_block")
+
+
+def _rewrite_values(
+    topic_name: str,
+    title: str,
+    body: str,
+    issues: list[str],
+    findings_text: str,
+    evidence: str,
+    as_of: str,
+    instructions: str,
+    writing_guidance: str,
+) -> dict:
+    """What `rewrite_prompt` renders its template with."""
     house_style = (
         f"\n\nHow articles on this topic are written (within the rules above):\n{writing_guidance}"
         if writing_guidance
@@ -181,7 +205,7 @@ def rewrite_prompt(
         "length_proviso": " unless the editor_note asks otherwise" if instructions else "",
         "house_style": house_style,
     }
-    return prompts.get_prompt("rewrite/rewrite", values, {"reply_rule": _REPLY_RULE})
+    return values
 
 
 def build_rewrite_prompt(
@@ -412,7 +436,15 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
     item = get_moderation_item(queue_id)
     if item is None or item.get("status") != "rewriting" or item.get("rewrite_id") != rewrite_id:
         return {"status": "skipped", "queue_id": queue_id, "reason": "no longer waiting for this rewrite"}
+    # Its model calls are traced under the article (common/call_traces.py, while trace_calls is on),
+    # its reviews as rewrite_adversarial_review and rewrite_compliance_review, so they never replace
+    # the reviews of the text the article was written with.
+    with call_traces.bind(item.get("article_id"), stage_prefix=REWRITE_STAGE):
+        return _rewrite(item, queue_id, rewrite_id)
 
+
+def _rewrite(item: dict, queue_id: str, rewrite_id: str) -> dict:
+    """`run_rewrite`'s work, once the item is known to be waiting for this rewrite."""
     article = None
     calls: list[dict] = []
     try:
@@ -436,7 +468,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
         as_of = datetime.now(UTC).isoformat()
         rules = fresh_review.writing_rules(topic)
         closing_rule = _CLOSING_SECTIONS_RULE if rules["drafting_guidance"] else ""
-        prompt = rewrite_prompt(
+        values = _rewrite_values(
             topic_label(topic),
             original_title,
             body,
@@ -445,8 +477,9 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
             evidence,
             as_of,
             instructions,
-            writing_guidance="\n".join(filter(None, [rules["figure_guidance"], closing_rule])),
+            "\n".join(filter(None, [rules["figure_guidance"], closing_rule])),
         )
+        prompt = prompts.get_prompt("rewrite/rewrite", values, {"reply_rule": _REPLY_RULE})
         try:
             result = invoke_model_tracked(prompt.text, model_id, max_tokens=REWRITE_MAX_TOKENS)
         except Exception as exc:  # noqa: BLE001
@@ -461,6 +494,9 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
                 "stop_reason": result.get("stop_reason"),
                 **prompts.lineage_fields(prompt),
             }
+        )
+        call_traces.record(
+            calls[-1], prompt.text, result["text"], untrusted=[values[name] for name in REWRITE_UNTRUSTED]
         )
         if result.get("stop_reason") == "max_tokens":
             return _fail(item, rewrite_id, "the rewrite was cut off before it finished", article, calls)

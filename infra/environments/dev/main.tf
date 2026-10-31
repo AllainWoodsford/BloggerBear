@@ -189,6 +189,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "content" {
       days = 21
     }
   }
+
+  # Call traces (lambdas/common/call_traces.py): each model call's whole prompt and reply, written
+  # while the evals setting trace_calls is on (on by default here: TRACE_CALLS_DEFAULT below). Two
+  # weeks is enough to read back what a prompt version was given and wrote, and no longer than the
+  # Findings they were written from are kept (FINDING_TTL_DAYS).
+  rule {
+    id     = "expire-call-traces"
+    status = "Enabled"
+
+    filter {
+      prefix = "traces/"
+    }
+
+    expiration {
+      days = 14
+    }
+  }
 }
 
 # -----------------------------------------------------------------------
@@ -779,6 +796,13 @@ locals {
     PROMPTS_BUCKET          = module.prompts.bucket_name
     PROMPT_HASHES_TABLE     = module.prompts.hash_table_name
     PROMPT_AS_ASSET_ENABLED = var.prompt_as_asset_enabled ? "true" : "false"
+
+    # Call traces (common/call_traces.py): whether the evals setting trace_calls is on while the evals
+    # row does not say. On here, as section 4.5 of docs/enhancements/model-ranch-prompt-assets-evals.md
+    # has it ("dev root sets true"); production's root says "false". `admin_cli evals set
+    # --trace-calls off` still turns it off. The traces expire after 14 days (the content bucket's
+    # expire-call-traces rule) and nothing public can read them.
+    TRACE_CALLS_DEFAULT = "true"
   }
 }
 
@@ -1214,6 +1238,10 @@ module "admin_api" {
     "POST /evals/rollup",
     "GET /evals/status",
     "GET /evals/digest",
+    # One article's call traces (common/call_traces.py: its model calls' prompts and replies, stored
+    # while the evals setting trace_calls is on). See admin_api_handler.py's _evals_traces_route and
+    # `admin_cli evals trace`.
+    "GET /evals/traces/{article_id}",
     "GET /reviewer-config",
     "PUT /reviewer-config",
     # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): each registered

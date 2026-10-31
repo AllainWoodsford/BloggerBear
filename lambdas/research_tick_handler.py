@@ -58,7 +58,7 @@ from decimal import Decimal
 
 import boto3
 
-from common import evidence, prompts
+from common import call_traces, evidence, prompts
 from common.adapters.base import SEEN_KEY
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
@@ -487,6 +487,11 @@ def _run_research_tick(topic_id: str, force: bool = False, due_checked_at: datet
 
     captured_at = new_state.get("fetched_at") or datetime.now(UTC).isoformat()
     snapshot_key = _snapshot_key(topic_id, captured_at)
+    # The call is traced under the Finding it writes (common/call_traces.py, while trace_calls is
+    # on), whole: the summary prompts set the source's data down as plain values, never as a
+    # delimited or defanged block, and the raw snapshot sits beside it under snapshots/ anyway.
+    with call_traces.bind(call_traces.finding_subject(topic_id, captured_at)):
+        call_traces.record(research_call, prompt, summary, stage="research")
 
     # The seen-set goes on a copy for storage only: it never reaches the summary
     # prompt above or an adapter's source_refs below; it exists for the next tick.

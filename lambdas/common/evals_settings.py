@@ -16,7 +16,8 @@ Two kinds:
   a change is a deliberate edit of the row itself.
 * **The CLI's** (`admin_cli evals set`): culling (`cull_enabled`, `cull_max_per_run`), the judge
   (`judge_enabled`, `judge_interval_hours`, `judge_max_items`, `judge_model_id`), spending
-  (`score_max_cost_aud`, `evals_daily_spend_cap_aud`), `trace_calls`, the `timezone` whose days
+  (`score_max_cost_aud`, `evals_daily_spend_cap_aud`), `trace_calls` (common/call_traces.py; off
+  by default, but on by default in dev, whose root says so: `defaults`), the `timezone` whose days
   the rollup adds events up by, and `excluded_sources`, whose events the rollup leaves out.
 
 **gated_windows** is what the gates say about one models row: the windows whose score is below
@@ -80,6 +81,10 @@ _NUMBER = {
     "evals_daily_spend_cap_aud": (0, 100),
 }
 _SWITCHES = ("cull_enabled", "judge_enabled", "trace_calls")
+# Section 4.5: `trace_calls` is off, and the dev root sets it on. This environment variable is the
+# root's say: "true" in dev's lambda_env_variables, "false" in production's. It only moves the
+# default, so a value on the row still decides, in dev as anywhere.
+TRACE_CALLS_DEFAULT_ENV = "TRACE_CALLS_DEFAULT"
 MAX_EXCLUDED_SOURCES = 20
 # An excluded source that names an offline scoring run rather than a source or a decider.
 RUN_SOURCE_PREFIX = "run:"
@@ -173,11 +178,19 @@ def _zone(value) -> ZoneInfo | None:
         return None
 
 
+def defaults() -> dict:
+    """Every setting's default in this deployment: SETTINGS, with `trace_calls` on where the root
+    says so (TRACE_CALLS_DEFAULT_ENV)."""
+    found = copy.deepcopy(SETTINGS)
+    found["trace_calls"] = os.environ.get(TRACE_CALLS_DEFAULT_ENV) == "true"
+    return found
+
+
 def effective_settings(row: dict | None) -> dict:
-    """Every setting's value in effect: the row's where it is valid, else the default."""
+    """Every setting's value in effect: the row's where it is valid, else the default (`defaults`)."""
     row = row or {}
     settings = {}
-    for name, default in SETTINGS.items():
+    for name, default in defaults().items():
         value = row.get(name)
         if value is not None and validate_setting(name, value) is not None:
             print(f"evals_settings: ignoring invalid {name}={value!r}; using {default!r}")

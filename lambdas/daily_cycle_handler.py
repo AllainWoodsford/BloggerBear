@@ -51,7 +51,16 @@ from datetime import UTC, date, datetime
 
 import boto3
 
-from common import compliance, equipment, evals_emission, fresh_review, goal_rotation, model_fleet, prompts
+from common import (
+    call_traces,
+    compliance,
+    equipment,
+    evals_emission,
+    fresh_review,
+    goal_rotation,
+    model_fleet,
+    prompts,
+)
 from common.adapters.base import DaySubject
 from common.attribution import sources_for_topic
 from common.bedrock import invoke_model_tracked
@@ -276,11 +285,15 @@ def _handle(event: dict, context=None) -> dict:
 
     print(f"daily_cycle_handler: starting run for topic_id={topic_id} force={force}")
     run_id = _run_id(event, context)
+    # The id the article will be stored under, chosen now so that every model call of the run can be
+    # traced under it as it is made (common/call_traces.py, while trace_calls is on). A run that
+    # stores no article leaves its traces under an id no article has; they expire with the rest.
+    article_id = str(uuid.uuid4())
     try:
         # Every prompt of this run draws its A/B arm by the run's id (common/prompts.py), so a
         # retry of the run is given the same versions; a run with no id draws at random.
-        with prompts.bind_run(run_id):
-            return _run_daily_cycle(topic_id, force=force, run_id=run_id)
+        with prompts.bind_run(run_id), call_traces.bind(article_id):
+            return _run_daily_cycle(topic_id, force=force, run_id=run_id, article_id=article_id)
     except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
         # Said in the log too: a caught error is a successful invocation to Step Functions, so
         # without this line it shows only in the execution's output.
@@ -504,7 +517,9 @@ def _written_by_this_run(topic: dict, run_id: str | None) -> dict | None:
     return None
 
 
-def _run_daily_cycle(topic_id: str, force: bool = False, run_id: str | None = None) -> dict:
+def _run_daily_cycle(
+    topic_id: str, force: bool = False, run_id: str | None = None, article_id: str | None = None
+) -> dict:
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "topic_id": topic_id, "error": "topic not found"}
@@ -748,6 +763,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False, run_id: str | None = No
             rotation=rotation,
             # Stamped as soon as the row exists: see _publish_or_moderate's `on_stored`.
             on_stored=_stored,
+            article_id=article_id,
         )
     except Exception as exc:
         if "article_id" not in stored:
@@ -1063,6 +1079,17 @@ def _financial_guidance_block(topic: dict) -> str:
     return f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
 
 
+# The values of the ideation and draft prompts that a call trace stores as their sha256
+# (common/call_traces.py): the findings, which the fresh-data review and the compliance review set
+# down as data and defang, and the gear's guidance, which is written from reader comments
+# (common/gear.py defangs it). Each is the string exactly as the prompt renders it.
+_TRACE_UNTRUSTED = ("summaries", "guidance_block")
+
+
+def _untrusted(values: dict) -> list[str]:
+    return [values[name] for name in _TRACE_UNTRUSTED if values.get(name)]
+
+
 def _ideate(
     topic: dict,
     summaries_block: str,
@@ -1176,6 +1203,7 @@ def _ideate(
     }
     if result.get("attempts", 1) > 1:
         lineage_call["attempts"] = result["attempts"]
+    call_traces.record(lineage_call, prompt.text, response, untrusted=_untrusted(values))
     return angles[:_NUM_CANDIDATE_ANGLES], lineage_call
 
 
@@ -1261,6 +1289,7 @@ def _draft_article(
     }
     if result.get("attempts", 1) > 1:
         lineage_call["attempts"] = result["attempts"]
+    call_traces.record(lineage_call, prompt.text, result["text"], untrusted=_untrusted(values))
     return result["text"], lineage_call
 
 
@@ -1312,6 +1341,9 @@ def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tu
     }
     if attempts > 1:
         lineage_call["attempts"] = attempts
+    # The prompt and reply of the call that counted (a retry's, when there was one), as lineage
+    # records its version. The angle is the ideation's own reply: nothing here is outside text.
+    call_traces.record(lineage_call, prompt.text, result["text"])
     return title, lineage_call, _is_plausible_reply(title, max_words=_MAX_TITLE_WORDS)
 
 
@@ -1362,6 +1394,7 @@ def _publish_or_moderate(
     subject_key: str | None = None,
     rotation: goal_rotation.Pick | None = None,
     on_stored: Callable[[str], None] | None = None,
+    article_id: str | None = None,
 ) -> dict:
     """Store the article and either publish it or send it to moderation.
 
@@ -1386,9 +1419,12 @@ def _publish_or_moderate(
     verdict (today: a truncated draft, a title that is not one, a topic with
     `force_manual_review`, and an enforced fresh-data review that held it). Any of them
     sends it to moderation, listed ahead of the compliance reasons, so a person sees why.
+
+    `article_id` is the id the run chose for it (`_handle`), so its call traces are under the id it
+    is stored with; a new one when not given.
     """
     hold_reasons = list(hold_reasons or [])
-    article_id = str(uuid.uuid4())
+    article_id = article_id or str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
     body_s3_key = f"articles/{article_id}.md"
 

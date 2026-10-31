@@ -42,6 +42,7 @@ from botocore.exceptions import ClientError
 
 from common import (
     backup,
+    call_traces,
     dispatch,
     equipment,
     evals_emission,
@@ -3213,6 +3214,81 @@ def _evals_digest_route(event: dict) -> dict:
     return _response(200, result)
 
 
+# --- Call traces (common/call_traces.py; docs/enhancements/model-ranch-prompt-assets-evals.md, PR18c) --
+#
+# One article's model calls as they were sent and answered, stored while trace_calls was on: its own
+# (traces/<article_id>/), and the research calls of the Findings its lineage names
+# (traces/<topic_id>#<captured_at>/research.json). Admin only; nothing public reads traces/.
+
+# The research traces one answer reads at most, the newest Findings first.
+TRACE_RESEARCH_MAX = 24
+# How large an answer grows before the traces after it are listed without their bodies: a Lambda
+# answers at most 6 MB, and whole prompts add up.
+TRACE_ANSWER_MAX_CHARS = 5_000_000
+
+
+def _evals_traces_route(event: dict) -> dict:
+    """Every trace of one article, by stage, and those of the research behind it, each with the
+    trace as stored ({prompt_id, version, model_id, rendered_prompt, reply, tokens}). 404 when there
+    is neither an article nor a trace under the id: a run that stored no article keeps its traces
+    under the id it chose, so they are still found by it."""
+    article_id = _path_param(event, "article_id")
+    if not call_traces.valid_subject(article_id) or "#" in article_id:
+        return _error(400, "article_id must be an article's id")
+    client = boto3.client("s3")
+    try:
+        article = get_article(article_id)
+        own = call_traces.read(article_id, client)
+        research, not_read = _research_traces(article, client)
+    except Exception as exc:  # noqa: BLE001 - say what failed rather than a bare 500
+        print(f"admin_api_handler: could not read the traces of {article_id}: {exc!r}")
+        return _error(502, f"could not read the traces ({type(exc).__name__})")
+    if article is None and not own:
+        return _error(404, f"no article and no traces under '{article_id}'")
+    try:
+        tracing = bool(evals_settings.get_settings()[call_traces.SETTING])
+    except Exception as exc:  # noqa: BLE001 - the traces are still worth showing
+        print(f"admin_api_handler: could not read {call_traces.SETTING}: {exc!r}")
+        tracing = None
+    used = 0
+    for entry in own + research:
+        size = len(json.dumps(entry["trace"], default=_json_number))
+        if used + size > TRACE_ANSWER_MAX_CHARS:
+            entry.update(trace=None, left_out="the answer is at its size limit")
+        else:
+            used += size
+    return _response(
+        200,
+        {
+            "article_id": article_id,
+            "article_found": article is not None,
+            call_traces.SETTING: tracing,
+            "traces": own,
+            "research": research,
+            "research_not_read": not_read,
+        },
+    )
+
+
+def _research_traces(article: dict | None, client) -> tuple[list[dict], int]:
+    """The traces of the research calls an article's lineage names (newest first, at most
+    TRACE_RESEARCH_MAX), each with its Finding's `captured_at`; and how many calls were past that."""
+    if article is None:
+        return [], 0
+    research = (article.get("lineage") or {}).get("research") or {}
+    times = {call.get("captured_at") for call in research.get("calls") or [] if isinstance(call, dict)}
+    captured = sorted((at for at in times if isinstance(at, str)), reverse=True)
+    found = []
+    for captured_at in captured[:TRACE_RESEARCH_MAX]:
+        subject = call_traces.finding_subject(str(article.get("topic_id")), captured_at)
+        if not call_traces.valid_subject(subject):
+            continue
+        entry = call_traces.read_one(subject, "research", client)
+        if entry is not None:
+            found.append({"captured_at": captured_at, **entry})
+    return found, max(len(captured) - TRACE_RESEARCH_MAX, 0)
+
+
 # --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/archive/reviewer-bear.md) -----
 #
 # The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
@@ -3980,6 +4056,7 @@ _ROUTES = {
     "POST /evals/rollup": _start_evals_rollup_route,
     "GET /evals/status": _evals_status_route,
     "GET /evals/digest": _evals_digest_route,
+    "GET /evals/traces/{article_id}": _evals_traces_route,
     "GET /reviewer-config": _get_reviewer_config_route,
     "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /prompts": _list_prompts_route,

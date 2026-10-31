@@ -8,7 +8,7 @@ than feedback (Feedback's own PII pipeline is Phase 5, out of scope here).
 
 import re
 
-from common import prompts
+from common import call_traces, prompts
 from common.bedrock import invoke_model_tracked
 
 # A handful of conservative, obvious-PII patterns -- not a PII-detection
@@ -331,11 +331,11 @@ def review_draft(
     redacted_draft = regex_redact(draft_text)
     if source_material and source_material.strip():
         source = _defang(regex_redact(source_material)[:MAX_SOURCE_CHARS])
-        prompt = prompts.get_prompt(
-            "reviews/compliance", {"source": source, "draft": _defang(redacted_draft)}
-        )
+        values = {"source": source, "draft": _defang(redacted_draft)}
+        prompt = prompts.get_prompt("reviews/compliance", values)
     else:
-        prompt = prompts.get_prompt("reviews/compliance_legacy", {"draft": redacted_draft})
+        values = {"draft": redacted_draft}
+        prompt = prompts.get_prompt("reviews/compliance_legacy", values)
     result = invoke_model_tracked(prompt.text, model_id, fallback_model_id=fallback_model_id)
     if source_material and source_material.strip():
         parsed = _review_verdict(
@@ -351,6 +351,9 @@ def review_draft(
         "used_fallback": result["used_fallback"],
         **prompts.lineage_fields(prompt),
     }
+    # Every value is the material under review (the research and the draft, which reviews/compliance
+    # sets down as data and defangs): a call trace stores each as its sha256 (common/call_traces.py).
+    call_traces.record(parsed["lineage_call"], prompt.text, result["text"], untrusted=values.values())
     return parsed
 
 
