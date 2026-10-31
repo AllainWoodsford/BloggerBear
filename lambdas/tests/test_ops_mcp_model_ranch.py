@@ -288,6 +288,13 @@ def test_a_calibrated_or_switched_off_judge_is_no_card(ranch):
     assert "The judge is off." in result["spoken"]
 
 
+def test_a_judge_with_no_pairs_yet_is_said_plainly(ranch):
+    spoken = model_ranch.model_ranch(now=NOW)["spoken"]
+
+    said = "The judge isn't calibrated yet, it has no pairs with people's verdicts yet, of the 20 it needs"
+    assert said in spoken
+
+
 def put_proposal(aws, *, expires_at="2026-11-06T04:00:00+11:00", models=None):
     proposal = {
         "proposed_at": "2026-10-30T04:00:00+11:00",

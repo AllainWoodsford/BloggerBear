@@ -350,16 +350,15 @@ def _cull(settings: dict, now: datetime) -> dict | None:
 def _judge_words(judge: dict) -> str:
     if not judge["judge_enabled"]:
         return "The judge is off."
-    agreement = judge["agreement"]
-    agrees = "with no pairs yet"
-    if agreement is not None:
-        agrees = f"agreeing with people {_pct(agreement)} of the time"
+    agreement, pairs, needed = judge["agreement"], judge["pairs"], judge["min_pairs"]
+    agrees = f"agreeing with people {_pct(agreement)} of the time over {pairs}"
     if judge["calibrated"]:
-        return f"The judge is calibrated, {agrees} over {judge['pairs']} pairs."
-    return (
-        f"The judge isn't calibrated yet, {agrees} over {judge['pairs']} of the {judge['min_pairs']} pairs "
-        "it needs, so its verdicts don't count towards the gates."
-    )
+        return f"The judge is calibrated, {agrees} pairs."
+    if agreement is None:
+        agrees = f"it has no pairs with people's verdicts yet, of the {needed} it needs"
+    else:
+        agrees = f"{agrees} of the {needed} pairs it needs"
+    return f"The judge isn't calibrated yet, {agrees}, so its verdicts don't count towards the gates."
 
 
 def _ranch_spoken(models: list[dict], judge: dict, cull: dict | None, weakest) -> str:
