@@ -1239,11 +1239,230 @@ def test_the_deploy_roles_trust_whichever_repository_bootstrap_is_told():
     owner_repo = 'repo:${split("/", var.github_repo)[0]}@*/${split("/", var.github_repo)[1]}@*'
     assert f'values   = ["{owner_repo}:ref:refs/heads/dev"]' in main
     assert f'values   = ["{owner_repo}:environment:production"]' in main
-    # Those two are the only subjects trusted, and neither names an owner or a repository itself.
-    assert len(re.findall(r'values\s*=\s*\["repo:', main)) == 2
+    # Every subject trusted anywhere in the file is built from the variable, none naming an owner
+    # or a repository itself: the deploy roles' two above, and the prompts publisher roles' three
+    # (the next test), which make five subject strings for three distinct subjects.
+    code = _uncommented(main)
+    subjects = _trust_subjects(code)
+    assert len(subjects) == 5 and all(subject.startswith(f"{owner_repo}:") for subject in subjects)
+    assert set(subjects) == {
+        f"{owner_repo}:ref:refs/heads/dev",
+        f"{owner_repo}:environment:production",
+        f"{owner_repo}:environment:production-prompts",
+    }
+    # Four trust documents (two deploy roles, two publisher roles), each with one `sub` condition,
+    # and nothing else signs in through GitHub's OIDC: a fifth document, a second subject condition,
+    # or a statement with no subject condition at all fails here. What each list holds, item by
+    # item, is the next test's.
+    assert code.count('variable = "token.actions.githubusercontent.com:sub"') == 4
+    assert len(_sub_lists(code)) == 4
+    assert code.count('actions = ["sts:AssumeRoleWithWebIdentity"]') == 4
     # And the state bucket's name is a variable too, with the name the backends are written for.
     bucket = variables.split('variable "state_bucket_name" {')[1].split("\n}\n")[0]
     assert '\n  default     = "bloggerbear-terraform-state"\n' in bucket
+
+
+def _trust_subjects(text: str) -> list[str]:
+    """Every `sub` claim pattern the trust documents in `text` accept, in the order written. A
+    subject holds quotes of its own (split("/", ...)), so each is read to the end of its line."""
+    return re.findall(r'"(repo:[^\n]*?)"[\],]\n', text)
+
+
+# The `values` list of a `sub` condition, to the `]` that ends a line: every subject holds `[0]` and
+# `[1]` of its own (split("/", ...)), so the first `]` is not the list's.
+_SUB_LIST = re.compile(
+    r'variable\s*=\s*"token\.actions\.githubusercontent\.com:sub"\n\s*values\s*=\s*\[(.*?)\]\n', re.S
+)
+
+
+def _sub_lists(text: str) -> list[str]:
+    """Every `sub` condition's whole list in `text`, every item and not only those that start with
+    repo:, with the whitespace and a trailing comma taken out, so a one-line list and a multi-line
+    one read alike."""
+    return ["".join(found.split()).rstrip(",") for found in _SUB_LIST.findall(text)]
+
+
+def _as_sub_list(*subjects: str) -> str:
+    """How _sub_lists reads a list that holds exactly `subjects`, in that order."""
+    return "".join(",".join(f'"{subject}"' for subject in subjects).split())
+
+
+def _trust_document(code: str, document: str) -> str:
+    return code.split(f'data "aws_iam_policy_document" "{document}" {{')[1].split("\n}\n")[0]
+
+
+def test_the_prompts_publisher_roles_trust_the_dev_branch_and_the_two_production_environments():
+    """gha-<prefix>-dev-prompts trusts what the dev deploy role trusts, a run off the dev branch,
+    through a trust document of its own. gha-<prefix>-prod-prompts trusts two GitHub Environments:
+    `production-prompts`, the prompts workflow's own gate, and `production`, so a release's publish
+    needs no third role. Both use the wildcarded owner/repo immutable subject claims call for (the
+    comment on gha_dev_trust), and each carries its own policy, never the deploy policy."""
+    # Every bootstrap file but the outputs (which read the roles' ARNs, checked below), so a policy
+    # attached from a new file is seen too.
+    code = _uncommented("\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((INFRA / "bootstrap").glob("*.tf")) if path.name != "outputs.tf"
+    ))  # fmt: skip
+    owner_repo = 'repo:${split("/", var.github_repo)[0]}@*/${split("/", var.github_repo)[1]}@*'
+    dev_branch, production = f"{owner_repo}:ref:refs/heads/dev", f"{owner_repo}:environment:production"
+    for document, subjects in (
+        ("gha_dev_trust", [dev_branch]),
+        ("gha_prod_trust", [production]),
+        ("gha_dev_prompts_trust", [dev_branch]),
+        ("gha_prod_prompts_trust", [f"{production}-prompts", production]),
+    ):
+        block = _trust_document(code, document)
+        assert _trust_subjects(block) == subjects, document
+        # The whole list, item by item: a "*" (any workflow in any repository) or any other entry
+        # beside the subjects fails here, whether or not it starts with repo:.
+        assert _sub_lists(block) == [_as_sub_list(*subjects)], document
+    for document in ("gha_dev_prompts_trust", "gha_prod_prompts_trust"):
+        block = _trust_document(code, document)
+        # The same federation as the deploy roles: this repository's OIDC provider, STS as the
+        # audience, and the subject matched as a pattern (the numeric ids after the @s).
+        assert 'actions = ["sts:AssumeRoleWithWebIdentity"]' in block
+        assert "identifiers = [aws_iam_openid_connect_provider.github_actions.arn]" in block
+        assert 'variable = "token.actions.githubusercontent.com:aud"' in block
+        assert 'values   = ["sts.amazonaws.com"]' in block
+        assert 'test     = "StringLike"' in block
+        assert 'variable = "token.actions.githubusercontent.com:sub"' in block
+        assert block.count("statement {") == 1 and '"Deny"' not in block
+    for env in ("dev", "prod"):
+        role = code.split(f'resource "aws_iam_role" "gha_{env}_prompts" {{')[1].split("\n}\n")[0]
+        assert f'name               = "gha-${{var.unique_name_prefix}}-{env}-prompts"' in role
+        assert f"assume_role_policy = data.aws_iam_policy_document.gha_{env}_prompts_trust.json" in role
+        # Those two attributes and no other: no managed_policy_arns, inline_policy or boundary.
+        attributes = [line.split()[0] for line in role.splitlines() if line.strip()]
+        assert attributes == ["name", "assume_role_policy"], env
+        opening = f'resource "aws_iam_role_policy_attachment" "gha_{env}_prompts" {{'
+        attachment = code.split(opening)[1].split("\n}\n")[0]
+        assert f"role       = aws_iam_role.gha_{env}_prompts.name" in attachment
+        assert f'policy_arn = aws_iam_policy.gha_prompts["{env}"].arn' in attachment
+        # That attachment is the only thing done to the role, so no other policy reaches it, never
+        # the deploy policy or the deploy roles' separation: nothing else refers to the role by any
+        # attribute (an aws_iam_role_policy through .id, a second attachment through .name) or by
+        # its name written out.
+        assert code.count(f"aws_iam_role.gha_{env}_prompts.") == 1
+        assert code.count(f'"gha-${{var.unique_name_prefix}}-{env}-prompts"') == 1
+    # The ARNs come out as outputs beside the deploy roles', each naming the secret it goes in.
+    outputs = _read("bootstrap", "outputs.tf")
+    for output, resource, secret in (
+        ("dev_prompts_role_arn", "gha_dev_prompts", "AWS_DEV_PROMPTS_ROLE_ARN"),
+        ("prod_prompts_role_arn", "gha_prod_prompts", "AWS_PROD_PROMPTS_ROLE_ARN"),
+    ):
+        block = outputs.split(f'output "{output}" {{')[1].split("\n}\n")[0]
+        assert f"value       = aws_iam_role.{resource}.arn" in block and secret in block
+        assert _uncommented(outputs).count(f"aws_iam_role.{resource}.") == 1  # that ARN, nothing more
+
+
+def test_the_prompts_publisher_roles_reach_one_bucket_and_one_table_and_nothing_else():
+    """Each publisher role's policy names its environment's prompts bucket and prompt-hashes table,
+    by the names the prompts module will give them (<prefix>-<env>-prompts and
+    <prefix>-<env>-prompt-hashes, docs/enhancements/model-ranch-prompt-assets-evals.md 4.2), and
+    nothing else: no "*" resource, no wildcard action, nothing of IAM, Lambda or logs. One document
+    for both, keyed by the role's environment like the deploy roles' separation policy."""
+    import fnmatch
+
+    raw = (INFRA / "bootstrap" / "main.tf").read_text(encoding="utf-8")
+    code = _uncommented(raw)
+    document = code.split('data "aws_iam_policy_document" "gha_prompts" {')[1].split(
+        'resource "aws_iam_policy" "gha_prompts"'
+    )[0]
+    assert "for_each = local.prompts_publisher_environment" in document
+    assert re.search(r'dev\s+= "dev"\n\s+prod\s+= "production"', code)
+
+    bucket = "arn:aws:s3:::${var.unique_name_prefix}-${each.value}-prompts"
+    table = "arn:aws:dynamodb:${var.aws_region}:*:table/${var.unique_name_prefix}-${each.value}-prompt-hashes"
+    # Every resource in the document is the bucket, its objects or the table, in the region the
+    # environments deploy to; nothing is "*".
+    resources = set(re.findall(r'"(arn:aws:[^"]*)"', document))
+    assert resources == {bucket, f"{bucket}/*", f"{bucket}/*/latest/*", table}
+    assert '"*"' not in document and "Deny" not in document
+    # Every action is one of the eleven a publish needs, and none is a wildcard.
+    actions = re.findall(r'"([a-z0-9]+:[A-Za-z*]+)"', document)
+    assert sorted(actions) == sorted([
+        "s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:GetObjectTagging", "s3:PutObjectTagging",
+        "s3:DeleteObject",
+        "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Scan", "dynamodb:Query",
+    ])  # fmt: skip
+    # Statement by statement: ListBucket on the bucket itself; the object actions on every key;
+    # DeleteObject under */latest/* alone (versions/ is write-once and releases/ is history); the
+    # table actions on the table.
+    statements = re.findall(r"statement \{(.*?)\n  \}", document, re.S)
+    assert len(statements) == 4
+    resources_of = {}
+    for statement in statements:
+        assert re.search(r'^\s*effect\s*=\s*"Allow"\s*$', statement, re.M)
+        for action in re.findall(r'"([a-z0-9]+:[A-Za-z*]+)"', statement):
+            resources_of[action] = re.findall(r'"(arn:aws:[^"]*)"', statement)
+    assert resources_of["s3:ListBucket"] == [bucket]
+    for action in ("s3:GetObject", "s3:PutObject", "s3:GetObjectTagging", "s3:PutObjectTagging"):
+        assert resources_of[action] == [f"{bucket}/*"], action
+    assert resources_of["s3:DeleteObject"] == [f"{bucket}/*/latest/*"]
+    for action in ("GetItem", "PutItem", "UpdateItem", "Scan", "Query"):
+        assert resources_of[f"dynamodb:{action}"] == [table], action
+    # With the default prefix: dev's role reaches dev's names, production's production's.
+    for env in ("dev", "production"):
+        filled = with_default_prefix(document).replace("${each.value}", env)
+        assert f'"arn:aws:s3:::{DEFAULT_PREFIX}-{env}-prompts"' in filled
+        assert f'"arn:aws:dynamodb:{_HOME}:*:table/{DEFAULT_PREFIX}-{env}-prompt-hashes"' in filled
+    # One managed policy per environment, named like the deploy policies, holding that document.
+    policy = code.split('resource "aws_iam_policy" "gha_prompts" {')[1].split("\n}\n")[0]
+    assert "for_each = data.aws_iam_policy_document.gha_prompts" in policy
+    assert 'name        = "${var.unique_name_prefix}-gha-${each.key}-prompts"' in policy
+    assert "policy      = each.value.json" in policy
+    # The description names the environment ("dev", "production"). each.value here is the whole
+    # policy document, which no string can hold (the next test).
+    description = 'description = "What the ${local.prompts_publisher_environment[each.key]} prompts publisher'
+    assert description in policy
+    # The deploy roles cannot reach the publisher roles: their IAM scopes are <prefix>-* roles,
+    # and these are named gha-<prefix>-*, like the deploy roles themselves.
+    patterns = re.findall(r'"arn:aws:iam::\*:role/([^"]+)"', with_default_prefix(code))
+    assert patterns
+    for role_name in (f"gha-{DEFAULT_PREFIX}-dev-prompts", f"gha-{DEFAULT_PREFIX}-prod-prompts"):
+        assert not any(fnmatch.fnmatch(role_name, pattern) for pattern in patterns), role_name
+
+
+def test_no_bootstrap_resource_puts_a_whole_data_source_into_a_string():
+    """A resource whose for_each is a data source gets that data source's whole object as
+    each.value, and only each.value.json, the policy, is a string. `"${each.value}"` in a name or a
+    description passes `terraform validate`, which cannot know the value yet, and stops every plan
+    of the bootstrap. CI never plans the bootstrap (the owner applies it by hand), so nothing but
+    this test would see it before the owner's apply did."""
+    code = _uncommented(_read("bootstrap", "main.tf"))
+    found = []
+    for match in re.finditer(r'^resource "[^"]+" "([^"]+)" \{\n(.*?)^\}', code, re.S | re.M):
+        if re.search(r"^\s*for_each\s*=\s*data\.", match.group(2), re.M):
+            found.append(match.group(1))
+            assert re.findall(r"each\.value[\w.]*", match.group(2)) == ["each.value.json"], match.group(1)
+    assert sorted(found) == ["gha_deploy_other_environment", "gha_prompts"]
+
+
+def test_the_deploy_roles_may_create_the_evals_log_group_before_the_module_that_needs_it():
+    """The evals log group (<prefix>-<env>-evals, docs/enhancements/model-ranch-prompt-assets-evals.md)
+    is the first of ours named outside /aws/lambda/, /aws/apigateway/ and aws-waf-logs-, so the
+    log-group statements the deploy roles had could not create it. The bootstrap is applied by
+    hand, so its statement lands ahead of the module, in the one policy both deploy roles carry."""
+    import fnmatch
+
+    bootstrap = _uncommented(_read("bootstrap", "main.tf"))
+    deploy = bootstrap.split('data "aws_iam_policy_document" "gha_deploy" {')[1].split(
+        'resource "aws_iam_policy" "gha_deploy"'
+    )[0]
+    found = re.search(r'sid\s*=\s*"EvalsLogGroups"(.*?)\n  \}', deploy, re.S)
+    assert found, "no EvalsLogGroups statement in the deploy policy"
+    statement = found.group(1)
+    # An Allow, matched whatever the spacing before "=" (fmt aligns it to a statement's longest
+    # attribute: #301).
+    assert re.search(r'^\s*effect\s*=\s*"Allow"\s*$', statement, re.M)
+    assert 'actions = ["logs:*"]' in statement
+    assert f'"arn:aws:logs:{_HOME}:*:log-group:{DEFAULT_PREFIX}-*-evals"' in statement
+    assert f'"arn:aws:logs:{_HOME}:*:log-group:{DEFAULT_PREFIX}-*-evals:*"' in statement
+    # Through the same reading the environments' log groups are checked against, in the home region.
+    allowed = _deploy_policy_log_group_patterns()
+    for env in ("dev", "production"):
+        name = f"{DEFAULT_PREFIX}-{env}-evals"
+        assert any(region == _HOME and fnmatch.fnmatch(name, pattern) for region, pattern in allowed), name
 
 
 def test_each_deploy_role_is_refused_the_other_environment_and_never_its_own():
@@ -1429,7 +1648,10 @@ def test_prompt_assets_are_wired_in_both_roots_and_off_until_the_repository_vari
     table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
     assert re.search(r"^\| `PROMPT_AS_ASSET_ENABLED` \| variable \| repo or `production` \|", table, re.M)
     assert re.search(r"^\| `AWS_DEV_PROMPTS_ROLE_ARN` \| secret \| repo \|", table, re.M)
-    assert re.search(r"^\| `AWS_PROD_PROMPTS_ROLE_ARN` \| secret \| `production` \|", table, re.M)
+    # Repository level, though production's: the prompts workflow publishes production's prompts under
+    # two environments (production-prompts and production), and an environment's secret reaches
+    # only its own jobs (scripts/setup_repo.py, beside the setting).
+    assert re.search(r"^\| `AWS_PROD_PROMPTS_ROLE_ARN` \| secret \| repo \|", table, re.M)
 
 
 def test_the_prompt_fallback_alarm_reads_the_evidence_line_from_every_pipeline_log_group():
