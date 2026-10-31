@@ -17,8 +17,9 @@
 # way, so switching never changes the role.
 #
 # Only while enabled: the eval-work queue, the eval-jobs function with its log group, its two
-# schedules and its queue mapping, the metric filters on the evals log group, and the alarms. With
-# evals off nothing reads or writes the table, emit() writes nothing, and nothing is invoked.
+# schedules and its queue mapping, the metric filters on the evals log group, the alarms, and the
+# ranch-and-prompts dashboard (dashboard.tf). With evals off nothing reads or writes the table,
+# emit() writes nothing, and nothing is invoked.
 #
 # Rights. Every pipeline Lambda runs as lambda_exec, so the grants are on that role, in one inline
 # policy, given here as var.lambda_exec_role_name: writing events and querying the log group, the
@@ -345,7 +346,8 @@ resource "aws_lambda_event_source_mapping" "eval_work" {
 # -----------------------------------------------------------------------
 
 # The sum of every event's rating_delta, by performance (good, bad, neutral), and the count of
-# events: the raw flow of scores, for the dashboard (PR11b), before any rollup.
+# events: the raw flow of scores before any rollup (the ranch-and-prompts dashboard's panels read
+# the log group itself; pipeline health's operator tiles count EvalRollups below).
 resource "aws_cloudwatch_log_metric_filter" "eval_rating_delta" {
   count          = var.enabled ? 1 : 0
   name           = "${var.unique_name_prefix}-${var.environment_name}-eval-rating-delta"

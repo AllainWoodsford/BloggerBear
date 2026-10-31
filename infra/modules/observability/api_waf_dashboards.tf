@@ -1,18 +1,15 @@
 # -----------------------------------------------------------------------
-# Scaling PR C: one more dashboard, <prefix>-<env>-edge, in the style of the pipeline and Lambda
-# runs ones in main.tf -- open on a span long enough to show something (7 days, hourly points),
-# counts on the left axis, a text header saying what each part is and why a widget can be
-# legitimately empty. Two halves:
+# Scaling PR C: the API Gateway and firewall widgets of what was the <prefix>-<env>-edge dashboard,
+# kept as locals for a dashboard to draw. The edge dashboard itself is gone (Model Ranch PR11b):
+# pipeline health (pipeline_health.tf) shows each API's requests, errors and latency and each web
+# ACL's blocks per rule within its 50 metrics, and these fuller sections (about 45 metrics for
+# production on their own) are here for a dashboard of their own should one be wanted again.
 #
 #   API Gateway   both REST APIs: requests, 4XX/5XX, latency vs integration latency, a per-status
 #                 split and 429s from the access logs, and the public API's CDN next to what still
 #                 reached API Gateway.
 #   Firewall      every web ACL: allowed/blocked/counted over time and per rule, plus the top
 #                 blocked rules, addresses and paths from the WAF logs.
-#
-# One dashboard, not two, and only where var.edge_dashboard_enabled (production): CloudWatch bills
-# US$3 a month for every dashboard past the account's first three, and dev's edge traffic is mostly
-# the operator's own.
 #
 # Regions: API Gateway and the regional ACLs are in the home region (var.aws_region). CloudFront's metrics, and the
 # CLOUDFRONT-scope ACL's metrics and log group, only exist in us-east-1 -- a widget pointed anywhere
@@ -389,15 +386,4 @@ locals {
     local.waf_regional_sections,
     local.waf_cloudfront_section,
   )])
-}
-
-resource "aws_cloudwatch_dashboard" "edge" {
-  count          = var.edge_dashboard_enabled && length(concat(local.api_gateway_widgets, local.waf_widgets)) > 0 ? 1 : 0
-  dashboard_name = "${var.unique_name_prefix}-${var.environment_name}-edge"
-
-  dashboard_body = jsonencode({
-    start          = "-P7D"
-    periodOverride = "inherit"
-    widgets        = concat(local.api_gateway_widgets, local.waf_widgets)
-  })
 }

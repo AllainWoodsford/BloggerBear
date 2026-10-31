@@ -63,3 +63,11 @@ variable "alerts_topic_arn" {
   type        = string
   description = "The environment's alerts topic (module.observability's sns_topic_arn): every alarm here notifies it, and lambda_exec may publish to it (the evals digest)."
 }
+
+variable "prompt_fallback_metric" {
+  type = object({
+    namespace = string
+    name      = string
+  })
+  description = "The metric the observability module's prompt_fallback filters feed (module.observability's prompt_fallback_metric), for the ranch-and-prompts dashboard's fallbacks panel."
+}

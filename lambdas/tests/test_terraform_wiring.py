@@ -674,21 +674,7 @@ def test_every_lambda_has_a_log_group_made_before_it(env):
 # --- dashboards --------------------------------------------------------------------------------
 
 
-def test_the_dashboards_open_on_a_span_that_shows_something():
-    module = _read("modules", "observability", "main.tf")
-    pipeline = re.search(r'resource "aws_cloudwatch_dashboard" "pipeline" \{(.*?)\n\}\n', module, re.S).group(
-        1
-    )
-    runs = re.search(r'resource "aws_cloudwatch_dashboard" "lambda_runs" \{(.*?)\n\}\n', module, re.S).group(
-        1
-    )
-
-    assert 'start          = "-P7D"' in pipeline and "period = 3600" in pipeline
-    assert 'yAxis = "right"' in pipeline  # duration off the count axis
-    assert "setPeriodToTimeRange = true" in runs
-
-
-def test_the_runs_dashboard_counts_match_the_handlers_log_lines():
+def test_the_feedback_funnel_counts_match_the_handlers_log_lines():
     module = _read("modules", "observability", "main.tf")
     handler = (ROOT / "lambdas" / "public_api_handler.py").read_text(encoding="utf-8")
 
@@ -706,33 +692,131 @@ def _dashboards() -> str:
     return _read("modules", "observability", "api_waf_dashboards.tf")
 
 
-def _dashboard_resource(name: str) -> str:
-    pattern = rf'resource "aws_cloudwatch_dashboard" "{name}" \{{(.*?)\n\}}\n'
-    return re.search(pattern, _dashboards(), re.S).group(1)
+def _pipeline_health() -> str:
+    return _read("modules", "observability", "pipeline_health.tf")
 
 
-def test_one_edge_dashboard_opens_on_a_week_of_hourly_points():
-    body = _dashboard_resource("edge")
-
-    assert 'start          = "-P7D"' in body
-    assert 'dashboard_name = "bloggerbear-${var.environment_name}-edge"' in body
-    assert "concat(local.api_gateway_widgets, local.waf_widgets)" in body
-    assert "period = 3600" in _dashboards()
-    # One dashboard, not one each: every dashboard past the account's first three is US$3 a month.
-    assert _dashboards().count('resource "aws_cloudwatch_dashboard"') == 1
+def _ranch_and_prompts() -> str:
+    return _read("modules", "evals", "dashboard.tf")
 
 
-def test_the_edge_dashboard_is_created_in_production_only():
-    assert "var.edge_dashboard_enabled &&" in _dashboard_resource("edge")
-    variables = _read("modules", "observability", "variables.tf")
-    variable = re.search(r'variable "edge_dashboard_enabled" \{(.*?)\n\}', variables, re.S).group(1)
-    assert "default     = false" in variable
-    assert "edge_dashboard_enabled = true" in _read("environments", "production", "main.tf")
-    assert "edge_dashboard_enabled = true" not in _read("environments", "dev", "main.tf")
+def test_two_dashboards_in_all_one_per_environment_and_one_while_evals_are_on():
+    """Every dashboard past an account's first three is about US$3 a month: pipeline health in
+    each environment and ranch-and-prompts while evals are on make four where dev and production
+    share an account. The pipeline, lambda-runs and edge dashboards, and the edge switch, are gone;
+    the API Gateway and firewall widgets stay as locals."""
+    dashboard = re.compile(r'^resource "aws_cloudwatch_dashboard" "(\w+)"', re.M)
+    made = {}
+    for path in terraform_files():
+        if found := dashboard.findall(read_terraform(path)):
+            made[path.relative_to(INFRA).as_posix()] = found
+    assert made == {
+        "modules/observability/pipeline_health.tf": ["pipeline_health"],
+        "modules/evals/dashboard.tf": ["ranch_and_prompts"],
+    }
+    pipeline = _resource_block(_pipeline_health(), "aws_cloudwatch_dashboard", "pipeline_health")
+    assert f'dashboard_name = "{DEFAULT_PREFIX}-${{var.environment_name}}-pipeline-health"' in pipeline
+    assert not re.search(r"^  count\s*=", pipeline, re.M)
+    ranch = _resource_block(_ranch_and_prompts(), "aws_cloudwatch_dashboard", "ranch_and_prompts")
+    assert f'dashboard_name = "{DEFAULT_PREFIX}-${{var.environment_name}}-ranch-and-prompts"' in ranch
+    assert re.search(r"^  count\s*=\s*var\.enabled \? 1 : 0$", ranch, re.M)
+    assert "api_gateway_widgets = flatten(" in _dashboards() and "waf_widgets = flatten(" in _dashboards()
+    for path in terraform_files():
+        assert "edge_dashboard_enabled" not in path.read_text(encoding="utf-8"), path
+
+
+def test_the_model_catalog_row_reads_fields_the_evidence_line_carries():
+    """Section 2's counters from model_catalog_job lines (common/evidence.py): "reverted" is a
+    review's reverted plus its unconfirmed, drops are its review_dropped, and the line's own
+    `dropped` (the fields that failed their checks) is never counted."""
+    from common import evidence
+
+    text = _pipeline_health()
+    counters = dict(re.findall(r'^    (\w+)\s*=\s*"(ModelCatalog\w+)"$', text, re.M))
+    tiles = re.findall(r'^    \["(ModelCatalog\w+)", "([a-z]+)"\],$', text, re.M)
+
+    fields = evidence.EVENTS["model_catalog_job"]
+    assert set(counters) <= set(fields) and all(fields[field] == "int" for field in counters)
+    assert "dropped" not in counters
+    assert counters["reverted"] == counters["unconfirmed"] == "ModelCatalogReverted"
+    assert counters["review_dropped"] == "ModelCatalogDropped"
+    assert [label for _, label in tiles] == [
+        "discovered", "pruned", "classified", "denied", "repriced", "reverted", "dropped",
+    ]
+    assert {metric for metric, _ in tiles} == set(counters.values())
+    metric_filter = _resource_block(text, "aws_cloudwatch_log_metric_filter", "model_catalog")
+    assert 'pattern        = "{ $.event = \\"model_catalog_job\\" && $.${each.key} >= 0 }"' in metric_filter
+    assert 'value     = "$.${each.key}"' in metric_filter
+    assert "default_value" not in metric_filter
+    for env in ("dev", "production"):
+        (block,) = _module_blocks(_read("environments", env, "main.tf"), "modules/observability")
+        group = r"aws_cloudwatch_log_group\.lambda\[aws_lambda_function\.model_catalog\.function_name\]\.name"
+        assert re.search(rf"^  model_catalog_log_group_name = {group}$", block, re.M), env
+
+
+def test_each_operator_tile_names_a_metric_a_filter_makes():
+    """The four tiles name their metrics alone, two of them another module's: a renamed metric
+    would leave a tile reading nothing, so each name is held to the filter that makes it."""
+    listed = _pipeline_health().split("operator_tiles = [", 1)[1].split("\n  ]\n", 1)[0]
+    tiles = re.findall(r'^    \["([A-Za-z]+)", "[a-z -]+"\],$', listed, re.M)
+    namespace = 'namespace = "BloggerBear/${var.environment_name}"'
+    by_local = "namespace = local.metric_namespace"
+    made = set()
+    for path in terraform_files():
+        for transformation in re.findall(r"metric_transformation \{(.*?)\n  \}", read_terraform(path), re.S):
+            # The evals module names the namespace through a local of the same value.
+            spaced = re.sub(r"\s+", " ", transformation).replace(by_local, namespace)
+            if namespace in spaced:
+                made |= set(re.findall(r'name\s*=\s*"(\w+)"', transformation))
+
+    assert tiles == ["DispatcherTicks", "EvalRollups", "PromptFallback", "SecurityHighSeverityIncidents"]
+    assert set(tiles) <= made
+
+
+def test_the_ranch_dashboard_reads_only_the_evals_events_fields():
+    """Its queries group by an event's own fields (common/evals.py), which hold codes and ids only."""
+    from common import evals
+
+    text = _ranch_and_prompts()
+    assert f'filter schema = \\"{evals.SCHEMA}\\"' in text
+    assert 'filter reason = \\"Prompt Fallback\\"' in text and "Prompt Fallback" in evals.REASONS
+    assert 'filter performance = \\"bad\\"' in text and "bad" in evals.PERFORMANCES
+    queries = re.findall(r'query  = "\$\{local\.evals_source\} \| (.*)"$', text, re.M)
+    assert len(queries) == 7
+    named = set()
+    for query in queries:
+        named |= set(re.findall(r"\b(?:by|ispresent\(|sum\(|fields @timestamp,)\s*([a-z_, ]+)", query))
+    words = {word.strip() for group in named for word in group.split(",")} - {"", "bin"}
+    assert words and words <= set(evals.FIELDS), words - set(evals.FIELDS)
+    assert "var.prompt_fallback_metric.namespace, var.prompt_fallback_metric.name" in text
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
-def test_both_dashboards_cover_both_apis_and_every_web_acl(env):
+def test_pipeline_health_is_given_every_pipeline_lambdas_timeout(env):
+    """The duration panel scales each function by its own timeout. The root lists the functions as
+    objects (the name count above stays one per function) beside the modules' own timeouts, and the
+    dashboard's precondition refuses a function left out at plan; this keeps the lists the same."""
+    main = _read("environments", env, "main.tf")
+    timeouts = main.split("pipeline_lambda_timeouts = merge(", 1)[1].split("\n  )\n", 1)[0]
+    names = main.split("pipeline_lambda_function_names = concat([", 1)[1].split("\n}\n", 1)[0]
+
+    assert re.findall(r"aws_lambda_function\.(\w+),", timeouts) == re.findall(
+        r"aws_lambda_function\.(\w+)\.function_name,", names
+    )
+    assert "], aws_lambda_function.reviewer) : function.function_name => function.timeout }" in timeouts
+    modules = "module.evals.function_timeouts,\n    module.work_queue.function_timeouts,"
+    assert timeouts.rstrip().endswith(modules)
+    (block,) = _module_blocks(main, "modules/observability")
+    assert re.search(r"^  lambda_timeouts\s*=\s*local\.pipeline_lambda_timeouts$", block, re.M)
+    for module in ("evals", "work-queue"):
+        outputs = _read("modules", module, "outputs.tf")
+        assert 'output "function_timeouts" {' in outputs, module
+    precondition = _resource_block(_pipeline_health(), "aws_cloudwatch_dashboard", "pipeline_health")
+    assert "contains(keys(var.lambda_timeouts), name)" in precondition
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_pipeline_health_covers_both_apis_and_every_web_acl(env):
     text = _read("environments", env, "main.tf")
     block = re.search(r'^module "observability" \{\n(.*?)^\}', text, re.S | re.M).group(1)
 
@@ -2105,9 +2189,9 @@ def test_dashboard_widget_lists_never_branch_on_a_conditional():
     """`cond ? [] : concat(...)` over widgets of different shapes passes validate and fails every
     plan ("Inconsistent conditional result types"), which broke the dev apply once. The idiom that
     works is `flatten([for _ in (cond ? [] : [1]) : ...])`; the module's terraform test plans it."""
-    text = _dashboards()
-
-    assert not re.search(r"= .*\? \[\] : concat\(", text)
+    for text in (_dashboards(), _pipeline_health(), _ranch_and_prompts()):
+        assert not re.search(r"= .*\? \[\] : concat\(", text)
+        assert not re.search(r"\? \[\{", text)
     assert (ROOT / "infra" / "modules" / "observability" / "tests" / "observability.tftest.hcl").exists()
     assert "terraform -chdir=\"$dir\" test" in (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(
         encoding="utf-8"
@@ -2685,6 +2769,8 @@ def test_both_roots_always_call_the_evals_module_with_their_own_names_and_role(e
         "lambda_environment": "local.lambda_env_variables",
         "pipeline_dlq_arn": "aws_sqs_queue.pipeline_dlq.arn",
         "alerts_topic_arn": "module.observability.sns_topic_arn",
+        # The ranch-and-prompts dashboard's fallbacks panel reads the observability module's metric.
+        "prompt_fallback_metric": "module.observability.prompt_fallback_metric",
     }
     if env == "production":
         expected["protect_data"] = "true"  # like module.app_data's: dev's tables are disposable
@@ -3466,10 +3552,10 @@ def test_the_vision_policy_reads_one_workers_log_and_the_running_states_only_whe
 
 
 def test_the_assistant_is_told_the_evals_switch_its_catalogue_reads():
-    """eval-jobs, the eval-work queue and their schedules exist only while evals are on. The MCP
-    server is told the switch under the pipeline's own name and form (EVALS_ENABLED, the exact word
-    "true" for on), and the catalogue's switch_env reads it, so with evals off a log review neither
-    reads nor refuses eval-jobs' log group."""
+    """eval-jobs, the eval-work queue, their schedules and the ranch-and-prompts dashboard exist
+    only while evals are on. The MCP server is told the switch under the pipeline's own name and
+    form (EVALS_ENABLED, the exact word "true" for on), and the catalogue's switch_env reads it, so
+    with evals off a log review neither reads nor refuses eval-jobs' log group."""
     variable = re.search(
         r'variable "evals_enabled" \{(.*?)\n\}', _read("modules", "ops-assistant", "variables.tf"), re.S
     ).group(1)
@@ -3488,7 +3574,7 @@ def test_the_assistant_is_told_the_evals_switch_its_catalogue_reads():
     agent = _uncommented(_resource_block(_agent_module(), "aws_lambda_function", "ops_agent"))
     assert "EVALS_ENABLED" not in agent
     architecture = (ROOT / "lambdas" / "ops_mcp" / "architecture.py").read_text(encoding="utf-8")
-    assert architecture.count('switch_env="EVALS_ENABLED"') == 4
+    assert architecture.count('switch_env="EVALS_ENABLED"') == 5
     assert '{"EVALS_ENABLED": ("evals", "evals_enabled")}' in architecture
 
 
@@ -4591,7 +4677,12 @@ def test_everything_the_page_and_the_browser_are_told_follows_the_region():
     )
     dashboards = _dashboards()
     assert "\n  api_region = var.aws_region\n" in dashboards
-    assert 'region = "' not in _uncommented(_read("modules", "observability", "main.tf"))
+    for parts in [
+        ("observability", "main.tf"),
+        ("observability", "pipeline_health.tf"),
+        ("evals", "dashboard.tf"),
+    ]:
+        assert 'region = "' not in _uncommented(_read("modules", *parts)), parts
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])

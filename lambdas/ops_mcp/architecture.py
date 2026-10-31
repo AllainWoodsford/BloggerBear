@@ -137,7 +137,7 @@ def _lambda(key: str, purpose: str, trigger: str, *, alarmed: bool = True, **mor
     "<prefix>-<env>-" + the function's own name, so the prefix appears twice)."""
     name = f"{PREFIX}{ENV}-{key}"
     alarms = (f"{PREFIX}{ENV}-{name}-errors", f"{PREFIX}{ENV}-{name}-throttles") if alarmed else ()
-    dashboards = (f"{PREFIX}{ENV}-pipeline", f"{PREFIX}{ENV}-lambda-runs") if alarmed else ()
+    dashboards = (_PIPELINE_DASHBOARD,) if alarmed else ()
     return Component(
         kind="function",
         key=key,
@@ -155,8 +155,10 @@ def _table(key: str, purpose: str, keys: tuple[str, ...], **more) -> Component:
     return Component(kind="table", key=key, name=f"{PREFIX}{ENV}-{key}", purpose=purpose, keys=keys, **more)
 
 
-_PIPELINE_DASHBOARD = f"{PREFIX}{ENV}-pipeline"
-_EDGE_DASHBOARD = f"{PREFIX}{ENV}-edge"
+# The two dashboards (PR11b): pipeline health in every environment (infra/modules/observability,
+# pipeline_health.tf), and the ranch and prompts one while evals are on (infra/modules/evals).
+_PIPELINE_DASHBOARD = f"{PREFIX}{ENV}-pipeline-health"
+_RANCH_DASHBOARD = f"{PREFIX}{ENV}-ranch-and-prompts"
 # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): a Lambda that cannot use a
 # prompt asset carries on with the copy in its code and logs a prompt_fallback line; the alarm (the
 # observability module's filter over every pipeline log group) reports the first in an hour. It is
@@ -447,7 +449,7 @@ CATALOGUE: tuple[Component, ...] = (
         ),
         aliases=("incidents", "security"),
         assistant_reads=True,
-        dashboards=(_EDGE_DASHBOARD,),
+        dashboards=(_PIPELINE_DASHBOARD,),
         alarms=(f"{PREFIX}{ENV}-security-high-severity",),
     ),
     _table(
@@ -592,14 +594,12 @@ CATALOGUE: tuple[Component, ...] = (
                 "<topic>-<date>-manual-<HHMMSS>",
             ),
         ),
-        dashboards=(_EDGE_DASHBOARD,),
         alarms=(_PROMPT_FALLBACK_ALARM,),
     ),
     _lambda(
         "public-api",
         "The public API the site calls: topics, articles, RSS, stats, views and reader feedback.",
         "on each request to the public API (through its CloudFront cache)",
-        dashboards=(_EDGE_DASHBOARD,),
         alarms=(
             f"{PREFIX}{ENV}-feedback-rejections-spike",
             f"{PREFIX}{ENV}-feedback-screening-budget-used-up",
@@ -660,6 +660,7 @@ CATALOGUE: tuple[Component, ...] = (
         "hourly at five past (the rollup) and hourly (the judge's selector), EventBridge Scheduler; "
         f"on each job on {PREFIX}{ENV}-eval-work, two at most at once",
         details=(("Exists", "only while evals are switched on (evals_enabled)"),),
+        dashboards=(_RANCH_DASHBOARD,),
         alarms=(f"{PREFIX}{ENV}-eval-rollup-heartbeat",),
         aliases=("evals-jobs", "evals-rollup"),
         # Made only while evals are on (the deployment tells the assistant EVALS_ENABLED): with
@@ -748,7 +749,7 @@ CATALOGUE: tuple[Component, ...] = (
             f"/aws/lambda/{PREFIX}{ENV}-public-api",
             f"aws-waf-logs-{PREFIX}{ENV}-public-api",
         ),
-        dashboards=(_EDGE_DASHBOARD,),
+        dashboards=(_PIPELINE_DASHBOARD,),
         aliases=("public", "site-api"),
     ),
     Component(
@@ -771,7 +772,7 @@ CATALOGUE: tuple[Component, ...] = (
             f"/aws/lambda/{PREFIX}{ENV}-admin-api",
             f"aws-waf-logs-{PREFIX}{ENV}-admin",
         ),
-        dashboards=(_EDGE_DASHBOARD,),
+        dashboards=(_PIPELINE_DASHBOARD,),
         aliases=("admin",),
     ),
     Component(
@@ -885,41 +886,42 @@ CATALOGUE: tuple[Component, ...] = (
     # --- Dashboards ----------------------------------------------------------------------------
     Component(
         kind="dashboard",
-        key="pipeline",
+        key="pipeline-health",
         name=_PIPELINE_DASHBOARD,
-        purpose="Pipeline health: per Lambda runs, errors, throttles and duration; the daily "
-        "cycle's failed and succeeded runs and the dead-letter queue; recent errors from every "
-        "Lambda's log.",
-        details=(("Opens on", "the last 7 days, hourly"),),
-        aliases=("pipeline-dashboard", "health-dashboard"),
-    ),
-    Component(
-        kind="dashboard",
-        key="lambda-runs",
-        name=f"{PREFIX}{ENV}-lambda-runs",
-        purpose="How often each Lambda ran and what happened to reader feedback, over whatever "
-        "span is picked.",
-        details=(("Opens on", "the last 24 hours"),),
-        aliases=("runs", "runs-dashboard"),
-    ),
-    Component(
-        kind="dashboard",
-        key="edge",
-        name=_EDGE_DASHBOARD,
-        purpose="The edge: both REST APIs' requests, 4XX and 5XX, latency, responses by status and "
-        "errors by route from the access logs; the public API's CDN; every firewall's allowed, "
-        "blocked and top blocked rules, addresses and paths.",
+        purpose="Pipeline health: every pipeline Lambda's errors, throttles and p95 duration as a share "
+        "of its timeout; the daily cycle's runs and dead-letter queue; feedback; each API's requests, "
+        "errors and latency; each firewall's blocks per rule; the model catalog's counts; 30 days of "
+        "trend; and recent errors from every Lambda's log.",
         details=(
-            ("Opens on", "the last 7 days, hourly"),
+            ("Opens on", "the last 7 days, hourly; the tiles add up the whole range picked"),
             (
-                "Only in production",
-                "dev leaves it off (edge_dashboard_enabled): past the "
-                "account's first three dashboards each costs US$3 a month. Set it to true in "
-                "infra/environments/dev/main.tf for a while to debug dev's edge.",
+                "Tiles",
+                "dispatcher ticks, evals rollups, prompt fallbacks and high-severity security "
+                "incidents; the model catalog's discovered, pruned, classified, denied, repriced, "
+                "reverted and dropped",
             ),
+            ("Replaces", "the pipeline, lambda-runs and edge dashboards"),
         ),
-        only_in=("production",),
-        aliases=("edge-dashboard", "api-dashboard", "waf-dashboard", "firewall-dashboard"),
+        aliases=(
+            "pipeline", "pipeline-dashboard", "health-dashboard", "lambda-runs", "runs-dashboard",
+            "edge-dashboard", "api-dashboard", "waf-dashboard", "firewall-dashboard",
+        ),
+    ),
+    Component(
+        kind="dashboard",
+        key="ranch-and-prompts",
+        name=_RANCH_DASHBOARD,
+        purpose="The Model Ranch and prompts: scored events from the evals log group by model, prompt "
+        "version, model and prompt together, reason and source, the latest bad ones, and prompt "
+        "fallbacks from every pipeline Lambda.",
+        details=(
+            ("Opens on", "the last 7 days"),
+            ("Exists", "only while evals are switched on (evals_enabled)"),
+            ("Reads", "the evals log group (Logs Insights, billed per GB scanned when opened)"),
+        ),
+        aliases=("ranch", "ranch-dashboard", "evals-dashboard", "prompts-dashboard"),
+        # Made only while evals are on, like the rest of the evals module's active parts.
+        switch_env="EVALS_ENABLED",
     ),
     # --- Log groups that belong to no one function ---------------------------------------------
     Component(
@@ -981,8 +983,9 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             ("Kept for", "120 days"),
             ("Written by", "common/evals.py emit(), from any pipeline Lambda, only while evals are on"),
-            ("Read by", "eval-jobs' hourly rollup (Logs Insights)"),
+            ("Read by", "eval-jobs' hourly rollup (Logs Insights), and the ranch-and-prompts dashboard"),
         ),
+        dashboards=(_RANCH_DASHBOARD,),
         aliases=("evals-log", "eval-events"),
     ),
     # --- Schedules, buckets, firewalls ---------------------------------------------------------
@@ -1102,7 +1105,7 @@ CATALOGUE: tuple[Component, ...] = (
         purpose="The public API's regional WAF web ACL: rate limits (general and on feedback) and "
         "AWS's common rule set.",
         log_groups=(f"aws-waf-logs-{PREFIX}{ENV}-public-api",),
-        dashboards=(_EDGE_DASHBOARD,),
+        dashboards=(_PIPELINE_DASHBOARD,),
         aliases=("public-api-waf", "waf"),
     ),
     Component(
@@ -1111,7 +1114,7 @@ CATALOGUE: tuple[Component, ...] = (
         name=f"{PREFIX}{ENV}-admin-api",
         purpose="The admin API's regional WAF web ACL: admits only the operator's addresses.",
         log_groups=(f"aws-waf-logs-{PREFIX}{ENV}-admin",),
-        dashboards=(_EDGE_DASHBOARD,),
+        dashboards=(_PIPELINE_DASHBOARD,),
         aliases=("admin-waf", "allowlist"),
     ),
 )

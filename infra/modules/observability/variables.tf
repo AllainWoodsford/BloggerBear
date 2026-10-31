@@ -10,12 +10,22 @@ variable "environment_name" {
 
 variable "lambda_function_names" {
   type        = list(string)
-  description = "Names of every pipeline Lambda function to monitor. Gets one Errors alarm and one Throttles alarm per entry, plus one dashboard widget per entry."
+  description = "Names of every pipeline Lambda function to monitor. Gets one Errors alarm and one Throttles alarm per entry, and a line each on pipeline health's errors, throttles and duration panels."
+}
+
+variable "lambda_timeouts" {
+  type        = map(number)
+  description = "Each function in lambda_function_names, by name, with its timeout in seconds: pipeline health draws each function's p95 duration as a share of its own timeout. The dashboard refuses a function left out."
+}
+
+variable "model_catalog_log_group_name" {
+  type        = string
+  description = "The model-catalog Lambda's log group, where every model_catalog_job evidence line is printed (common/evidence.py): one metric filter per counter feeds pipeline health's model-catalog row."
 }
 
 variable "state_machine_arn" {
   type        = string
-  description = "ARN of the daily-cycle Step Functions state machine -- alarmed on ExecutionsFailed and charted on the dashboard."
+  description = "ARN of the daily-cycle Step Functions state machine -- alarmed on ExecutionsFailed and charted on pipeline health."
 }
 
 variable "dlq_queue_name" {
@@ -54,12 +64,6 @@ variable "prompt_fallback_log_groups" {
   description = "Log groups of the pipeline Lambdas, for the prompt-fallback alarm: a Lambda that cannot use a prompt asset prints one prompt_fallback evidence line (common/evidence.py) and uses the copy in its code. One metric filter per log group feeds the alarm. Empty: no alarm."
 }
 
-variable "edge_dashboard_enabled" {
-  type        = bool
-  default     = false
-  description = "Create the <prefix>-<env>-edge dashboard (API Gateway and firewall, api_waf_dashboards.tf). Off by default: CloudWatch bills US$3 a month for every dashboard past the account's first three, so only production turns it on."
-}
-
 variable "api_dashboard_apis" {
   type = list(object({
     label            = string # e.g. "Public API"
@@ -68,7 +72,7 @@ variable "api_dashboard_apis" {
     access_log_group = string
   }))
   default     = []
-  description = "The REST APIs on the API Gateway dashboard (api_waf_dashboards.tf). Empty: no dashboard."
+  description = "The REST APIs on pipeline health (their requests, 4XX, 5XX and latency) and in the API Gateway widgets (api_waf_dashboards.tf). Empty: no API panels."
 }
 
 variable "api_cdn" {
@@ -79,7 +83,7 @@ variable "api_cdn" {
     stage                      = string
   })
   default     = null
-  description = "The public API's CloudFront distribution, for the cache widgets on the API Gateway dashboard. Null: no cache widgets."
+  description = "The public API's CloudFront distribution, for the cache widgets in api_waf_dashboards.tf. Null: no cache widgets."
 }
 
 variable "waf_regional_acls" {
@@ -89,7 +93,7 @@ variable "waf_regional_acls" {
     log_group   = string
   }))
   default     = []
-  description = "The REGIONAL web ACLs (in var.aws_region) on the edge dashboard."
+  description = "The REGIONAL web ACLs (in var.aws_region): their blocks per rule on pipeline health, and the firewall widgets in api_waf_dashboards.tf."
 }
 
 variable "waf_cloudfront_acl" {
@@ -99,7 +103,7 @@ variable "waf_cloudfront_acl" {
     log_group   = string # in us-east-1
   })
   default     = null
-  description = "The CLOUDFRONT-scope web ACL (metrics and logs in us-east-1) on the edge dashboard. Null: left off."
+  description = "The CLOUDFRONT-scope web ACL (metrics and logs in us-east-1), as for waf_regional_acls. Null: left off."
 }
 
 variable "feedback_rejections_alarm_threshold" {

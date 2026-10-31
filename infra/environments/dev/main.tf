@@ -2837,6 +2837,28 @@ resource "aws_scheduler_schedule" "reviewer" {
 # =========================================================================
 
 locals {
+  # The same functions with their timeouts, for pipeline health's duration panel (each one's p95
+  # as a share of its own timeout). The functions themselves, not their names, so the line count
+  # below stays one name per function; the dashboard refuses a function this leaves out.
+  pipeline_lambda_timeouts = merge(
+    { for function in concat([
+      aws_lambda_function.research_tick,
+      aws_lambda_function.daily_cycle,
+      aws_lambda_function.admin_api,
+      aws_lambda_function.public_api,
+      aws_lambda_function.weekly_reflection,
+      aws_lambda_function.dlq_handler,
+      aws_lambda_function.musing_feedback,
+      aws_lambda_function.stats_rollover,
+      aws_lambda_function.cost_explorer_poll,
+      aws_lambda_function.model_catalog,
+      aws_lambda_function.security_events,
+      aws_lambda_function.sign_in_events,
+    ], aws_lambda_function.reviewer) : function.function_name => function.timeout },
+    module.evals.function_timeouts,
+    module.work_queue.function_timeouts,
+  )
+
   # Every pipeline/API Lambda's function_name -- shared by module.observability's alarms/
   # dashboard below and this environment's own log-group retention (aws_cloudwatch_log_group.lambda,
   # Cleanup PR), so the two can never drift out of sync when a function is added or removed.
@@ -2882,8 +2904,9 @@ module "evals" {
   lambda_package_hash   = data.archive_file.lambdas.output_base64sha256
   lambda_environment    = local.lambda_env_variables
 
-  pipeline_dlq_arn = aws_sqs_queue.pipeline_dlq.arn
-  alerts_topic_arn = module.observability.sns_topic_arn
+  pipeline_dlq_arn       = aws_sqs_queue.pipeline_dlq.arn
+  alerts_topic_arn       = module.observability.sns_topic_arn
+  prompt_fallback_metric = module.observability.prompt_fallback_metric
 }
 
 module "observability" {
@@ -2894,12 +2917,16 @@ module "observability" {
   unique_name_prefix    = var.unique_name_prefix
   environment_name      = "dev"
   lambda_function_names = local.pipeline_lambda_function_names
+  lambda_timeouts       = local.pipeline_lambda_timeouts
   state_machine_arn     = aws_sfn_state_machine.daily_cycle.arn
   dlq_queue_name        = aws_sqs_queue.pipeline_dlq.name
   alert_email           = var.alert_email
 
   # Its own log group resource rather than a hand-built name, so the metric filters depend on it.
   feedback_log_group_name = aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name
+
+  # Where the model catalog prints its model_catalog_job lines, for pipeline health's counter row.
+  model_catalog_log_group_name = aws_cloudwatch_log_group.lambda[aws_lambda_function.model_catalog.function_name].name
 
   # The Lambdas that record security events, each logging one SECURITY_ALERT line per
   # high-severity incident (see the Security events section below).
@@ -2917,10 +2944,8 @@ module "observability" {
   # names built by hand, so the metric filters depend on them.
   prompt_fallback_log_groups = [for group in aws_cloudwatch_log_group.lambda : group.name]
 
-  # Scaling PR C: what the edge dashboard (API Gateway and WAF, api_waf_dashboards.tf in the
-  # module) would show. Not created in dev (edge_dashboard_enabled defaults to false): dashboards
-  # past the account's first three cost US$3 a month each, and dev's traffic is mostly the
-  # operator's own. Set it to true here for a while to debug the edge in dev.
+  # Each API's requests, errors and latency, and each web ACL's blocks per rule, on pipeline
+  # health (and in the module's API Gateway and firewall widgets, api_waf_dashboards.tf).
   api_dashboard_apis = [
     {
       label            = "Public API"

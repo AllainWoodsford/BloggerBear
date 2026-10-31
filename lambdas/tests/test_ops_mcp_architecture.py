@@ -150,16 +150,35 @@ def test_the_assistant_is_catalogued_where_it_is_deployed():
             assert architecture.exists_in(component, environment) is deployed, (environment, key)
 
 
-def test_every_dashboard_is_in_the_catalogue_and_the_edge_one_only_in_production():
-    observability = _read("modules", "observability", "main.tf") + _read(
-        "modules", "observability", "api_waf_dashboards.tf"
-    )
-    names = {_template(n) for n in re.findall(r'dashboard_name = "([^"]+)"', observability)}
+def test_every_dashboard_is_in_the_catalogue_and_every_catalogued_one_is_in_terraform():
+    """Both ways, over every .tf file: pipeline health (the observability module's) and the ranch
+    and prompts one (the evals module's), which replaced the pipeline, lambda-runs and edge ones."""
+    names = set()
+    for path in _terraform_files():
+        names |= {_template(n) for n in re.findall(r'dashboard_name\s*=\s*"([^"]+)"', read_terraform(path))}
 
     assert names == {c.name for c in _of_kind("dashboard").values()}
-    assert "edge_dashboard_enabled = true" in _read("environments", "production", "main.tf")
-    assert "edge_dashboard_enabled = true" not in _read("environments", "dev", "main.tf")
-    assert _of_kind("dashboard")["edge"].only_in == ("production",)
+    assert set(_of_kind("dashboard")) == {"pipeline-health", "ranch-and-prompts"}
+
+
+def test_pipeline_health_is_in_every_environment_and_the_ranch_one_only_while_evals_are_on():
+    dashboards = _of_kind("dashboard")
+    health = _blocks(_read("modules", "observability", "pipeline_health.tf"), "aws_cloudwatch_dashboard")
+    ranch = _blocks(_read("modules", "evals", "dashboard.tf"), "aws_cloudwatch_dashboard")
+
+    assert not re.search(r"^  count\s*=", health["pipeline_health"], re.M)
+    assert dashboards["pipeline-health"].only_in == () and dashboards["pipeline-health"].switch_env is None
+    assert re.search(r"^  count\s*=\s*var\.enabled \? 1 : 0$", ranch["ranch_and_prompts"], re.M)
+    assert dashboards["ranch-and-prompts"].switch_env == "EVALS_ENABLED"
+
+
+def test_every_dashboard_a_resource_names_is_one_the_catalogue_has():
+    """Where to look for a resource never names a dashboard that is gone."""
+    dashboards = {c.name for c in _of_kind("dashboard").values()}
+    named = {board for c in CATALOGUE for board in c.dashboards}
+
+    assert named and named <= dashboards
+    assert named == dashboards  # and each dashboard is where to look for something
 
 
 def _alarm_templates() -> set[str]:
@@ -407,7 +426,9 @@ def test_without_an_environment_names_keep_a_placeholder_and_no_data_is_allowed(
         ("aws-waf-logs-bloggerbear-dev-public-api", ["log_group:waf-public-api"]),
         ("aws-waf-logs-bloggerbear-shared", ["log_group:waf-shared"]),
         ("/aws/apigateway/bloggerbear-prod-public-api-access", ["log_group:public-api-access"]),
-        ("bloggerbear-dev-edge", ["dashboard:edge"]),
+        (f"{PREFIX}dev-pipeline-health", ["dashboard:pipeline-health"]),
+        # A dashboard pipeline health replaced finds it.
+        (f"{PREFIX}prod-lambda-runs", ["dashboard:pipeline-health"]),
         ("bloggerbear-prod-pipeline-dlq", ["queue:pipeline-dlq"]),
         ("arn:aws:lambda:ap-southeast-2:1:function:bloggerbear-dev-public-api", ["function:public-api"]),
     ],
@@ -425,7 +446,7 @@ def test_kind_narrows_a_name_that_means_several_things(dev):
 
 
 def test_a_resource_only_in_production_says_so_in_dev(dev):
-    answer = architecture.architecture("edge")
+    answer = architecture.architecture("waf-shared")
 
     assert answer["matches"][0]["exists_here"] is False
     assert "It isn't deployed in dev." in answer["spoken"]
@@ -924,7 +945,7 @@ def test_a_layer_nobody_has_gets_the_list(dev):
 def test_a_name_or_a_kind_still_wins_over_a_layer(dev):
     assert architecture.architecture("topics", layer="edge")["matches"][0]["key"] == "topics"
     by_kind = architecture.architecture(kind="dashboard", layer="edge")
-    assert by_kind["table"]["rows"][0][0] == "bloggerbear-dev-pipeline"
+    assert by_kind["table"]["rows"][0][0] == f"{PREFIX}dev-pipeline-health"
 
 
 def test_every_resource_is_still_listed_as_a_table_when_everything_is_asked_for(dev):
@@ -932,14 +953,15 @@ def test_every_resource_is_still_listed_as_a_table_when_everything_is_asked_for(
 
     assert answer["table"]["columns"] == ["Name", "Kind", "What it's for"]
     assert ["bloggerbear-dev-candidate-ideas", "DynamoDB table"] == answer["table"]["rows"][2][:2]
-    assert architecture.architecture(kind="dashboard")["table"]["rows"][0][0] == "bloggerbear-dev-pipeline"
+    rows = architecture.architecture(kind="dashboard")["table"]["rows"]
+    assert rows[0][0] == f"{PREFIX}dev-pipeline-health"
     assert "kinds" in architecture.architecture(kind="spaceship")
 
 
 def test_console_links_are_built_only_for_what_needs_no_account_id(dev):
-    assert architecture.console_url("dashboard", "bloggerbear-dev-pipeline") == (
+    assert architecture.console_url("dashboard", f"{PREFIX}dev-pipeline-health") == (
         "https://ap-southeast-2.console.aws.amazon.com/cloudwatch/home?region=ap-southeast-2"
-        "#dashboards:name=bloggerbear-dev-pipeline"
+        f"#dashboards:name={PREFIX}dev-pipeline-health"
     )
     assert architecture.console_url("log_group", "/aws/lambda/bloggerbear-dev-public-api").endswith(
         "#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fbloggerbear-dev-public-api"
@@ -1050,14 +1072,15 @@ def test_a_component_not_deployed_here_says_so_in_the_tables(dev, monkeypatch):
 # The evals module's switched parts (infra/modules/evals: count = var.enabled ? 1 : 0), and the two
 # it makes whether evals are on or off.
 EVALS_SWITCHED = [("function", "eval-jobs"), ("queue", "eval-work"), ("schedule", "eval-rollup"),
-                  ("schedule", "eval-judge")]  # fmt: skip
+                  ("schedule", "eval-judge"), ("dashboard", "ranch-and-prompts")]  # fmt: skip
 EVALS_ALWAYS = [("table", "evals"), ("log_group", "evals")]
 
 
 def test_the_evals_modules_switched_parts_exist_only_while_evals_are_on(dev, monkeypatch):
-    """eval-jobs, the eval-work queue and their schedules are made only while evals are on, which the
-    deployment tells the assistant as EVALS_ENABLED: until then they are not deployed here, so a log
-    review neither reads nor refuses eval-jobs' log group. The table and the log group always are."""
+    """eval-jobs, the eval-work queue, their schedules and the ranch-and-prompts dashboard are made
+    only while evals are on, which the deployment tells the assistant as EVALS_ENABLED: until then
+    they are not deployed here, so a log review neither reads nor refuses eval-jobs' log group. The
+    table and the log group always are."""
     assert {(c.kind, c.key) for c in CATALOGUE if c.switch_env} == set(EVALS_SWITCHED)
     switches = {c.switch_env for c in CATALOGUE if c.switch_env}
     assert switches == {"EVALS_ENABLED"} and switches <= set(architecture.SWITCHES)
