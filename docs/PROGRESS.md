@@ -1048,6 +1048,7 @@ rebased (spec section 6).
 | PR16 culling, proposal mode | #404 | `claude/ranch-47-culling` | PR15 + PR13b |
 | PR14 emission | #405 | `claude/ranch-45-emission` | stacks-meet |
 | PR11b dashboards | #406 | `claude/ranch-31-dashboards` | stacks-meet |
+| PR18 judge and eval consumer | #407 | `claude/ranch-49-judge` | stacks-meet |
 
 **Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
 #390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
@@ -1061,8 +1062,7 @@ forgive), so its diff shows PR13b's commits until #402 merges.
 base. That branch is PR13's tip with #393, Q2, PR10, PR17, PR4, PR5, PR2 and #401 merged in and
 their conflicts resolved (PR2, PR4 and PR5 sit beside PR6 to PR10, not under them, so each is
 merged on its own). It gets no PR of its own. Once the stacks reach `dev`, the PRs built on it are
-retargeted to `dev` and rebased like any other. PR18 (`claude/ranch-49-judge`) is finished; its PR
-opens once its full suite passes. PR12 (#395) merges only after the owner says "bootstrap
+retargeted to `dev` and rebased like any other. PR12 (#395) merges only after the owner says "bootstrap
 applied", and after #393. A branch that is not on `origin` lived only in the old session's
 container: start it again from its parent with the per-PR workflow.
 
