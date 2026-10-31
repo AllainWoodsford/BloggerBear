@@ -5,8 +5,9 @@ wrote it.
 
 What is held: exactly one event per prompt (one for a rewrite) with exact fields; Professor
 Grizzlewick's approvals, rejections and rewrites, which take the same routes, are none; a rewrite
-that cannot start is none; nothing is read or written while evals are off; and an emit that fails
-leaves every answer exactly as it was.
+that cannot start is none; after a rewrite that failed, a decision and the next rewrite credit the
+text the article still has, never the failed attempt's; nothing is read or written while evals are
+off; and an emit that fails leaves every answer exactly as it was.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from test_admin_api_handler import (  # noqa: F401 - the fixtures, used by name
 from test_evals_emission import ALPHA, BETA, LINEAGE, PROMPTS, stamped
 
 import admin_api_handler
+from common import prompts, rewrite
 
 pytestmark = pytest.mark.usefixtures("aws_resources")
 
@@ -246,3 +248,113 @@ def test_a_failing_emit_leaves_the_rewrites_answer_unchanged(held, logs_down, ro
     assert status == 202
     assert body == {"rewriting": body["rewriting"], "article_id": ARTICLE_ID, "model_id": BETA}
     assert _rewrite_id(body["rewriting"])
+
+
+# --- after a failed rewrite -----------------------------------------------------------------------
+
+FINISHED_REWRITE = {
+    "stage": "rewrite", "model_id": BETA, "input_tokens": 9, "output_tokens": 9,
+    "prompt_id": "rewrite/rewrite", "prompt_version": "v2",
+}  # fmt: skip
+# What the article holds before a person sends it back to BETA and that rewrite fails: (the calls
+# after LINEAGE's, its finished rewrites, the model its text is credited to, its prompts as Admin
+# Review names them, and the prompt and version an Article Rewrite names).
+BEFORE_THE_FAILED_REWRITE = {
+    "only_the_draft": ([], [], ALPHA, PROMPTS, ("daily_cycle/draft", "v2")),
+    "a_finished_rewrite_by_the_same_model": (
+        [FINISHED_REWRITE],
+        [{"number": 1, "model_id": BETA}],
+        BETA,
+        [*PROMPTS[:5], ("rewrite/rewrite", "v2"), *PROMPTS[5:]],
+        ("rewrite/rewrite", "v2"),
+    ),
+}
+
+
+def _fail_a_rewrite(events: list, before: str) -> None:
+    """The article as `before` says, sent back to BETA by a person, and that rewrite drawn at
+    rewrite/rewrite v3 and cut off (common/rewrite.py): its call is stored, marked, and the item is
+    back in the inbox. The events of sending it back are cleared."""
+    calls, rewrites, *_ = BEFORE_THE_FAILED_REWRITE[before]
+    # A stored research block carries its cost, which recording the failed rewrite's call reads.
+    lineage = {"calls": [*LINEAGE["calls"], *calls], "research": {**LINEAGE["research"], "cost_aud": None}}
+    _put_written_article(lineage=lineage, rewrites=rewrites)
+    assert _rewrite("queue")[0] == 202
+    prompt = prompts.Prompt(text="Rewrite it.", prompt_id="rewrite/rewrite", version="v3", source="asset")
+    cut_off = {
+        "text": '{"title": "A Ti', "model_id": BETA, "input_tokens": 900, "output_tokens": 4000,
+        "used_fallback": False, "stop_reason": "max_tokens",
+    }  # fmt: skip
+    with (
+        patch("common.rewrite.read_article_body", return_value="# Body"),
+        patch("common.rewrite._evidence", return_value=""),
+        patch("common.rewrite.rewrite_prompt", return_value=prompt),
+        patch("common.rewrite.invoke_model_tracked", return_value=cut_off),
+        patch("common.rewrite.record_article_lineage"),
+    ):
+        result = rewrite.run_rewrite("queue-1", _rewrite_id("queue-1"))
+    assert result["status"] == "failed" and result["released"]
+    stored = boto3.resource("dynamodb", region_name=REGION).Table("Articles").get_item(
+        Key={"article_id": ARTICLE_ID}
+    )["Item"]
+    assert stored["lineage"]["calls"][-1]["prompt_version"] == "v3"
+    events.clear()
+
+
+@pytest.mark.parametrize("before", BEFORE_THE_FAILED_REWRITE)
+@pytest.mark.parametrize(
+    "route,decision,delta,performance",
+    [("approve", "approved", 2, "good"), ("reject", "rejected", -2, "bad")],
+)
+def test_a_decision_after_a_failed_rewrite_credits_the_text_the_article_still_has(
+    held, events, before, route, decision, delta, performance
+):
+    _fail_a_rewrite(events, before)
+    _, _, model, prompts_named, _ = BEFORE_THE_FAILED_REWRITE[before]
+
+    status, body = _decide(route)
+
+    assert status == 200 and body == {decision: "queue-1", "article_id": ARTICLE_ID}
+    assert stamped(events) == [
+        {
+            "schema": "evals/1",
+            "event_id": f"admin:queue-1:{decision}:{prompt_id}",
+            "model_id": model,
+            "prompt_id": prompt_id,
+            "prompt_version": version,
+            "performance": performance,
+            "rating_delta": delta,
+            "reason": "Admin Review",
+            "subject": ARTICLE_ID,
+            "topic_id": TOPIC_ID,
+            "source": "admin_api",
+            "by": "human",
+        }
+        for prompt_id, version in prompts_named
+    ]
+
+
+@pytest.mark.parametrize("before", BEFORE_THE_FAILED_REWRITE)
+def test_sending_it_back_again_after_a_failed_rewrite_scores_the_text_it_still_has(held, events, before):
+    _fail_a_rewrite(events, before)
+    _, _, model, _, (prompt_id, version) = BEFORE_THE_FAILED_REWRITE[before]
+
+    status, body = _rewrite("queue")
+
+    assert status == 202
+    assert stamped(events) == [
+        {
+            "schema": "evals/1",
+            "event_id": f"rewrite:{_rewrite_id(body['rewriting'])}",
+            "model_id": model,
+            "prompt_id": prompt_id,
+            "prompt_version": version,
+            "performance": "bad",
+            "rating_delta": -2,
+            "reason": "Article Rewrite",
+            "subject": ARTICLE_ID,
+            "topic_id": TOPIC_ID,
+            "source": "admin_api",
+            "by": "human",
+        }
+    ]

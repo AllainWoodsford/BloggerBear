@@ -3,11 +3,12 @@ model-ranch-prompt-assets-evals.md, sections 4.3 and 5.4, PR14), and the daily c
 stored earns an Article Completion per prompt of its lineage.
 
 What is held: an article's prompts are every prompt id its lineage names, once each, at the most
-recent call's version; its model is the one that wrote its text as it stands, the same on every
-event; each point writes exactly section 4.3's fields and the event ids the rollup deduplicates and
-joins by; nothing is read or written while evals are off; an event the schema refuses is skipped
-and the rest written; a Logs that fails stops the rest and never raises; and a stored article, held
-or published, emits once per prompt while the run's result stays what it was.
+recent call's version, leaving out the calls of a rewrite that failed and the research its goal set
+aside; its model is the one that wrote its text as it stands, the same on every event; each point
+writes exactly section 4.3's fields and the event ids the rollup deduplicates and joins by; nothing
+is read or written while evals are off; an event the schema refuses is skipped and the rest
+written; a Logs that fails stops the rest and never raises; and a stored article, held or
+published, emits once per prompt while the run's result stays what it was.
 
 The admin API's points are in test_evals_emission_admin.py, the public API's in
 test_evals_emission_public.py. `events` here is their fixture too.
@@ -28,7 +29,7 @@ from moto import mock_aws
 from test_evals_rollup import FakeBedrock, FakeLogs, plain, row
 
 import daily_cycle_handler
-from common import evals, evals_emission, evals_rollup
+from common import costing, evals, evals_emission, evals_rollup, rewrite
 
 REGION = "ap-southeast-2"
 GROUP = "acme-dev-evals"
@@ -56,12 +57,14 @@ def events(monkeypatch):
 
 @pytest.fixture
 def evals_off(monkeypatch):
-    """Evals off, and any attempt to build a Logs client or write fails the test."""
+    """Evals off, and any attempt to build a Logs client or write fails the test. Through pytest.fail,
+    whose exception is a BaseException: the `except Exception` that keeps common/evals.emit and every
+    common/evals_emission function from raising would swallow an AssertionError and let it pass."""
     monkeypatch.setenv("EVALS_ENABLED", "false")
     monkeypatch.setenv("EVALS_LOG_GROUP", GROUP)
 
     def never(*_args, **_kwargs):
-        raise AssertionError("nothing is written while evals are off")
+        pytest.fail("nothing is written while evals are off")
 
     monkeypatch.setattr(evals, "_put", never)
     monkeypatch.setattr(evals, "_logs", never)
@@ -174,7 +177,7 @@ def test_the_writer_is_the_draft_calls_model_even_when_another_call_fell_back():
 
 def test_the_writer_is_the_latest_finished_rewrites_model_with_its_own_call_not_a_failed_ones():
     finished = call("rewrite", BETA, "rewrite/rewrite", "v1")
-    failed_later = call("rewrite", GAMMA, "rewrite/rewrite", "v2")
+    failed_later = call("rewrite", GAMMA, "rewrite/rewrite", "v2")  # unmarked: stored before the mark
     article = {
         "lineage": {"calls": [*LINEAGE["calls"], finished, failed_later]},
         "rewrites": [{"number": 1, "model_id": BETA}],
@@ -183,6 +186,62 @@ def test_the_writer_is_the_latest_finished_rewrites_model_with_its_own_call_not_
     model, found = evals_emission.writer(article)
 
     assert model == BETA and found is finished
+
+
+def test_a_failed_rewrite_after_a_finished_one_by_the_same_model_leaves_the_finished_ones_call():
+    """Each rewrite draws its own arm (its run key is the rewrite id), so a second rewrite by the
+    same model may send another version: when it fails, the text and its credit stay the first's."""
+    finished = call("rewrite", BETA, "rewrite/rewrite", "v2")
+    failed = call("rewrite", BETA, "rewrite/rewrite", "v3", failed=True)
+    article = {
+        "lineage": {**LINEAGE, "calls": [*LINEAGE["calls"], finished, failed]},
+        "rewrites": [{"number": 1, "model_id": BETA}],
+    }
+
+    model, found = evals_emission.writer(article)
+
+    assert model == BETA and found is finished
+    assert dict(evals_emission.article_prompts(article["lineage"]))["rewrite/rewrite"] == "v2"
+
+
+@pytest.mark.parametrize("mark", [{"failed": True}, {}], ids=["marked", "stored_before_the_mark"])
+def test_a_failed_rewrite_leaves_the_draft_calls_model_as_the_writer(mark):
+    failed = call("rewrite", GAMMA, "rewrite/rewrite", "v1", **mark)
+    article = {"lineage": {"calls": [*LINEAGE["calls"], failed]}, "rewrites": []}
+
+    assert evals_emission.writer(article) == (ALPHA, LINEAGE["calls"][1])
+
+
+def test_none_of_a_failed_rewrites_calls_is_among_the_articles_prompts():
+    """A rewrite by BETA that was cut off, and a review of its text: every call of the attempt is
+    marked, and the text a person decides on is still the draft's."""
+    lineage = {
+        **LINEAGE,
+        "calls": [
+            *LINEAGE["calls"],
+            call("rewrite", BETA, "rewrite/rewrite", "v3", failed=True),
+            call("fresh_review", prompt_id="reviews/adversarial_review", version="v9", failed=True),
+        ],
+    }
+
+    assert evals_emission.article_prompts(lineage) == PROMPTS
+
+
+def test_research_the_articles_goal_set_aside_is_not_among_its_prompts():
+    """Yesterday's trend Finding, and a newer version of a summary prompt the article does name: both
+    were in the window, and both were set aside."""
+    set_aside = [
+        {**research("crypto_feed/trend", "v1", "2026-10-29T23:00:00+00:00"), "set_aside": True},
+        {**research("research_tick/summary", "v9", "2026-10-30T05:00:00+00:00"), "set_aside": True},
+    ]
+    lineage = {**LINEAGE, "research": {"calls": [*LINEAGE["research"]["calls"], *set_aside]}}
+
+    assert evals_emission.article_prompts(lineage) == PROMPTS
+
+
+def test_the_marks_are_spelled_as_the_lineages_writers_spell_them():
+    assert evals_emission.FAILED == rewrite.FAILED_MARK
+    assert evals_emission.SET_ASIDE == costing.SET_ASIDE
 
 
 def test_a_rewrite_whose_call_is_not_in_the_lineage_still_names_its_model_and_no_call():
@@ -295,6 +354,20 @@ def test_a_rewrite_is_one_event_for_the_writer_naming_the_prompt_that_wrote_the_
     ]
 
 
+@pytest.mark.parametrize("mark", [{"failed": True}, {}], ids=["marked", "stored_before_the_mark"])
+def test_a_rewrite_requested_after_a_failed_one_is_for_the_draft_calls_model_and_prompt(events, mark):
+    failed = call("rewrite", GAMMA, "rewrite/rewrite", "v1", **mark)
+    article = {"lineage": {"calls": [*LINEAGE["calls"], failed]}, "rewrites": []}
+
+    evals_emission.article_rewrite(
+        lambda: article, article_id=ARTICLE_ID, rewrite_id="rw-3", topic_id=TOPIC_ID
+    )
+
+    (event,) = stamped(events)
+    named = (event["model_id"], event["prompt_id"], event["prompt_version"])
+    assert named == (ALPHA, "daily_cycle/draft", "v2")
+
+
 def test_a_rewrite_of_text_whose_call_names_no_prompt_is_the_models_alone(events):
     article = {"lineage": {"calls": [call("draft")]}, "rewrites": []}
 
@@ -353,7 +426,7 @@ def test_nothing_is_read_or_written_while_evals_are_off(evals_off):
     article = {"article_id": ARTICLE_ID, "topic_id": TOPIC_ID, "lineage": LINEAGE}
 
     def unread():
-        raise AssertionError("the article is not read while evals are off")
+        pytest.fail("the article is not read while evals are off")  # past article_rewrite's own except
 
     ids = {"article_id": ARTICLE_ID}
     assert evals_emission.completion(**ids, topic_id=TOPIC_ID, lineage=LINEAGE) == 0
@@ -491,7 +564,7 @@ def cycle(monkeypatch):
     }.items():  # fmt: skip
         monkeypatch.setenv(key, value)
 
-    def run(*, compliant=True, title_model=ALPHA):
+    def run(*, compliant=True, title_model=ALPHA, topic=TOPIC, findings=FINDINGS):
         replies = [
             _tracked("Angle one\nAngle two\nAngle three"),
             _tracked("# Draft body"),
@@ -505,8 +578,8 @@ def cycle(monkeypatch):
             "set_last_armor_versions": {},
             "get_model_rotation_candidates": {"return_value": []},
             "set_topic_model_id": {},
-            "get_topic": {"return_value": TOPIC},
-            "list_recent_findings": {"return_value": FINDINGS},
+            "get_topic": {"return_value": topic},
+            "list_recent_findings": {"return_value": findings},
             "list_prompt_refinements": {"return_value": []},
             "get_top_voted_articles": {"return_value": []},
             "resolve_model": {"return_value": (ALPHA, BETA)},
@@ -570,6 +643,66 @@ def test_when_the_title_fell_back_every_event_still_names_the_model_that_drafted
     titles = [call for call in stored["lineage"]["calls"] if call["stage"] == "title"]
     assert titles[0]["model_id"] == BETA and titles[0]["used_fallback"] is True
     assert {event["model_id"] for event in events} == {ALPHA}
+
+
+def _crypto_finding(captured: datetime, prompt_id: str) -> dict:
+    return {
+        "topic_id": TOPIC_ID,
+        "captured_at": captured.isoformat(),
+        "summary": "Bitcoin held its range.",
+        "source_refs": [],
+        "research_call": {
+            "model_id": GAMMA, "input_tokens": 400, "output_tokens": 100, "used_fallback": False,
+            "prompt_id": prompt_id, "prompt_version": "v1",
+        },
+    }  # fmt: skip
+
+
+@pytest.mark.parametrize("days_ago", [0, 1], ids=["captured_today", "nothing_captured_today"])
+def test_a_goal_topic_credits_the_research_it_was_written_from_not_what_its_goal_set_aside(
+    events, cycle, days_ago
+):
+    """The crypto feed's window straddles a UTC midnight and its goal keeps one day's Findings
+    (today's, else the newest day's), each summarised with that day's goal's prompt. The article
+    credits the kept day's prompt alone, at completion and at a person's decision, while its research
+    cost still counts both calls."""
+    now = datetime.now(UTC)
+    kept = _crypto_finding(now - timedelta(days=days_ago), "crypto_feed/news")
+    set_aside = _crypto_finding(now - timedelta(days=days_ago + 1), "crypto_feed/trend")
+
+    _, stored = cycle(topic={**TOPIC, "adapter": "crypto_feed"}, findings=[kept, set_aside])
+
+    article_id = stored["article_id"]
+    research_events = [event for event in stamped(events) if event["prompt_id"].startswith("crypto_feed/")]
+    assert research_events == [
+        {
+            "schema": "evals/1",
+            "event_id": f"completion:{article_id}:crypto_feed/news",
+            "model_id": ALPHA,
+            "prompt_id": "crypto_feed/news",
+            "prompt_version": "v1",
+            "performance": "good",
+            "rating_delta": 2,
+            "reason": "Article Completion",
+            "subject": article_id,
+            "topic_id": TOPIC_ID,
+            "source": "daily_cycle",
+        }
+    ]
+    research_block = stored["lineage"]["research"]
+    assert [(c["prompt_id"], c.get("set_aside")) for c in research_block["calls"]] == [
+        ("crypto_feed/news", None),
+        ("crypto_feed/trend", True),
+    ]
+    assert (research_block["tracked_findings"], research_block["input_tokens"]) == (2, 800)
+
+    events.clear()
+    evals_emission.admin_review(
+        {"lineage": stored["lineage"]}, article_id=article_id, queue_id="q", decision="rejected",
+        topic_id=TOPIC_ID,
+    )  # fmt: skip
+    decided = {event["prompt_id"] for event in events}
+    assert "crypto_feed/news" in decided and "crypto_feed/trend" not in decided
 
 
 def test_a_stored_article_emits_nothing_while_evals_are_off(evals_off, cycle):

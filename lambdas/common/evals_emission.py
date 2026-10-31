@@ -17,12 +17,18 @@ are (docs/enhancements/model-ranch-prompt-assets-evals.md, sections 4.3 and 5.4)
   subject to reach the prompts' cells (common/evals_rollup.py).
 
 **The article's prompts** are every prompt id its lineage names: its own calls (`lineage.calls`:
-ideation, draft, title, the reviews, a revision, a rewrite and its reviews) and the research its
-Findings were summarised with (`lineage.research.calls`). A prompt id gets one event per article
-(section 4.3), so when it was sent more than once the event carries the most recent call's version:
-for the article's own calls, which are in the order they were made, the last one (a rewritten
-article's reviews are those of the text a person now decides on); for its research, the newest
-Finding's. A call recorded before prompts were registered names none and has no event.
+ideation, draft, title, the reviews, a revision, a finished rewrite and its reviews) and the research
+of the Findings it was written from (`lineage.research.calls`). Two kinds of call are in the lineage
+for their cost alone and carry a mark that leaves them out here: every call of a rewrite that failed
+(`failed`, common/rewrite.py), whose text was thrown away, so a decision on the text it would have
+replaced counts for none of its prompts; and the research of a Finding that was in the article's
+window but that its editorial goal set aside (`set_aside`, common/costing.py). A call stored before
+these marks existed carries none and counts like any other. A daily-cycle revision the guards turned
+down is not marked: it is part of the run that wrote the text. A prompt id gets one event per
+article (section 4.3), so when it was sent more than once the event carries the most recent call's
+version: for the article's own calls, which are in the order they were made, the last one (a
+rewritten article's reviews are those of the text a person now decides on); for its research, the
+newest Finding's. A call recorded before prompts were registered names none and has no event.
 
 **The article's model** is the one that wrote its text as it stands: the model of its latest finished
 rewrite (`rewrites`), else the model of its draft call. Every event of one article carries that one
@@ -50,6 +56,11 @@ from common.model_pricing import canonical_model_id
 # (common/rewrite.py, REWRITE_STAGE).
 DRAFT_STAGE = "draft"
 REWRITE_STAGE = "rewrite"
+# The marks that leave a lineage call out of an article's prompts and its writer, spelled as their
+# writers spell them: every call of a rewrite that failed (common/rewrite.py, FAILED_MARK), and the
+# research of a Finding the article's editorial goal set aside (common/costing.py, SET_ASIDE).
+FAILED = "failed"
+SET_ASIDE = "set_aside"
 
 COMPLETION = "Article Completion"
 ADMIN_REVIEW = "Admin Review"
@@ -68,8 +79,11 @@ DAILY_CYCLE, ADMIN_API, PUBLIC_API = "daily_cycle", "admin_api", "public_api"
 
 
 def _calls(block) -> list[dict]:
+    """The calls of a lineage block that are the article's: every one but a marked one."""
     calls = block.get("calls") if isinstance(block, dict) else None
-    return [call for call in calls if isinstance(call, dict)] if isinstance(calls, list) else []
+    if not isinstance(calls, list):
+        return []
+    return [c for c in calls if isinstance(c, dict) and not c.get(FAILED) and not c.get(SET_ASIDE)]
 
 
 def _prompt(call: dict | None) -> tuple[str, str] | None:
@@ -85,9 +99,9 @@ def _model(call: dict) -> str | None:
 
 
 def article_prompts(lineage) -> list[tuple[str, str]]:
-    """[(prompt id, version)], one per prompt id the lineage names, in the order each first appears:
-    the article's own calls, then its research. A prompt sent more than once carries the most recent
-    call's version (see the module's docstring). Never raises."""
+    """[(prompt id, version)], one per prompt id the lineage's unmarked calls name, in the order each
+    first appears: the article's own calls, then its research. A prompt sent more than once carries
+    the most recent call's version (see the module's docstring). Never raises."""
     try:
         found: dict[str, str] = {}
         for call in _calls(lineage):
@@ -115,9 +129,10 @@ def writer(article) -> tuple[str | None, dict | None]:
     """(model, call): the canonical id of the model that wrote `article`'s text as it stands, and the
     lineage call that wrote it (None when it cannot be found). `article` is an Articles item, or a
     dict holding only the `lineage` of an article being stored. The latest finished rewrite's model
-    (`rewrites`, which only a finished rewrite is added to) with that model's latest rewrite call (a
-    failed rewrite's call is in the lineage too); else the draft call's. (None, None) when neither is
-    recorded. Never raises."""
+    (`rewrites`, which only a finished rewrite is added to) with that model's latest rewrite call,
+    which is the finished rewrite's own: a failed rewrite's calls are marked and left out (FAILED),
+    and the model match still passes over an unmarked one stored before the mark when another model
+    made it. Else the draft call's. (None, None) when neither is recorded. Never raises."""
     try:
         if not isinstance(article, dict):
             return None, None
