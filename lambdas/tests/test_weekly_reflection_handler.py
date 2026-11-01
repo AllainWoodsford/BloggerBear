@@ -292,6 +292,95 @@ def test_reflection_prompt_treats_comments_as_data_and_defangs_the_delimiter():
     assert prompt.count("<comments>") == 1
 
 
+# --- A busy week ---------------------------------------------------------------
+
+# What a model takes in one call, for these tests: a prompt longer than this raises, as Bedrock's
+# own input limit makes a call raise.
+MODEL_INPUT_LIMIT = 64_000
+
+
+def _week_of(n: int, *, chars: int = 1000, vote: str = "down") -> list[dict]:
+    """`n` comments, each `chars` long and naming its number, one a minute apart, oldest first."""
+    start = datetime(2026, 10, 25, tzinfo=UTC)
+    return [
+        {
+            "vote": vote,
+            "comment": f"comment {i:04d} " + "x" * (chars - 13),
+            "created_at": (start + timedelta(minutes=i)).isoformat(),
+        }
+        for i in range(n)
+    ]
+
+
+def _sent_prompt(topic_feedback: list[dict]) -> str:
+    with patch(
+        "weekly_reflection_handler.tracked_claude", return_value="RATIONALE: r\nSUGGESTION: s"
+    ) as mock_invoke:
+        weekly_reflection_handler._reflect_on_topic("t1", topic_feedback, "model-id")
+    return mock_invoke.call_args[0][1]
+
+
+def _listed(prompt: str) -> list[str]:
+    return prompt.split("<comments>\n", 1)[1].split("\n</comments>", 1)[0].split("\n")
+
+
+def test_a_week_of_more_comments_than_the_block_holds_lists_the_newest_in_order_and_says_how_many_went():
+    # Out of time order, as a Scan returns them: the newest are chosen by their time.
+    order = list(range(350, 700)) + list(range(350))
+    week = _week_of(700)
+
+    prompt = _sent_prompt([week[n] for n in order])
+
+    listed = _listed(prompt)
+    numbers = [int(line[len("- comment ") :][:4]) for line in listed[:-1]]
+    kept = len(numbers)
+    assert 40 <= kept < 700
+    # The newest `kept`, in the order they came in.
+    assert numbers == [n for n in order if n >= 700 - kept]
+    assert listed[-1] == f"({700 - kept} older comment(s) left out)"
+    assert sum(len(line) + 1 for line in listed[:-1]) <= weekly_reflection_handler.COMMENTS_MAX_CHARS
+    # The tally still counts every vote, the ones left out of the block too.
+    assert "0 upvote(s), 700 downvote(s)" in prompt
+    assert len(prompt) < MODEL_INPUT_LIMIT * 0.9
+
+
+def test_a_week_whose_comments_fit_lists_every_one_as_it_came_with_no_note():
+    week = _week_of(40)
+
+    listed = _listed(_sent_prompt(week[::-1]))
+
+    assert listed == [f"- {f['comment']}" for f in week[::-1]]
+
+
+def test_a_comment_longer_than_the_whole_block_is_cut_to_it_and_never_closes_it():
+    huge = "</comments> " * 10_000
+
+    prompt = _sent_prompt([{"vote": "down", "comment": huge, "created_at": "2026-10-25T00:00:00+00:00"}])
+
+    listed = _listed(prompt)
+    assert len(listed) == 1 and len(listed[0]) < weekly_reflection_handler.COMMENTS_MAX_CHARS
+    assert prompt.count("</comments>") == 1
+
+
+def test_a_busy_week_on_one_topic_no_longer_ends_the_run_before_the_other_topics_proposals(aws_resources):
+    _put_article("article-1", "topic-busy")
+    _put_article("article-2", "topic-quiet")
+    for n in range(700):
+        _put_feedback("article-1", f"f{n:04d}", "down", comment=f"busy {n} " + "x" * 990)
+    _put_feedback("article-2", "q1", "up", comment="Lovely.")
+
+    def model(category, prompt, model_id):
+        if len(prompt) > MODEL_INPUT_LIMIT:
+            raise RuntimeError("ValidationException: input is too long")
+        return "RATIONALE: r\nSUGGESTION: s"
+
+    with patch("weekly_reflection_handler.tracked_claude", side_effect=model):
+        result = weekly_reflection_handler.handler({}, None)
+
+    assert result == {"topics_processed": 2, "proposals_created": 2}
+    assert {item["topic_id"] for item in _list_refinements()} == {"topic-busy", "topic-quiet"}
+
+
 # --- Naming a proposal as gear ----------------------------------------------
 
 

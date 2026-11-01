@@ -31,7 +31,7 @@ import pytest
 from moto import mock_aws
 from table_schemas import KEYS
 
-from common import dynamo, evals, evals_rollup, evidence
+from common import dynamo, evals, evals_rollup, evidence, prompts
 
 ROOT = Path(__file__).resolve().parents[2]
 REGION = "ap-southeast-2"
@@ -306,6 +306,46 @@ def test_a_prompt_fallback_is_counted_for_its_prompt_version_and_scores_nothing(
     prompt = plain(row(aws, f"prompt#{DRAFT}#v2", "2026-10-27"))
     assert (prompt["perf"], prompt["events"], prompt["good"], prompt["bad"]) == (0, 1, 0, 0)
     assert row(aws, f"model#{ALPHA}", "2026-10-27") is None
+
+
+def test_the_fallback_events_common_prompts_writes_count_once_a_run_for_their_version_and_no_model(
+    aws, monkeypatch
+):
+    """What common/prompts.py's fallback emits, through evals.emit, read back by the rollup: the run's
+    two fallbacks of one prompt count once, on the version that fell back, scoring nothing, and no
+    model's or cell's row is made, since the event names none."""
+    logs = FakeLogs()
+    at = sydney("2026-10-27T08:00")
+
+    class Writer:
+        def create_log_stream(self, logGroupName, logStreamName):  # noqa: N803 - boto3's own names
+            pass
+
+        def put_log_events(self, logGroupName, logStreamName, logEvents):  # noqa: N803
+            for event in logEvents:
+                logs.put(event["message"], at + timedelta(seconds=1))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return at.astimezone(tz) if tz else at
+
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    monkeypatch.setattr(evals, "_client", Writer())
+    monkeypatch.setattr(evals, "_stream", None)
+    monkeypatch.setattr(evals, "datetime", Clock)
+    spec = prompts.spec_for(DRAFT)
+    with prompts.bind_run("exec-1"):
+        prompts._count_fallback(spec, "v2")
+        prompts._count_fallback(spec, "v2")
+
+    summary = rollup(logs)
+
+    prompt = plain(row(aws, f"prompt#{DRAFT}#v2", "2026-10-27"))
+    assert (prompt["perf"], prompt["events"], prompt["good"], prompt["bad"]) == (0, 1, 0, 0)
+    assert prompt["by_reason"]["Prompt Fallback"]["events"] == 1
+    assert summary["duplicates"] == 1
+    assert {entity for entity, _ in entities(aws) if entity.startswith(("model#", "cell#"))} == set()
 
 
 def test_a_duplicate_event_counts_once_and_an_unreadable_line_not_at_all(aws):

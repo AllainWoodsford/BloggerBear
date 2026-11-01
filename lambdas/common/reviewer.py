@@ -315,6 +315,38 @@ _DEFANG_REPLY_RULE = (
 )
 
 
+# The two blocks his questions set their material down in: the article (its title and text) and its
+# numbered flags. Both are untrusted, as the reviews' material is (common/fresh_review.py): the
+# article was drafted from what research read on the web, and its flags quote the article and the
+# web. His verdicts approve and publish, so nothing in the material may pose as the end of the
+# article, as flags of its own, or as a reply. Each block is a value with its tags inside it, built
+# here, so an asset can place a block but can neither rename its tags nor set the material down
+# outside them; and _break_delimiters breaks exactly these tags inside the material, so it cannot
+# close its block early. The names are ones no honest article holds (one on HTML may well write
+# <article>): a quote for the final review's cut is matched against the article as written
+# (cut_sentences), so only a sentence that holds one of these tags is quoted differently, and that
+# article waits for a person.
+_DELIMITER_TAG = re.compile(r"<(/?)(article_text|review_flags)", re.IGNORECASE)
+
+
+def _break_delimiters(text: str) -> str:
+    """Break any of his blocks' tags inside the material, so it cannot close a block early."""
+    return _DELIMITER_TAG.sub(lambda m: f"< {m.group(1)}{m.group(2)}", text)
+
+
+def _article_block(title: str, body: str) -> str:
+    """The article as his questions are given it: its title and its text cut to BODY_MAX_CHARS."""
+    article = _break_delimiters(f"Title: {title}\n\n{body[:BODY_MAX_CHARS]}")
+    return f"<article_text>\n{article}\n</article_text>"
+
+
+def _flags_block(majors: list[str]) -> str:
+    """The flags as his questions are given them, numbered here, in code, because the verdicts answer
+    by those numbers."""
+    listed = "\n".join(f"{n}. {flag}" for n, flag in enumerate(majors, 1))
+    return f"<review_flags>\n{_break_delimiters(listed)}\n</review_flags>"
+
+
 def _ask_about(
     ask: Callable[[str], str],
     prompt_id: str,
@@ -324,12 +356,10 @@ def _ask_about(
     body: str,
     majors: list[str] | None = None,
 ) -> dict | None:
-    """Put one of his questions to the model and read its JSON answer (None when there is none).
-    The article is cut to BODY_MAX_CHARS and the flags numbered here, in code, because the verdicts
-    answer by those numbers."""
-    values = {"topic_name": topic_name, "title": title, "body": body[:BODY_MAX_CHARS]}
+    """Put one of his questions to the model and read its JSON answer (None when there is none)."""
+    values = {"topic_name": topic_name, "article_block": _article_block(title, body)}
     if majors is not None:
-        values["flags"] = "\n".join(f"{n}. {flag}" for n, flag in enumerate(majors, 1))
+        values["flags_block"] = _flags_block(majors)
     prompt = prompts.get_prompt(prompt_id, values, {"reply_rule": reply_rule})
     return _json_answer(ask(prompt.text))
 

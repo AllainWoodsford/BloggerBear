@@ -24,12 +24,11 @@ into the window's n, mean or good share.
 but not calibrated (`judge_uncalibrated`), a cull proposal waiting (`cull_proposed`; while culling is
 off its card names `evals set --cull on` first, suggestions.VARIANTS) and a prompt that fell back to
 the copy in the code in the last FALLBACK_DAYS days (`prompt_fallback`, about its prompt id: the
-`Prompt Fallback` events its day rows count). Nothing emits those events yet: section 4.3 defines
-them (`fallback:<request_id>:<prompt_id>`), but common/prompts.py's fallback writes only its
-`prompt_fallback` evidence line to the calling function's log. So this card, and the memory's
-follow-up of it (fallback_check), stay quiet until an emitter lands beside that line. The evidence
-lines themselves could be read through ops_mcp/logs.py under the role's existing logs grant; these
-tools read the two tables only.
+`Prompt Fallback` events its day rows count). common/prompts.py emits one beside each
+`prompt_fallback` evidence line (`fallback:<request_id>:<prompt_id>`, section 4.3, with the run's key
+as the request id), naming the version that fell back and no model, so the rollup counts it on that
+version's day row alone. This card and the memory's follow-up of it (fallback_check) read those
+counts; these tools read the two tables only.
 
 **What is said.** Everything here is an id, a code or a number: model ids, prompt ids and versions as
 the rollup keyed them (each matched to its shape again before it is used), purposes and roles as

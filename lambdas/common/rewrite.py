@@ -102,7 +102,8 @@ _CLOSING_SECTIONS_RULE = (
     "If the draft ends with summary sections (a table, a list of takeaways), keep them and update "
     "them so they still match the article after your changes."
 )
-# Every block the rewrite prompt uses (fresh_review._defang knows only its own three).
+# Every block the rewrite prompt uses. fresh_review._defang knows only the review prompts' own
+# blocks, which leave out issues_to_fix and editor_note, so the rewrite keeps a list of its own.
 _DELIMITER_TAG = re.compile(r"<(/?)(draft|findings|fresh_data|issues_to_fix|editor_note)", re.IGNORECASE)
 
 

@@ -32,6 +32,9 @@ RETIRE_GRACE_S), and the template rules (`missing_placeholder`, `unknown_placeho
 `locked_missing`, `locked_order`, `too_large`). Every fallback but the deployment switch's writes one
 `prompt_fallback` evidence line (common/evidence.py; the observability module alarms on it): a
 deployment that has not turned assets on has nothing to fall back from, and its alarm stays quiet.
+Beside the line it emits section 4.3's Prompt Fallback event to the evals log (common/evals.py, a
+no-op while evals are off), which the rollup counts on the version's day row and the ops
+assistant's prompt_metrics reads (`_count_fallback`).
 
 **The arm.** With n files, the arm is `sha256("<run key>|<prompt_id>") % n` over the sorted keys,
 so every prompt in one run lands on the same side of its own split (and different prompts on
@@ -67,12 +70,13 @@ import os
 import random
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import boto3
 
-from common import dynamo, evidence
+from common import dynamo, evals, evidence
 
 CONFIG_ID = "prompts"
 # Every setting of the `prompts` row and its default; an unset or invalid value takes the default.
@@ -515,10 +519,40 @@ def _vanilla(spec: PromptSpec, values: dict, locked: dict, code: str | None) -> 
 
 def _fallback(spec: PromptSpec, values: dict, locked: dict, code: str, version: str | None) -> Prompt:
     """The vanilla in an asset's place, and the evidence line that says why (the asset's version
-    when one was read)."""
+    when one was read), and the evals event that counts it."""
     lambda_id, _, prompt_name = spec.prompt_id.partition("/")
     evidence.emit("prompt_fallback", lambda_id=lambda_id, prompt_name=prompt_name, version=version, code=code)
+    _count_fallback(spec, version)
     return _vanilla(spec, values, locked, code)
+
+
+FALLBACK_REASON = "Prompt Fallback"
+
+
+def _count_fallback(spec: PromptSpec, version: str | None) -> None:
+    """Section 4.3's Prompt Fallback event for this fallback: counted, scoring nothing, for the version
+    that fell back (the asset's, or the vanilla's when no asset version was read). It names no model:
+    get_prompt does not know which one the prompt goes to, and the reason applies to the prompt version
+    alone (common/evals.SCORING), so the rollup counts it on that version's `prompt#` day row and on no
+    model's or cell's (common/evals_rollup.add_up). Its id is `fallback:<request id>:<prompt id>` with
+    the run's key (bind_run) as the request id, so a run that renders the prompt again, or an
+    invocation retried under the same key, counts once; a key that is not an id's shape stands in as
+    its sha256, and with none bound each fallback is its own. Never raises: evals.emit does not, and
+    writes nothing while evals are off. The source is the prompt's lambda id, as the evidence line's."""
+    if not evals.enabled():
+        return
+    key = bound_run()
+    event_id = evals.event_id(FALLBACK_REASON, request_id=key, prompt_id=spec.prompt_id)
+    if event_id is None:
+        stand_in = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32] if key else uuid.uuid4().hex
+        event_id = evals.event_id(FALLBACK_REASON, request_id=stand_in, prompt_id=spec.prompt_id)
+    evals.emit(
+        FALLBACK_REASON,
+        event_id=event_id,
+        source=spec.prompt_id.partition("/")[0],
+        prompt_id=spec.prompt_id,
+        prompt_version=version or spec.vanilla_label,
+    )
 
 
 def get_prompt(prompt_id: str, values: dict | None = None, locked: dict | None = None) -> Prompt:

@@ -875,6 +875,47 @@ def test_an_adjustment_of_a_model_not_in_the_registry_is_refused(logs, aws):
 
 
 @pytest.mark.parametrize(
+    ("prompt_id", "version", "said"),
+    [
+        # Well formed, so the event's own checks pass it: only the registry knows it is not a prompt.
+        ("daily_cycle/drafts", "v2", "no prompt 'daily_cycle/drafts' in the registry"),
+        # A code-only prompt is never read from the bucket, so no asset version of it can exist.
+        ("reviews/compliance", "v2", "'reviews/compliance' is code-only"),
+        # Past the registry's own vanilla: a version no deployment has served yet.
+        (DRAFT, "vanilla:v2", f"'{DRAFT}' has no vanilla:v2: its vanilla is vanilla:v1"),
+        ("ops_agent/system", "vanilla:v3", "its vanilla is vanilla:v2"),
+    ],
+)
+def test_an_adjustment_of_a_prompt_version_the_registry_cannot_have_is_refused(
+    logs, aws, prompt_id, version, said
+):
+    adjustment = {**PROMPT_ADJUST, "prompt_id": prompt_id, "version": version}
+
+    status, body = call("POST /evals/adjust", adjustment)
+
+    assert status == 404 and said in body["error"]
+    assert adjust_rows(aws) == [] and logs.lines == []
+
+
+@pytest.mark.parametrize(
+    ("prompt_id", "version"),
+    [
+        (DRAFT, "v7"),  # any asset version: the publisher's, which the registry does not list
+        (DRAFT, "vanilla:v1"),  # the registry's own vanilla
+        ("reviews/compliance", "vanilla:v1"),  # a code-only prompt at its vanilla
+        ("ops_agent/system", "vanilla:v1"),  # a vanilla the registry's v2 replaced
+    ],
+)
+def test_an_adjustment_of_a_prompt_version_the_registry_can_have_is_written(logs, aws, prompt_id, version):
+    status, body = call("POST /evals/adjust", {**PROMPT_ADJUST, "prompt_id": prompt_id, "version": version})
+
+    assert status == 201 and (body["prompt_id"], body["version"]) == (prompt_id, version)
+    assert [row["entity"] for row in adjust_rows(aws)] == [f"adjust#prompt#{prompt_id}#{version}"]
+    [event] = events_of(logs, "Admin Punish")
+    assert (event["prompt_id"], event["prompt_version"]) == (prompt_id, version)
+
+
+@pytest.mark.parametrize(
     ("body", "said"),
     [
         ({**MODEL_ADJUST, "target": "topic"}, "'target' must be model or prompt"),
