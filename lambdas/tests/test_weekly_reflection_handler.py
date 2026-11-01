@@ -357,8 +357,12 @@ def test_a_comment_longer_than_the_whole_block_is_cut_to_it_and_never_closes_it(
 
     prompt = _sent_prompt([{"vote": "down", "comment": huge, "created_at": "2026-10-25T00:00:00+00:00"}])
 
+    # The comment itself is listed, defanged and cut to the block, not left out for a note saying so.
     listed = _listed(prompt)
-    assert len(listed) == 1 and len(listed[0]) < weekly_reflection_handler.COMMENTS_MAX_CHARS
+    assert len(listed) == 1
+    assert listed[0].startswith("- < /comments> ")
+    assert len(listed[0]) == weekly_reflection_handler.COMMENTS_MAX_CHARS - 1
+    assert "left out" not in prompt
     assert prompt.count("</comments>") == 1
 
 

@@ -25,10 +25,11 @@ but not calibrated (`judge_uncalibrated`), a cull proposal waiting (`cull_propos
 off its card names `evals set --cull on` first, suggestions.VARIANTS) and a prompt that fell back to
 the copy in the code in the last FALLBACK_DAYS days (`prompt_fallback`, about its prompt id: the
 `Prompt Fallback` events its day rows count). common/prompts.py emits one beside each
-`prompt_fallback` evidence line (`fallback:<request_id>:<prompt_id>`, section 4.3, with the run's key
-as the request id), naming the version that fell back and no model, so the rollup counts it on that
-version's day row alone. This card and the memory's follow-up of it (fallback_check) read those
-counts; these tools read the two tables only.
+`prompt_fallback` evidence line (`fallback:<request_id>:<prompt_id>`, section 4.3, with the
+invocation's key as the request id: the run's, or the reviewer bear's run and article), naming the
+version that fell back and no model, so the rollup counts it on that version's day row alone. This
+card and the memory's follow-up of it (fallback_check) read those counts; these tools read the two
+tables only.
 
 **What is said.** Everything here is an id, a code or a number: model ids, prompt ids and versions as
 the rollup keyed them (each matched to its shape again before it is used), purposes and roles as

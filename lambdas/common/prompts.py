@@ -76,7 +76,7 @@ from datetime import UTC, datetime
 
 import boto3
 
-from common import dynamo, evals, evidence
+from common import dynamo, evals, evidence, naming
 
 CONFIG_ID = "prompts"
 # Every setting of the `prompts` row and its default; an unset or invalid value takes the default.
@@ -276,6 +276,29 @@ def bind_run(key: str | None):
 def bound_run() -> str | None:
     """The run key bound by `bind_run`, or None."""
     return _run_key.get()
+
+
+_request_key: contextvars.ContextVar[str | None] = contextvars.ContextVar("prompts_request_key", default=None)
+
+
+@contextlib.contextmanager
+def bind_request(key: str | None):
+    """The invocation a fallback's evals event is counted under (`_count_fallback`), for a caller whose
+    run key outlives one invocation; every other caller's run key is its invocation and binds nothing
+    here. The reviewer bear draws each task's arms by its article's id, the same on every run that
+    asks about the article, so he binds his run's id with the article's (common/reviewer.tick), and a
+    held article that keeps falling back counts on each run, not only on the first. The arm is still
+    drawn by the run key alone. Reset on exit, like bind_run."""
+    token = _request_key.set(key)
+    try:
+        yield
+    finally:
+        _request_key.reset(token)
+
+
+def bound_request() -> str | None:
+    """The request key bound by `bind_request`, or None."""
+    return _request_key.get()
 
 
 def arm_index(prompt_id: str, n: int, run_key: str | None) -> int:
@@ -534,14 +557,19 @@ def _count_fallback(spec: PromptSpec, version: str | None) -> None:
     that fell back (the asset's, or the vanilla's when no asset version was read). It names no model:
     get_prompt does not know which one the prompt goes to, and the reason applies to the prompt version
     alone (common/evals.SCORING), so the rollup counts it on that version's `prompt#` day row and on no
-    model's or cell's (common/evals_rollup.add_up). Its id is `fallback:<request id>:<prompt id>` with
-    the run's key (bind_run) as the request id, so a run that renders the prompt again, or an
-    invocation retried under the same key, counts once; a key that is not an id's shape stands in as
+    model's or cell's (common/evals_rollup.add_up). Its id is `fallback:<request id>:<prompt id>`, the
+    request id being the invocation's key: the one bind_request bound, else the run's (bind_run). So
+    an invocation that renders the prompt again, or one retried under the same key, counts once, and
+    the reviewer bear's article, whose run key is the same on every run, counts once on each run
+    (common/reviewer.tick binds his run's id with it). A key that is not an id's shape stands in as
     its sha256, and with none bound each fallback is its own. Never raises: evals.emit does not, and
-    writes nothing while evals are off. The source is the prompt's lambda id, as the evidence line's."""
+    writes nothing while evals are off. The source is the code of the Lambda it runs in
+    (`_running_code`), section 4.3's emitting Lambda, so a run's events are revoked by that Lambda's
+    code (`evals revoke --source daily_cycle` takes the daily cycle's review prompts' fallbacks too);
+    outside a Lambda named as Terraform names them, it is the prompt's lambda id."""
     if not evals.enabled():
         return
-    key = bound_run()
+    key = bound_request() or bound_run()
     event_id = evals.event_id(FALLBACK_REASON, request_id=key, prompt_id=spec.prompt_id)
     if event_id is None:
         stand_in = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32] if key else uuid.uuid4().hex
@@ -549,10 +577,23 @@ def _count_fallback(spec: PromptSpec, version: str | None) -> None:
     evals.emit(
         FALLBACK_REASON,
         event_id=event_id,
-        source=spec.prompt_id.partition("/")[0],
+        source=_running_code() or spec.prompt_id.partition("/")[0],
         prompt_id=spec.prompt_id,
         prompt_version=version or spec.vanilla_label,
     )
+
+
+def _running_code() -> str | None:
+    """The code of the Lambda this runs in: `daily_cycle` for `<prefix>-dev-daily-cycle`, as Terraform
+    names every function `<prefix>-<environment>-<code, hyphenated>`. None outside a Lambda (a test,
+    a script), or where the function is not told its environment (ENVIRONMENT_NAME) or its name is
+    not built that way: then the caller names the prompt's lambda id instead. Read on each call, which
+    only a fallback makes."""
+    name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME") or ""
+    prefix = naming.environment_prefix(os.environ.get("ENVIRONMENT_NAME") or "")
+    if not name.startswith(prefix):
+        return None
+    return evidence.check("code", name[len(prefix) :].replace("-", "_"))
 
 
 def get_prompt(prompt_id: str, values: dict | None = None, locked: dict | None = None) -> Prompt:

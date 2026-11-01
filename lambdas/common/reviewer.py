@@ -322,10 +322,11 @@ _DEFANG_REPLY_RULE = (
 # article, as flags of its own, or as a reply. Each block is a value with its tags inside it, built
 # here, so an asset can place a block but can neither rename its tags nor set the material down
 # outside them; and _break_delimiters breaks exactly these tags inside the material, so it cannot
-# close its block early. The names are ones no honest article holds (one on HTML may well write
-# <article>): a quote for the final review's cut is matched against the article as written
-# (cut_sentences), so only a sentence that holds one of these tags is quoted differently, and that
-# article waits for a person.
+# close its block early. Each flag is put on one line before it is numbered, so every numbered line
+# in the flags' block is one this code numbered. The names are ones no honest article holds (one on
+# HTML may well write <article>): a quote for the final review's cut is matched against the article
+# as written (cut_sentences), so only a sentence that holds one of these tags is quoted differently,
+# and that article waits for a person.
 _DELIMITER_TAG = re.compile(r"<(/?)(article_text|review_flags)", re.IGNORECASE)
 
 
@@ -342,8 +343,11 @@ def _article_block(title: str, body: str) -> str:
 
 def _flags_block(majors: list[str]) -> str:
     """The flags as his questions are given them, numbered here, in code, because the verdicts answer
-    by those numbers."""
-    listed = "\n".join(f"{n}. {flag}" for n, flag in enumerate(majors, 1))
+    by those numbers. A flag can hold line breaks (a compliance reply with no labels is one reason of
+    many lines, its own list among them), and a line after one would read as a flag with a number of
+    its own, whose verdict judge_majors and judge_defang would map onto another flag; so each flag's
+    whitespace, line breaks included, is closed up to single spaces first."""
+    listed = "\n".join(f"{n}. {' '.join(str(flag).split())}" for n, flag in enumerate(majors, 1))
     return f"<review_flags>\n{_break_delimiters(listed)}\n</review_flags>"
 
 
@@ -971,7 +975,12 @@ def tick(state: dict, hands: Hands, now: datetime, settings: dict | None = None)
     counts = dict(state.get("counts") or {})
     mentions = list(state.get("mentions") or [])
     for task in batch:
-        outcome = do_task(task, hands, now, joke=int(counts.get("rejected") or 0), settings=settings)
+        # A prompt's fallback counts once per article on each run (common/prompts.bind_request): the
+        # article's id alone, which do_task binds for its arms, is the same on every run that asks
+        # about it, and the evals rollup keeps one event per id.
+        request = ":".join(str(part) for part in (state.get("run_id"), task.get("article_id")) if part)
+        with prompts.bind_request(request or None):
+            outcome = do_task(task, hands, now, joke=int(counts.get("rejected") or 0), settings=settings)
         counts[outcome] = int(counts.get(outcome) or 0) + 1
         if outcome in _LINKED + _REWRITES and task.get("article_id"):
             mentions.append({"outcome": outcome, "article_id": task["article_id"]})

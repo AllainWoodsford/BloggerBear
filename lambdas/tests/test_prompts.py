@@ -14,7 +14,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from common import dynamo, evals, evidence, prompts, prompts_registry
+from common import dynamo, evals, evidence, naming, prompts, prompts_registry
 from common.prompts import Prompt, PromptSpec, sha256_text
 
 REGION = "ap-southeast-2"
@@ -730,7 +730,8 @@ class EvalsLog:
 
 @pytest.fixture
 def evals_log(monkeypatch):
-    """Evals on, with the evals log as an EvalsLog."""
+    """Evals on, with the evals log as an EvalsLog, outside any Lambda."""
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
     monkeypatch.setenv("EVALS_ENABLED", "true")
     monkeypatch.setenv("EVALS_LOG_GROUP", "acme-dev-evals")
     log = EvalsLog()
@@ -799,6 +800,94 @@ def test_a_run_key_that_is_not_an_ids_shape_stands_in_as_its_sha256(aws, evals_l
 
     [event] = evals_log.events
     assert event["event_id"] == f"fallback:{hashlib.sha256(key.encode()).hexdigest()[:32]}:daily_cycle/draft"
+
+
+def test_a_bound_request_key_names_the_fallback_event_so_one_run_key_on_two_runs_counts_on_each(
+    aws, evals_log
+):
+    """The reviewer bear's run key is an article's id, the same on every run that asks about it; the
+    request key he binds beside it (his run's id with the article's) names the event, so the article
+    counts on each run, and once on each however often a run renders the prompt."""
+    with prompts.bind_run("article-1"):
+        for run in ("run-1", "run-2"):
+            with prompts.bind_request(f"{run}:article-1"):
+                for _ in range(2):
+                    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "no_files"
+                assert prompts.bound_run() == "article-1"
+            assert prompts.bound_request() is None
+
+    assert [event["event_id"] for event in evals_log.events] == [
+        "fallback:run-1:article-1:daily_cycle/draft",
+        "fallback:run-1:article-1:daily_cycle/draft",
+        "fallback:run-2:article-1:daily_cycle/draft",
+        "fallback:run-2:article-1:daily_cycle/draft",
+    ]
+
+
+def test_a_bound_request_key_never_moves_the_arm_the_run_key_draws(aws):
+    publish(aws, ASSET, "v2")
+    publish(aws, ASSET_B, "v3")
+    for run_key in (f"article-{i}" for i in range(20)):
+        arm = prompts.arm_index("daily_cycle/draft", 2, run_key)
+        with prompts.bind_run(run_key):
+            for request in ("run-1", "run-2", None):
+                with prompts.bind_request(f"{request}:{run_key}" if request else None):
+                    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+                assert got.version == ("v2", "v3")[arm]
+
+
+@pytest.mark.parametrize(
+    ("function", "prompt_id", "code"),
+    [
+        ("daily-cycle", "reviews/adversarial_review", "daily_cycle"),
+        ("eval-jobs", "daily_cycle/draft", "eval_jobs"),
+    ],
+)
+def test_a_fallback_inside_a_lambda_is_stamped_with_that_lambdas_code_as_its_source(
+    aws, evals_log, registry, monkeypatch, function, prompt_id, code
+):
+    """Section 4.3's source is the emitting Lambda's code, so `evals revoke --source daily_cycle`
+    takes a review prompt's fallback in the daily cycle, and `--source eval_jobs` an offline run's
+    draft, rather than the prompt's own namespace."""
+    registry.append(spec(prompt_id="reviews/adversarial_review"))
+    monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", f"{naming.environment_prefix('dev')}{function}")
+
+    assert prompts.get_prompt(prompt_id, VALUES, LOCKED).fallback_code == "no_files"
+
+    [event] = evals_log.events
+    assert (event["prompt_id"], event["source"]) == (prompt_id, code)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"AWS_LAMBDA_FUNCTION_NAME": "daily-cycle", "ENVIRONMENT_NAME": "dev"},
+        {
+            "AWS_LAMBDA_FUNCTION_NAME": f"{naming.environment_prefix('production')}daily-cycle",
+            "ENVIRONMENT_NAME": "dev",
+        },
+        {"AWS_LAMBDA_FUNCTION_NAME": f"{naming.environment_prefix('dev')}daily-cycle"},
+        {"AWS_LAMBDA_FUNCTION_NAME": f"{naming.environment_prefix('dev')}", "ENVIRONMENT_NAME": "dev"},
+    ],
+)
+def test_a_fallback_outside_a_lambda_named_as_terraform_names_them_is_stamped_with_the_prompts_lambda_id(
+    aws, evals_log, registry, monkeypatch, env
+):
+    """No function name (a test, a script), a name not built from this environment's prefix, or a
+    function not told its environment: the source falls back to the prompt's lambda id, so the event is
+    still written rather than refused for its source."""
+    registry.append(spec(prompt_id="reviews/adversarial_review"))
+    for name in ("AWS_LAMBDA_FUNCTION_NAME", "ENVIRONMENT_NAME"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    prompts.get_prompt("reviews/adversarial_review", VALUES, LOCKED)
+
+    [event] = evals_log.events
+    assert event["source"] == "reviews"
 
 
 def test_no_fallback_event_is_written_when_nothing_fell_back_or_evals_are_off(aws, evals_log, monkeypatch):

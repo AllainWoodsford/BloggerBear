@@ -348,6 +348,33 @@ def test_the_fallback_events_common_prompts_writes_count_once_a_run_for_their_ve
     assert {entity for entity, _ in entities(aws) if entity.startswith(("model#", "cell#"))} == set()
 
 
+def test_one_held_articles_fallbacks_on_back_to_back_reviewer_runs_count_on_both_days_however_added_up(aws):
+    """The reviewer bear's runs on the 31st and the 1st (his every-second-day schedule starts again
+    each month) each fall back on one held article. Named by his run's id with the article's
+    (reviewer.tick binds it, common/prompts.bind_request), the two events have two ids, so each counts
+    on its own day under the scheduled runs, and again when the two days are added up again: the
+    rollup keeps one event per id, and the article's id alone would make the second a copy."""
+    logs = FakeLogs()
+    skeptic = "reviewer/skeptic"
+    for run_id, day in (("261030180000-aaaaaa", "2026-10-31"), ("261031180000-bbbbbb", "2026-11-01")):
+        log(
+            logs, "Prompt Fallback", sydney(f"{day}T05:00"), parts={"request_id": f"{run_id}:a1",
+            "prompt_id": skeptic}, prompt_id=skeptic, prompt_version="v1", source="reviewer",
+        )  # fmt: skip
+
+    def counted():
+        days = ("2026-10-31", "2026-11-01")
+        return [plain(row(aws, f"prompt#{skeptic}#v1", day) or {}).get("events") for day in days]
+
+    for at in ("2026-10-31T06:00", "2026-11-01T03:00", "2026-11-01T06:00", "2026-11-02T03:00"):
+        rollup(logs, now=sydney(at))
+    assert index(aws)["last_rolled_day"] == "2026-11-01"
+    assert counted() == [1, 1]
+
+    rollup(logs, now=sydney("2026-11-02T04:00"), trigger="admin", day_from=date(2026, 10, 31))
+    assert counted() == [1, 1]
+
+
 def test_a_duplicate_event_counts_once_and_an_unreadable_line_not_at_all(aws):
     logs = FakeLogs()
     record = completion(logs, "a1", DRAFT, sydney("2026-10-27T09:00"))
