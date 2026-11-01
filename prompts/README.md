@@ -85,5 +85,5 @@ value set only on one.
   are served again and the release is **pinned**: every later publish, merges and releases included,
   publishes the pinned release again until a run with `clear_pin` publishes the tree and clears it.
 - **One version, at once:** `admin_cli prompts pause <prompt_id> <version>` stops serving it within
-  ten minutes while the rest of its split keeps serving; `admin_cli prompts set --assets off` turns
+  five minutes while the rest of its split keeps serving; `admin_cli prompts set --assets off` turns
   every asset off without a publish.

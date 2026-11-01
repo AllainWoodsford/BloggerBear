@@ -406,8 +406,14 @@ group.
    ```
    A topic is ready when its line shows a few days clean in a row (`N clean in a row`: the days
    checked with no mismatch since its last mismatch or unchecked day; the move itself asks for one)
-   and a last research turn. Its `N mismatches` and `N unchecked days` cover its whole history and
-   never go back to 0; they need not. Move dev's topics one at a time
+   and, for a cron research cadence, shadow mode has judged a research turn on time (since its last
+   research mismatch, if it had one). The line does not show that: its `last research turn` is the
+   last turn recorded, judged or not. A heartbeat running off the dispatcher's minute never gives a
+   turn on time, so it can show clean days and a last research turn and still be refused; the
+   move's 400 says so, naming the mismatched turn when there was one. Its `N mismatches` and
+   `N unchecked days` cover its whole history and never go back to 0; they need not. If a topic has
+   been added or deleted, or the stagger changed, since the schedules were last written, run
+   `topics reschedule` first: until then the move is refused. Move dev's topics one at a time
    ([how, and back](#moving-topics-to-the-queue-and-back)), and watch each one's next article arrive
    on time. Production after its release: a plain feed topic first (not financial,
    not a vision topic, no rota), then the rest.
@@ -525,10 +531,11 @@ python scripts/admin_cli.py topics reschedule --dispatch-mode schedule     # eve
 - **The move** deletes the topic's two EventBridge schedules, once, and the dispatcher runs it from
   the next minute. It is refused, with every reason, while the topic is paused; while shadow mode
   has not watched a full day clean since its last mismatch or unchecked day, or (for a cron research
-  cadence) seen a research turn on time since its last research mismatch; while the schedules
-  written for it are not the ones the dispatcher works out now; and for a cadence, slug or topic id
-  the dispatcher cannot use ([what each means](configuration.md#the-queue-platform)). An old
-  mismatch needs nothing done by hand: a clean full day after it lets the move through.
+  cadence) seen a research turn on time (since its last research mismatch, if any); while the
+  schedules written for it are not the ones the dispatcher works out now; and for a cadence, slug or
+  topic id the dispatcher cannot use ([what each means](configuration.md#the-queue-platform)). An old
+  mismatch needs nothing done by hand: a clean full day after it lets the move through (after a
+  research mismatch, once a research turn has also been judged on time).
 - **Refused for its schedules:** the answer says "the schedules written for it are not the ones the
   dispatcher would run" and to run `topics reschedule` first. A topic added or deleted, or a stagger
   change, moves every topic's daily minute, and only a reschedule writes them all again; until then
@@ -574,10 +581,15 @@ each environment's releases, newest first, and the one in place.
 
 1. **Stop serving it**, with no publish: `prompts pause <prompt_id> <version>` (a run that draws
    that version gets the code's copy; runs that draw the prompt's other files keep them) or `prompts
-   set --assets off` (every prompt's code copy). In force within ten minutes; `prompts resume` and
-   `prompts set --assets on` undo them. While the assets are off, every prompt served is a reported
-   fallback, so the `<prefix>-<env>-prompt-fallback` alarm stays in ALARM until they are on again:
-   expected, not a second problem.
+   set --assets off` (every prompt's code copy). In force within five minutes; `prompts resume` and
+   `prompts set --assets on` undo them. While the assets are off, every asset prompt served is a
+   reported fallback, so the `<prefix>-<env>-prompt-fallback` alarm is in ALARM for every hour in
+   which an asset prompt is rendered. In an hour with none (a research tick with nothing new calls
+   no model; the daily cycle runs once a day) it goes back to OK and emails, then fires again at the
+   next render. Both emails are expected until they are on again, not a second problem: an OK email
+   does not mean the fallbacks have stopped. A pause does the same for every hour in which a run
+   draws the paused version, and goes back to OK more often, since runs that draw the other arms
+   write nothing.
 2. **Pin an earlier release:** take its id from `prompts releases`, then
    ```bash
    gh workflow run prompts.yml --ref dev -f environment=production -f release_id=<release id>
@@ -594,12 +606,12 @@ One step each, as the CLI spells it (`python scripts/admin_cli.py ...`).
 
 | What happened | The step |
 |---|---|
-| A bad prompt is live | `prompts pause <prompt_id> <version>`, or every prompt at once, `prompts set --assets off`. In force within ten minutes. With the assets off, the `prompt-fallback` alarm stays in ALARM until `prompts set --assets on` |
+| A bad prompt is live | `prompts pause <prompt_id> <version>`, or every prompt at once, `prompts set --assets off`. In force within five minutes. With the assets off, the `prompt-fallback` alarm is in ALARM for every hour with an asset prompt's render and back to OK, with an email, after an hour without one; both are expected until `prompts set --assets on` |
 | A model was culled by mistake | `models restore <model_id>` |
 | A model is gated and should not be | `evals ungate --model <model_id> --hours 48` |
 | The judge ran away | `evals revoke --source judge --since <ISO time>`. Its tripwire has already turned it off; `evals set --judge on` turns it back on and clears `judge_paused_reason` |
-| The queue is stuck (the `work-queue-age` or `dispatcher-heartbeat` alarm emails) | `topics reschedule --dispatch-mode schedule` puts every queue topic back on its schedules; `failed-executions list` shows what failed |
-| The `dispatcher-errors` alarm emails and the dispatcher's log says `start refused` | Step Functions refused a daily start for a reason no one topic causes (the dispatcher's role, the state machine, the service), and the line names the error; every other topic was still run. Mend that: each minute retries under the same execution name, so no day runs twice |
+| The queue is stuck (the `work-queue-age` or `dispatcher-heartbeat` alarm emails), unless the dispatcher's log says `start refused`: then the next row | `topics reschedule --dispatch-mode schedule` puts every queue topic back on its schedules; `failed-executions list` shows what failed |
+| The `dispatcher-errors` alarm (and, after 15 minutes, `dispatcher-heartbeat`) emails and the dispatcher's log says `start refused` | Step Functions refused a daily start for a reason no one topic causes (the dispatcher's role, the state machine, the service), and the line names the error; every other topic was still run. Mend that: each minute retries under the same execution name, so no day runs twice |
 | A move to the queue is refused: "the schedules written for it are not the ones the dispatcher would run" | `topics reschedule`, then the move again |
 | An offline scoring run stopped at the spend cap | It carries on by itself once a new day's cap allows; `evals runs resume <run_id>` sends again whatever has no result, a failed model call's items included, or raise the cap with `evals set --daily-spend-cap <AUD>`. A message that can cost more than the whole cap (lowered since the run started) is counted finished without a result, so the run closes; `resume` refuses (409) while a message it would send can cost more than the whole cap, so raise the cap first |
 | A scoring job reached the dead-letter queue (`failed-executions list` shows kind `score_job`) | eval-work delivered it three times without it finishing: eval-jobs could not read its run or count it finished, or timed out. Once that is mended, `evals runs resume <run_id>` sends whatever of the run has no result. If it answers that every message has its result, the job's result was written but never counted, so the run stays running: `evals runs cancel <run_id>` ends it, keeping what was scored |
@@ -617,7 +629,7 @@ One step each, as the CLI spells it (`python scripts/admin_cli.py ...`).
   [Prompts: publishing and rolling back](#prompts-publishing-and-rolling-back). To turn prompts as
   assets or evals off in production, set `PROMPT_AS_ASSET_ENABLED` or `EVALS_ENABLED` to `false` on
   the `production` environment and publish a release (`prompts set --assets off` stops the prompts
-  within ten minutes, with no release). Evals off removes eval-jobs and its queue; the evals table and log group
+  within five minutes, with no release). Evals off removes eval-jobs and its queue; the evals table and log group
   stay, with every total.
 - **Tearing production down** is deliberately awkward: tables have deletion protection (in
   `infra/environments/production/main.tf` set `protect_data = false` on `module "app_data"`,

@@ -190,8 +190,8 @@ with:
 
 **The cache.** Each container keeps the listing, the tags, the bodies by sha256, the hash rows and
 the `prompts` row for 300 seconds, so a warm container reads each prompt's files at most once every
-five minutes. A paused or superseded version is therefore served for at most 600 seconds: the cache
-plus the retire grace.
+five minutes. A pause or the kill switch, read from the cached `prompts` row, therefore lands within
+300 seconds; a superseded version is served for at most 600 seconds: the cache plus the retire grace.
 
 **An unreadable `prompts` row** is not read as its defaults, since a paused or killed version's
 hash row still says `live`. A container that cannot read the row keeps the settings it last read,
@@ -263,9 +263,13 @@ printed holds a prompt's text.
 | Go back to an earlier release | `git revert` and a publish; or the workflow's `release_id` input | A revert publishes the old files as a new release. `release_id` pins an earlier release: its files are made live and synced into `latest/` again, every other live row is retired, and `current.json` names it as `pinned_release`. Every later publish, a merge or a release, publishes the pin again until a run with `clear_pin` publishes the tree |
 
 The pause and the kill switch are fallbacks like any other: every call they affect writes a
-`prompt_fallback` line, so `<prefix>-<env>-prompt-fallback` stays in alarm while one is in place
-(with `--assets off`, on every asset prompt's call). That is expected, and it clears after an hour
-with no fallback line, once the pause or the kill switch is lifted and the caches have read it.
+`prompt_fallback` line (with `--assets off`, on every asset prompt's call), so
+`<prefix>-<env>-prompt-fallback` is in alarm for every hour that has one. While one is in place it
+can also clear, with an email, in an hour with no affected call (a research tick with nothing new
+calls no model; the daily cycle runs once a day), and the next affected call sets it off again: both
+emails are expected, and an OK email does not mean the fallbacks have stopped. Once the pause or the
+kill switch is lifted and the caches have read it (up to five minutes), the next hour with no
+fallback line clears it for good.
 `prompts list` shows each prompt's files under `latest/` with their version, release, sha256, hash
 status and pause state, and whether the deployment serves assets at all; `prompts releases` shows
 what each publish did, and which release is in place or pinned. Both read the bucket fresh, never

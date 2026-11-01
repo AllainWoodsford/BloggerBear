@@ -150,8 +150,9 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
         "set",
         help=(
             "The kill switch: --assets off serves every prompt's copy in the code, without a deploy; "
-            "each render then writes a prompt_fallback line, so the prompt-fallback alarm is expected "
-            "in ALARM while it is off"
+            "each render of an asset prompt then writes a prompt_fallback line, so the prompt-fallback "
+            "alarm is expected in ALARM in every hour with a render while it is off (and back to OK, "
+            "with an email, in an hour without one)"
         ),
     )
     set_parser.add_argument(

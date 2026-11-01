@@ -179,10 +179,17 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             (
                 "Written by",
-                "the Admin API (admin_cli topics ...); research-tick and daily-cycle "
+                "the Admin API (admin_cli topics ...; once the day's daily turn has passed, a move to the "
+                "queue, a resume and a topic made on the queue also write the daily claim, "
+                "last_daily_dispatched_on); research-tick and daily-cycle "
                 "stamp last_research_at and last_article_at, with last_article_run (the run that wrote "
                 "the article, so a retry of that run writes nothing), and, for a topic that rotates "
-                "through subjects, last_article_by_subject (each subject's last article)",
+                "through subjects, last_article_by_subject (each subject's last article); research-tick "
+                "also stamps last_research_attempt_at when it takes its turn, before it asks the source; "
+                "the dispatcher writes its claims (research_claimed_at, last_daily_dispatched_on and "
+                "daily_claim_n) and, in shadow mode, the shadow record (shadow_last_research_dispatch_at, "
+                "shadow_last_daily_dispatch_at, shadow_mismatches, shadow_unchecked, shadow_checked_days, "
+                "shadow_clean_days, shadow_research_mismatch_at and shadow_research_matched_at)",
             ),
             ("Read by", "every pipeline function, the public API, the assistant"),
         ),
@@ -380,7 +387,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "the \"evals\" row; `evals cull --apply`, its last_cull_apply on model-catalog-state "
                 "and the culled models in the \"model-archive\" row; `models restore`, which takes a "
                 "model out of that archive); the public API (rate-limit counters); model-catalog (its "
-                "state, with the weekly cycle's cull_proposal, and its pricing runs)",
+                "state, with the weekly cycle's cull_proposal, and its pricing runs); the dispatcher "
+                "(last_tick on the pipeline row)",
             ),
             ("Read by", "every pipeline function, the assistant (its access switch, model_catalog)"),
             ("Expires", "the rate-limit counters, and a pricing run 14 days after it closes, by TTL"),

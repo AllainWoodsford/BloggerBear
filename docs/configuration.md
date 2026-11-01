@@ -816,12 +816,18 @@ all again. The move deletes the topic's two schedules once, before the row says 
 
 Its alarms ([observability.md](observability.md)): `<prefix>-<env>-work-queue-age` (a job has waited
 more than 15 minutes), `-work-dlq-messages` and `-work-dlq-received` (a job failed three times;
-`failed-executions list` names it), and `-dispatcher-heartbeat` (no tick finished in 15 minutes),
-beside the dispatcher's errors and throttles alarms that every pipeline Lambda has. Its errors
-alarm also fires when Step Functions refuses a daily start for a reason that is not the topic's own
-(anything but its execution name or input: the dispatcher's role, the state machine, the service).
-That tick still runs every other topic and writes `last_tick` first, and its log says `start
-refused` with the topic.
+`failed-executions list` names it), and `-dispatcher-heartbeat` (no tick finished without raising
+in 15 minutes), beside the dispatcher's errors and throttles alarms that every pipeline Lambda has.
+Its errors alarm also fires when a daily start is throttled (`ThrottlingException`,
+`TooManyRequestsException`, `ExecutionLimitExceeded`): that tick fails at once and the next one
+tries again. It fires as well when Step Functions refuses a daily start for a reason that is not
+the topic's own: the dispatcher's role, the state machine, the service. That excludes
+`ExecutionAlreadyExists`, which counts as the day's run, and a refusal of the topic's execution name
+or input (`InvalidName`, `InvalidExecutionInput`, `ValidationException`), which only skips that
+topic ([the cases](architecture/queue-platform.md#a-daily-run)). Such a tick still runs every other
+topic and writes `last_tick` first, and its log says `start refused` with the topic. Its
+`dispatcher_tick` line's `outcome` is still `error`, so a refusal that lasts 15 minutes fires
+`-dispatcher-heartbeat` too.
 
 ### Prompts as assets
 
@@ -840,14 +846,14 @@ prompts are code-only and never read from S3: `ops_agent/system`, `reviews/compl
 |---|---|---|---|
 | `PROMPT_AS_ASSET_ENABLED` | [GitHub variable](#github-secrets-and-variables) | off | Every Lambda reads assets. Needs a deploy. Off, nothing of the bucket is read for serving and no fallback is reported. Also the gate of both publish jobs, read at repository level only |
 | `AWS_DEV_PROMPTS_ROLE_ARN`, `AWS_PROD_PROMPTS_ROLE_ARN` | GitHub secrets, repository level | unset | The publisher roles. Each is also the one principal its bucket lets write |
-| `prompt_assets` | `prompts` row | `on` | The kill switch, with no deploy: `off` serves every prompt's vanilla (`prompts set --assets off`), each one a reported fallback, so the `prompt-fallback` alarm stays in ALARM while it is off |
+| `prompt_assets` | `prompts` row | `on` | The kill switch, with no deploy: `off` serves every prompt's vanilla (`prompts set --assets off`), each asset prompt's render a reported fallback, so the `prompt-fallback` alarm is in ALARM for every hour with one (and back to OK, with an email, after an hour without) until it is on again |
 | `paused_versions` | `prompts` row | none | Versions taken out of service, `<prompt_id>@<version>` (`prompts pause <prompt_id> <version>`): a run that draws a paused version gets the vanilla (`paused`); runs that draw the prompt's other files keep them |
 | `production-prompts` | GitHub environment | none | Where production's prompts are published between releases, after your approval. Required reviewer: you; deployment branch: `dev`. It needs no secret or variable of its own: everything the publish reads is at repository level |
 
 - **How fast a change lands.** Each Lambda container keeps what it read (the listing, the files,
-  the hash rows and the `prompts` row) for five minutes, and a retired file's hash row is still
-  accepted for five minutes after a release, so a superseded or paused version is served for at most
-  ten.
+  the hash rows and the `prompts` row) for five minutes, so a pause or the kill switch lands within
+  five; a retired file's hash row is still accepted for five minutes after a release, so a
+  superseded version is served for at most ten.
 - **An unreadable `prompts` row is not read as the defaults.** A container keeps the row it last
   read, past the five minutes, and one that has read none yet serves the vanilla until it can, so a
   failed read never brings a paused or killed version back.
@@ -856,8 +862,12 @@ prompts are code-only and never read from S3: `ops_agent/system`, `reviews/compl
   included, feeds the `<prefix>-<env>-prompt-fallback` alarm, which emails at the first fallback in
   an hour and again when it clears. While evals are on, each fallback is also a Prompt Fallback event
   in the evals log, counted on the version's row and never scored. The kill switch is a fallback
-  too: while `prompt_assets` is `off`, every prompt a Lambda renders writes a line (`assets_off`), so
-  the alarm stays in ALARM until `prompts set --assets on`. That is expected.
+  too: while `prompt_assets` is `off`, every asset prompt a Lambda renders writes a line
+  (`assets_off`); the nine code-only prompts above write none. So the alarm is in ALARM for every
+  hour with such a render, and an hour with none (a research tick with nothing new calls no model;
+  the daily cycle runs once a day) sends it back to OK, with an email, until the next render fires
+  it again. Both emails are expected until `prompts set --assets on`: an OK email does not mean the
+  fallbacks have stopped.
 - **Who publishes where.** `publish-dev` runs on a merge to `dev` that touches `prompts/`, the prompts
   code or the workflow, or by hand from `dev`, as `gha-<prefix>-dev-prompts`, in no environment.
   `publish-production` runs with every published release, under `production`, and by hand from `dev`

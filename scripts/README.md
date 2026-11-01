@@ -889,8 +889,8 @@ The pipeline's prompts can be served from the prompts bucket instead of the copi
 `PROMPT_AS_ASSET_ENABLED` is on and the `prompts` workflow has published them
 ([configuration.md](../docs/configuration.md#prompts-as-assets); the files and their rules are in
 [prompts/README.md](../prompts/README.md)). These commands read what is published and change what is
-served, with no deploy. A change reaches every Lambda within five minutes; a paused or superseded
-version is served for at most ten.
+served, with no deploy. A change reaches every Lambda within five minutes; a version superseded by a
+publish is served for at most ten.
 
 ```bash
 python scripts/admin_cli.py prompts list                          # each prompt's files under latest/, and whether assets are served
@@ -923,8 +923,11 @@ python scripts/admin_cli.py prompts set --assets ""               # cleared: bac
   brings a paused or switched-off version back.
 - A Lambda that falls back from an asset to the code's copy says so in a `prompt_fallback` log line
   (the `<prefix>-<env>-prompt-fallback` alarm emails at the first in an hour), and `evals status`
-  counts the last 24 hours' fallbacks. With the kill switch on, every call falls back and writes one,
-  so the alarm stays in ALARM until `prompts set --assets ""`: expected, not a second fault.
+  counts the last 24 hours' fallbacks. With the kill switch on, every asset prompt's call falls back
+  and writes one, so the alarm is in ALARM for every hour with one; an hour with none (a research
+  tick with nothing new calls no model; the daily cycle runs once a day) sends it back to OK, with an
+  email, and the next call fires it again. Both emails are expected until `prompts set --assets ""`,
+  not a second fault: an OK email does not mean the fallbacks have stopped.
 
 ## The prompts tree: `prompt_lint.py` and `publish_prompts.py`
 
