@@ -165,12 +165,14 @@ places, all in the same AUD at the same fixed rate:
 | Where | What | Kept |
 |---|---|---|
 | This week's row, `evals_*` | The call's tokens and its cost, or one unpriced call, like every other category. The Stats page shows it as "Model evals". | rolled over each Monday, like every category |
-| The evals table's day row: `entity` `spend`, `sk` `day#<yyyy-mm-dd>` (`<prefix>-<env>-evals`) | `spent_aud` and `calls` for the day, the day in the evals settings' `timezone` (`Australia/Sydney` by default). A call on a model with no price is counted here at A$0.05, never as free. This is the row the daily cap is checked against. | for good: the evals table expires nothing |
+| The evals table's day row: `entity` `spend`, `sk` `day#<yyyy-mm-dd>` (`<prefix>-<env>-evals`) | `spent_aud` and `calls` for the day, the day in the evals settings' `timezone` (`Australia/Sydney` by default), and `held_aud`. A call on a model with no price is counted here at A$0.05, never as free. This is the row the daily cap is checked against. `spent_aud` also counts what consumers hold for calls they are making (the daily cap, below), and `held_aud` says how much of it is held. | for good: the evals table expires nothing |
 | The run's own rows, `run#<run_id>` on the same table | The run header's `spent_aud`, for a judge run and an offline run alike. An offline run's item rows also hold each item's tokens and `cost_aud`. `evals runs list` and `evals runs get <run_id>` show them. | for good |
 
 So the week's `evals_*` figure and the day rows can differ a little: an unpriced call is a count
 on the week's row and A$0.05 on a day row, and a day row runs midnight to midnight in the evals
-time zone while a week runs from one Monday's rollover to the next.
+time zone while a week runs from one Monday's rollover to the next. A day row's `spent_aud` also
+keeps any hold that was never given back (a consumer that died mid-call, or a give-back that
+failed), for good; its `held_aud` says how much.
 
 **The daily cap.** `evals_daily_spend_cap_aud` (A$2 by default; `evals set --daily-spend-cap N`)
 bounds what the judge and offline runs spend together in a day:
@@ -182,14 +184,27 @@ bounds what the judge and offline runs spend together in a day:
   `evals set --score-max-cost N`). The estimate it prints is approximate: it counts the live
   version's draft for every combination, though that draft is made once per item, and it leaves
   out the one retry of a draft cut off at its token limit, which bills both attempts.
-- Before each call the consumer reads the day's spend again, for a scoring job against the most
-  the job can cost, its retried draft included. At the cap it marks the run `paused: spend cap`
-  and sends the job back to the queue to wait 15 minutes, and again each time it comes back while
-  the cap holds, so the run carries on by itself once the day turns or the cap is raised.
-  `evals runs resume <run_id>` sends again a scoring run's jobs that have no result (one that
-  failed, or one that could not be sent back).
-- eval-work runs two jobs at once, and the check and the spend are separate writes, so two jobs
-  can pass the check together: a day can end one call, or one scoring job, over its cap.
+- A run with a job that could cost more than the whole daily cap is refused outright (409), its
+  dry run too, since no day could pay for that job. A job's most is the candidate's draft and,
+  until its item's live draft is kept on the run, the live version's, each with its retry, plus
+  the verdict (`message_ceiling_aud` in the admin API's answer). `evals runs resume` refuses the
+  same, pricing only the jobs it would send.
+- Before its calls the consumer holds their cost on the day row, in one conditional write: one
+  estimated call for the judge, and for a scoring job the most it can cost, its retried drafts
+  included. The write adds the hold to `spent_aud`, and to `held_aud`, only while `spent_aud`
+  stays within the cap, and the hold is given back once the calls' real costs are added. When the
+  hold does not fit, the consumer marks the run `paused: spend cap` and sends the job back to the
+  queue to wait 15 minutes, and again each time it comes back while the cap holds, so the run
+  carries on by itself once the day turns or the cap is raised. A scoring job whose most is more
+  than the whole cap (lowered since its run was started or resumed) is not sent back: it is
+  counted finished with no result, so its run still closes.
+- `evals runs resume <run_id>` sends again a scoring run's jobs that have no result: one that
+  failed, one that could not be sent back, and one counted finished without a result (over the
+  whole cap, or failed before it was claimed).
+- eval-work runs two jobs at once, but the second job's hold already counts the first's, so the
+  two can never both take the last of the cap. A day ends over its cap only by what calls cost
+  beyond the holds taken for them. A consumer that dies holding leaves the day under its cap,
+  never over.
 
 The cap is the evals' alone. The pipeline's own model calls have none, and the AWS budget on
 Bedrock only emails ([the Bedrock budget](../observability.md#the-bedrock-budget)).
@@ -298,7 +313,7 @@ Two other repairs go through the admin API:
 | History and the all-time row | `lambdas/common/dynamo.py` (`put_stats_history_row`, `increment_stats_totals`, `set_stats_totals_fields`, `set_stats_history_week_fields`) | `<prefix>-<env>-stats-history` |
 | The Articles section | `lambdas/common/stats.py` | the `articles-snapshot` row |
 | The API and the page | `_stats` in `lambdas/public_api_handler.py`; `frontend/app.js` | `GET /stats` on `<prefix>-<env>-public-api`, cached by `infra/modules/api-cdn/` |
-| Continuous evals' spend | `_record_spend`, `remaining_aud` and `select` in `lambdas/common/eval_judge.py`; `start` and `consume` in `lambdas/common/eval_score.py`; the settings in `lambdas/common/evals_settings.py` | the `spend` and `run#` rows of `<prefix>-<env>-evals` (`infra/modules/evals`) |
+| Continuous evals' spend | `_record_spend`, `reserve`, `release`, `remaining_aud` and `select` in `lambdas/common/eval_judge.py`; `start`, `resume`, `most_per_message_aud` and `consume` in `lambdas/common/eval_score.py`; the settings in `lambdas/common/evals_settings.py` | the `spend` and `run#` rows of `<prefix>-<env>-evals` (`infra/modules/evals`) |
 | The missed-run alarm | | `aws_cloudwatch_metric_alarm` for `schedule-invocations-dropped` in `infra/modules/observability/main.tf` |
 | Repairs | `scripts/repair_stats_week.py`; `stats` and `lineage` in `scripts/admin_cli.py` | |
 

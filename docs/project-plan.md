@@ -1658,8 +1658,10 @@ the same failures reproduced from a home connection, so the cause was GDELT's ow
   News RSS is free and fast but unofficial.
 - **Deploy permissions:** the bootstrap deploy roles may manage `bedrock-agentcore:*` only in
   `ap-northeast-1`, plus the `*-agentcore-gateway` role. Bootstrap is applied by hand, and a plan run
-  without its usual `-var`s (`domain_name`, `budget_alert_email`) proposes destroying the DNS zone and the
-  budget alarm -- `prevent_destroy` stops it. Keep them in the git-ignored `infra/bootstrap/terraform.tfvars`.
+  without its usual `-var`s proposes destroying the budget alarm (`budget_alert_email` is empty by
+  default). `domain_name` then takes its default, the original deployment's domain: a deployment on
+  another domain would have its DNS zone replaced, which `prevent_destroy` stops, and one with no zone
+  would get one for that domain. Keep them in the git-ignored `infra/bootstrap/terraform.tfvars`.
 
 Also fixed alongside: the CoinGecko key reached only the research-tick Lambda, so the review (which runs
 in the daily-cycle Lambda) called CoinGecko keyless. Both Lambdas now share `local.coingecko_env_variables`.
@@ -2328,7 +2330,9 @@ itself, as an execution named `<slug>-<local date>-<n>`, at most `daily_starts_p
 conditional claim on the topic's row stops two ticks doing the same work. Until a topic moves, the
 dispatcher only shadows it, recording on its row what it would have done and counting where that
 differs from what the schedules did. `topics update <id> --dispatch-mode queue` moves one topic once
-shadow mode has watched it, and deletes its two schedules;
+shadow mode has watched it clean for a full day (`shadow_clean_days`) and the schedules on record
+are the ones the dispatcher works out now (after a topic is added or deleted, or the stagger
+changes, `topics reschedule` writes them), and deletes its two schedules;
 `topics reschedule --dispatch-mode schedule` puts every topic on the queue back on them. The fixed
 jobs (the reviewer bear, the model catalog, the stats rollover, the cost poll, the weekly
 reflection, musing feedback and the evals' own jobs) keep their schedules.
@@ -2345,7 +2349,8 @@ folder split the runs between them, one draw per run. Nine prompts are code-only
 asset: the ops agent's system prompt, the compliance reviews, vision triage, comment screening, the
 judge's two rubrics and offline scoring's comparison. Each call's prompt id and version go into the
 article's lineage. `prompts pause` and `prompts set --assets off` act within five minutes, with no
-deploy.
+deploy. Both write a `prompt_fallback` line on every render they turn away, so the prompt-fallback
+alarm fires while they are set, as expected.
 
 **Continuous evals.** Whenever something says a model or a prompt did well or badly (an article
 completed, a person's approve, reject or rewrite, a reader's vote, the judge's or a person's

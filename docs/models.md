@@ -267,8 +267,10 @@ every foundation model, whatever its lifecycle (a `LEGACY` one keeps its purpose
 called, the system inference profiles (`au.`, `apac.`, `global.`, ...), and the application
 inference profiles this account made, by their ARN, each judged by the model under it. A model in
 none of them is marked `unknown`. A custom, provisioned or imported model's ARN is left as it is and
-counted as unchanged: Bedrock lists those through calls the catalog does not make. `model-catalog
-get` shows the result (`last_classify_result`: how many classified, how many `unknown`, with their
+counted as unchanged, never marked `unknown`: Bedrock lists those through calls the catalog does
+not make. With no purpose recorded, such a row stays `unclassified`, and the pricing-unit rule
+[above](#what-a-model-is-for-purpose-and-suitability) keeps judging it. The hourly rollup
+classifies the rows that have no purpose by the same rules. `model-catalog get` shows the result (`last_classify_result`: how many classified, how many `unknown`, with their
 ids).
 
 ## Rotation: trying several models
@@ -696,7 +698,8 @@ python scripts/admin_cli.py evals set --cull off
 
 **The apply.** `evals cull --apply` takes up to `cull_max_per_run` (3) of the proposal's models,
 worst total first. It is refused (409) while `cull_enabled` is off, while evals are off, when there
-is no proposal, and once the proposal has expired. Each model is checked again against the rules as
+is no proposal, and once the proposal has expired; those last two refusals name `model-catalog set
+--cycle on`, since a paused cycle writes no proposal. Each model is checked again against the rules as
 they are now, so one that has since been given a role, had its price locked or its gates held open,
 recovered above the gate, or left the registry is kept, and the answer says why. A culled model
 goes the way a pruned one does: its price into the `model-archive` row (old articles still cost

@@ -92,8 +92,11 @@ interval has passed since the topic was last checked, less 5 minutes for schedul
 interval is `research_interval_hours`: the topic's own, else the pipeline-wide one, else 1 hour. A
 manual `topics trigger --pipeline research_tick` always skips that check.
 
-Otherwise the adapter fetches the source, and a fetch that answers stamps the topic's
-`last_research_at`; one that fails stamps nothing, so the next heartbeat tries again.
+Otherwise the tick first stamps `last_research_attempt_at` to say it took its turn; only the
+dispatcher's shadow mode reads it ([the queue platform](queue-platform.md#shadow-mode-as-built)).
+Then the adapter fetches the source, and a fetch that answers stamps the topic's
+`last_research_at`; one that fails leaves `last_research_at` as it was, so the next heartbeat
+tries again.
 
 For a topic on the queue, the tick is handed one job from the work queue. It runs at the minute the
 dispatcher found the topic due (`due_checked_at`), not the minute the job left the queue: that time

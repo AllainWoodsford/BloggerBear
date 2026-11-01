@@ -326,7 +326,7 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | A topic's slot in the stagger (`stagger_slot`), and the schedules written for it (`research_schedule`, `daily_schedule`) | `<prefix>-<env>-topics`, one item per topic | `topics create\|update --stagger-slot N` (`""` for the next free one); `topics schedule` shows them | The next free slot when the topic is created or first edited |
 | A topic paused: no research tick, no candidate ideas, no article until it is resumed (`paused`, `paused_at`, `resumed_at`); its schedules disabled; "Paused" on its page; a musing each way | same item | `topics pause <topic_id>`, `topics resume <topic_id>` | Running |
 | The dispatcher ([the queue platform](#the-queue-platform)): its shadow mode for topics still on their schedules (`dispatch_shadow`), and how many daily cycles it may start in one minute (`daily_starts_per_tick`, 1 to 10; the rest wait a minute). It keeps `last_tick` on the same row, where its next minute's research window starts | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --dispatch-shadow on\|off --daily-starts-per-tick N` (`''` clears either) | Shadow on; 3 a minute |
-| Whether a topic runs from its two EventBridge schedules or from the dispatcher and the work queue (`dispatch_mode`: `schedule`, or absent, or `queue`), and the dispatcher's record of it: shadow mode's (`shadow_last_research_dispatch_at`, `shadow_last_daily_dispatch_at`, `shadow_mismatches`, `shadow_unchecked`, `shadow_checked_days`) and the live claims (`last_daily_dispatched_on`, `daily_claim_n`, `research_claimed_at`). Only `dispatch_mode` is yours to set; the dispatcher and the cutover write the rest | same item as the topic | `topics update <topic_id> --dispatch-mode queue\|schedule` (it asks first; `--yes` does not); `topics reschedule --dispatch-mode schedule` moves every queue topic back; `topics schedule` shows the mode and the shadow record | `schedule`: its two schedules |
+| Whether a topic runs from its two EventBridge schedules or from the dispatcher and the work queue (`dispatch_mode`: `schedule`, or absent, or `queue`), and the dispatcher's record of it: shadow mode's (`shadow_last_research_dispatch_at`, `shadow_last_daily_dispatch_at`, `shadow_mismatches`, `shadow_unchecked`, `shadow_checked_days`, `shadow_clean_days`, `shadow_research_mismatch_at`, `shadow_research_matched_at`) and the live claims (`last_daily_dispatched_on`, `daily_claim_n`, `research_claimed_at`). Only `dispatch_mode` is yours to set; the dispatcher writes the rest, and the cutover, a resume and a backup restore also write `last_daily_dispatched_on` | same item as the topic | `topics update <topic_id> --dispatch-mode queue\|schedule` (it asks first; `--yes` does not); `topics reschedule --dispatch-mode schedule` moves every queue topic back; `topics schedule` shows the mode and the shadow record | `schedule`: its two schedules |
 | The fresh-data review of each draft (`review_mode`), and what enforce mode does when a review cannot run (`review_on_unavailable`, pipeline-wide only). A topic's own `review_mode` wins over the pipeline-wide one | `<prefix>-<env>-model-config`, item `config_id` = `pipeline`; a topic's own `review_mode` on its item in `<prefix>-<env>-topics` | `pipeline-config set --review-mode off\|shadow\|enforce`, `--review-on-unavailable hold\|note`; for one topic, `topics create\|update --review-mode off\|shadow\|enforce` (`""` clears it on update) | `shadow`; hold |
 | An operator's note on what a topic's fresh-data review should look for (`topic_review_steering`): one line of plain text, at most 500 characters, set into the review's prompt as an operator note marked untrusted. The evals judge reads it too; the compliance review never does | `<prefix>-<env>-topics`, the topic's item | `topics update <topic_id> --review-steering '...'` (`''` clears it) | None |
 | Who may reach the operator's assistant | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --assistant-access open\|allowlist\|off` | `open` |
@@ -716,9 +716,11 @@ Dev first, then production, one part at a time. The commands, and how to tell ea
 in the production runsheet's [enable order](production-runsheet.md#the-enable-order).
 
 0. **The queue platform.** Shadow mode watches every topic from the first deploy. Once `topics
-   schedule` shows a topic's shadow record clean for a few days, move it with `topics update <id>
-   --dispatch-mode queue`: dev's topics first, then production's after its release, a plain feed
-   topic first.
+   schedule` shows a topic a few days clean in a row (`N clean in a row`, `shadow_clean_days`; the
+   move itself asks for one), move it with `topics update <id> --dispatch-mode queue`: dev's topics
+   first, then production's after its release, a plain feed topic first. Run `topics reschedule`
+   first if a topic has been added or deleted, or the stagger changed, since the schedules were last
+   written: until then the move is refused.
 1. **The bootstrap, by hand**, if it was applied before the prompts and evals work: it makes the two
    prompts publisher roles and lets the deploy roles create the evals log group. Then create the
    `production-prompts` GitHub environment and set `AWS_DEV_PROMPTS_ROLE_ARN` and
@@ -741,7 +743,9 @@ however many topics there are. For a topic on the queue, research that is due go
 a job in the topic's own message group, so one topic's jobs run one at a time; a daily cycle that is
 due is started on the daily-cycle state machine as an execution named `<slug>-<local date>-<n>`, so a
 second start is refused by Step Functions itself. A claim on the topic's row stops two ticks queueing
-the same work.
+the same work. A send or start that fails gives its claim back, a daily claim with its number, so
+the next minute's retry sends the same execution name and Step Functions never runs the day twice,
+even when the failed start had reached it.
 
 | Setting | Where | Default | What it does |
 |---|---|---|---|
@@ -753,30 +757,47 @@ the same work.
 **Shadow mode, as built.** For a topic on its schedules the dispatcher records each turn it would
 have taken and compares it with what the Scheduler did:
 
-- A research turn is judged 5 minutes after it: a mismatch when `last_research_at` did not move
-  within 5 minutes of the turn. A run-now is never a mismatch. A heartbeat that drifts off its
-  computed minute is counted once, at the first turn after the drift began.
+- A research turn is judged 5 minutes after it: a mismatch when the schedule's research tick took
+  no turn within 5 minutes of it. The tick stamps `last_research_attempt_at` once it finds the
+  topic due (or is forced), before it asks the source, and `last_research_at` only once the source
+  answers; shadow mode reads the later of the two, so a fetch that failed is not a mismatch. A
+  run-now is never a mismatch. Each judged turn is dated on the row: on time in
+  `shadow_research_matched_at`, a mismatch in `shadow_research_mismatch_at`. A heartbeat that drifts
+  off its computed minute is counted at the first turn after the drift began (and at each later one
+  when the topic's research interval is shorter than its cadence's period), and never gives a turn
+  on time.
 - A `rate(...)` research cadence is recorded but never judged: the Scheduler's minute for a rate
   cannot be worked out from the expression.
 - A daily turn is judged on the last day shadow mode recorded: a mismatch when that day saw no
   execution of the topic, so the first check comes at the second shadow daily turn. A day the check
   could not answer (Step Functions refused, or its pages ran out) is counted in `shadow_unchecked`,
-  never as a match; a day it did answer, in `shadow_checked_days`.
+  never as a match; a day it did answer, in `shadow_checked_days`. A day it answered with a match,
+  with no research mismatch since the daily record before, adds one to `shadow_clean_days`; a
+  mismatch of either kind, or an unchecked day, sets it back to 0.
 
-`topics schedule` shows the record as `N mismatches · N unchecked days · N checked days`. **The
+`topics schedule` shows the record as `N mismatches · N unchecked days · N checked days · N clean in
+a row` (the last once the dispatcher has counted clean days for the topic). The first three cover
+the topic's whole shadow history and never reset; the cutover judges the recent stretch. **The
 cutover's pre-flight** (`topics update <id> --dispatch-mode queue`, answered 400 with every reason)
-asks for no mismatch, no unchecked day, at least one checked day, and, for a cron research cadence,
-at least one research turn recorded. It also refuses a paused topic, a cadence the dispatcher cannot
-read (an `at(...)` expression, or a `rate(...)` daily cadence), a slug (the topic id lower-cased,
-every other character but a digit or `-` made `-`, at most 40 characters) another topic shares, and a topic id SQS cannot take as a message group. The
-counts cover the topic's whole shadow history and nothing resets them: once you have found and fixed
-a mismatch's cause and watched a clean day since, remove `shadow_mismatches` (or `shadow_unchecked`)
-from the topic's item in the console to let the cutover through.
+asks for at least one clean day in a row and, for a cron research cadence, a research turn judged on
+time since the last research mismatch (`topics schedule` does not show the two research dates; the
+refusal names the mismatch's turn). So an old mismatch, or a record from before a cadence change,
+holds the cutover only until a full day after it has been watched clean, a day or two, and nothing on
+the row needs clearing by hand. A topic whose days were checked before clean days were counted reads
+as clean when it never had a mismatch or an unchecked day. The pre-flight also refuses a paused
+topic, a cadence the dispatcher cannot read (an `at(...)` expression, or a `rate(...)` daily
+cadence), schedules written for the topic (`research_schedule`, `daily_schedule`) that are not the
+ones the dispatcher works out now, or were never recorded (it says to run `topics reschedule` first,
+and to make a cadence or slot change in an update of its own), a slug (the topic id lower-cased,
+every other character but a digit or `-` made `-`, at most 40 characters) another topic shares, and a topic id SQS cannot take as a message group.
 
 **On cutover day** the Scheduler may already have run today's daily cycle. A same-day shadow daily
 record counts as today's dispatch, and the move also writes today's claim
 (`last_daily_dispatched_on`) when today's daily turn has passed, so the topic is not started twice
-today. Its next run is tomorrow's.
+today. Its next run is tomorrow's. Both judge today's turn by the schedule the dispatcher works out,
+which is why the pre-flight asks for the written schedules to match it: adding or deleting a topic,
+or changing the stagger, moves every topic's daily minute, and only `topics reschedule` writes them
+all again. The move deletes the topic's two schedules once, before the row says queue.
 
 **What changes for a topic on the queue:**
 
@@ -786,15 +807,21 @@ today. Its next run is tomorrow's.
   and `--pipeline daily_cycle` starts an execution named `<slug>-<local date>-manual-<HHMMSS>`.
 - `topics reschedule` writes it no schedules; with `--dispatch-mode schedule` it first moves every
   queue topic back.
-- A queue topic resumed after today's daily turn starts today's run at the next tick if today is
-  not already claimed (the dispatcher had not started it before the pause, and the move did not
-  record today as done), where the Scheduler would not, and a backup restore keeps a queue topic's
-  `last_daily_dispatched_on` from the snapshot, which can start a second daily run that day.
+- A queue topic resumed after today's daily turn has passed is given today's claim in the write
+  that resumes it, as a move then would be, so its next run is tomorrow's, as a schedule enabled
+  again would have it; resumed before the turn, it runs at the turn. A backup restore writes a queue
+  topic's `last_daily_dispatched_on` as the newest of the snapshot's, the live row's (when it is in
+  the same zone) and, once today's turn has passed, today's. Neither starts a second daily run that
+  day.
 
 Its alarms ([observability.md](observability.md)): `<prefix>-<env>-work-queue-age` (a job has waited
 more than 15 minutes), `-work-dlq-messages` and `-work-dlq-received` (a job failed three times;
 `failed-executions list` names it), and `-dispatcher-heartbeat` (no tick finished in 15 minutes),
-beside the dispatcher's errors and throttles alarms that every pipeline Lambda has.
+beside the dispatcher's errors and throttles alarms that every pipeline Lambda has. Its errors
+alarm also fires when Step Functions refuses a daily start for a reason that is not the topic's own
+(anything but its execution name or input: the dispatcher's role, the state machine, the service).
+That tick still runs every other topic and writes `last_tick` first, and its log says `start
+refused` with the topic.
 
 ### Prompts as assets
 
@@ -813,7 +840,7 @@ prompts are code-only and never read from S3: `ops_agent/system`, `reviews/compl
 |---|---|---|---|
 | `PROMPT_AS_ASSET_ENABLED` | [GitHub variable](#github-secrets-and-variables) | off | Every Lambda reads assets. Needs a deploy. Off, nothing of the bucket is read for serving and no fallback is reported. Also the gate of both publish jobs, read at repository level only |
 | `AWS_DEV_PROMPTS_ROLE_ARN`, `AWS_PROD_PROMPTS_ROLE_ARN` | GitHub secrets, repository level | unset | The publisher roles. Each is also the one principal its bucket lets write |
-| `prompt_assets` | `prompts` row | `on` | The kill switch, with no deploy: `off` serves every prompt's vanilla (`prompts set --assets off`) |
+| `prompt_assets` | `prompts` row | `on` | The kill switch, with no deploy: `off` serves every prompt's vanilla (`prompts set --assets off`), each one a reported fallback, so the `prompt-fallback` alarm stays in ALARM while it is off |
 | `paused_versions` | `prompts` row | none | Versions taken out of service, `<prompt_id>@<version>` (`prompts pause <prompt_id> <version>`): a run that draws a paused version gets the vanilla (`paused`); runs that draw the prompt's other files keep them |
 | `production-prompts` | GitHub environment | none | Where production's prompts are published between releases, after your approval. Required reviewer: you; deployment branch: `dev`. It needs no secret or variable of its own: everything the publish reads is at repository level |
 
@@ -828,7 +855,9 @@ prompts are code-only and never read from S3: `ops_agent/system`, `reviews/compl
   line naming the prompt, the version and why. Every pipeline Lambda's log group, eval-jobs'
   included, feeds the `<prefix>-<env>-prompt-fallback` alarm, which emails at the first fallback in
   an hour and again when it clears. While evals are on, each fallback is also a Prompt Fallback event
-  in the evals log, counted on the version's row and never scored.
+  in the evals log, counted on the version's row and never scored. The kill switch is a fallback
+  too: while `prompt_assets` is `off`, every prompt a Lambda renders writes a line (`assets_off`), so
+  the alarm stays in ALARM until `prompts set --assets on`. That is expected.
 - **Who publishes where.** `publish-dev` runs on a merge to `dev` that touches `prompts/`, the prompts
   code or the workflow, or by hand from `dev`, as `gha-<prefix>-dev-prompts`, in no environment.
   `publish-production` runs with every published release, under `production`, and by hand from `dev`
@@ -848,9 +877,15 @@ days. eval-jobs adds them up hourly into the evals table, by day, for each model
 and each pair of the two, and writes each model's windows (`daily_perf`, `weekly_perf`,
 `monthly_perf`, `total_perf`) on its models row. From those the rotation guard leaves gated models
 out of the candidates, the weekly cycle proposes models to cull, and the rewrite picker ranks the
-models. eval-jobs also runs the judge and offline scoring runs from the eval-work queue. Off, the
-table and the log group still exist and nothing writes to them; turning it off again stops the
-scoring and the gates, and keeps every total.
+models. eval-jobs also runs the judge and offline scoring runs from the eval-work queue. It answers
+every job, so the queue deletes it: a judge item that failed stays unjudged for a later run, and a
+scoring message that failed, even before its result row was claimed, is counted finished without a
+result, so its run closes and `evals runs resume` sends it again. The exceptions are a scoring
+message whose run's header cannot be read and one that cannot be counted finished after a failure:
+eval-jobs names them in its answer's `batchItemFailures`, so eval-work delivers them again, and after
+three receives moves them to the pipeline's dead-letter queue (`failed-executions list`, kind
+`score_job`). Off, the table and the log group still exist and nothing writes to them; turning it
+off again stops the scoring and the gates, and keeps every total.
 
 #### The evals settings
 
@@ -867,15 +902,15 @@ editing the row in the console.
 | `total_gate` | -1000 | none | The same over the model's whole total, adjustments included; also the line below which a model is proposed for culling |
 | `min_events` | 10 | none | The events a window needs before its gate applies, and before the rewrite picker ranks a model by its score. 1 to 1000 |
 | `judge_min_agreement` | 0.7 | none | How often the judge must agree with people before its verdicts count towards the gates. 0 to 1 |
-| `judge_min_pairs` | 20 | none | Over how many subjects both a person and the judge decided. 1 to 1000 |
+| `judge_min_pairs` | 20 | none | Over how many subjects both a person and the judge decided, on the same text (an article's verdicts record which, `rewrite_number`). 1 to 1000 |
 | `cull_enabled` | off | `--cull on\|off` | Lets `evals cull --apply` archive and delete the proposed models; refused (409) while off. It gates the apply, not the proposal: the weekly cycle proposes whenever evals are on and the cycle runs (`model-catalog set --cycle on`), and `models restore` works either way |
 | `cull_max_per_run` | 3 | `--cull-max-per-run N` | Models one apply may delete, worst total first, 1 to 50 |
 | `judge_enabled` | on | `--judge on\|off` | The judge's runs. Its tripwire turns it off, and writes `judge_paused_reason`, when a run marks more than 80% of at least 10 items bad; `evals set --judge on` (or `off`) clears the reason |
 | `judge_interval_hours` | 4 | `--judge-interval-hours N` | Hours between judge runs, 1 to 24: the hourly selector runs only once this has passed since its last run (`last_judge_at`) |
 | `judge_max_items` | 10 | `--judge-max-items N` | Items one judge run reviews, 1 to 50: Findings no judge has reviewed and unjudged articles, in turn, the Findings one topic after another, starting each run from the topic after the last one (`last_judge_topic` on the evals table's index row) |
-| `judge_model_id` | none | `--judge-model-id MODEL_ID` | The judge's model. Unset: model-config's fallback model, else the deployment's default (`BEDROCK_MODEL_ID`). A text model. The judge never judges its own work: an item every option wrote is skipped |
+| `judge_model_id` | none | `--judge-model-id MODEL_ID` | The judge's model. Unset: model-config's fallback model, else the deployment's default (`BEDROCK_MODEL_ID`). A text model. The judge never judges its own work: an item every option wrote is skipped. Models are compared by their base id, so the same model through another inference profile, or named by its ARN, is still the author |
 | `score_max_cost_aud` | 5 | `--score-max-cost AUD` | The estimate, in Australian dollars, an offline scoring run may reach before `evals score` needs `--yes`. 0 to 100. The estimate is approximate: it leaves out the retry of a draft cut off at its limit, which the check before each call does price |
-| `evals_daily_spend_cap_aud` | 2 | `--daily-spend-cap AUD` | What the judge and the offline scoring runs may spend in a day (in `timezone`), together, 0 to 100, kept on the evals table's `spend` rows. Checked when items are queued and before each call. At the cap a run is paused (`paused: spend cap`) and its items wait, 15 minutes at a time, for the next day. Two calls made at once can both pass the check, so a day can end one call over |
+| `evals_daily_spend_cap_aud` | 2 | `--daily-spend-cap AUD` | What the judge and the offline scoring runs may spend in a day (in `timezone`), together, 0 to 100, kept on the evals table's `spend` rows. Checked when items are queued, and held before the calls: one conditional write adds a judge call's estimate, or the most a scoring message can cost (its retried drafts included), to the day's row (`held_aud`, counted in `spent_aud` too), given back once the costs are counted, so two items worked at once can never both spend the last of it, and a consumer that dies holding leaves the day under its cap. At the cap a run is paused (`paused: spend cap`) and its items wait, 15 minutes at a time, for the next day. A scoring run one of whose messages can cost more than the whole cap is refused (409) by `evals score`, already at the dry run that shows its estimate, and by `evals runs resume`; a message that meets a cap lowered under its most since is counted finished without a result, for `resume` to send once the cap is raised |
 | `trace_calls` | off; on in dev | `--trace-calls on\|off` | Stores each model call's prompt and reply at `traces/<subject>/<stage>.json` in the private content bucket, dropped after 14 days, for `evals trace <article_id>`. The gear's guidance and the topic's operator note are stored as their sha256, never as text. Dev's root sets `TRACE_CALLS_DEFAULT` to `true` and production's to `false`; it moves only the default, so a value on the row decides in either |
 | `timezone` | `Australia/Sydney` | `--timezone ZONE` | The IANA zone whose days the rollup, the windows, the spend cap and the Friday digest count in |
 | `excluded_sources` | none | `--excluded-sources A,B` (the whole list) | Events the rollup leaves out, at most 20: `human`, `judge` or `system` (who decided), `run:<run id>` (an offline run), or the code of the Lambda that wrote them. `evals revoke --source S [--since ISO]` adds one entry, and the days already final are added up again, by a rollup it starts or the `evals rollup` command it prints |

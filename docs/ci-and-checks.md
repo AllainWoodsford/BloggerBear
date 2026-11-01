@@ -25,7 +25,7 @@ Every setting a workflow reads (secrets, variables, switches) is in
 
 | Workflow (file) | Runs on | What it runs | What it changes |
 |---|---|---|---|
-| `pr-checks.yml` | Every pull request. | `validate`: `terraform init` (no backend), `fmt -check` and `validate` in each `infra/environments/*`, then `terraform test` in each module that has tests. `secret-scan`: Trufflehog over the pull request's commits. `gitleaks`: Gitleaks over the pull request's commits, with `.gitleaks.toml`. `pii-denylist`: `scripts/pii_denylist_check.py` over what the pull request adds. | Nothing. No AWS credentials. |
+| `pr-checks.yml` | Every pull request. | `validate`: `terraform init` (no backend), `fmt -check` and `validate` in each `infra/environments/*`, then `terraform test` in `infra/bootstrap` and in each module that has tests. `secret-scan`: Trufflehog over the pull request's commits. `gitleaks`: Gitleaks over the pull request's commits, with `.gitleaks.toml`. `pii-denylist`: `scripts/pii_denylist_check.py` over what the pull request adds. | Nothing. No AWS credentials. |
 | `security.yml` | Every pull request. Also called by `terraform.yml` and `terraform-production-release.yml` before they apply. | `security`: Trivy over `infra/` (fails on HIGH and CRITICAL), Trivy over the whole repository for vulnerable dependencies and secrets (reports MEDIUM and up, fails on HIGH and CRITICAL), Bandit over `lambdas/` and `scripts/`. `checkov`: Checkov over the Terraform, as `.checkov.yaml` says. | Nothing. |
 | `python-ci.yml` | Pull requests that touch `lambdas/**`, `scripts/**`, `pyproject.toml`, `.claude/skills/**`, `docs/hackathon/**` or the workflow itself. Pushes to `prod` that touch `lambdas/**`, `scripts/**`, `pyproject.toml`, `.claude/skills/**` or the workflow. Also called by `terraform.yml` and `terraform-production-release.yml`. | `lint-test`: installs the requirements on Python 3.11, prints `pip freeze --all`, runs `ruff check lambdas/ scripts/`, then `pytest lambdas/ scripts/`. | Nothing. A Ruff failure puts the diff `ruff check --fix` would make in the job summary. |
 | `ruff-autofix.yml` | Pull requests opened, pushed to or reopened that touch `lambdas/**`, `scripts/**` or `pyproject.toml`. | `autofix`: Ruff's safe fixes, then `ruff check` again. [More below](#ruff-autofix). | With the `RUFF_AUTOFIX_TOKEN` secret: pushes a commit to the pull request's branch. Without it: nothing (the diff goes in the job summary). |
@@ -182,7 +182,7 @@ credentials, no plan, no deploy.
 
 | Job | What it does, beyond what a pull request runs |
 |---|---|
-| `terraform` | `terraform fmt -check -recursive -diff infra/` (every module and bootstrap, with diffs); `validate` in `infra/bootstrap` as well as every environment; `terraform test -verbose` in each module with tests. |
+| `terraform` | `terraform fmt -check -recursive -diff infra/` (every module and bootstrap, with diffs); `validate` in `infra/bootstrap` as well as every environment; `terraform test -verbose` in `infra/bootstrap` and each module with tests. |
 | `code-and-dependencies` | Trivy over `infra/` and over the repository at every severity (report only), with every dependency it found listed; then the same HIGH and CRITICAL gates as `security.yml`. Bandit at every severity and confidence (report only), then the same gate. |
 | `checkov` | Every Checkov check, `.checkov.yaml`'s repository-wide skips included (report only); then the same gate as `security.yml`. A `checkov:skip` comment on a resource still applies. |
 | `secrets-and-personal-data` | Gitleaks and Trufflehog over the **whole history**, every branch and tag (Trufflehog with unverified results too); the personal-data check over **every tracked file**, not just what a change adds. Accepted history findings are listed in `.gitleaksignore`. |
@@ -365,7 +365,8 @@ done
 ```
 
 `fmt -check` there covers each environment's own files only. `on-demand-scan` checks every
-module and the bootstrap too, and validates the bootstrap, which no other workflow does:
+module and the bootstrap too, and runs `validate` in the bootstrap as well (`pr-checks` plans it in
+its tests, below):
 
 ```bash
 terraform fmt -check -recursive -diff infra/
@@ -373,13 +374,18 @@ terraform -chdir=infra/bootstrap init -backend=false -input=false
 terraform -chdir=infra/bootstrap validate
 ```
 
-The module tests (`pr-checks`): today the `evals`, `observability`, `ops-assistant`, `prompts` and
-`work-queue` modules have them.
-They plan each module with a mocked AWS provider, so they need no credentials, and they catch an
-expression that only fails once real values flow through it, which `validate` does not.
+The Terraform tests (`pr-checks`, and `on-demand-scan` with `-verbose`): today the bootstrap and
+the `evals`, `observability`, `ops-assistant`, `prompts` and `work-queue` modules have them.
+They plan each with a mocked AWS provider, so they need no credentials and read no secret, and they
+catch an expression that only fails once real values flow through it, which `validate` does not.
+The bootstrap's are there because it is applied once, by hand, and never by CI, so nothing else
+plans it before your own apply: a `for_each` over a data source once passed `validate` and failed
+at plan. They plan it with no domain and no budget email (no zone, no budget), with the
+separation switch off, with a state bucket the separation refuses (stopped at its precondition),
+and with a domain and a budget email set.
 
 ```bash
-for dir in infra/modules/*; do
+for dir in infra/bootstrap infra/modules/*; do
   if ls "$dir"/tests/*.tftest.hcl >/dev/null 2>&1; then
     terraform -chdir="$dir" init -backend=false -input=false
     terraform -chdir="$dir" test

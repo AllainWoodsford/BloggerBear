@@ -4431,7 +4431,7 @@
         "releases",
         "set"
       ],
-      "help_text": "usage: admin_cli.py prompts [-h] {list,pause,resume,releases,set} ...\n\npositional arguments:\n  {list,pause,resume,releases,set}\n    list                Each registered prompt's files under latest/ with their version, release,\n                        sha256, hash status and pause state, and whether this deployment serves\n                        assets at all\n    pause               Stop serving one version of a prompt: its other files under latest/, or\n                        the copy in the code, are served instead, within five minutes\n    resume              Serve a paused version of a prompt again\n    releases            What each publish did, newest first, and which release is in place (or\n                        pinned)\n    set                 The kill switch: --assets off serves every prompt's copy in the code,\n                        without a deploy\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py prompts [-h] {list,pause,resume,releases,set} ...\n\npositional arguments:\n  {list,pause,resume,releases,set}\n    list                Each registered prompt's files under latest/ with their version, release,\n                        sha256, hash status and pause state, and whether this deployment serves\n                        assets at all\n    pause               Stop serving one version of a prompt, within five minutes: a run that\n                        draws it gets the copy in the code (fallback code `paused`); runs that\n                        draw the prompt's other files under latest/ keep them\n    resume              Serve a paused version of a prompt again\n    releases            What each publish did, newest first, and which release is in place (or\n                        pinned)\n    set                 The kill switch: --assets off serves every prompt's copy in the code,\n                        without a deploy; each render then writes a prompt_fallback line, so the\n                        prompt-fallback alarm is expected in ALARM while it is off\n\noptions:\n  -h, --help            show this help message and exit\n"
     },
     "prompts list": {
       "help": "Each registered prompt's files under latest/ with their version, release, sha256, hash status and pause state, and whether this deployment serves assets at all",
@@ -4459,7 +4459,7 @@
       "help_text": "usage: admin_cli.py prompts list [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json      Print the raw answer as JSON\n"
     },
     "prompts pause": {
-      "help": "Stop serving one version of a prompt: its other files under latest/, or the copy in the code, are served instead, within five minutes",
+      "help": "Stop serving one version of a prompt, within five minutes: a run that draws it gets the copy in the code (fallback code `paused`); runs that draw the prompt's other files under latest/ keep them",
       "group": false,
       "arguments": [
         {
@@ -4572,7 +4572,7 @@
       "help_text": "usage: admin_cli.py prompts releases [-h] [--limit LIMIT] [--json]\n\noptions:\n  -h, --help     show this help message and exit\n  --limit LIMIT  how many releases to show (default 20, at most 200)\n  --json         Print the raw answer as JSON\n"
     },
     "prompts set": {
-      "help": "The kill switch: --assets off serves every prompt's copy in the code, without a deploy",
+      "help": "The kill switch: --assets off serves every prompt's copy in the code, without a deploy; each render then writes a prompt_fallback line, so the prompt-fallback alarm is expected in ALARM while it is off",
       "group": false,
       "arguments": [
         {

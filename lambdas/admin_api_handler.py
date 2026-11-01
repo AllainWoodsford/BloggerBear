@@ -3734,8 +3734,10 @@ def _list_prompts_route(event: dict) -> dict:
 
 def _pause_prompt_route(event: dict) -> dict:
     """Pull one version of a prompt: `{prompt_id, version}` is added to the `prompts` row's
-    paused_versions, and every run serves the prompt's other files (or its vanilla) instead. Only a
-    registered asset prompt can be paused: a code-only one is never read from the bucket."""
+    paused_versions. The arm is still drawn over every file under latest/ (prompts._read_asset):
+    a run that draws the paused version serves the vanilla (fallback code `paused`), and a run
+    that draws another file keeps it. Only a registered asset prompt can be paused: a code-only
+    one is never read from the bucket."""
     return _edit_paused_versions(event, pause=True)
 
 

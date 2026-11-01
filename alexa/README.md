@@ -235,7 +235,7 @@ in .34"):
 | "...how to pause repricing", "...how to reprice the models now" | `cli_guides` with `model-prices`: the help and a suggested command are on the page |
 | "...how the models are doing", "...whether any model is gated", "...why a model isn't being picked" | `model_ranch`, where evals are on: how many models have scores, which are gated, how many are kept all the same as the default, fallback or judge or held open by an override, the judge's agreement with people, a cull proposal waiting, and the weakest pairing of a model with a prompt version |
 | "...whether the judge is working", "...whether the judge is calibrated" | `model_ranch`: its judge part (on or off, its agreement over how many pairs, and whether its verdicts count yet) |
-| "...how the prompts are doing", "...whether the new prompt is better" | `prompt_metrics`, where evals are on: how many prompt versions have scores and how many have enough to judge, the prompts split between versions, and any that fell back to the code's copy in the last two days |
+| "...how the prompts are doing", "...whether the new prompt is better" | `prompt_metrics`, where evals are on: how many prompt versions have scores and how many have enough to judge, the prompts split between versions, and any that fell back to the code's copy in the last three days (today and the two before; the reviewer bear runs every second day) |
 | "...what needs attention" | `follow_up` and `watch_list`, which also carry the Model Ranch's cards: a gated model, a prompt that fell back, a judge not yet calibrated, a cull proposal waiting |
 
 **The Model Ranch** ([docs/models.md](../docs/models.md#the-model-ranch-scores-gates-and-culling)).

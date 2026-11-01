@@ -138,9 +138,11 @@ the dispatcher.
 
 **It raises,** unlike the pipeline's other handlers. A tick that could not do its job (the Topics
 scan, a send to the queue, a throttled `StartExecution`, or the `last_tick` write) is printed and
-raised again, so the function's errors alarm fires. One topic's own trouble (a zone the runtime
-does not know, a field missing) is printed as `dispatcher: topic_id=... skipped: ...` and the tick
-goes on to the next topic.
+raised again, so the function's errors alarm fires. So is a tick that finished but had a daily
+start refused for a reason that is not the topic's own ([a daily run](#a-daily-run)): it runs every
+other topic and writes `last_tick` first. One topic's own trouble (a zone the runtime does not
+know, a field missing, an execution name or input Step Functions refuses) is printed as
+`dispatcher: topic_id=... skipped: ...` and the tick goes on to the next topic.
 
 ## Reading a cadence: the cron matcher
 
@@ -193,8 +195,10 @@ to the design.
 
 Both also require the row to exist, so a claim never recreates a deleted topic. A send or start
 that fails after its claim **releases** it (the field put back as it was, or removed), but only
-while the row still holds this tick's value. `daily_claim_n` is never put back: the name it
-numbered may already have reached Step Functions, and an execution name is never reused.
+while the row still holds this tick's value. A daily release gives `daily_claim_n` back in the same
+write, so the next try sends the same execution name: the start that failed may have reached Step
+Functions all the same, which answers that name with success while the run is running and with
+`ExecutionAlreadyExists` once it has closed, so the day's run never starts twice.
 
 ## A research job on work.fifo
 
@@ -212,8 +216,9 @@ The event source mapping hands the research tick one job per invocation (`batch_
 at most `worker_concurrency` jobs running at once (the Terraform variable, default 2, the least
 SQS accepts). The research tick reads the record's body as it reads a direct invoke's, ignores
 `job`, and runs **at `due_checked_at`**: that time decides its own due check and is the
-`last_research_at` a successful fetch stamps, never the time it ran. The stamp never moves
-backwards (the later of the stored value and `due_checked_at`). Otherwise a topic behind a busy
+`last_research_attempt_at` it stamps before the fetch and the `last_research_at` a successful
+fetch stamps, never the time it ran. `last_research_at` never moves backwards (the later of the
+stored value and `due_checked_at`). Otherwise a topic behind a busy
 queue would be stamped late, found not due at its next turn, and researched only every second
 heartbeat. A stale job is harmless for the same reason. A record whose `due_checked_at` cannot be
 read runs at now, as a direct invoke does.
@@ -238,8 +243,17 @@ success. From there the run is the one a schedule starts: `NameTheRun` adds `$$.
 daily cycle's `already_written` check and the state machine's retries work unchanged
 ([article research](article-research.md#runs-that-write-nothing-and-runs-that-fail)).
 
-A throttled start (`ThrottlingException`, `TooManyRequestsException`, `ExecutionLimitExceeded`)
-releases the claim and raises, so the tick fails and the next tick tries again.
+A start that fails releases the claim, with its number, and what happens next depends on why:
+
+- **Throttled** (`ThrottlingException`, `TooManyRequestsException`, `ExecutionLimitExceeded`): the
+  tick raises at once, so it fails and the next tick tries again.
+- **The topic's own name or input** (`InvalidName`, `InvalidExecutionInput`,
+  `ValidationException`): that topic's trouble alone, printed as `skipped`, and the tick goes on.
+- **Any other refusal** (the role, the state machine, the service), which no one topic causes and
+  likely every queue topic meets: printed as `dispatcher: topic_id=... start refused: ...`, and the
+  tick goes on to the other topics, so their research still goes out and their starts are tried.
+  Once it has written `last_tick` it raises `DispatchError`, so the dispatcher's errors alarm fires,
+  and the next tick tries again.
 
 ## Shadow mode, as built
 
@@ -251,17 +265,25 @@ row that the cutover's pre-flight reads. It never changes what the topic's sched
 the live path would have claimed it (the topic due, and no record younger than the claim's
 expiry), or when the schedule's own research tick, firing in the same minute, has already stamped
 `last_research_at` within 5 minutes of now. A recorded turn is judged once, **5 minutes after the
-turn**, by the tick whose window holds that moment: a mismatch when `last_research_at` is missing
-or more than 5 minutes from the turn. A stamp later than that is a run-now made since the turn,
-which replaced the turn's evidence, so the turn is left unjudged rather than counted. A research
-cadence that is a `rate(...)` is recorded, once an interval, but **never judged**: the Scheduler's
-firing minute for a rate cannot be worked out from the expression.
+turn**, by the tick whose window holds that moment, against the turn the schedule's research tick
+took: the later of `last_research_at`, which it stamps only once the source has answered, and
+`last_research_attempt_at`, which it stamps once it has found the topic due (or was forced),
+before it asks the source. So a tick whose fetch failed still took its turn, as a queue job would
+have, failing the same way. The turn matches when that stamp is within 5 minutes of it, and is a
+mismatch when there is no stamp or it is earlier than that. A stamp later than that is a run-now
+made since the turn, which replaced the turn's evidence, so the turn is left unjudged rather than
+counted. Each judged turn dates itself on the row: one on time in
+`shadow_research_matched_at`, a mismatch in `shadow_research_mismatch_at` (which also sets
+`shadow_clean_days` back to 0, [below](#the-recent-stretch-shadow_clean_days)). A research cadence
+that is a `rate(...)` is recorded, once an interval, but **never judged**: the Scheduler's firing
+minute for a rate cannot be worked out from the expression.
 
-A heartbeat that drifts more than 5 minutes off its computed minute is counted once, at the first
-turn after the drift began. From then on the topic is not due at the computed minute, so those
-turns are neither recorded nor judged. One mismatch is enough to hold the cutover, and a drift that
-began before shadow mode did leaves no research turn recorded at all, which the pre-flight refuses
-too.
+A heartbeat that drifts more than 5 minutes off its computed minute is counted at the first turn
+after the drift began. When the topic's research interval is shorter than its cadence's period,
+every later turn finds it due again and is judged a mismatch too; otherwise the topic is not due at
+the computed minute, so its later turns are neither recorded nor judged. Either way the pre-flight
+waits for a research turn judged on time since the last research mismatch, which a drifted
+heartbeat never gives, nor one that drifted before shadow mode began.
 
 **Daily.** Once a day, when the daily turn passes, the turn is recorded as
 `shadow_last_daily_dispatch_at`, and the previous recorded day is checked: did an execution of the
@@ -269,18 +291,32 @@ daily-cycle state machine with this topic's id in its input start on that local 
 reads the executions newest first (`ListExecutions`, then `DescribeExecution` for each one that
 started that day), up to 10 pages of 100, and stops at the first execution older than the day.
 
-- It ran: the day counts in `shadow_checked_days`.
-- It did not: the day counts in `shadow_checked_days` and adds one to `shadow_mismatches`.
+- It ran: the day counts in `shadow_checked_days`, and in `shadow_clean_days` too unless a
+  research mismatch is dated at or after the previous daily record (then `shadow_clean_days` goes
+  back to 0). A research mismatch judged in the same tick as the check is handed to it.
+- It did not: the day counts in `shadow_checked_days`, adds one to `shadow_mismatches` and sets
+  `shadow_clean_days` back to 0.
 - The check could not answer (Step Functions refused, or the pages ran out): the day counts in
-  `shadow_unchecked`, never as a match, so a missing grant can never pass as zero mismatches.
+  `shadow_unchecked`, never as a match, so a missing grant can never pass as zero mismatches, and
+  sets `shadow_clean_days` back to 0.
 
 The first shadow day has nothing before it to compare, so it adds to no count.
 
-**The counts are whole-history.** `shadow_mismatches`, `shadow_unchecked` and
-`shadow_checked_days` only ever grow: nothing in the code resets them, so one old mismatch, or one
-from before a cadence change, holds a topic's cutover until it is cleared on the row by hand.
+### The recent stretch: shadow_clean_days
+
+`shadow_mismatches`, `shadow_unchecked` and `shadow_checked_days` are the topic's whole history:
+they only ever grow, and are only shown. What the pre-flight judges is the recent stretch.
+`shadow_clean_days` counts the daily checks in a row that found the previous day's run with no
+research mismatch since the daily record before, so each one stands for a full day, record to
+record, with no mismatch of either kind. A mismatch of either kind, or an unchecked day, sets it
+back to 0. So one old mismatch, or a record from before a cadence change, holds the cutover only
+until a full day after it has been watched clean (a day or two, by where in the day it fell), never
+until someone clears the row by hand. A row whose days were checked before the count existed is
+read as clean when it never counted a mismatch or an unchecked day.
+
 `topics schedule` shows the record under each topic as
-`N mismatches · N unchecked days · N checked days`, with the last turns recorded.
+`N mismatches · N unchecked days · N checked days · N clean in a row` (the last part once the
+dispatcher has counted clean days for it), with the last turns recorded.
 
 ## The cutover and its pre-flight
 
@@ -294,14 +330,26 @@ bulk: each topic has its own pre-flight and its own confirmation.
      it now and as stored (the dispatcher falls back to the stored text whenever the topic's
      offset comes to 0, so a daily `rate(...)` is refused whatever the stagger is now), or its
      zone;
+   - when its cadences are readable: the schedules written for it (`research_schedule` and
+     `daily_schedule` on its row) are not the ones the dispatcher works out now, or were never
+     recorded. The move judges today's daily turn by the dispatcher's expression
+     ([cutover day](#cutover-day)), but the Scheduler ran today by the written one, and the two
+     part whenever a topic is added or deleted (the daily offset counts the topics) or the stagger
+     changes, since only `topics reschedule` writes every topic's schedules again. A move between
+     the two minutes would start a second run that day, or none. The refusal says to run
+     `topics reschedule` first. The row is judged as this update would write it, so a cadence or
+     slot changed in the same update is refused the same way: make that change in an update of its
+     own, then move;
    - its slug has no letter or digit, or another topic has the same slug (their daily runs would
      take each other's names);
    - its id cannot be the work queue's message group id (letters, digits and punctuation, short
      enough for the longest deduplication id);
-   - shadow mode has counted a mismatch, has a day it could not check, has not yet checked a full
-     day (its first check runs at its second shadow daily turn), or, for a cron research cadence,
-     has recorded none of its research turns. A topic whose research cadence is a `rate(...)` is
-     judged by its daily record alone.
+   - shadow mode has not yet checked a full day (its first check runs at its second shadow daily
+     turn), or has not watched a full day clean since its last mismatch or unchecked day
+     (`shadow_clean_days` is 0; the reason gives the whole-history counts), or, for a cron research
+     cadence, has seen none of its research turns taken on time since its last research mismatch
+     (the reason names that turn), or none at all. A topic whose research cadence is a `rate(...)`
+     is judged by its daily record alone.
 2. **The confirmation.** Without `confirm: true` the API answers 409 `confirm_required`, naming the
    two schedules it will delete. The CLI asks first, unless `--yes`.
 3. **The schedules are deleted,** before the row says queue, so a failure in between leaves the
@@ -309,26 +357,27 @@ bulk: each topic has its own pre-flight and its own confirmation.
    fails answers 502 and the row still says schedule; one of the two may be gone already, and the
    same update run again (or `topics reschedule`, which writes both back) puts that right.
 4. **The row** is written with `dispatch_mode: queue` and, when today's turn has passed, today's
-   daily claim ([cutover day](#cutover-day)). The schedules are then deleted once more as the row
-   is applied, and none are found.
+   daily claim ([cutover day](#cutover-day)). Applying the row then records the expressions the
+   dispatcher reads and deletes nothing: the schedules are deleted once, in step 3.
 
 From the next minute the dispatcher runs the topic. A topic on the queue keeps its cadences and
 its slot, and its row keeps recording the expressions the dispatcher reads (`research_schedule`,
 `daily_schedule`). An update to a topic on the queue is checked against the matcher, with the
 same 400 as the pre-flight's cadence reason.
 
-**A 500 from the move.** If anything fails after the row is written (that second delete, or
-recording `research_schedule` and `daily_schedule`), the API answers a bare 500 `internal server
-error`, but the move has already happened: the row says queue, the schedules are gone, and the
-dispatcher runs the topic from the next minute. Run `topics schedule` before anything else. If it
+**A 500 from the move.** If recording `research_schedule` and `daily_schedule` fails after the row
+is written, the API answers a bare 500 `internal server error`, but the move has already happened:
+the row says queue, the schedules are gone, and the dispatcher runs the topic from the next minute.
+Nothing deletes the schedules a second time, so no failed delete can answer 500 for a move made.
+Run `topics schedule` before anything else. If it
 shows the topic on the queue, nothing more is needed; running the same update again is harmless,
 since it is no longer a move, so it is neither checked nor confirmed, and it answers 200. A failure
 on the row write itself is the same bare 500 with the row still on schedule and its schedules gone:
 `topics update <id> --dispatch-mode schedule` writes them back.
 
 The API also takes `dispatch_mode: queue` when a topic is created (the CLI has no flag for it).
-The same checks apply, bar the shadow record, which a new topic cannot have, and the topic is
-given no schedules.
+The same checks apply, bar the schedules written and the shadow record, which a new topic cannot
+have, and the topic is given no schedules.
 
 ## Cutover day
 
@@ -343,6 +392,9 @@ second run:
 - **A same-day shadow record counts as dispatched.** A live topic never writes a shadow field, so a
   `shadow_last_daily_dispatch_at` dated today can only mean the Scheduler owned today; the live
   path treats it as today's dispatch.
+
+Both judge today's turn by the expression the dispatcher works out, which is why the pre-flight
+first asks that the expressions written to the Scheduler are the same.
 
 ## The way back
 
@@ -377,14 +429,24 @@ already-written check holds. `network_prefetch` still invokes the research tick 
 work queue in the deployment (`WORK_QUEUE_URL` empty), a manual research job answers 500.
 
 **Pausing.** The dispatcher skips a paused topic, and a paused topic's handlers refuse it whatever
-invoked them. A topic on the queue has no schedules to disable. A queue topic resumed after its
-daily turn has passed starts today's run at the next tick, if today is not already claimed: the
-Scheduler's disabled schedule, by contrast, would have missed the day.
+invoked them. A topic on the queue has no schedules to disable. A queue topic resumed after
+today's daily turn has passed is given today's date as `last_daily_dispatched_on` in the same write
+that unpauses it (`dispatch.cutover_day`, the cutover's rule), so the dispatcher starts its next run
+tomorrow, as a schedule enabled again after its turn would, rather than starting today's late.
+`daily_claim_n` is left as it is. Resumed before the turn, it runs today at its turn. When the
+dispatcher cannot read its cadences or zone, nothing is claimed: it skips such a topic anyway.
 
-**A restore** (`backup restore`) writes each topic's row as the snapshot holds it, then, in its
-schedules phase, deletes the schedules of every restored row that says queue (it may have gone
-back to them after the snapshot was taken). The row's `last_daily_dispatched_on` is the
-snapshot's, so a snapshot from before today's run lets the dispatcher start a second run today.
+**A restore** (`backup restore`) writes each topic's row as the snapshot holds it, with one field
+changed for a topic on the queue: its `last_daily_dispatched_on` is the newest of the snapshot's,
+the live row's (only when the live row is in the same zone, since another zone's date can be
+tomorrow here) and, once today's daily turn has passed in its zone, today's (`dispatch.cutover_day`,
+judged with this deployment's pipeline row and every topic it will hold). So a snapshot from before
+today's run starts no second run today, and an older claim is never written over a newer one the
+live row holds. `daily_claim_n` is left as the snapshot has it: an execution name carries the date.
+A claim the dispatcher makes between the restore's read of the live rows and its write is still
+written over, since a batch write cannot be conditional. Then, in its schedules phase, the restore
+deletes the schedules of every restored row that says queue (it may have gone back to them after
+the snapshot was taken).
 
 ## Flows
 
@@ -401,16 +463,20 @@ not dispatched today → under `daily_starts_per_tick` → claim `last_daily_dis
 `daily_claim_n` → `StartExecution` named `<slug>-<date>-<n>` → `NameTheRun` adds the execution id →
 daily cycle (`_run_id` the execution id; `already_written` check) → the article
 ([article research](article-research.md)). Loss points: `ExecutionAlreadyExists` (consumed, no
-retry); a throttled start releases the claim and fails the tick; a run that fails is retried by the
-state machine and then reaches the pipeline dead-letter queue, as from a schedule.
+retry); a failed start releases the claim and its number; a throttled one fails the tick at once,
+and one refused for a reason not the topic's own fails it once every other topic has run; a run
+that fails is retried by the state machine and then reaches the pipeline dead-letter queue, as from
+a schedule.
 
 **A shadowed topic.** Dispatcher tick → research turn recorded, judged 5 minutes later against
-`last_research_at` → daily turn recorded, the previous recorded day checked against the state
-machine's executions → counts on the row → `topics schedule` → the pre-flight.
+the later of `last_research_at` and `last_research_attempt_at`, and dated on the row as matched or
+mismatched → daily turn recorded, the previous recorded day checked against the state machine's
+executions → the counts and `shadow_clean_days` on the row → `topics schedule` → the pre-flight.
 
-**The cutover.** `topics update <id> --dispatch-mode queue` → pre-flight (400) → 409
-`confirm_required` → the CLI asks → the schedules deleted → the row written with
-`dispatch_mode: queue` and the cutover-day claim → the next tick runs it.
+**The cutover.** (`topics reschedule` first, whenever a topic was added or deleted or the stagger
+changed since the schedules were written) → `topics update <id> --dispatch-mode queue` →
+pre-flight (400) → 409 `confirm_required` → the CLI asks → the schedules deleted, once → the row
+written with `dispatch_mode: queue` and the cutover-day claim → the next tick runs it.
 
 ## When something fails
 
@@ -419,6 +485,7 @@ machine's executions → counts on the row → `topics schedule` → the pre-fli
 | The dispatcher has stopped, or fails every minute | `<prefix>-<env>-dispatcher-heartbeat`: fewer than one `ok` tick in each of three 5-minute periods (missing data counts as breaching); the function's errors alarm for a tick that raised | Read `/aws/lambda/<prefix>-<env>-dispatcher` for the tick's error. A topic on the queue is not run meanwhile. To move every topic back: `topics reschedule --dispatch-mode schedule` |
 | Jobs wait too long | `<prefix>-<env>-work-queue-age`: the oldest job in `work.fifo` more than 900 seconds old | Look for the research tick's errors or throttles; raise `worker_concurrency` if the queue is simply long |
 | A research job could not finish | `<prefix>-<env>-work-dlq-messages` and `-work-dlq-received`; a `research_job` row in `failed-executions list`; the DLQ handler's log line `research job for topic_id=... failed` | Read the research tick's log for the timeout or crash. Nothing replays the job: the topic's next turn sends a new one |
+| A daily run could not be started | `dispatcher: topic_id=... start refused: ...` in the dispatcher's log every minute a start is refused, and the function's errors alarm | Step Functions refused the dispatcher's role, the state machine or the service, not the topic: read the refusal and mend that. Each claim was given back with its number, so once mended the next tick starts the day's run under the same name |
 | A daily run failed | As from a schedule: the pipeline dead-letter queue, `failed-executions list`, the daily cycle's alarms | [Article research](article-research.md#runs-that-write-nothing-and-runs-that-fail) |
 | A cadence the dispatcher cannot read | `dispatcher: cadence unparsable topic_id=...` every minute; `skipped_unparsable` in `dispatcher_tick` | Change the cadence (`topics update`), or move the topic back to its schedules |
 
@@ -432,8 +499,9 @@ pipeline Lambda's; the other four are the work-queue module's own. Each emails t
 |---|---|
 | Whether a topic is on the queue | `dispatch_mode` on its row of `<prefix>-<env>-topics` (unset means its schedules) |
 | The claims | `last_daily_dispatched_on`, `daily_claim_n` and `research_claimed_at` on the topic's row |
-| The shadow record | `shadow_last_research_dispatch_at`, `shadow_last_daily_dispatch_at`, `shadow_mismatches`, `shadow_unchecked` and `shadow_checked_days` on the topic's row |
-| The expressions the dispatcher reads | `research_schedule` and `daily_schedule` on the topic's row, as the stagger writes them |
+| The shadow record | `shadow_last_research_dispatch_at`, `shadow_last_daily_dispatch_at`, `shadow_mismatches`, `shadow_unchecked`, `shadow_checked_days`, `shadow_clean_days`, `shadow_research_mismatch_at` and `shadow_research_matched_at` on the topic's row |
+| The research tick's own stamps | `last_research_at` (a fetch that answered) and `last_research_attempt_at` (a turn taken, stamped before the fetch, and read only by shadow mode) on the topic's row |
+| The expressions the dispatcher reads | `research_schedule` and `daily_schedule` on the topic's row, as the stagger writes them; for a topic on its schedules, what was last written to the Scheduler, which the pre-flight compares with what the dispatcher works out now |
 | The settings and the last tick | `dispatch_shadow`, `daily_starts_per_tick` and `last_tick` on the `pipeline` row of `<prefix>-<env>-model-config` |
 | Jobs waiting | `<prefix>-<env>-work.fifo`; those that could not finish in `<prefix>-<env>-work-dlq.fifo`, then a row in `<prefix>-<env>-failed-executions` |
 | Daily runs | the daily-cycle state machine's executions, named `<slug>-<date>-<n>` or `<slug>-<date>-manual-<HHMMSS>` |
@@ -461,7 +529,8 @@ which may invoke the dispatcher and nothing else.
 | The tick and its decisions | `lambdas/dispatcher_handler.py`; `lambdas/common/dispatch.py` (`Dispatcher`, the claims, `SETTINGS`, `validate_setting`, `effective_settings`) | `aws_lambda_function.dispatcher`, `aws_scheduler_schedule.dispatcher` in [`infra/modules/work-queue/main.tf`](../../infra/modules/work-queue/main.tf) |
 | The cron matcher | `lambdas/common/cron_match.py` (`parse`, `research_turn`, `daily_turn_passed`) | none |
 | The queues and their consumers | `_queue_record`, `_stamp` in `lambdas/research_tick_handler.py`; `lambdas/dlq_handler.py` | `aws_sqs_queue.work`, `aws_sqs_queue.work_dlq`, both event source mappings; `worker_concurrency` in each environment's `variables.tf` |
-| The cutover, the way back, manual runs | `_update_topic`, `_move_to_queue`, `_reschedule_topics`, `_apply_topic_schedules`, `_trigger_on_the_queue`, `_schedule_view` in `lambdas/admin_api_handler.py`; `cutover_refusals`, `cutover_day`, `cadence_problem`, `slug_problem`, `queue_id_problem` in `dispatch.py` | the admin API's `PUT /topics/{topic_id}`, `POST /topics/reschedule`, `POST /topics/{topic_id}/trigger` |
+| The cutover, the way back, manual runs, a resume | `_update_topic`, `_move_to_queue`, `_reschedule_topics`, `_apply_topic_schedules`, `_trigger_on_the_queue`, `_queue_resume_day`, `_schedule_view` in `lambdas/admin_api_handler.py`; `cutover_refusals`, `cutover_day`, `cadence_problem`, `written_schedule_problem`, `shadow_problems`, `slug_problem`, `queue_id_problem` in `dispatch.py` | the admin API's `PUT /topics/{topic_id}`, `POST /topics/reschedule`, `POST /topics/{topic_id}/trigger`, `POST /topics/{topic_id}/resume` |
+| A restore's daily claim | `_restored_topics`, `_newest_claim` in [`lambdas/common/backup.py`](../../lambdas/common/backup.py) | none |
 | The commands | `scripts/admin_cli.py`: `topics update --dispatch-mode`, `topics reschedule --dispatch-mode schedule`, `topics schedule`, `topics trigger`, `pipeline-config set --dispatch-shadow --daily-starts-per-tick` | none |
 | Alarms | none | `work_queue_age`, `work_dlq_messages`, `work_dlq_received`, `dispatcher_heartbeat` (with the `dispatcher_ticks` metric filter) in the module; errors and throttles through `local.pipeline_lambda_function_names` |
 

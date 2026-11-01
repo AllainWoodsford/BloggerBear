@@ -293,7 +293,8 @@ python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5
 # - cycle: on Fridays at 04:00 it refreshes the topics' rotation lists (`model-catalog set
 #   --cycle off` pauses it).
 # `models add` with the same id switches a discovered model on; --lock-price keeps the reprice
-# off a price you set on purpose.
+# off a price you set on purpose. When another writer changes the row while it is written, it reads
+# it again and retries once; a second change answers 409 and writes nothing: send it again.
 python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0" \
     --display-name "Claude Haiku 4.5" --provider anthropic \
     --input-price 0.0011 --output-price 0.0055 --lock-price
@@ -302,8 +303,9 @@ python scripts/admin_cli.py models discover    # now, even when paused
 # Each model's purpose (text, image, embedding, video, speech, other; unknown once Bedrock no longer
 # lists it) and inputs, recorded from Bedrock's listing now, in the background. `models list` shows
 # a row from before purposes were recorded as `unclassified`, judged as a text model until this runs.
-# Application inference profiles are listed and classified; a custom, provisioned or imported model's
-# ARN is left as it is. Only text models are routed to, rotated or accepted (docs/models.md).
+# Application inference profiles are listed and classified by the model under them; a custom,
+# provisioned or imported model's ARN is left as it is (never `unknown`; with no purpose, its pricing
+# unit still judges it). Only text models are routed to, rotated or accepted (docs/models.md).
 python scripts/admin_cli.py models classify
 # Put a culled (or pruned) model back from the archive (docs/models.md, the Model Ranch): its gates
 # are held open for 7 days and, when its total is below zero, an Admin Forgive brings it to zero. A
@@ -457,10 +459,14 @@ retry a topic after fixing whatever caused the failure, use
 `topics trigger <topic_id> --pipeline daily_cycle` again.
 
 It also holds a queue job that was received three times without finishing (it timed out or
-crashed): a topic's research job from the work queue's dead-letter queue (`kind: research_job`),
-and a judge or offline scoring job from eval-work (`judge_job`, `score_job`). Retry a research job
+crashed, or, for a scoring job, eval-jobs asked for it again each time because it could not read
+the run's header or count the job finished): a topic's research job from the work queue's
+dead-letter queue (`kind: research_job`), and a judge or offline scoring job from eval-work
+(`judge_job`, `score_job`). Retry a research job
 with `topics trigger <topic_id> --pipeline research_tick`; a scoring job's item is sent again by
-`evals runs resume <run_id>`, and an unjudged item is picked again by a later judge run.
+`evals runs resume <run_id>` (one whose result was written but never counted leaves `resume`
+nothing to send and its run running: `evals runs cancel <run_id>` ends it, keeping what was
+scored), and an unjudged item is picked again by a later judge run.
 
 The list also holds a row for each model catalog review that put one or more prices back
 (`kind: model_pricing`, no topic; see `lambdas/common/model_catalog.py`). The error's `Cause`
@@ -500,15 +506,18 @@ github-trending  (slot 2, running)
   daily:    daily at 09:30  Australia/Sydney
             cron(30 9 * * ? *)
   real research every 4 h · last researched 2026-10-15T04:10:12+00:00 · last article 2026-10-14T23:30:03+00:00
-  shadow: 0 mismatches · 0 unchecked days · 3 checked days · last research turn 2026-10-15T04:10:00+00:00 · last daily turn 2026-10-14T22:30:00+00:00
+  shadow: 0 mismatches · 0 unchecked days · 3 checked days · 3 clean in a row · last research turn 2026-10-15T04:10:00+00:00 · last daily turn 2026-10-14T22:30:00+00:00
 ```
 
 `dispatch:` says where the topic runs from: its two schedules, or the queue (the dispatcher runs it,
 and it has no EventBridge schedules). `shadow:` is the dispatcher's record of a topic still on its
 schedules, from its first shadow turn on: the mismatches with what the schedules did, the days its
-daily check could not answer and the days it did, and the last turns it would have dispatched. The
-counts cover the topic's whole shadow history; what each means, and how to clear an old mismatch, is
-in [configuration.md](../docs/configuration.md#the-queue-platform).
+daily check could not answer and the days it did, how many of those matched in a row since the
+last mismatch or unchecked day (`N clean in a row`, `shadow_clean_days`, shown once the dispatcher
+has counted clean days for the topic), and the last turns it would have dispatched. The first three
+counts cover the topic's whole shadow history and never reset; the move to the queue judges the
+clean run (below). What each means is in
+[configuration.md](../docs/configuration.md#the-queue-platform).
 
 Twelve five-minute slots fill an hour. Past that, shorten the stagger, or move topics to the queue
 (below): the dispatcher reads the same slots, and one setting (`WORKER_CONCURRENCY`) caps how many
@@ -526,12 +535,20 @@ python scripts/admin_cli.py topics reschedule --dispatch-mode schedule          
 ```
 
 - **The move is refused** (400, with every reason) until shadow mode has watched the topic cleanly:
-  no mismatch, no day it could not check, at least one day it did, and, for a cron research cadence,
-  at least one research turn recorded. It is refused for a paused topic too, for a cadence the
-  dispatcher cannot read (an `at(...)`, or a `rate(...)` daily cadence), for a slug another topic
-  shares (the id lower-cased, every character but a letter, digit or `-` made `-`, at most 40) and
-  for a topic id the queue cannot take as a message group. Then it asks, since the schedules are
-  deleted; `--yes` answers for you.
+  at least one clean day in a row (a full day checked, record to record, with no mismatch of either
+  kind) and, for a cron research cadence, a research turn judged on time since its last research
+  mismatch (`topics schedule` does not show the research turns' dates; the refusal names the
+  mismatch's turn). So an old mismatch holds the move a day or two, and needs no clearing. It is
+  refused for a paused topic too, for a cadence the dispatcher cannot read (an `at(...)`, or a
+  `rate(...)` daily cadence), for a slug another topic shares (the id lower-cased, every character
+  but a letter, digit or `-` made `-`, at most 40) and for a topic id the queue cannot take as a
+  message group. Then it asks, since the schedules are deleted; `--yes` answers for you.
+- **The move is refused while the schedules on record are stale**: "the schedules written for it
+  are not the ones the dispatcher would run", with what was written beside what the dispatcher
+  reads, or "not recorded". A topic added or deleted, or a stagger change, moves every topic's
+  daily minute, and only `topics reschedule` writes them all again; until then the move cannot tell
+  whether today's daily cycle has run. Run `topics reschedule`, then the move again. A cadence or
+  slot changed in the same update is refused the same way: change it in an update of its own first.
 - **On cutover day** the Scheduler may already have run today's article: a shadow daily record from
   today counts as today's dispatch, and when today's daily turn has passed the move also writes
   today's claim, so the dispatcher starts nothing more today.
@@ -550,7 +567,9 @@ ideas, no daily article. The Topics row's `paused` is what the handlers obey, wh
 them; the two schedules are disabled as well so the heartbeats cost nothing (a topic on the queue
 has none, and the dispatcher passes a paused topic over), `topics trigger`
 refuses the topic, the topic page's "Articles in the Pipeline" says Paused, and the bear muses
-about it (a reflective one on a pause, an excited one on a resume). Pausing twice is a no-op.
+about it (a reflective one on a pause, an excited one on a resume). Pausing twice is a no-op. A
+topic on the queue resumed after today's daily turn has passed is given today's claim in the write
+that resumes it, so its next run is tomorrow's, as a schedule enabled again would have it.
 
 ```bash
 python scripts/admin_cli.py topics pause wow-forever
@@ -904,7 +923,8 @@ python scripts/admin_cli.py prompts set --assets ""               # cleared: bac
   brings a paused or switched-off version back.
 - A Lambda that falls back from an asset to the code's copy says so in a `prompt_fallback` log line
   (the `<prefix>-<env>-prompt-fallback` alarm emails at the first in an hour), and `evals status`
-  counts the last 24 hours' fallbacks.
+  counts the last 24 hours' fallbacks. With the kill switch on, every call falls back and writes one,
+  so the alarm stays in ALARM until `prompts set --assets ""`: expected, not a second fault.
 
 ## The prompts tree: `prompt_lint.py` and `publish_prompts.py`
 
@@ -1024,19 +1044,27 @@ python scripts/admin_cli.py evals runs cancel <run_id>
 python scripts/admin_cli.py evals runs resume <run_id>    # send again whatever has no result, under today's cap
 ```
 
-- `--judge`: the model that compares the drafts, none of `--models`. `--models`: 1 to 5. `--prompt`:
+- `--judge`: the model that compares the drafts, none of `--models` (compared by base model, so the
+  same model through another inference profile is refused too). `--models`: 1 to 5. `--prompt`:
   a prompt and its versions, each one this deployment published (live, or retired since) or
   `vanilla`, the copy in the code; only `daily_cycle/draft` can be scored today. At most 10
   combinations. `--sample`: 1 to 50 past articles (default 10).
 - The CLI first asks for the plan without starting anything and prints the environment, the
   combinations, the items and the estimate beside what today's spend cap leaves. The estimate is
-  approximate: it leaves out the retry of a draft cut off at its limit, which the check before each
-  call does price. Over the cap left, the run is refused; over `score_max_cost_aud` it needs `--yes`;
-  `--record` always needs `--yes`; otherwise it asks before it starts, then follows the run for up to
-  30 minutes.
+  approximate: it leaves out the retry of a draft cut off at its limit, which the hold each job
+  takes on the day's cap before its calls does price. Over the cap left, the run is refused; over
+  `score_max_cost_aud` it needs `--yes`; `--record` always needs `--yes`; otherwise it asks before
+  it starts, then follows the run for up to 30 minutes.
+- The plan itself is refused (409) when one message can cost more than the whole daily cap, its
+  drafts retried (`message_ceiling_aud`): no day could pay for it. Raise the cap (`evals set
+  --daily-spend-cap`) or score cheaper models.
 - A run at the spend cap shows `paused: spend cap` and goes on by itself when a new day's cap allows.
   `resume` sends again every item with no result: a paused or cancelled run's, one whose send failed,
-  and one whose model call failed.
+  one whose model call failed, one whose job failed before it claimed its item, and one that met a
+  cap lowered below what it can cost. It is refused (409) when every message has its result or is
+  being scored, when what is left costs more than today's cap leaves, and when one of its messages
+  can cost more than the whole cap. A job eval-jobs cannot place in its run or count finished is
+  delivered again by eval-work, and after three receives is a `score_job` in `failed-executions list`.
 
 **Call traces:**
 
@@ -1086,6 +1114,8 @@ python scripts/admin_cli.py backup resume <job_id>          # restart one shown 
 python scripts/admin_cli.py backup restore backup/bloggerbear-dev/snapshots/20261017T160000Z-schedule.jsonl.gz
 #   The name is the job's start in UTC: Sunday 3am in Sydney is Saturday 16:00 UTC (17:00 when Sydney is on standard time).
 #   --no-pages / --no-schedules skip those steps; --bucket reads it from another allowed bucket.
+#   A topic on the queue keeps the newest daily claim of the snapshot's, the live row's (same zone)
+#   and, once today's daily turn has passed, today's, so the restore starts no second run that day.
 
 # Copy every article (its row as JSON, its final text and figures) to a bucket, with manifest.json.
 python scripts/admin_cli.py backup export                                   # into the backup bucket's exports/

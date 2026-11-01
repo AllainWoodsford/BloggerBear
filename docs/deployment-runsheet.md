@@ -796,7 +796,9 @@ bucket is not part of dev, so a snapshot kept there survives
 4. **Restore:** point the CLI at the new Admin API URL and run
    `python scripts/admin_cli.py backup restore <key>`. Topics, gear, settings, costs,
    musings and articles come back; the topics' schedules are written and the published pages
-   rendered again. The evals table comes back too. The prompts bucket and its hash table do not
+   rendered again. A topic on the queue gets no schedules, and once today's daily turn has passed
+   its daily run counts as done for today, so the dispatcher starts it tomorrow, never late today.
+   The evals table comes back too. The prompts bucket and its hash table do not
    (they are not in a snapshot): with prompts as assets on, publish again
    (`gh workflow run prompts.yml --ref dev -f environment=dev`), or every prompt falls back to the
    code's copy and the `prompt-fallback` alarm fires.

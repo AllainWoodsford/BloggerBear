@@ -262,12 +262,14 @@ printed holds a prompt's text.
 | Stop serving every asset | `prompts set --assets off` (`--assets on` undoes it) | Within five minutes, every asset prompt is the vanilla (`assets_off`), with no deploy |
 | Go back to an earlier release | `git revert` and a publish; or the workflow's `release_id` input | A revert publishes the old files as a new release. `release_id` pins an earlier release: its files are made live and synced into `latest/` again, every other live row is retired, and `current.json` names it as `pinned_release`. Every later publish, a merge or a release, publishes the pin again until a run with `clear_pin` publishes the tree |
 
-The pause and the kill switch are fallbacks like any other: each run they affect writes a
-`prompt_fallback` line, so the fallback alarm stays in alarm while one is in place. `prompts list`
-shows each prompt's files under `latest/` with their version, release, sha256, hash status and
-pause state, and whether the deployment serves assets at all; `prompts releases` shows what each
-publish did, and which release is in place or pinned. Both read the bucket fresh, never from a
-cache.
+The pause and the kill switch are fallbacks like any other: every call they affect writes a
+`prompt_fallback` line, so `<prefix>-<env>-prompt-fallback` stays in alarm while one is in place
+(with `--assets off`, on every asset prompt's call). That is expected, and it clears after an hour
+with no fallback line, once the pause or the kill switch is lifted and the caches have read it.
+`prompts list` shows each prompt's files under `latest/` with their version, release, sha256, hash
+status and pause state, and whether the deployment serves assets at all; `prompts releases` shows
+what each publish did, and which release is in place or pinned. Both read the bucket fresh, never
+from a cache.
 
 ### A/B splits: one draw per run
 
@@ -339,7 +341,9 @@ Every fallback except the deployment switch's writes two things:
   `source` is the running Lambda's code, and its request key the bound run key; the reviewer bear
   binds `<run_id>:<article_id>` (`bind_request`), so a held article that keeps falling back counts
   once on each of his runs. `evals status` shows the last 24 hours' fallbacks, and the assistant's
-  `prompt_fallback` card reads the counts.
+  `prompt_fallback` card reads the counts of the last three days, today and the two before
+  (`FALLBACK_DAYS`): longer than the reviewer bear's every-second-day cadence, so neither his card
+  nor its follow-up reads as fixed on the day between his runs.
 
 ## Continuous evals and the Model Ranch
 
@@ -587,16 +591,22 @@ The judge has two halves, both in eval-jobs:
   item's rubric (`eval_judge/research_review`, a Finding's summary beside an excerpt of its source
   snapshot; or `eval_judge/article_review`), with the topic's review steering after the rules, and
   reads the reply against the locked contract: `{"verdict": "good"|"bad", "reason_code": ...}`. A
-  verdict writes the `pair#<subject>` judge row, the marks on the Finding (`review_count`,
+  verdict writes the `pair#<subject>` judge row (for an article, with the text it judged,
+  `rewrite_number`: [calibration](#calibration)), the marks on the Finding (`review_count`,
   `reviewed_by` with `judge`, `last_reviewed_at`) or the article (`eval_judged_at`), the run's item
   row and one Research Review or Article Review event for the model that wrote the item and the
-  prompt it used. A reply that is not exactly the contract is ignored; its spend still counts.
+  prompt it used. A reply that is not exactly the contract is ignored; its spend still counts. Once
+  the run's header is read, a failure nothing expects (a spend write, the item row's) still counts
+  the item finished, judged when its pair row was already written, so the run closes and checks the
+  tripwire; the item is otherwise left unjudged for a later run.
 
 **Judge is never author.** The judge's model is the first of `judge_model_id`, the model-config
 default row's `fallback_model_id`, then `BEDROCK_MODEL_ID`, that is fit for text and wrote none of
-the item. When every option wrote it, or the author is not recorded, the item is skipped with a
-`judge_skipped` line. The judge's call is not traced: it builds no lineage call, and its rubrics
-are code-only.
+the item. Models are compared by their base id (`eval_judge.same_model`: no ARN, no geo prefix), so
+one model reached through two inference profiles, or named by its ARN, is one author and never
+judges its own work; events and rows keep the canonical ids. When every option wrote it, or the
+author is not recorded, the item is skipped with a `judge_skipped` line. The judge's call is not
+traced: it builds no lineage call, and its rubrics are code-only.
 
 **The tripwire.** A run that marks more than 80% of at least 10 items bad turns the judge off
 (`judge_enabled = false`, with `judge_paused_reason`) and prints `judge_tripwire`. `evals set
@@ -605,19 +615,29 @@ its events out of the rollup.
 
 **Spend.** Each call is counted on the Stats page under `evals`, on the run's `spent_aud`, and on
 the evals table's `spend`/`day#<yyyy-mm-dd>` row (in the settings' time zone), the row
-`evals_daily_spend_cap_aud` (A$2) bounds. The consumer checks the remaining cap before each call; at
-the cap it marks the run `paused: spend cap`, sends the message back with a 900-second delay and
-returns, so the item waits for the next day. The check is not atomic: two consumers can pass it
-together, so a day can end one call over its cap. A call on a model with no price is counted at
-A$0.05, never as free.
+`evals_daily_spend_cap_aud` (A$2) bounds. Before each call the consumer holds the call's estimate
+on that row (`reserve`: one conditional write adds it to `spent_aud`, and to `held_aud` so a hold
+can be told from a cost, only while the hold still fits under the cap), so two consumers can never
+both spend the last of it; once the call's cost is counted, or the call failed, it gives the hold
+back (`release`). When the hold does not fit it marks the run `paused: spend cap`, sends the
+message back with a 900-second delay and returns, so the item waits for the next day. A consumer
+that dies holding, or a hold that cannot be given back, leaves it counted until the day ends, so
+the day ends under its cap, never over. A call on a model with no price is counted at A$0.05, never
+as free.
 
 ### Calibration
 
 The judge's verdicts gate only while it is **calibrated**: `judge_agreement`, the share of subjects
 where the judge's verdict and a person's agree, is at least `judge_min_agreement` (0.7) over at least
 `judge_min_pairs` (20) pairs. The rollup computes it from every `pair#<subject>` row that holds both
-a `judge` and a `human` verdict, pooled over Findings and articles, and writes it to the index row.
-Until then the judge's events are written to the log as always, and counted in no gate.
+a `judge` and a `human` verdict given on the same text, pooled over Findings and articles, and
+writes it to the index row. An article's two rows each record the text they were given on,
+`rewrite_number` (how many rewrites were saved before the verdict, 0 for the daily cycle's text),
+and `judge_agreement` pairs them only when the numbers match. A row without one counts as text 0:
+a Finding's rows never carry one, since a Finding is never rewritten, and an article row from
+before the number was kept was nearly always given on the first text, so at worst one given on a
+rewrite goes unpaired. Until the judge is calibrated its events are written to the log as always,
+and counted in no gate.
 
 People's verdicts come from two places:
 
@@ -626,9 +646,9 @@ People's verdicts come from two places:
   decisions people make anyway. The latest decision is the one kept while the text is the one the
   judge judged. Once a rewrite was saved after the judge's mark (`eval_judged_at`), a decision keeps
   no pair, since it would be paired with the judge's verdict on the text before; a human row already
-  there, given on the text the judge saw, stays. With no judge mark yet, the decision is kept: the
-  pair rows do not record which text each verdict was given on, so a rewrite saved before the judge
-  runs still pairs two texts.
+  there, given on the text the judge saw, stays. With no judge mark yet, the decision is kept with
+  its `rewrite_number`: should a rewrite be saved before the judge runs, the judge's row names the
+  newer text, and the person's stays unpaired until they decide the text the judge saw.
 - **A person's review of a Finding** ([next](#human-review)).
 
 ### Human review
@@ -660,27 +680,45 @@ records.
   call site built it (`daily_cycle_handler.rebuild_draft_prompt`). A version is any `vN` this
   deployment published, live or retired (its hash row names the prompt and the version), or
   `vanilla`. Each model with each version, at most 10 combinations; 1 to 5 models; 1 to 50 items.
-- **The request** (`POST /evals/runs`): the judge is none of the candidates, and every model is in
-  the registry, enabled and a text model. The items are the newest articles of the last 14 days that
-  can be rebuilt, one topic at a time. The estimate is two drafts and one judge call per item and
-  combination, priced from the registry. It is approximate: it counts the live draft for every
-  combination though it is made once per item, and leaves out the one retry of a draft cut off at
-  its limit, which the consume-time check does price. A run is refused over what today's cap leaves,
-  over `score_max_cost_aud` (A$5) without `--yes`, and with `--record` without `--yes`. The CLI
-  shows the estimate and the environment and asks first.
+- **The request** (`POST /evals/runs`): the judge is none of the candidates (compared as models,
+  `same_model`, as for the judge), and every model is in the registry, enabled and a text model.
+  The items are the newest articles of the last 14 days that can be rebuilt, one topic at a time.
+  The estimate is two drafts and one judge call per item and combination, priced from the registry.
+  It is approximate: it counts the live draft for every combination though it is made once per
+  item, and leaves out the one retry of a draft cut off at its limit, which the consume-time hold
+  does price. A run is refused (409), its dry run too, when one of its messages can cost more than
+  the whole daily cap with its drafts retried (`message_ceiling_aud` in the plan), since no day
+  could pay for that message. It is also refused over what today's cap leaves, over
+  `score_max_cost_aud` (A$5) without `--yes`, and with `--record` without `--yes`. The CLI shows
+  the estimate and the environment and asks first.
 - **The run** is `run#<run_id>` on the evals table: its header, and a row per item and combination.
   One `score` message per item and combination goes to eval-work. The consumer reads the run's
-  status first (a cancelled run's messages are dropped), checks the day's cap against the most the
-  message can cost, claims the item's row, drafts the live version once per item (kept on the run),
-  drafts the candidate, and has the judge, which is neither model, say which of the two drafts is
-  better, in an order drawn per item. The verdict is +2 when the candidate's is better, −2 when the
-  live version's is. With `--record` it writes an Offline Review event, which gates only while the
-  judge is calibrated. Spend goes to the same day row as the judge's, with the same non-atomic
-  check: two messages scored at once can end a day one message over its cap.
+  status first (a cancelled run's messages are dropped), holds the most the message can cost, a
+  retried draft included, on the same day row as the judge's (`reserve`; when it does not fit, the
+  run is paused and the message waits 900 seconds), claims the item's row, drafts the live version
+  once per item (kept on the run), drafts the candidate, and has the judge, which is neither model,
+  say which of the two drafts is better, in an order drawn per item. The hold is given back once the
+  calls' costs are counted. The verdict is +2 when the candidate's is better, −2 when the live
+  version's is. With `--record` it writes an Offline Review event, which gates only while the judge
+  is calibrated.
+- **When a message fails:** a message whose most is more than the whole cap (lowered since the run
+  started or was resumed) is counted finished with no row rather than sent back to wait for a day
+  that never comes, so the run closes and `resume` sends it again once the cap is raised. A failure
+  before the item's row is claimed is counted the same way. Once the row is claimed, a failure is
+  recorded as the message's outcome (`error`), which `resume` also sends again. Three cases are
+  left for eval-work to deliver again instead (`eval_judge.RETRY`, which eval-jobs names among its
+  `batchItemFailures`; the eval-work mapping reports batch item failures): a message whose run's
+  header could not be read, a failure before the claim whose count fails too, and a claimed message
+  that cannot be counted finished after a failure (its row may hold its result, which `resume`
+  never sends again; the copy counts it, `already_scored`). Each comes back after eval-work's
+  visibility timeout, and after three receives goes to the pipeline dead-letter queue (a
+  `score_job` row in `failed-executions list`).
 - **Progress and control:** `evals runs list`, `evals runs get <id>` (read from the item rows),
   `evals runs cancel <id>` (destructive), and `evals runs resume <id>`, which sends again every
   message with no result that is not being scored: a paused run's, a cancelled run's, one whose send
-  failed, and one whose model calls failed.
+  failed, one whose model calls failed, and one counted finished with no row. Like a new run, it is
+  refused (409) when one of the messages it would send can cost more than the whole daily cap,
+  priced as the consumer holds it (without the live draft once its item has one).
 
 ### Call traces
 
@@ -737,7 +775,9 @@ tools.
 - **`model_ranch`**: per model with scores, its windows with the events behind each and the mean per
   event, its gate (gated, protected, held open or open, decided as the rotation guard decides), its
   roles and purpose, this week against last, and its two weakest pairings with a prompt version over
-  30 days; the judge's agreement and calibration; the weekly cull proposal.
+  30 days; the judge's agreement and calibration; the weekly cull proposal, counting only the models
+  another `evals cull --apply` would still take (once it has been applied, the ones it left, and
+  never one gone from the registry).
 - **`prompt_metrics(prompt_id=None, days=30)`**: per prompt version with events in the window, its
   `n` (good plus bad), good share with its Wilson interval, mean per event and the same per model.
   "Insufficient data" is judged on `n`, good plus bad, never on events: a version under `min_events`
@@ -776,13 +816,16 @@ within 300 seconds each warm container lists the new files → a fallback, if an
 `prompt_fallback` line and the fallback alarm.
 
 **The judge.** Hourly `judge_select` → interval up → claim `last_judge_at` → unjudged Findings and
-articles → `judge` messages within the remaining cap → consumer → the judge's model (never the
-author) → verdict → `pair#` row, marks, event → the rollup's agreement → calibrated or not.
+articles → `judge` messages within the remaining cap → consumer (a hold on the cap) → the judge's
+model (never the author, compared as models) → verdict → `pair#` row (an article's with its
+`rewrite_number`), marks, event → the rollup's agreement on the same texts → calibrated or not.
 
 **An offline run.** `evals score` → `POST /evals/runs` (validate, estimate, cap) → the CLI asks →
-`run#meta` and one `score` message per item and combination → consumer (cap, claim, live draft once,
-candidate draft, the judge compares) → item row (+ Offline Review with `--record`) → `evals runs
-get`.
+`run#meta` and one `score` message per item and combination → consumer (a hold on the cap, claim,
+live draft once, candidate draft, the judge compares, the hold given back) → item row (+ Offline
+Review with `--record`) → `evals runs get`. Loss points: a message no day's cap can pay for, or a
+failure before the claim, is counted finished with no row (`evals runs resume`); a record that
+cannot be placed or counted is delivered again, then dead-lettered after three receives.
 
 ## Where state lives
 
@@ -823,7 +866,7 @@ get`.
 | The rollup and the settings | `evals_rollup.py`, `evals_settings.py`; `lambdas/eval_jobs_handler.py` | `aws_lambda_function.eval_jobs`, `aws_scheduler_schedule.rollup`, `aws_dynamodb_table.evals`, `aws_cloudwatch_metric_alarm.rollup_heartbeat` |
 | The gates and culling | `model_ranch.py`, `model_cull.py`, `cull_proposal` and `cull_check` in `model_fleet.py`; `rank_rewrite_models` in `scripts/review_inbox.py` | none |
 | Adjustments | `evals_adjust.py` | `POST /evals/adjust`, `/evals/ungate`, `/evals/revoke` |
-| The judge, human review, offline runs | `eval_judge.py`, `human_review.py`, `eval_score.py` | `aws_scheduler_schedule.judge`, `aws_sqs_queue.eval_work`, `aws_lambda_event_source_mapping.eval_work`, `aws_cloudwatch_metric_alarm.eval_work_age` |
+| The judge, human review, offline runs | `eval_judge.py` (the spend hold in `reserve` and `release`, `same_model`, `RETRY`), `human_review.py`, `eval_score.py`; `_delivered_again` in `eval_jobs_handler.py` | `aws_scheduler_schedule.judge`, `aws_sqs_queue.eval_work` (its redrive to the pipeline dead-letter queue), `aws_lambda_event_source_mapping.eval_work` (`ReportBatchItemFailures`), `aws_cloudwatch_metric_alarm.eval_work_age` |
 | Traces | `call_traces.py` | the `traces/` lifecycle rule on the content bucket in each environment's `main.tf` |
 | Reading it back | `evals_status.py`, `evals_digest.py`; `lambdas/ops_mcp/model_ranch.py`, `suggestions.py`, `memory.py` | `aws_cloudwatch_dashboard.ranch_and_prompts` in `infra/modules/evals/dashboard.tf` |
 | The evals commands | `scripts/admin_cli_evals.py`; `approve --source findings` in `scripts/review_inbox.py` | the `/evals*` routes of `module "admin_api"` in each environment's `main.tf` |

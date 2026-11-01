@@ -404,10 +404,12 @@ group.
    ```bash
    python scripts/admin_cli.py topics schedule
    ```
-   A topic is ready when its line has been clean for a few days in a row:
-   `0 mismatches · 0 unchecked days`, some checked days, and a last research turn. Move dev's topics
-   one at a time ([how, and back](#moving-topics-to-the-queue-and-back)), and watch each one's next
-   article arrive on time. Production after its release: a plain feed topic first (not financial,
+   A topic is ready when its line shows a few days clean in a row (`N clean in a row`: the days
+   checked with no mismatch since its last mismatch or unchecked day; the move itself asks for one)
+   and a last research turn. Its `N mismatches` and `N unchecked days` cover its whole history and
+   never go back to 0; they need not. Move dev's topics one at a time
+   ([how, and back](#moving-topics-to-the-queue-and-back)), and watch each one's next article arrive
+   on time. Production after its release: a plain feed topic first (not financial,
    not a vision topic, no rota), then the rest.
 1. **The bootstrap and GitHub, once.** [Apply the bootstrap again](#the-bootstrap-the-publisher-roles-and-the-evals-log-group)
    if it predates the prompts and evals work, [create `production-prompts`](#the-production-prompts-environment),
@@ -513,30 +515,42 @@ environment's own settings reach only its own jobs.
 
 ```bash
 python scripts/admin_cli.py topics schedule                                # each topic's mode and shadow record
+python scripts/admin_cli.py topics reschedule                              # first, when the move says its schedules are stale
 python scripts/admin_cli.py topics update <topic_id> --dispatch-mode queue  # asks first; --yes does not
 python scripts/admin_cli.py topics update <topic_id> --dispatch-mode schedule   # one topic back
 python scripts/admin_cli.py topics reschedule --dispatch-mode schedule --dry-run
 python scripts/admin_cli.py topics reschedule --dispatch-mode schedule     # every queue topic back
 ```
 
-- **The move** deletes the topic's two EventBridge schedules, and the dispatcher runs it from the
-  next minute. It is refused, with every reason, while the topic is paused, while shadow mode has
-  seen a mismatch or a day it could not check, or not yet a checked day or (for a cron research
-  cadence) a research turn, and for a cadence, slug or topic id the dispatcher cannot use
-  ([what each means](configuration.md#the-queue-platform)). The shadow counts are never reset: a
-  topic with an old mismatch whose cause you have fixed needs `shadow_mismatches` removed from its
-  item in the console, once it has had a clean day since. A 500 from the move can come after the
-  row says queue: check `topics schedule` before retrying it or moving the topic back
-  ([what it means](architecture/queue-platform.md#the-cutover-and-its-pre-flight)).
+- **The move** deletes the topic's two EventBridge schedules, once, and the dispatcher runs it from
+  the next minute. It is refused, with every reason, while the topic is paused; while shadow mode
+  has not watched a full day clean since its last mismatch or unchecked day, or (for a cron research
+  cadence) seen a research turn on time since its last research mismatch; while the schedules
+  written for it are not the ones the dispatcher works out now; and for a cadence, slug or topic id
+  the dispatcher cannot use ([what each means](configuration.md#the-queue-platform)). An old
+  mismatch needs nothing done by hand: a clean full day after it lets the move through.
+- **Refused for its schedules:** the answer says "the schedules written for it are not the ones the
+  dispatcher would run" and to run `topics reschedule` first. A topic added or deleted, or a stagger
+  change, moves every topic's daily minute, and only a reschedule writes them all again; until then
+  the move cannot tell whether today's daily cycle has run. Run `topics reschedule`, then the move
+  again. A cadence or slot change goes in an update of its own, before the move.
+- **If the move fails part way:** a 502 means the schedules could not be deleted and the row still
+  says schedule; one of them may be gone, so run the same update again (or `topics reschedule`,
+  which writes both back). A bare 500 comes either after the row says queue (recording the
+  expressions failed: the move is made) or with the row still on schedule and its schedules gone
+  (the row write failed). Check `topics schedule` before anything else: on the queue, nothing more
+  is needed; on schedule, `topics update <topic_id> --dispatch-mode schedule` writes its schedules
+  back ([what it means](architecture/queue-platform.md#the-cutover-and-its-pre-flight)).
 - **On the day of the move**, if today's daily turn has passed the move records today's daily run
   as done, so the topic writes again tomorrow, not twice today.
 - **After it:** a daily cadence with several hours runs once a day; `topics trigger` queues a
   research job or starts a manual daily run (`<slug>-<date>-manual-<HHMMSS>`); pausing works as
-  before, but a topic resumed after today's daily turn starts today's run at the next tick if today
-  is not already claimed (a run the dispatcher started before the pause, or the move that recorded
-  today as done, leaves nothing to start); and a backup restored over a queue topic keeps the
-  snapshot's `last_daily_dispatched_on`, which can start a second daily run that day. Watch the
-  `work-queue-age` and `dispatcher-heartbeat` alarms.
+  before, and a topic resumed after today's daily turn has passed is given today's run as done, so
+  it writes again tomorrow, as on its schedules; a backup restored over a queue topic keeps the
+  newest daily claim of the snapshot's, the live row's (in the same zone) and, once today's turn has
+  passed, today's,
+  so it starts no second daily run that day. Watch the `work-queue-age`, `dispatcher-heartbeat` and
+  `dispatcher-errors` alarms.
 - **The way back** writes the topic's two schedules again from its row, in its stagger slot. Nothing
   else changes, and it can move to the queue again later (the pre-flight runs again).
 
@@ -561,7 +575,9 @@ each environment's releases, newest first, and the one in place.
 1. **Stop serving it**, with no publish: `prompts pause <prompt_id> <version>` (a run that draws
    that version gets the code's copy; runs that draw the prompt's other files keep them) or `prompts
    set --assets off` (every prompt's code copy). In force within ten minutes; `prompts resume` and
-   `prompts set --assets on` undo them.
+   `prompts set --assets on` undo them. While the assets are off, every prompt served is a reported
+   fallback, so the `<prefix>-<env>-prompt-fallback` alarm stays in ALARM until they are on again:
+   expected, not a second problem.
 2. **Pin an earlier release:** take its id from `prompts releases`, then
    ```bash
    gh workflow run prompts.yml --ref dev -f environment=production -f release_id=<release id>
@@ -578,12 +594,15 @@ One step each, as the CLI spells it (`python scripts/admin_cli.py ...`).
 
 | What happened | The step |
 |---|---|
-| A bad prompt is live | `prompts pause <prompt_id> <version>`, or every prompt at once, `prompts set --assets off`. In force within ten minutes |
+| A bad prompt is live | `prompts pause <prompt_id> <version>`, or every prompt at once, `prompts set --assets off`. In force within ten minutes. With the assets off, the `prompt-fallback` alarm stays in ALARM until `prompts set --assets on` |
 | A model was culled by mistake | `models restore <model_id>` |
 | A model is gated and should not be | `evals ungate --model <model_id> --hours 48` |
 | The judge ran away | `evals revoke --source judge --since <ISO time>`. Its tripwire has already turned it off; `evals set --judge on` turns it back on and clears `judge_paused_reason` |
 | The queue is stuck (the `work-queue-age` or `dispatcher-heartbeat` alarm emails) | `topics reschedule --dispatch-mode schedule` puts every queue topic back on its schedules; `failed-executions list` shows what failed |
-| An offline scoring run stopped at the spend cap | It carries on by itself once a new day's cap allows; `evals runs resume <run_id>` sends again whatever has no result, a failed model call's items included, or raise the cap with `evals set --daily-spend-cap <AUD>` |
+| The `dispatcher-errors` alarm emails and the dispatcher's log says `start refused` | Step Functions refused a daily start for a reason no one topic causes (the dispatcher's role, the state machine, the service), and the line names the error; every other topic was still run. Mend that: each minute retries under the same execution name, so no day runs twice |
+| A move to the queue is refused: "the schedules written for it are not the ones the dispatcher would run" | `topics reschedule`, then the move again |
+| An offline scoring run stopped at the spend cap | It carries on by itself once a new day's cap allows; `evals runs resume <run_id>` sends again whatever has no result, a failed model call's items included, or raise the cap with `evals set --daily-spend-cap <AUD>`. A message that can cost more than the whole cap (lowered since the run started) is counted finished without a result, so the run closes; `resume` refuses (409) while a message it would send can cost more than the whole cap, so raise the cap first |
+| A scoring job reached the dead-letter queue (`failed-executions list` shows kind `score_job`) | eval-work delivered it three times without it finishing: eval-jobs could not read its run or count it finished, or timed out. Once that is mended, `evals runs resume <run_id>` sends whatever of the run has no result. If it answers that every message has its result, the job's result was written but never counted, so the run stays running: `evals runs cancel <run_id>` ends it, keeping what was scored |
 | The rollup has stopped (`eval-rollup-heartbeat` emails) | `evals rollup` runs it now, from its watermark |
 
 ## Rolling back

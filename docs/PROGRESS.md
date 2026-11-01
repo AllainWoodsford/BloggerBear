@@ -157,9 +157,10 @@ Spec: `docs/enhancements/archive/phase-0-foundations.md`
   table; locking is native S3 (`use_lockfile = true`) — code complete; the
   one-time local apply is done by hand (last applied 2026-09-27, adding the
   AgentCore deploy permissions). Keep its variables in the git-ignored
-  `infra/bootstrap/terraform.tfvars`: a plan without `domain_name` and
-  `budget_alert_email` proposes destroying the DNS zone and budget
-  (`prevent_destroy` blocks it)
+  `infra/bootstrap/terraform.tfvars`: a plan without `budget_alert_email`
+  proposes destroying the budget, and one without `domain_name` takes its
+  default, the original deployment's domain, so a deployment on another
+  domain would see its DNS zone replaced (`prevent_destroy` blocks that)
 - [x] `infra/modules/static-site`: reusable module (S3 + CloudFront + OAC),
   parameterized for `enable_custom_domain` and `force_destroy`
 - [x] `infra/environments/dev`: region `ap-southeast-2`, no custom domain,

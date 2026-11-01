@@ -500,7 +500,9 @@ publish that retires them.
 final review's question and the read that follows land on the same side of their splits, and an
 article asked about again on a later run is given the same versions. A fallback is counted once per
 article on each run: he binds his run's id with the article's (`prompts.bind_request`), and the
-fallback's event id is built from it.
+fallback's event id is built from it. The assistant's `prompt_fallback` card looks back three days,
+longer than his every-second-day cadence, so his fallback does not read as fixed on the day between
+his runs.
 
 ## His decisions and continuous evals
 

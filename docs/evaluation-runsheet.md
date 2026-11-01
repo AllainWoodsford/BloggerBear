@@ -143,7 +143,7 @@ evals on, no part should say it.
 |---|---|---|
 | `switches` | `evals_enabled` in this deployment, and the `judge_enabled`, `cull_enabled` and `trace_calls` settings | `judge_enabled` false when you did not turn it off: the tripwire did ([4](#4-the-judge-and-calibrating-it)) |
 | `prompt_release` | the prompts release in place, and the pinned one during a rollback; `off` with no prompts bucket | |
-| `prompt_fallbacks` | how many prompts fell back to the code's copy in the last 24 hours, in how many hours, and the latest; `off` while this deployment does not read assets | any fallback: `prompts list`, then the Lambda's `prompt_fallback` lines say why |
+| `prompt_fallbacks` | how many prompts fell back to the code's copy in the last 24 hours, in how many hours, and the latest; `off` while this deployment does not read assets | any fallback: `prompts list`, then the Lambda's `prompt_fallback` lines say why. While the kill switch is on (`prompts set --assets off`) every call falls back, so this counts them all and the `<prefix>-<env>-prompt-fallback` alarm stays in ALARM, as expected, until it is cleared |
 | `rollup` | the watermark (`last_rolled_day`), when the last run finished, and what it did | a last run more than an hour or two old: `evals rollup`, then eval-jobs' log |
 | `late_dropped` | events that reached the log after their day was final, and so are counted nowhere (a rollup of those days leaves them out too) | it should stay near 0; one that keeps growing means events reach the log hours after the time they carry |
 | `judge` | the judge's switch and model, its agreement with people over how many pairs, whether that makes it calibrated, the thresholds, `last_judge_at`, and `judge_paused_reason` while the tripwire holds it off | not calibrated: [calibrate it](#4-the-judge-and-calibrating-it) |
@@ -197,12 +197,14 @@ eval-jobs:
 
 **The judge's model** is the first of `judge_model_id`, model-config's fallback model and
 `BEDROCK_MODEL_ID` that is an enabled text model and did not write the item: the judge never judges
-its own work. An item every option wrote is skipped, with a `judge_skipped` line; so is a Finding
-from before research recorded its model, as there is nothing for a verdict to score.
+its own work. Models are compared by their base model, so the model that wrote the item reached
+through another inference profile, or named by its ARN, counts as its author too. An item every
+option wrote is skipped, with a `judge_skipped` line; so is a Finding from before research recorded
+its model, as there is nothing for a verdict to score.
 
 **Calibration.** The judge's verdicts count towards the gates only while it agrees with people
 often enough: at least `judge_min_agreement` (0.7) over at least `judge_min_pairs` (20) subjects
-both a person and the judge decided. The rollup works the agreement out each hour from the evals
+both a person and the judge decided, on the same text. The rollup works the agreement out each hour from the evals
 table's `pair#<subject>` rows. Until it is calibrated, every verdict is still written and kept, and
 counts in the rewrite picker's good and bad, but not in any window a gate reads. A person's verdict
 comes from two places:
@@ -222,10 +224,13 @@ comes from two places:
   is left after the page), so the Findings you skipped, which only your machine remembers, cannot
   hide the ones behind them. `--source findings` is never part of the default `approve` run.
 - **Articles you approve or reject in the inbox.** Each decision is also your verdict on the
-  article (good for approve, bad for reject), and the latest one is kept. A decision made after a
-  Re-Write was saved on top of the text the judge marked keeps no pair, since the two verdicts would
-  be on different texts. The pair rows do not record which text each verdict was given on, though:
-  a decision, then a Re-Write, then the judge's verdict on the new text still pairs two texts.
+  article (good for approve, bad for reject), and the latest one is kept. Both halves of an
+  article's pair record which text they were given on (`rewrite_number`: how many Re-Writes were
+  saved before it), and the rollup pairs only verdicts on the same text. A decision made after a
+  Re-Write was saved on top of the text the judge marked is not kept as your half at all (an
+  earlier decision's row stays). A decision, then a Re-Write, then the judge's verdict on the new
+  text leaves your half unpaired until you decide the text the judge saw. A row from before the
+  number was kept counts as the first text.
 
 `evals status` (its `judge` part) shows the agreement, the pairs and whether the judge is
 calibrated, and the assistant's `judge_uncalibrated` card suggests `approve --source findings`.
@@ -245,10 +250,13 @@ Setting `--judge` (on or off) clears `judge_paused_reason`.
 **What it spends.** Each call is added to the day's spend on the evals table (its `spend` rows, the
 day in the evals `timezone`), to the run, and to the Stats page's `evals` category.
 `evals_daily_spend_cap_aud` (A$2) bounds the judge and offline runs together: the selector sends no
-more items than the cap has left, and each job checks again before its call. At the cap, the run is
-marked `paused: spend cap` and its items wait on the queue, 15 minutes at a time, until a new day's
-cap allows. Two jobs run at once (eval-work runs two) can both pass the check, so a day can end one
-call over the cap. A model with no price is counted at A$0.05 a call, never as free.
+more items than the cap has left, and each job holds what its calls can cost on the day's `spend`
+row before making them (`held_aud`, counted in `spent_aud` too, in one conditional write) and gives
+it back once their cost is counted. So two jobs run at once (eval-work runs two) can never both take
+the last of the cap. When the hold does not fit, the run is marked `paused: spend cap` and its items
+wait on the queue, 15 minutes at a time, until a new day's cap allows. A job that dies holding, or a
+hold that cannot be given back, stays counted until the day ends: the day spends less, never more
+than its cap. A model with no price is counted at A$0.05 a call, never as free.
 
 ### 5. Offline scoring runs
 
@@ -262,7 +270,8 @@ python scripts/admin_cli.py evals score --judge <judge model id> \
     --models <model id>,<model id> --prompt daily_cycle/draft=v2,vanilla --sample 20
 ```
 
-- `--models`: 1 to 5 models, each registered, enabled and a text model, none of them the judge.
+- `--models`: 1 to 5 models, each registered, enabled and a text model, none of them the judge
+  (compared by base model, as [the judge's own](#4-the-judge-and-calibrating-it) are).
 - `--prompt`: the prompt and 1 to 5 versions. A version is any this deployment published, live or
   retired since, so a version a later one replaced can still be scored, or `vanilla`, the copy in
   the code.
@@ -281,9 +290,15 @@ the environment, the judge, the combinations, the items, the messages and the es
 dollars beside what today's cap leaves. The estimate is an estimate, not a bound: it counts the live
 version's draft once per combination, though it is made once per article, and it leaves out the one
 retry, with a larger limit, of a draft cut off at its limit (that draft then costs about two and a
-half times its estimate). The check each job makes before its calls does price that retry. The run
-is refused when the estimate is more than today's cap leaves; over `score_max_cost_aud` (A$5) it
-needs `--yes`; otherwise the CLI asks before it starts.
+half times its estimate). The hold each job takes on the day's cap before its calls does price that
+retry. The run is refused when the estimate is more than today's cap leaves; over
+`score_max_cost_aud` (A$5) it needs `--yes`; otherwise the CLI asks before it starts.
+
+**A message no day can pay for.** The plan, its dry run included, is refused (409) when one of the
+run's messages can cost more than the whole daily cap: its candidate's draft and, until its
+article's live draft is kept, the live one's, each with its retry, and the judge's verdict. The
+answer gives that most as `message_ceiling_aud`. It turns on the models, not on how many messages
+there are, so raise the cap (`evals set --daily-spend-cap <AUD>`) or score cheaper models.
 
 **Following it.** The CLI then follows the run, printing a line whenever its progress changes, for
 up to 30 minutes (`--no-wait` returns at once). eval-work runs two jobs at a time, so a few items
@@ -300,8 +315,17 @@ python scripts/admin_cli.py evals runs resume <run id>      # send again whateve
 A run stopped by the spend cap shows `paused: spend cap` and goes on by itself once a new day's cap
 allows; to go on today, raise the cap (`evals set --daily-spend-cap <AUD>`). `resume` sends again
 every item of a scoring run that has no result and is not being scored: a paused or cancelled run's,
-one whose send failed, and one whose model call failed (a failed call is recorded as the item's
-`error`, so the run still closes). It runs under the same cap check as a new run.
+one whose send failed, one whose model call failed (a failed call is recorded as the item's
+`error`, so the run still closes), one whose job failed before it claimed its item, and one that met
+a cap lowered since below what it can cost (those two are counted finished with no row, so the run
+still closes too). It runs under the same cap checks as a new run, and is refused (409) when every
+message has its result or is being scored, when what is left costs more than today's cap leaves,
+and when one of the messages it would send can cost more than the whole cap (raise the cap first).
+
+A scoring job eval-jobs cannot place in its run (the run's header could not be read), or cannot
+count finished after a failure, is not deleted: eval-jobs names it among the answer's
+`batchItemFailures`, eval-work delivers it again, and the copy finishes it. After three receives it
+goes to the pipeline's dead-letter queue, which `failed-executions list` shows as a `score_job`.
 
 **`--record`** (it needs `--yes`) also writes each verdict as an Offline Review event for the
 candidate model and prompt version, which counts towards the gates only while the judge is
