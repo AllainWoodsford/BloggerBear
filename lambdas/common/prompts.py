@@ -50,8 +50,10 @@ not have, a value that cannot be rendered); the tests catch those.
 **The `prompts` row** (`config_id = "prompts"` in the model-config table, written by the admin
 API): `prompt_assets` (`on`|`off`) turns every asset off without a deploy, and `paused_versions`
 (`<prompt_id>@<version>` entries) pulls one version while the others of its split keep serving.
-An unreadable row falls open to the defaults: the hash check reads the same service and fails the
-asset to vanilla when DynamoDB is down, so nothing unapproved is ever served.
+An unreadable row is not read as the defaults: a paused or killed version's hash row is still
+`live`, so when only the model-config read fails the hash check would serve it again. The container
+keeps the last row it read, even past the TTL, and one that has read none yet serves the vanilla
+(`assets_off`) until it can.
 
 **What is published** (`published_files`, `releases`, `current_release`): the same reads, made
 fresh rather than from the cache, for the admin API's GET /prompts and GET /prompts/releases.
@@ -395,11 +397,19 @@ def _cached(key: tuple, load):
 
 
 def _settings() -> dict:
+    """The `prompts` row's settings, read through the cache. A failed read keeps the last row this
+    container read, even once it has expired, and writes nothing back, so the next call reads again.
+    A paused or killed version's hash row stays `live`, so the hash check cannot hold a pause or the
+    kill switch when only this read fails; a container that has read no row yet fails closed."""
     try:
         return _cached(("settings",), lambda: effective_settings(dynamo.get_config_row(CONFIG_ID)))
-    except Exception as exc:  # noqa: BLE001 - the row is advisory; the hash check is the gate
-        print(f"prompts: could not read the {CONFIG_ID} settings row; using defaults: {exc!r}")
-        return effective_settings(None)
+    except Exception as exc:  # noqa: BLE001 - never raise; keep the pause list and the kill switch
+        last = _cache.get(("settings",))  # not _cache_get, which reads an expired entry as none
+        if last is not None:
+            print(f"prompts: could not read the {CONFIG_ID} settings row; keeping the last read: {exc!r}")
+            return last[1]
+        print(f"prompts: could not read the {CONFIG_ID} settings row; assets off until it is read: {exc!r}")
+        return {**effective_settings(None), "prompt_assets": "off"}
 
 
 def _list_latest(prompt_id: str) -> list[str]:
