@@ -873,5 +873,5 @@ pip install -c constraints-py311.txt -r lambdas/requirements.txt
 pip install -c constraints-py311.txt -r lambdas/requirements-dev.txt
 pip install -c constraints-py311.txt -r scripts/requirements.txt
 ruff check lambdas/ scripts/
-pytest lambdas/ scripts/
+pytest lambdas/ scripts/ -n auto --dist loadfile
 ```

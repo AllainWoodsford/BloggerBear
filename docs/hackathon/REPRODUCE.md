@@ -7,7 +7,7 @@ output to check. Every command has its PowerShell line beside the bash one.
 
 | Tier | What | Needs | Time |
 |---|---|---|---|
-| [1a](#tier-1a-the-ci-commands) | Lint and the whole test suite, exactly as CI runs them | Python 3.11; internet for the install only | about 10 minutes |
+| [1a](#tier-1a-the-ci-commands) | Lint and the whole test suite, exactly as CI runs them | Python 3.11; internet for the install only | about 5 minutes on 4 CPUs (the tests run one worker per CPU) |
 | [1b](#tier-1b-real-data-runs-each-with-an-output-to-check) | The real-data runs: coverage of the pinned Sentinel-2 scenes, the OpenCV kernels, the replay | internet (the public `sentinel-cogs` bucket); no AWS account | about 30 minutes |
 | [2](#tier-2-deploy-it-on-aws) | Deploy it on AWS and watch a city measured, triaged and held for a person | an AWS account, a GitHub fork, Bedrock model access | an afternoon, then days of real scenes |
 | [3](#tier-3-cool-on-graviton4) | COOL against stock OpenCV on Graviton4 | an AWS account and the COOL Marketplace subscription | about 3 hours |
@@ -38,7 +38,7 @@ pip install -c constraints-py311.txt -r lambdas/requirements.txt
 pip install -c constraints-py311.txt -r lambdas/requirements-dev.txt
 pip install -c constraints-py311.txt -r scripts/requirements.txt
 ruff check lambdas/ scripts/
-pytest lambdas/ scripts/
+pytest lambdas/ scripts/ -n auto --dist loadfile
 ```
 
 ```powershell
@@ -48,7 +48,7 @@ pip install -c constraints-py311.txt -r lambdas\requirements.txt
 pip install -c constraints-py311.txt -r lambdas\requirements-dev.txt
 pip install -c constraints-py311.txt -r scripts\requirements.txt
 ruff check lambdas\ scripts\
-pytest lambdas\ scripts\
+pytest lambdas\ scripts\ -n auto --dist loadfile
 ```
 
 **What to check.** `ruff` prints `All checks passed!`; `pytest` ends with [R2: "N passed, M
