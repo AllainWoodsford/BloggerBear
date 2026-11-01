@@ -26,6 +26,16 @@ output "function_names" {
   value       = aws_lambda_function.eval_jobs[*].function_name
 }
 
+output "function_log_group_names" {
+  description = "The same functions' log groups (eval-jobs' while evals are on, else none), for module.observability's prompt_fallback_log_groups: offline scoring drafts each item's live version through the daily_cycle/draft asset, so eval-jobs prints prompt_fallback lines of its own."
+  value       = aws_cloudwatch_log_group.eval_jobs[*].name
+}
+
+output "function_timeouts" {
+  description = "The same functions, by name, with each one's timeout in seconds, for module.observability's lambda_timeouts (pipeline health's duration panel)."
+  value       = { for function in aws_lambda_function.eval_jobs : function.function_name => function.timeout }
+}
+
 output "alarm_names" {
   description = "The alarms this module makes while evals are on: the rollup's heartbeat and eval-work's oldest job."
   value = concat(

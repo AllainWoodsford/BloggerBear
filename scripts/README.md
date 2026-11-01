@@ -398,8 +398,10 @@ still published exactly as it was, and `inbox` and `moderation list` say so, wit
 stay up meanwhile. A **rejected** article is brought back to waiting for review; one already
 **waiting in the inbox** is rewritten in place. The rewrite runs in the background
 (`lambdas/common/rewrite.py`) with your note as the main thing to fix, alongside anything the
-reviews flagged. It gets the same guards as any rewrite (no figure or link that is in none of the
-sources), goes through the fresh-data and compliance reviews again, and comes back to the inbox
+reviews flagged. It corrects the article rather than writing a new one: the model sends back edits
+to the passages with a problem, and everything else is kept exactly as it was. It gets the same
+guards as any rewrite (no figure or link that is in none of the sources), goes through the
+fresh-data and compliance reviews again, and comes back to the inbox
 for you to approve, reject or rewrite again; approving it publishes it. `--model` picks a
 registered model (`models list`); by default it uses the model the topic writes with today. If the
 rewrite of an article that was not published (or was taken down with `--force`) fails, the article
@@ -513,10 +515,16 @@ you, a preview) and waits for one key, no Enter:
 | `q` | Quit. Nothing you already decided is lost |
 
 - **Re-Write** (`w`) sends the article, its hold reasons, its research and current data to the model
-  you pick (any enabled model from `admin_cli models`). The result is checked like the automatic
-  revision (no figure or link that is in none of the sources), reviewed again, and comes back to
-  this inbox as a new item showing `Re-Write #n by <model> (~$cost)` and the old title, to approve,
-  reject or rewrite again. The article is never published by a rewrite, and the text it replaced is
+  you pick (any enabled model from `admin_cli models`). It is a correction, not a new article: the
+  model sends back edits to the passages with a problem, and everything else is kept exactly as it
+  was. A rewrite whose edits cannot be placed in the article, that changes nothing, or that replaces
+  more than half of it fails. The result is checked like the automatic revision (no figure or link
+  that is in none of the sources), reviewed again, and comes back to this inbox as a new item showing
+  `Re-Write #n by <model> (~$cost); <n> passages edited, <k>% kept as it was` and the old title, to
+  approve, reject or rewrite again. Only problems in the text count as something to fix: the
+  fresh-data review's notes about the review itself (figures that moved inside the tolerance, a
+  review that could not run) do not, and alone they do not offer `w`. The article is never
+  published by a rewrite, and the text it replaced is
   kept in S3 (`articles/<id>.before-rewrite-<n>.md`). If it fails, the original comes back with the
   reason; one that never finishes is put back after 15 minutes. Its tokens and cost go into the
   article's lineage (stage `rewrite`) and the week's Stats.

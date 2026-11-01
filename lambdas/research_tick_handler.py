@@ -58,7 +58,7 @@ from decimal import Decimal
 
 import boto3
 
-from common import evidence, prompts
+from common import call_traces, evidence, prompts
 from common.adapters.base import SEEN_KEY
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
@@ -68,6 +68,7 @@ from common.dynamo import (
     get_pipeline_config,
     get_topic,
     put_finding,
+    set_topic_fields,
     set_topic_last_research_at,
 )
 from common.editorial_resolver import resolve_editorial_goals
@@ -75,7 +76,7 @@ from common.figures import MAX_FIGURES_PER_FINDING, clean_figures
 from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.relevance import research_relevance_rule, topic_label
-from common.research_schedule import is_due, next_due_at, resolve_interval_hours
+from common.research_schedule import LAST_RESEARCH_ATTEMPT_AT, is_due, next_due_at, resolve_interval_hours
 
 FINDING_TTL_DAYS = 14
 COMPACT_STATE_MAX_CHARS = 4000
@@ -373,6 +374,18 @@ def _record_research_check(topic_id: str, now: datetime) -> None:
         print(f"research_tick_handler: could not record last_research_at for {topic_id}: {exc!r}")
 
 
+def _record_research_attempt(topic_id: str, run_started: datetime) -> None:
+    """Remember that this tick took its turn: it found the topic due (or was forced) and is about to
+    ask the source. last_research_at is stamped only once the source answers, so without this a
+    tick whose fetch failed would look, to the dispatcher's shadow mode, like a heartbeat that never
+    fired, and count a mismatch that holds the topic's cutover (common/dispatch.py). Never raises: a
+    failure only costs shadow mode this turn's evidence."""
+    try:
+        set_topic_fields(topic_id, {LAST_RESEARCH_ATTEMPT_AT: run_started.isoformat()})
+    except Exception as exc:  # noqa: BLE001
+        print(f"research_tick_handler: could not record the research attempt for {topic_id}: {exc!r}")
+
+
 def _run_network_prefetch(topic_id: str) -> dict:
     """The `prefetch_network` event: the adapter's prefetch_networks (rail_access), one log line
     per site. A paused topic fetches nothing, as for a tick."""
@@ -412,6 +425,9 @@ def _run_research_tick(topic_id: str, force: bool = False, due_checked_at: datet
         if not_due is not None:
             print(f"research_tick_handler: {topic_id} not due until {not_due['next_due_at']}")
             return not_due
+    # Stamped after the not-due check, so a heartbeat that did no work never passes for one that
+    # took the turn, and before anything that can fail.
+    _record_research_attempt(topic_id, run_started)
 
     adapter_key = topic.get("adapter")
     adapter_cls = ADAPTER_REGISTRY.get(adapter_key)
@@ -487,6 +503,11 @@ def _run_research_tick(topic_id: str, force: bool = False, due_checked_at: datet
 
     captured_at = new_state.get("fetched_at") or datetime.now(UTC).isoformat()
     snapshot_key = _snapshot_key(topic_id, captured_at)
+    # The call is traced under the Finding it writes (common/call_traces.py, while trace_calls is
+    # on), whole: it is given the source's data and no reader text, and the raw snapshot sits beside
+    # it under snapshots/ anyway.
+    with call_traces.bind(call_traces.finding_subject(topic_id, captured_at)):
+        call_traces.record(research_call, prompt, summary, stage="research")
 
     # The seen-set goes on a copy for storage only: it never reaches the summary
     # prompt above or an adapter's source_refs below; it exists for the next tick.

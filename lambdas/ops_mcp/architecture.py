@@ -137,7 +137,7 @@ def _lambda(key: str, purpose: str, trigger: str, *, alarmed: bool = True, **mor
     "<prefix>-<env>-" + the function's own name, so the prefix appears twice)."""
     name = f"{PREFIX}{ENV}-{key}"
     alarms = (f"{PREFIX}{ENV}-{name}-errors", f"{PREFIX}{ENV}-{name}-throttles") if alarmed else ()
-    dashboards = (f"{PREFIX}{ENV}-pipeline", f"{PREFIX}{ENV}-lambda-runs") if alarmed else ()
+    dashboards = (_PIPELINE_DASHBOARD,) if alarmed else ()
     return Component(
         kind="function",
         key=key,
@@ -155,8 +155,10 @@ def _table(key: str, purpose: str, keys: tuple[str, ...], **more) -> Component:
     return Component(kind="table", key=key, name=f"{PREFIX}{ENV}-{key}", purpose=purpose, keys=keys, **more)
 
 
-_PIPELINE_DASHBOARD = f"{PREFIX}{ENV}-pipeline"
-_EDGE_DASHBOARD = f"{PREFIX}{ENV}-edge"
+# The two dashboards (PR11b): pipeline health in every environment (infra/modules/observability,
+# pipeline_health.tf), and the ranch and prompts one while evals are on (infra/modules/evals).
+_PIPELINE_DASHBOARD = f"{PREFIX}{ENV}-pipeline-health"
+_RANCH_DASHBOARD = f"{PREFIX}{ENV}-ranch-and-prompts"
 # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): a Lambda that cannot use a
 # prompt asset carries on with the copy in its code and logs a prompt_fallback line; the alarm (the
 # observability module's filter over every pipeline log group) reports the first in an hour. It is
@@ -402,16 +404,17 @@ CATALOGUE: tuple[Component, ...] = (
             (
                 "Written by",
                 "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), its "
-                "judge (runs, pairs, spend) and its Friday digest (the index row's last_digest_on); the "
-                "admin API, its adjust# rows (`evals forgive` and "
-                "`evals punish`) and a person's verdicts as pairs (a Finding reviewed with `approve "
-                "--source findings`, an article approved or rejected)",
+                "judge (runs, pairs, spend), its offline scoring jobs (run items, the live drafts they "
+                "compare with, spend) and its Friday digest (the index row's last_digest_on); the admin "
+                "API, its adjust# rows (`evals forgive` and `evals punish`), its offline runs (`evals "
+                "score`, `evals runs cancel|resume`: run headers) and a person's verdicts as pairs (a "
+                "Finding reviewed with `approve --source findings`, an article approved or rejected)",
             ),
             (
                 "Read by",
-                "eval-jobs (the windows, the judge's agreement, the digest), the admin API (`evals "
-                "status`, `evals digest`), the assistant (model_ranch and prompt_metrics, while evals "
-                "are on)",
+                "eval-jobs (the windows, the judge's agreement, the digest, a run's header), the admin "
+                "API (`evals status`, `evals digest`, `evals runs`), the assistant (model_ranch and "
+                "prompt_metrics, while evals are on)",
             ),
             ("Expires", "never: no TTL"),
         ),
@@ -472,7 +475,7 @@ CATALOGUE: tuple[Component, ...] = (
         ),
         aliases=("incidents", "security"),
         assistant_reads=True,
-        dashboards=(_EDGE_DASHBOARD,),
+        dashboards=(_PIPELINE_DASHBOARD,),
         alarms=(f"{PREFIX}{ENV}-security-high-severity",),
     ),
     _table(
@@ -531,7 +534,8 @@ CATALOGUE: tuple[Component, ...] = (
             ("Written by", "the prompts publisher alone (its own role); every Lambda may only read a row"),
             (
                 "Read by",
-                "every Lambda that renders a prompt (common/prompts.py), the Admin API's prompts list",
+                "every Lambda that renders a prompt (common/prompts.py), the Admin API's prompts list; "
+                "the Admin API's `evals score` (whether a version was published, live or retired)",
             ),
             ("No TTL", "a retired row is the record of what was once approved"),
             ("Backups", "not in the snapshots: publishing writes it again from the repository's prompts/"),
@@ -546,7 +550,7 @@ CATALOGUE: tuple[Component, ...] = (
         f"on the queue (dispatch_mode queue), on each research job on {PREFIX}{ENV}-work.fifo, "
         "at most worker_concurrency at once",
         details=(
-            ("Writes", "findings; topics.last_research_at"),
+            ("Writes", "findings; topics.last_research_at, last_research_attempt_at"),
             ("Schedules", f"{PREFIX}{ENV}-<topic_id>-research-tick"),
         ),
         alarms=(_PROMPT_FALLBACK_ALARM,),
@@ -562,7 +566,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "Writes",
                 "topics.research_claimed_at, last_daily_dispatched_on and daily_claim_n; in shadow mode "
                 "topics.shadow_last_research_dispatch_at, shadow_last_daily_dispatch_at, "
-                "shadow_mismatches, shadow_unchecked and shadow_checked_days; last_tick on the "
+                "shadow_mismatches, shadow_unchecked, shadow_checked_days, shadow_clean_days, "
+                "shadow_research_mismatch_at and shadow_research_matched_at; last_tick on the "
                 "model-config pipeline row",
             ),
             (
@@ -614,17 +619,16 @@ CATALOGUE: tuple[Component, ...] = (
                 "Sends",
                 f"for a topic on the queue, topics trigger sends a research job to {PREFIX}{ENV}-work.fifo "
                 f"or starts {PREFIX}{ENV}-daily-cycle with an execution named "
-                "<topic>-<date>-manual-<HHMMSS>",
+                "<topic>-<date>-manual-<HHMMSS>; `evals score` and `evals runs resume` send score jobs, "
+                f"one per item and combination, to {PREFIX}{ENV}-eval-work (only while evals are on)",
             ),
         ),
-        dashboards=(_EDGE_DASHBOARD,),
         alarms=(_PROMPT_FALLBACK_ALARM,),
     ),
     _lambda(
         "public-api",
         "The public API the site calls: topics, articles, RSS, stats, views and reader feedback.",
         "on each request to the public API (through its CloudFront cache)",
-        dashboards=(_EDGE_DASHBOARD,),
         alarms=(
             f"{PREFIX}{ENV}-feedback-rejections-spike",
             f"{PREFIX}{ENV}-feedback-screening-budget-used-up",
@@ -681,12 +685,14 @@ CATALOGUE: tuple[Component, ...] = (
         "Continuous evals' jobs: the hourly rollup of the evals log group into the evals table, the "
         "judge's selector, and the judge and offline scoring jobs from the eval-work queue; on "
         "Fridays, while digest_email is on, the week's digest to the alerts topic. The judge reviews "
-        "recent Findings and articles with a model that wrote none of them; offline scoring jobs are "
-        "dropped until offline runs land.",
+        "Findings and articles with a model that wrote none of them; an offline scoring job redrafts "
+        "a past article for it to compare.",
         "hourly at five past (the rollup) and hourly (the judge's selector), EventBridge Scheduler; "
         f"on each job on {PREFIX}{ENV}-eval-work, two at most at once",
         details=(("Exists", "only while evals are switched on (evals_enabled)"),),
-        alarms=(f"{PREFIX}{ENV}-eval-rollup-heartbeat",),
+        dashboards=(_RANCH_DASHBOARD,),
+        # Offline scoring drafts through the live daily_cycle/draft asset, so it can fall back too.
+        alarms=(f"{PREFIX}{ENV}-eval-rollup-heartbeat", _PROMPT_FALLBACK_ALARM),
         aliases=("evals-jobs", "evals-rollup"),
         # Made only while evals are on (the deployment tells the assistant EVALS_ENABLED): with
         # them off it is not deployed here, so a log review neither reads nor refuses its log.
@@ -774,7 +780,7 @@ CATALOGUE: tuple[Component, ...] = (
             f"/aws/lambda/{PREFIX}{ENV}-public-api",
             f"aws-waf-logs-{PREFIX}{ENV}-public-api",
         ),
-        dashboards=(_EDGE_DASHBOARD,),
+        dashboards=(_PIPELINE_DASHBOARD,),
         aliases=("public", "site-api"),
     ),
     Component(
@@ -797,7 +803,7 @@ CATALOGUE: tuple[Component, ...] = (
             f"/aws/lambda/{PREFIX}{ENV}-admin-api",
             f"aws-waf-logs-{PREFIX}{ENV}-admin",
         ),
-        dashboards=(_EDGE_DASHBOARD,),
+        dashboards=(_PIPELINE_DASHBOARD,),
         aliases=("admin",),
     ),
     Component(
@@ -912,41 +918,42 @@ CATALOGUE: tuple[Component, ...] = (
     # --- Dashboards ----------------------------------------------------------------------------
     Component(
         kind="dashboard",
-        key="pipeline",
+        key="pipeline-health",
         name=_PIPELINE_DASHBOARD,
-        purpose="Pipeline health: per Lambda runs, errors, throttles and duration; the daily "
-        "cycle's failed and succeeded runs and the dead-letter queue; recent errors from every "
-        "Lambda's log.",
-        details=(("Opens on", "the last 7 days, hourly"),),
-        aliases=("pipeline-dashboard", "health-dashboard"),
-    ),
-    Component(
-        kind="dashboard",
-        key="lambda-runs",
-        name=f"{PREFIX}{ENV}-lambda-runs",
-        purpose="How often each Lambda ran and what happened to reader feedback, over whatever "
-        "span is picked.",
-        details=(("Opens on", "the last 24 hours"),),
-        aliases=("runs", "runs-dashboard"),
-    ),
-    Component(
-        kind="dashboard",
-        key="edge",
-        name=_EDGE_DASHBOARD,
-        purpose="The edge: both REST APIs' requests, 4XX and 5XX, latency, responses by status and "
-        "errors by route from the access logs; the public API's CDN; every firewall's allowed, "
-        "blocked and top blocked rules, addresses and paths.",
+        purpose="Pipeline health: every pipeline Lambda's errors, throttles and p95 duration as a share "
+        "of its timeout; the daily cycle's runs and dead-letter queue; feedback; each API's requests, "
+        "errors and latency; each firewall's blocks per rule; the model catalog's counts; 30 days of "
+        "trend; and recent errors from every Lambda's log.",
         details=(
-            ("Opens on", "the last 7 days, hourly"),
+            ("Opens on", "the last 7 days, hourly; the tiles add up the whole range picked"),
             (
-                "Only in production",
-                "dev leaves it off (edge_dashboard_enabled): past the "
-                "account's first three dashboards each costs US$3 a month. Set it to true in "
-                "infra/environments/dev/main.tf for a while to debug dev's edge.",
+                "Tiles",
+                "dispatcher ticks, evals rollups, prompt fallbacks and high-severity security "
+                "incidents; the model catalog's discovered, pruned, classified, denied, repriced, "
+                "reverted and dropped",
             ),
+            ("Replaces", "the pipeline, lambda-runs and edge dashboards"),
         ),
-        only_in=("production",),
-        aliases=("edge-dashboard", "api-dashboard", "waf-dashboard", "firewall-dashboard"),
+        aliases=(
+            "pipeline", "pipeline-dashboard", "health-dashboard", "lambda-runs", "runs-dashboard",
+            "edge-dashboard", "api-dashboard", "waf-dashboard", "firewall-dashboard",
+        ),
+    ),
+    Component(
+        kind="dashboard",
+        key="ranch-and-prompts",
+        name=_RANCH_DASHBOARD,
+        purpose="The Model Ranch and prompts: scored events from the evals log group by model, prompt "
+        "version, model and prompt together, reason and source, the latest bad ones, and prompt "
+        "fallbacks from every pipeline Lambda.",
+        details=(
+            ("Opens on", "the last 7 days"),
+            ("Exists", "only while evals are switched on (evals_enabled)"),
+            ("Reads", "the evals log group (Logs Insights, billed per GB scanned when opened)"),
+        ),
+        aliases=("ranch", "ranch-dashboard", "evals-dashboard", "prompts-dashboard"),
+        # Made only while evals are on, like the rest of the evals module's active parts.
+        switch_env="EVALS_ENABLED",
     ),
     # --- Log groups that belong to no one function ---------------------------------------------
     Component(
@@ -1012,8 +1019,9 @@ CATALOGUE: tuple[Component, ...] = (
                 "common/evals.py emit(), from any pipeline Lambda and the admin API (`evals forgive` "
                 "and `evals punish`), only while evals are on",
             ),
-            ("Read by", "eval-jobs' hourly rollup (Logs Insights)"),
+            ("Read by", "eval-jobs' hourly rollup (Logs Insights), and the ranch-and-prompts dashboard"),
         ),
+        dashboards=(_RANCH_DASHBOARD,),
         aliases=("evals-log", "eval-events"),
     ),
     # --- Schedules, buckets, firewalls ---------------------------------------------------------
@@ -1094,6 +1102,13 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             ("Name", "unique across all of AWS, which is why each deployment has its own prefix"),
             ("Also", "pricing/<date>-<run>.json: old model prices a reprice replaced, once checked"),
+            (
+                "Call traces",
+                "traces/<article or finding>/<stage>.json: each model call's prompt and reply, the "
+                "gear's guidance and the review's operator note as their sha256, while the evals setting "
+                "trace_calls is on (on by default in dev only); expire after 14 days; read by "
+                "`admin_cli evals trace`, never by anything public",
+            ),
         ),
         aliases=("content-bucket", "s3"),
     ),
@@ -1119,8 +1134,10 @@ CATALOGUE: tuple[Component, ...] = (
             ("Written by", "the prompts publisher alone: the bucket policy refuses every other writer"),
             (
                 "Read by",
-                "the Lambdas, only while PROMPT_AS_ASSET_ENABLED is on (common/prompts.py); the "
-                "Admin API's prompts list and prompts releases",
+                "the Lambdas, to serve prompts, only while PROMPT_AS_ASSET_ENABLED is on "
+                "(common/prompts.py); the Admin API's prompts list and prompts releases; offline scoring "
+                "whether or not it is on: the Admin API's `evals score` (a prompt's versions/ listing) and "
+                "eval-jobs' scoring jobs (the run's versions/<sha256>.txt)",
             ),
             ("Old versions", "kept 90 days after a file is replaced"),
         ),
@@ -1133,7 +1150,7 @@ CATALOGUE: tuple[Component, ...] = (
         purpose="The public API's regional WAF web ACL: rate limits (general and on feedback) and "
         "AWS's common rule set.",
         log_groups=(f"aws-waf-logs-{PREFIX}{ENV}-public-api",),
-        dashboards=(_EDGE_DASHBOARD,),
+        dashboards=(_PIPELINE_DASHBOARD,),
         aliases=("public-api-waf", "waf"),
     ),
     Component(
@@ -1142,7 +1159,7 @@ CATALOGUE: tuple[Component, ...] = (
         name=f"{PREFIX}{ENV}-admin-api",
         purpose="The admin API's regional WAF web ACL: admits only the operator's addresses.",
         log_groups=(f"aws-waf-logs-{PREFIX}{ENV}-admin",),
-        dashboards=(_EDGE_DASHBOARD,),
+        dashboards=(_PIPELINE_DASHBOARD,),
         aliases=("admin-waf", "allowlist"),
     ),
 )

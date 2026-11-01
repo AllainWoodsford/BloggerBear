@@ -16,10 +16,10 @@ with a Copy button (the page already shows those; cli_guide.py makes the same ki
 a log and changes nothing. `how_to` is not in the suggestion catalogue, so memory.py never records
 one, and server.py does not pass this tool through it.
 
-**Per environment.** A step about something only one environment has (the edge dashboard is only
-created in production) is replaced by what to do instead in the other. A step about a component
-that lives in another Region (the vision worker, architecture.Component.region_env) links to that
-Region, and says it is not deployed where vision is off.
+**Per environment.** A step about something only one environment has (Step.only_in) is replaced
+by what to do instead (Step.instead) in the other. A step about a component that lives in another
+Region (the vision worker, architecture.Component.region_env) links to that Region, and says it is
+not deployed where vision is off.
 """
 
 from __future__ import annotations
@@ -184,29 +184,29 @@ def _api_steps(api: str, status: int | None) -> tuple[Step, ...]:
     return tuple(steps)
 
 
+# Pipeline health (infra/modules/observability, pipeline_health.tf) is the one dashboard for the
+# whole pipeline, in every environment. Each step says which of its panels answers the question,
+# and only what it draws: no runs per Lambda, no responses by status or route (the logs have those).
+_HEALTH = by_key("dashboard", "pipeline-health").name
 _EDGE = Step(
-    f"{PREFIX}{ENV}-edge",
+    _HEALTH,
     "dashboard",
-    "API Gateway half: requests and 4XX/5XX per API, responses by status, errors by route with "
-    "errorType, 429s; then the firewall half.",
-    only_in=("production",),
-    instead=(
-        "The edge dashboard is not created in dev (each dashboard past the account's first three "
-        "costs US$3 a month). Use the API Gateway console and access log steps below, or set "
-        "edge_dashboard_enabled = true in infra/environments/dev/main.tf for a while."
-    ),
+    "Each API's requests, 4XX and 5XX and its p95 latency, and each web ACL's blocks per rule: "
+    "when it started, and which rule is blocking.",
 )
 _PIPELINE = Step(
-    f"{PREFIX}{ENV}-pipeline",
+    _HEALTH,
     "dashboard",
-    "Per Lambda runs, errors, throttles and duration; the daily cycle's failed runs and the "
-    "dead-letter queue; the Recent errors table at the bottom.",
+    "Each Lambda's errors, throttles and p95 duration as a share of its timeout; the daily cycle's "
+    "Step Functions runs and the dead-letter queue; 30 days of trend; the Recent errors table at "
+    "the bottom.",
 )
-_RUNS = Step(
-    f"{PREFIX}{ENV}-lambda-runs",
+_FEEDBACK = Step(
+    _HEALTH,
     "dashboard",
-    "How many times each Lambda ran over the span picked, and runs per day: a gap is a schedule "
-    "that did not fire.",
+    "The feedback tiles over the range picked: accepted (comments kept among them) against "
+    "rejected (dropped by the screening model, or the model checks used up); and feedback "
+    "accepted per day in the 30-day trend.",
 )
 _ALARMS = Step(
     f"CloudWatch console > Alarms > filter {PREFIX}{ENV}-",
@@ -325,7 +325,6 @@ def _runsheets(api: str | None, status: int | None) -> tuple[Runsheet, ...]:
                     "That the schedule exists, is enabled and has the expected rate. It is made "
                     "by the Admin API when the topic is saved, not by Terraform.",
                 ),
-                _RUNS,
                 Step(
                     f"/aws/lambda/{PREFIX}{ENV}-research-tick",
                     "log_group",
@@ -335,7 +334,8 @@ def _runsheets(api: str | None, status: int | None) -> tuple[Runsheet, ...]:
                 Step(
                     f"{PREFIX}{ENV}-research-tick",
                     "function",
-                    "Lambda console > Monitor: invocations per hour, errors and throttles.",
+                    "Lambda console > Monitor: invocations per hour (a gap is a schedule that did "
+                    "not fire), errors and throttles.",
                 ),
             ),
         ),
@@ -358,8 +358,8 @@ def _runsheets(api: str | None, status: int | None) -> tuple[Runsheet, ...]:
                 "traceback",
                 "crash",
             ),
-            "Each Lambda has an errors and a throttles alarm, a widget on the pipeline dashboard "
-            "and a log group named after it.",
+            "Each Lambda has an errors and a throttles alarm, its own lines on the pipeline health "
+            "dashboard and a log group named after it.",
             ("log_review", "alarms", "pipeline_health"),
             (
                 _PIPELINE,
@@ -434,10 +434,10 @@ def _runsheets(api: str | None, status: int | None) -> tuple[Runsheet, ...]:
             "feedback",
             "Reader feedback rejected, or screening used up",
             ("feedback", "comment", "comments", "vote", "votes", "screening", "rejected", "readers"),
-            "Feedback is counted on the lambda-runs dashboard and has two alarms of its own.",
+            "Feedback is counted on the pipeline health dashboard and has two alarms of its own.",
             ("alarms",),
             (
-                _RUNS,
+                _FEEDBACK,
                 Step(
                     f"CloudWatch console > Metrics > BloggerBear/{ENV}",
                     "console",

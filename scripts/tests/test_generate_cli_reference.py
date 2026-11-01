@@ -133,6 +133,7 @@ def test_which_commands_are_destructive_is_read_from_the_parser(fresh):
         "equipment delete",
         "evals cull",
         "evals punish",
+        "evals runs cancel",
         "models restore",
         "moderation reject",
         "prompts pause",

@@ -189,6 +189,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "content" {
       days = 21
     }
   }
+
+  # Call traces (lambdas/common/call_traces.py): each model call's whole prompt and reply, written
+  # while the evals setting trace_calls is on (on by default here: TRACE_CALLS_DEFAULT below). Two
+  # weeks is enough to read back what a prompt version was given and wrote, and no longer than the
+  # Findings they were written from are kept (FINDING_TTL_DAYS).
+  rule {
+    id     = "expire-call-traces"
+    status = "Enabled"
+
+    filter {
+      prefix = "traces/"
+    }
+
+    expiration {
+      days = 14
+    }
+  }
 }
 
 # -----------------------------------------------------------------------
@@ -774,11 +791,20 @@ locals {
     # prompt templates are published to and the table of their approved hashes (module.prompts
     # above), and whether the code reads them at all ("false" keeps every prompt as the copy in the
     # code). The switch is var.prompt_as_asset_enabled, from the PROMPT_AS_ASSET_ENABLED GitHub
-    # variable, off by default: the bucket and the table exist, empty, and nothing reads them until
-    # someone sets it.
+    # variable, off by default: the bucket and the table exist, empty, and no prompt is served from
+    # them until someone sets it. The admin API's prompts listings and the offline scoring runs
+    # (common/eval_score.py) read them whatever it says, so a version can be scored before assets are
+    # served.
     PROMPTS_BUCKET          = module.prompts.bucket_name
     PROMPT_HASHES_TABLE     = module.prompts.hash_table_name
     PROMPT_AS_ASSET_ENABLED = var.prompt_as_asset_enabled ? "true" : "false"
+
+    # Call traces (common/call_traces.py): whether the evals setting trace_calls is on while the evals
+    # row does not say. On here, as section 4.5 of docs/enhancements/model-ranch-prompt-assets-evals.md
+    # has it ("dev root sets true"); production's root says "false". `admin_cli evals set
+    # --trace-calls off` still turns it off. The traces expire after 14 days (the content bucket's
+    # expire-call-traces rule) and nothing public can read them.
+    TRACE_CALLS_DEFAULT = "true"
   }
 }
 
@@ -1227,6 +1253,18 @@ module "admin_api" {
     # _review_finding_route, and `admin_cli approve --source findings`.
     "GET /evals/findings",
     "POST /evals/findings/review",
+    # Offline scoring runs: start one (or only price it), list them, one run's progress and results,
+    # cancel one, and send a scoring run's unscored items again. See admin_api_handler.py's evals runs
+    # routes and `admin_cli evals score|runs`.
+    "POST /evals/runs",
+    "GET /evals/runs",
+    "GET /evals/runs/{run_id}",
+    "DELETE /evals/runs/{run_id}",
+    "POST /evals/runs/{run_id}/resume",
+    # One article's call traces (common/call_traces.py: its model calls' prompts and replies, stored
+    # while the evals setting trace_calls is on). See admin_api_handler.py's _evals_traces_route and
+    # `admin_cli evals trace`.
+    "GET /evals/traces/{article_id}",
     "GET /reviewer-config",
     "PUT /reviewer-config",
     # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): each registered
@@ -2850,6 +2888,28 @@ resource "aws_scheduler_schedule" "reviewer" {
 # =========================================================================
 
 locals {
+  # The same functions with their timeouts, for pipeline health's duration panel (each one's p95
+  # as a share of its own timeout). The functions themselves, not their names, so the line count
+  # below stays one name per function; the dashboard refuses a function this leaves out.
+  pipeline_lambda_timeouts = merge(
+    { for function in concat([
+      aws_lambda_function.research_tick,
+      aws_lambda_function.daily_cycle,
+      aws_lambda_function.admin_api,
+      aws_lambda_function.public_api,
+      aws_lambda_function.weekly_reflection,
+      aws_lambda_function.dlq_handler,
+      aws_lambda_function.musing_feedback,
+      aws_lambda_function.stats_rollover,
+      aws_lambda_function.cost_explorer_poll,
+      aws_lambda_function.model_catalog,
+      aws_lambda_function.security_events,
+      aws_lambda_function.sign_in_events,
+    ], aws_lambda_function.reviewer) : function.function_name => function.timeout },
+    module.evals.function_timeouts,
+    module.work_queue.function_timeouts,
+  )
+
   # Every pipeline/API Lambda's function_name -- shared by module.observability's alarms/
   # dashboard below and this environment's own log-group retention (aws_cloudwatch_log_group.lambda,
   # Cleanup PR), so the two can never drift out of sync when a function is added or removed.
@@ -2895,8 +2955,9 @@ module "evals" {
   lambda_package_hash   = data.archive_file.lambdas.output_base64sha256
   lambda_environment    = local.lambda_env_variables
 
-  pipeline_dlq_arn = aws_sqs_queue.pipeline_dlq.arn
-  alerts_topic_arn = module.observability.sns_topic_arn
+  pipeline_dlq_arn       = aws_sqs_queue.pipeline_dlq.arn
+  alerts_topic_arn       = module.observability.sns_topic_arn
+  prompt_fallback_metric = module.observability.prompt_fallback_metric
 }
 
 module "observability" {
@@ -2907,12 +2968,16 @@ module "observability" {
   unique_name_prefix    = var.unique_name_prefix
   environment_name      = "dev"
   lambda_function_names = local.pipeline_lambda_function_names
+  lambda_timeouts       = local.pipeline_lambda_timeouts
   state_machine_arn     = aws_sfn_state_machine.daily_cycle.arn
   dlq_queue_name        = aws_sqs_queue.pipeline_dlq.name
   alert_email           = var.alert_email
 
   # Its own log group resource rather than a hand-built name, so the metric filters depend on it.
   feedback_log_group_name = aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name
+
+  # Where the model catalog prints its model_catalog_job lines, for pipeline health's counter row.
+  model_catalog_log_group_name = aws_cloudwatch_log_group.lambda[aws_lambda_function.model_catalog.function_name].name
 
   # The Lambdas that record security events, each logging one SECURITY_ALERT line per
   # high-severity incident (see the Security events section below).
@@ -2927,13 +2992,15 @@ module "observability" {
   # Every pipeline Lambda's log group, for the prompt-fallback alarm: a Lambda that cannot use a
   # prompt asset prints one prompt_fallback evidence line and carries on with the copy in its
   # code (docs/enhancements/model-ranch-prompt-assets-evals.md). The log group resources, not
-  # names built by hand, so the metric filters depend on them.
-  prompt_fallback_log_groups = [for group in aws_cloudwatch_log_group.lambda : group.name]
+  # names built by hand, so the metric filters depend on them. eval-jobs' group is the evals
+  # module's own, so it comes from that module: offline scoring drafts through the live asset.
+  prompt_fallback_log_groups = concat(
+    [for group in aws_cloudwatch_log_group.lambda : group.name],
+    module.evals.function_log_group_names,
+  )
 
-  # Scaling PR C: what the edge dashboard (API Gateway and WAF, api_waf_dashboards.tf in the
-  # module) would show. Not created in dev (edge_dashboard_enabled defaults to false): dashboards
-  # past the account's first three cost US$3 a month each, and dev's traffic is mostly the
-  # operator's own. Set it to true here for a while to debug the edge in dev.
+  # Each API's requests, errors and latency, and each web ACL's blocks per rule, on pipeline
+  # health (and in the module's API Gateway and firewall widgets, api_waf_dashboards.tf).
   api_dashboard_apis = [
     {
       label            = "Public API"

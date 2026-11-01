@@ -15,9 +15,11 @@ records on each row what it would have done (dispatch.py's docstring says how).
 
 **It raises**, unlike the pipeline's other handlers: a tick that could not run (the Topics scan,
 a queue send, a throttled StartExecution: DispatchError, or the last_tick write) is printed and
-raised again, so the function's Errors alarm fires. A missed minute costs nothing: the next tick
-looks back to the last one that finished (`last_tick`). One topic's own trouble never reaches
-here; the tick prints it and goes on to the next topic.
+raised again, so the function's Errors alarm fires. So is a tick that finished but had a daily
+start refused for a reason no one topic causes (the role, the state machine, the service): the
+other topics were still run. A missed minute costs nothing: the next tick looks back to the last
+one that finished (`last_tick`). One topic's own trouble never reaches here; the tick prints it and
+goes on to the next topic.
 """
 
 from __future__ import annotations

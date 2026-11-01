@@ -32,6 +32,11 @@ output "function_names" {
   value       = [aws_lambda_function.dispatcher.function_name]
 }
 
+output "function_timeouts" {
+  description = "The same functions, by name, with each one's timeout in seconds, for module.observability's lambda_timeouts (pipeline health's duration panel)."
+  value       = { (aws_lambda_function.dispatcher.function_name) = aws_lambda_function.dispatcher.timeout }
+}
+
 output "alarm_names" {
   description = "The alarms this module makes: the work queue's oldest message, the dead-letter queue's two, and the dispatcher's heartbeat."
   value = [

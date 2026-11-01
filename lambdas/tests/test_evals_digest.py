@@ -14,7 +14,7 @@ import pytest
 from moto import mock_aws
 from table_schemas import KEYS
 
-from common import dynamo, evals_digest
+from common import dynamo, evals_adjust, evals_digest, evals_status
 from common.naming import environment_prefix
 
 REGION = "ap-southeast-2"
@@ -177,6 +177,47 @@ def test_the_email_is_the_digests_ids_codes_and_numbers_and_nothing_else(on):
     assert beta.endswith(", not in the registry") and "gated" not in beta
 
 
+def test_the_email_calls_gated_only_the_models_the_rotation_guard_holds_back(on):
+    """The guard (common/model_ranch.py, as `evals status` and GET /models apply it) never gates the
+    default, the fallback or the judge, nor a model an operator's `ungated_until` holds open: each is
+    served whatever its windows say. The email must not call one of them gated; it says which window
+    is below its gate, and why that model is served all the same."""
+    default, judge, forgiven = "maker.default-v1:0", "maker.judge-v1:0", "maker.forgiven-v1:0"
+    on.Table("ModelConfig").put_item(Item={"config_id": "default", "model_id": default})
+    on.Table("ModelConfig").put_item(
+        Item={"config_id": "evals", "digest_email": True, "judge_model_id": judge}
+    )
+    # Each under the daily gate (-50) with more than min_events (10) events behind it.
+    scores = {"daily_perf": -60, "perf_events": {"daily": 12, "weekly": 12, "monthly": 12, "total": 12}}
+    for model_id in (ALPHA, default, judge, forgiven):
+        on.Table("Models").put_item(Item={"model_id": model_id, "model_purpose": "text", **scores})
+        put_day(on, f"model#{model_id}", "2026-10-29", perf=-6, events=3, good=0, bad=3)
+    # The operator holds FORGIVEN's gate open for two days (`admin_cli evals ungate --hours 48`).
+    evals_adjust.ungate({"model_id": forgiven, "hours": 48}, now=FRIDAY - timedelta(hours=1))
+    sns = MagicMock()
+
+    evals_digest.maybe_send(FRIDAY, sns=sns)
+
+    lines = {
+        line.strip().split(": perf ")[0]: line
+        for line in sns.publish.call_args.kwargs["Message"].splitlines()
+        if line.startswith("  maker.")
+    }
+    # What the guard decides for the same rows at the same moment.
+    status = evals_status._gated_models(evals_status.evals_settings.get_settings(), FRIDAY)
+    assert [model["model_id"] for model in status["gated"]] == [ALPHA]
+    assert {model["model_id"] for model in status["held_open"]} == {forgiven}
+    assert {model["model_id"]: model["role"] for model in status["protected"]} == {
+        default: "default", judge: "judge",
+    }  # fmt: skip
+    # The email agrees: ALPHA is gated; the others are served, so not called gated.
+    assert lines[ALPHA].endswith(", gated: daily")
+    assert lines[default].endswith(", below gate: daily (kept as the default)")
+    assert lines[judge].endswith(", below gate: daily (kept as the judge)")
+    assert lines[forgiven].endswith(", below gate: daily (held open by an override)")
+    assert not [model_id for model_id in (default, judge, forgiven) if ", gated:" in lines[model_id]]
+
+
 def test_only_a_window_shaped_as_one_is_written_beside_a_gated_model():
     """gated_windows gives only the gated windows' own names, so this guards input that cannot
     reach render today: a window read from anywhere else still could not carry words into the email."""
@@ -185,6 +226,27 @@ def test_only_a_window_shaped_as_one_is_written_beside_a_gated_model():
     _, message = evals_digest.render(digest, "dev")
 
     assert ", gated: weekly" in message and HOSTILE not in message
+
+
+@pytest.mark.parametrize(
+    ("gate", "role", "said"),
+    [
+        ("protected", "fallback", ", below gate: weekly (kept as the fallback)"),
+        ("held_open", None, ", below gate: weekly (held open by an override)"),
+        (None, None, ", below gate: weekly (its gate could not be read)"),
+        ("protected", HOSTILE, ", below gate: weekly (its gate could not be read)"),
+        (HOSTILE, None, ", below gate: weekly (its gate could not be read)"),
+    ],
+)
+def test_a_model_below_a_gate_that_is_served_says_why_in_words_of_this_module(gate, role, said):
+    """Only a state and a role of the fixed set reach the email: anything else is written as unread,
+    never as gated, and never in its own words."""
+    entry = {"model_id": ALPHA, "below_gate": ["weekly", HOSTILE], "gate": gate, "role": role}
+
+    _, message = evals_digest.render({"models": [{**entry, "interval": [None, None]}]}, "dev")
+
+    (line,) = (line for line in message.splitlines() if line.startswith(f"  {ALPHA}:"))
+    assert line.endswith(said) and HOSTILE not in message and ", gated:" not in message
 
 
 def test_the_subject_is_cut_to_what_sns_takes_and_is_one_line():

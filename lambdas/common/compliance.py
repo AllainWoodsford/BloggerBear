@@ -8,7 +8,7 @@ than feedback (Feedback's own PII pipeline is Phase 5, out of scope here).
 
 import re
 
-from common import prompts
+from common import call_traces, prompts
 from common.bedrock import invoke_model_tracked
 
 # A handful of conservative, obvious-PII patterns -- not a PII-detection
@@ -58,6 +58,7 @@ _FINANCIAL_REASON = "financial topic - routed to manual moderation regardless of
 
 MAX_SOURCE_CHARS = 12_000
 _DELIMITER_TAG = re.compile(r"<(/?)(draft|source_material)", re.IGNORECASE)
+_FRESH_DATA_LABEL = "(current data from the topic's source, which the draft may have been corrected from)"
 
 
 def _defang(text: str) -> str:
@@ -310,6 +311,7 @@ def review_draft(
     *,
     fallback_model_id: str | None = None,
     source_material: str | None = None,
+    fresh_data: str | None = None,
 ) -> dict:
     """Run the compliance review for a draft and return
     {compliant, reasons, lineage_call}.
@@ -317,6 +319,11 @@ def review_draft(
     `source_material` is the research the draft was written from. When given, the reviewer
     checks the draft's claims against it (a claim the material supports is not "unsubstantiated");
     when not, it reviews the draft alone, as before. It is redacted like the draft is.
+
+    `fresh_data` is current data from the topic's source, for a draft that was corrected from it
+    (a Re-Write, common/rewrite.py, may only take a figure from the findings or from that data). It
+    counts as source material too, with its own MAX_SOURCE_CHARS, so a figure the correction took
+    from it is not called fabricated. The daily cycle does not pass it.
 
     Financial topics are routed to manual moderation unconditionally -- this
     is a deterministic routing rule, not something an LLM call could
@@ -329,18 +336,16 @@ def review_draft(
         return {"compliant": False, "reasons": [_FINANCIAL_REASON], "lineage_call": None}
 
     redacted_draft = regex_redact(draft_text)
-    if source_material and source_material.strip():
-        source = _defang(regex_redact(source_material)[:MAX_SOURCE_CHARS])
+    source = _source_text(source_material, fresh_data)
+    if source:
         prompt = prompts.get_prompt(
-            "reviews/compliance", {"source": source, "draft": _defang(redacted_draft)}
+            "reviews/compliance", {"source": _defang(source), "draft": _defang(redacted_draft)}
         )
     else:
         prompt = prompts.get_prompt("reviews/compliance_legacy", {"draft": redacted_draft})
     result = invoke_model_tracked(prompt.text, model_id, fallback_model_id=fallback_model_id)
-    if source_material and source_material.strip():
-        parsed = _review_verdict(
-            result["text"], regex_redact(source_material)[:MAX_SOURCE_CHARS], redacted_draft
-        )
+    if source:
+        parsed = _review_verdict(result["text"], source, redacted_draft)
     else:
         parsed = _parse_compliance_response(result["text"])
     parsed["lineage_call"] = {
@@ -351,7 +356,21 @@ def review_draft(
         "used_fallback": result["used_fallback"],
         **prompts.lineage_fields(prompt),
     }
+    # Stored as sent: the draft, its research and any fresh data are the material under review,
+    # already redacted of obvious PII above, and none of it is reader text (common/call_traces.py).
+    call_traces.record(parsed["lineage_call"], prompt.text, result["text"])
     return parsed
+
+
+def _source_text(source_material: str | None, fresh_data: str | None) -> str:
+    """What a draft's claims are checked against, redacted: the research it was written from,
+    then any fresh data under its own label, each cut at MAX_SOURCE_CHARS. "" when there is neither."""
+    parts = []
+    if source_material and source_material.strip():
+        parts.append(regex_redact(source_material)[:MAX_SOURCE_CHARS])
+    if fresh_data and fresh_data.strip():
+        parts.append(f"{_FRESH_DATA_LABEL}\n{regex_redact(fresh_data)[:MAX_SOURCE_CHARS]}")
+    return "\n\n".join(parts)
 
 
 def _parse_compliance_response(response: str) -> dict:

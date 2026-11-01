@@ -61,8 +61,9 @@ classified from one Bedrock listing: model_catalog.listed_models, the whole list
 `unknown` keeps meaning that Bedrock no longer lists the model.
 
 **The judge's agreement** with people (`judge_agreement`, `judge_pairs`) is computed from every
-`pair#<subject>` row that holds both a judge's verdict and a person's. The judge is calibrated while
-`judge_pairs >= judge_min_pairs` and `judge_agreement >= judge_min_agreement`.
+`pair#<subject>` row that holds both a judge's verdict and a person's on the same text (an article's
+rows record which text, its `rewrite_number`). The judge is calibrated while `judge_pairs >=
+judge_min_pairs` and `judge_agreement >= judge_min_agreement`.
 
 **When it fails.** A run that finished prints one `rollup_done` evidence line, which the evals
 module's heartbeat alarm counts. A run that cannot read the log or read and write the tables raises
@@ -117,6 +118,8 @@ INDEX = "index"
 INDEX_KEY = {"entity": INDEX, "sk": INDEX}
 DAY = "day#"
 PAIR = "pair#"
+# On an article's pair rows, the text its verdict was given on (common/evals_emission.REWRITE_NUMBER).
+REWRITE_NUMBER = "rewrite_number"
 # An operator's forgive or punish of a model (common/evals_adjust.py writes these rows): its deltas
 # count in total_perf and in no window.
 ADJUST_MODEL = "adjust#model#"
@@ -528,9 +531,20 @@ def _verdict(item: dict) -> str | None:
     return "good" if delta > 0 else "bad" if delta < 0 else None
 
 
+def _text(item: dict) -> int:
+    """Which text of an article a pair row's verdict was given on (REWRITE_NUMBER). A row without one
+    counts as the first text, 0: a Finding's rows never carry one, since a Finding is never rewritten,
+    and an article's rows written before the number was kept were nearly all given on the text the
+    daily cycle wrote (an article is rewritten only when a person sends it back). As a text only ever
+    moves forward, such a row is never paired with a numbered row of another text; at worst one given
+    on a rewrite goes unpaired."""
+    return count_of(item.get(REWRITE_NUMBER))
+
+
 def judge_agreement(table=None) -> tuple[float | None, int]:
     """(agreement, pairs): of the subjects whose `pair#` rows hold both a judge's verdict and a
-    person's, how many there are, and the share on which the two agree (None with no pair)."""
+    person's, given on the same text (_text: an article rewritten between the two is not a pair), how
+    many there are, and the share on which the two agree (None with no pair)."""
     # The table has no index on its pair rows, so this Scan reads all of it. It holds day rows only
     # for the models, prompt versions and cells in use, a few hundred a day at most, so an hourly
     # Scan costs cents a month.
@@ -538,16 +552,16 @@ def judge_agreement(table=None) -> tuple[float | None, int]:
     items = _all(
         table.scan,
         FilterExpression=Attr("entity").begins_with(PAIR),
-        ProjectionExpression="#e, #s, verdict, delta",
-        ExpressionAttributeNames={"#e": "entity", "#s": "sk"},
+        ProjectionExpression="#e, #s, verdict, delta, #n",
+        ExpressionAttributeNames={"#e": "entity", "#s": "sk", "#n": REWRITE_NUMBER},
     )
-    verdicts: dict[str, dict[str, str | None]] = {}
+    verdicts: dict[str, dict[str, tuple[str | None, int]]] = {}
     for item in items:
-        verdicts.setdefault(item["entity"], {})[item["sk"]] = _verdict(item)
+        verdicts.setdefault(item["entity"], {})[item["sk"]] = (_verdict(item), _text(item))
     pairs = agree = 0
     for found in verdicts.values():
-        judge, human = found.get("judge"), found.get("human")
-        if judge and human:
+        (judge, judged), (human, decided) = found.get("judge", (None, 0)), found.get("human", (None, 0))
+        if judge and human and judged == decided:
             pairs += 1
             agree += judge == human
     return (round(agree / pairs, 4) if pairs else None), pairs
@@ -596,9 +610,15 @@ def update_models(
 
 def classify_unclassified(registry: list[dict], region: str, bedrock=None) -> tuple[str, int, int]:
     """Classify the registry models with no purpose yet, from one listing of everything Bedrock
-    lists (model_catalog.listed_models), only while each still has none. (status, classified,
-    unknown); status `none` when every model has a purpose, `failed` when the listing failed."""
-    unclassified = [model for model in registry if not model.get("model_purpose")]
+    lists (model_catalog.listed_models), only while each still has none. A model whose ARN no
+    listing holds (model_catalog.listable) stays as it is: listing for it would write nothing, hour
+    after hour. (status, classified, unknown); status `none` when every other model has a purpose,
+    `failed` when the listing failed."""
+    unclassified = [
+        model
+        for model in registry
+        if not model.get("model_purpose") and model_catalog.listable(model["model_id"])
+    ]
     if not unclassified:
         return "none", 0, 0
     try:

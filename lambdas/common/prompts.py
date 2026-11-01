@@ -32,6 +32,9 @@ RETIRE_GRACE_S), and the template rules (`missing_placeholder`, `unknown_placeho
 `locked_missing`, `locked_order`, `too_large`). Every fallback but the deployment switch's writes one
 `prompt_fallback` evidence line (common/evidence.py; the observability module alarms on it): a
 deployment that has not turned assets on has nothing to fall back from, and its alarm stays quiet.
+Beside the line it emits section 4.3's Prompt Fallback event to the evals log (common/evals.py, a
+no-op while evals are off), which the rollup counts on the version's day row and the ops
+assistant's prompt_metrics reads (`_count_fallback`).
 
 **The arm.** With n files, the arm is `sha256("<run key>|<prompt_id>") % n` over the sorted keys,
 so every prompt in one run lands on the same side of its own split (and different prompts on
@@ -50,8 +53,10 @@ not have, a value that cannot be rendered); the tests catch those.
 **The `prompts` row** (`config_id = "prompts"` in the model-config table, written by the admin
 API): `prompt_assets` (`on`|`off`) turns every asset off without a deploy, and `paused_versions`
 (`<prompt_id>@<version>` entries) pulls one version while the others of its split keep serving.
-An unreadable row falls open to the defaults: the hash check reads the same service and fails the
-asset to vanilla when DynamoDB is down, so nothing unapproved is ever served.
+An unreadable row is not read as the defaults: a paused or killed version's hash row is still
+`live`, so when only the model-config read fails the hash check would serve it again. The container
+keeps the last row it read, even past the TTL, and one that has read none yet serves the vanilla
+(`assets_off`) until it can.
 
 **What is published** (`published_files`, `releases`, `current_release`): the same reads, made
 fresh rather than from the cache, for the admin API's GET /prompts and GET /prompts/releases.
@@ -67,12 +72,13 @@ import os
 import random
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import boto3
 
-from common import dynamo, evidence
+from common import dynamo, evals, evidence, naming
 
 CONFIG_ID = "prompts"
 # Every setting of the `prompts` row and its default; an unset or invalid value takes the default.
@@ -274,6 +280,29 @@ def bound_run() -> str | None:
     return _run_key.get()
 
 
+_request_key: contextvars.ContextVar[str | None] = contextvars.ContextVar("prompts_request_key", default=None)
+
+
+@contextlib.contextmanager
+def bind_request(key: str | None):
+    """The invocation a fallback's evals event is counted under (`_count_fallback`), for a caller whose
+    run key outlives one invocation; every other caller's run key is its invocation and binds nothing
+    here. The reviewer bear draws each task's arms by its article's id, the same on every run that
+    asks about the article, so he binds his run's id with the article's (common/reviewer.tick), and a
+    held article that keeps falling back counts on each run, not only on the first. The arm is still
+    drawn by the run key alone. Reset on exit, like bind_run."""
+    token = _request_key.set(key)
+    try:
+        yield
+    finally:
+        _request_key.reset(token)
+
+
+def bound_request() -> str | None:
+    """The request key bound by `bind_request`, or None."""
+    return _request_key.get()
+
+
 def arm_index(prompt_id: str, n: int, run_key: str | None) -> int:
     """Which of `n` sorted files a run gets: the salted hash of the run key, so a run always lands
     on the same arm of one prompt's split and on independent arms of different prompts'; random
@@ -395,11 +424,19 @@ def _cached(key: tuple, load):
 
 
 def _settings() -> dict:
+    """The `prompts` row's settings, read through the cache. A failed read keeps the last row this
+    container read, even once it has expired, and writes nothing back, so the next call reads again.
+    A paused or killed version's hash row stays `live`, so the hash check cannot hold a pause or the
+    kill switch when only this read fails; a container that has read no row yet fails closed."""
     try:
         return _cached(("settings",), lambda: effective_settings(dynamo.get_config_row(CONFIG_ID)))
-    except Exception as exc:  # noqa: BLE001 - the row is advisory; the hash check is the gate
-        print(f"prompts: could not read the {CONFIG_ID} settings row; using defaults: {exc!r}")
-        return effective_settings(None)
+    except Exception as exc:  # noqa: BLE001 - never raise; keep the pause list and the kill switch
+        last = _cache.get(("settings",))  # not _cache_get, which reads an expired entry as none
+        if last is not None:
+            print(f"prompts: could not read the {CONFIG_ID} settings row; keeping the last read: {exc!r}")
+            return last[1]
+        print(f"prompts: could not read the {CONFIG_ID} settings row; assets off until it is read: {exc!r}")
+        return {**effective_settings(None), "prompt_assets": "off"}
 
 
 def _list_latest(prompt_id: str) -> list[str]:
@@ -515,10 +552,58 @@ def _vanilla(spec: PromptSpec, values: dict, locked: dict, code: str | None) -> 
 
 def _fallback(spec: PromptSpec, values: dict, locked: dict, code: str, version: str | None) -> Prompt:
     """The vanilla in an asset's place, and the evidence line that says why (the asset's version
-    when one was read)."""
+    when one was read), and the evals event that counts it."""
     lambda_id, _, prompt_name = spec.prompt_id.partition("/")
     evidence.emit("prompt_fallback", lambda_id=lambda_id, prompt_name=prompt_name, version=version, code=code)
+    _count_fallback(spec, version)
     return _vanilla(spec, values, locked, code)
+
+
+FALLBACK_REASON = "Prompt Fallback"
+
+
+def _count_fallback(spec: PromptSpec, version: str | None) -> None:
+    """Section 4.3's Prompt Fallback event for this fallback: counted, scoring nothing, for the version
+    that fell back (the asset's, or the vanilla's when no asset version was read). It names no model:
+    get_prompt does not know which one the prompt goes to, and the reason applies to the prompt version
+    alone (common/evals.SCORING), so the rollup counts it on that version's `prompt#` day row and on no
+    model's or cell's (common/evals_rollup.add_up). Its id is `fallback:<request id>:<prompt id>`, the
+    request id being the invocation's key: the one bind_request bound, else the run's (bind_run). So
+    an invocation that renders the prompt again, or one retried under the same key, counts once, and
+    the reviewer bear's article, whose run key is the same on every run, counts once on each run
+    (common/reviewer.tick binds his run's id with it). A key that is not an id's shape stands in as
+    its sha256, and with none bound each fallback is its own. Never raises: evals.emit does not, and
+    writes nothing while evals are off. The source is the code of the Lambda it runs in
+    (`_running_code`), section 4.3's emitting Lambda, so a run's events are revoked by that Lambda's
+    code (`evals revoke --source daily_cycle` takes the daily cycle's review prompts' fallbacks too);
+    outside a Lambda named as Terraform names them, it is the prompt's lambda id."""
+    if not evals.enabled():
+        return
+    key = bound_request() or bound_run()
+    event_id = evals.event_id(FALLBACK_REASON, request_id=key, prompt_id=spec.prompt_id)
+    if event_id is None:
+        stand_in = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32] if key else uuid.uuid4().hex
+        event_id = evals.event_id(FALLBACK_REASON, request_id=stand_in, prompt_id=spec.prompt_id)
+    evals.emit(
+        FALLBACK_REASON,
+        event_id=event_id,
+        source=_running_code() or spec.prompt_id.partition("/")[0],
+        prompt_id=spec.prompt_id,
+        prompt_version=version or spec.vanilla_label,
+    )
+
+
+def _running_code() -> str | None:
+    """The code of the Lambda this runs in: `daily_cycle` for `<prefix>-dev-daily-cycle`, as Terraform
+    names every function `<prefix>-<environment>-<code, hyphenated>`. None outside a Lambda (a test,
+    a script), or where the function is not told its environment (ENVIRONMENT_NAME) or its name is
+    not built that way: then the caller names the prompt's lambda id instead. Read on each call, which
+    only a fallback makes."""
+    name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME") or ""
+    prefix = naming.environment_prefix(os.environ.get("ENVIRONMENT_NAME") or "")
+    if not name.startswith(prefix):
+        return None
+    return evidence.check("code", name[len(prefix) :].replace("-", "_"))
 
 
 def get_prompt(prompt_id: str, values: dict | None = None, locked: dict | None = None) -> Prompt:
@@ -536,6 +621,85 @@ def get_prompt(prompt_id: str, values: dict | None = None, locked: dict | None =
     if code is None:
         return Prompt(render(spec, template, values, locked), prompt_id, version, SOURCE_ASSET, None)
     return _fallback(spec, values, locked, code, version)
+
+
+# --- offline scoring (common/eval_score.py) ---------------------------------------------------------
+#
+# An offline scoring run drafts with a version a person names, live or not served here at all, so it
+# never draws an arm and never writes a prompt_fallback line: the version is checked once, when the run
+# is asked for (published_version), and read by its sha256 from versions/, where the publisher writes
+# each file once and never deletes it (version_prompt). Both only read, and neither asks whether assets
+# are served (PROMPT_AS_ASSET_ENABLED): a version can be scored before they are.
+
+# A file under versions/ is named by the sha256 of its bytes.
+_VERSIONS_FILE = re.compile(r"([0-9a-f]{64})\.txt")
+
+
+def store_named() -> bool:
+    """Whether this deployment names a prompts bucket and a hash table (both roots set them whether or
+    not assets are served, so a version can be scored before the switch is turned on)."""
+    return bool(os.environ.get("PROMPTS_BUCKET")) and bool(os.environ.get("PROMPT_HASHES_TABLE"))
+
+
+def version_key(prompt_id: str, sha256: str) -> str:
+    """Where the publisher keeps a file of `prompt_id` for good: `<prompt_id>/versions/<sha256>.txt`."""
+    return f"{prompt_id}/versions/{sha256}.txt"
+
+
+def published_version(prompt_id: str, version: str) -> str | None:
+    """The sha256 of `version` (`v2`) of `prompt_id` when this deployment published it: a file under
+    versions/ whose hash row names this prompt and this version, `live` or `retired`. The hash table is
+    the record of every version published, and a version names one text for ever
+    (scripts/publish_prompts.py), so a version a later one replaced is found as well as the live one.
+    None for a version no such row names: never published here, or `pending`, which was never approved.
+    Each file's key names its sha256, so this lists the prompt's versions/ and reads their rows, as
+    many as it has versions. Read now, never from the cache; raises when the bucket or the hash table
+    cannot be read (store_named must hold)."""
+    if not _VERSION.fullmatch(version or ""):
+        return None
+    bucket, prefix = os.environ["PROMPTS_BUCKET"], f"{prompt_id}/versions/"
+    for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for item in page.get("Contents", []):
+            named = _VERSIONS_FILE.fullmatch(item["Key"][len(prefix) :])
+            if named is None:
+                continue
+            row = _hash_row(named.group(1)) or {}
+            if (row.get("prompt_id"), row.get("version")) != (prompt_id, version):
+                continue
+            if row.get("status") in ("live", "retired"):
+                return named.group(1)
+    return None
+
+
+def version_prompt(prompt_id: str, version: str, sha256: str, values: dict, locked: dict) -> Prompt | None:
+    """`version` of `prompt_id` rendered from its file under versions/ (`sha256`, recorded when the run
+    was asked for), checked again here: its bytes must hash to `sha256` and pass the spec's template
+    rules. None when it cannot be read or does not pass. A body is kept by its sha256 for the TTL, as
+    get_prompt keeps one: a versions/ file never changes."""
+    spec = spec_for(prompt_id)
+    template = _cache_get(("body", sha256))
+    if template is None:
+        try:
+            raw = _s3().get_object(Bucket=os.environ["PROMPTS_BUCKET"], Key=version_key(prompt_id, sha256))
+            template = raw["Body"].read().decode("utf-8").replace("\r\n", "\n")
+        except Exception as exc:  # noqa: BLE001 - a version that cannot be read is not scored
+            print(f"prompts: {prompt_id}: could not read {version} from versions/: {exc!r}")
+            return None
+        if sha256_text(template) != sha256:
+            print(f"prompts: {prompt_id}: the versions/ file of {version} does not hash to its name")
+            return None
+        _cache_put(("body", sha256), template)
+    code = validate(spec, template)
+    if code is not None:
+        print(f"prompts: {prompt_id}: {version} fails its template rules: {code}")
+        return None
+    return Prompt(render(spec, template, values, locked), prompt_id, version, SOURCE_ASSET, None)
+
+
+def vanilla_render(prompt_id: str, values: dict, locked: dict) -> Prompt:
+    """The code's own template for `prompt_id`, rendered, as `vanilla:<version>` with no fallback code:
+    the vanilla asked for by name, not served in an asset's place."""
+    return _vanilla(spec_for(prompt_id), values, locked, None)
 
 
 # --- what is published (the admin API's listings) -----------------------------------------------------

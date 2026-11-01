@@ -12,9 +12,9 @@ time zone, Sydney's by default and across daylight saving; a model with no row i
 back, and the judge in effect is among a model's roles; a purpose written while Bedrock is listed is
 kept; excluded sources are left out and their rows deleted when a day is added up again; a window of
 10,000 rows is split and every event counted, and a minute that alone holds them raises rather than
-splitting forever; the judge's agreement comes from pair# rows, and its verdicts gate only while it
-is calibrated; readers' votes reach cells and never a gate; the line the rollup ends with is the one
-the heartbeat filter counts.
+splitting forever; the judge's agreement comes from pair# rows given on the same text (a row without
+its text counts as the first), and its verdicts gate only while it is calibrated; readers' votes
+reach cells and never a gate; the line the rollup ends with is the one the heartbeat filter counts.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import pytest
 from moto import mock_aws
 from table_schemas import KEYS
 
-from common import dynamo, evals, evals_rollup, evidence
+from common import dynamo, evals, evals_rollup, evidence, model_fleet, prompts
 
 ROOT = Path(__file__).resolve().parents[2]
 REGION = "ap-southeast-2"
@@ -306,6 +306,73 @@ def test_a_prompt_fallback_is_counted_for_its_prompt_version_and_scores_nothing(
     prompt = plain(row(aws, f"prompt#{DRAFT}#v2", "2026-10-27"))
     assert (prompt["perf"], prompt["events"], prompt["good"], prompt["bad"]) == (0, 1, 0, 0)
     assert row(aws, f"model#{ALPHA}", "2026-10-27") is None
+
+
+def test_the_fallback_events_common_prompts_writes_count_once_a_run_for_their_version_and_no_model(
+    aws, monkeypatch
+):
+    """What common/prompts.py's fallback emits, through evals.emit, read back by the rollup: the run's
+    two fallbacks of one prompt count once, on the version that fell back, scoring nothing, and no
+    model's or cell's row is made, since the event names none."""
+    logs = FakeLogs()
+    at = sydney("2026-10-27T08:00")
+
+    class Writer:
+        def create_log_stream(self, logGroupName, logStreamName):  # noqa: N803 - boto3's own names
+            pass
+
+        def put_log_events(self, logGroupName, logStreamName, logEvents):  # noqa: N803
+            for event in logEvents:
+                logs.put(event["message"], at + timedelta(seconds=1))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return at.astimezone(tz) if tz else at
+
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    monkeypatch.setattr(evals, "_client", Writer())
+    monkeypatch.setattr(evals, "_stream", None)
+    monkeypatch.setattr(evals, "datetime", Clock)
+    spec = prompts.spec_for(DRAFT)
+    with prompts.bind_run("exec-1"):
+        prompts._count_fallback(spec, "v2")
+        prompts._count_fallback(spec, "v2")
+
+    summary = rollup(logs)
+
+    prompt = plain(row(aws, f"prompt#{DRAFT}#v2", "2026-10-27"))
+    assert (prompt["perf"], prompt["events"], prompt["good"], prompt["bad"]) == (0, 1, 0, 0)
+    assert prompt["by_reason"]["Prompt Fallback"]["events"] == 1
+    assert summary["duplicates"] == 1
+    assert {entity for entity, _ in entities(aws) if entity.startswith(("model#", "cell#"))} == set()
+
+
+def test_one_held_articles_fallbacks_on_back_to_back_reviewer_runs_count_on_both_days_however_added_up(aws):
+    """The reviewer bear's runs on the 31st and the 1st (his every-second-day schedule starts again
+    each month) each fall back on one held article. Named by his run's id with the article's
+    (reviewer.tick binds it, common/prompts.bind_request), the two events have two ids, so each counts
+    on its own day under the scheduled runs, and again when the two days are added up again: the
+    rollup keeps one event per id, and the article's id alone would make the second a copy."""
+    logs = FakeLogs()
+    skeptic = "reviewer/skeptic"
+    for run_id, day in (("261030180000-aaaaaa", "2026-10-31"), ("261031180000-bbbbbb", "2026-11-01")):
+        log(
+            logs, "Prompt Fallback", sydney(f"{day}T05:00"), parts={"request_id": f"{run_id}:a1",
+            "prompt_id": skeptic}, prompt_id=skeptic, prompt_version="v1", source="reviewer",
+        )  # fmt: skip
+
+    def counted():
+        days = ("2026-10-31", "2026-11-01")
+        return [plain(row(aws, f"prompt#{skeptic}#v1", day) or {}).get("events") for day in days]
+
+    for at in ("2026-10-31T06:00", "2026-11-01T03:00", "2026-11-01T06:00", "2026-11-02T03:00"):
+        rollup(logs, now=sydney(at))
+    assert index(aws)["last_rolled_day"] == "2026-11-01"
+    assert counted() == [1, 1]
+
+    rollup(logs, now=sydney("2026-11-02T04:00"), trigger="admin", day_from=date(2026, 10, 31))
+    assert counted() == [1, 1]
 
 
 def test_a_duplicate_event_counts_once_and_an_unreadable_line_not_at_all(aws):
@@ -768,6 +835,44 @@ def test_a_purpose_another_job_writes_while_bedrock_is_listed_is_kept(aws):
     assert (summary["classify"], summary["classified"], summary["unknown"]) == ("done", 0, 0)
 
 
+def test_the_rollup_never_calls_a_model_bedrock_lists_by_its_arn_unknown(aws):
+    """Registry rows keyed by ARNs, from before purposes were recorded. Bedrock lists the application
+    inference profile (typeEquals=APPLICATION), so it takes its base model's purpose; it lists the
+    custom model through a call the catalog does not make, so that row keeps no purpose and the
+    pricing-unit rule (model_fleet.suitable) keeps judging it. Neither is marked `unknown`, which
+    would make it unsuitable everywhere, and the custom model alone never sends the rollup back to
+    Bedrock hour after hour."""
+    arn = "arn:aws:bedrock:ap-southeast-2:123456789012:application-inference-profile/abcd1234efgh"
+    custom = "arn:aws:bedrock:ap-southeast-2:123456789012:custom-model/maker.writer-v1:0/abcd1234efgh"
+    for model_id in (arn, custom):
+        put_model(aws, model_id, pricing_unit="tokens")
+        aws.Table("Models").update_item(Key={"model_id": model_id}, UpdateExpression="REMOVE model_purpose")
+    base = {
+        "modelId": "maker.writer-v1:0", "outputModalities": ["TEXT"], "inputModalities": ["TEXT"],
+        "modelLifecycle": {"status": "ACTIVE"},
+    }  # fmt: skip
+
+    class WithApplicationProfile(FakeBedrock):
+        def list_inference_profiles(self, typeEquals=None, nextToken=None):  # noqa: N803 - boto3's names
+            if typeEquals != "APPLICATION":
+                return super().list_inference_profiles()
+            route = {"modelArn": "arn:aws:bedrock:ap-southeast-2::foundation-model/maker.writer-v1:0"}
+            profile = {"inferenceProfileArn": arn, "type": "APPLICATION", "models": [route]}
+            return {"inferenceProfileSummaries": [profile]}
+
+    summary = rollup(FakeLogs(), bedrock=WithApplicationProfile([base]))
+
+    assert (summary["classify"], summary["classified"], summary["unknown"]) == ("done", 1, 0)
+    row = model_row(aws, arn)
+    assert (row["model_purpose"], row["model_inputs"]) == ("text", ["TEXT"])
+    assert model_fleet.suitable(row)
+    left = model_row(aws, custom)
+    assert "model_purpose" not in left and model_fleet.suitable(left)
+
+    again = WithApplicationProfile([base])
+    assert rollup(FakeLogs(), bedrock=again)["classify"] == "none" and again.listings == 0
+
+
 # --- excluded sources -----------------------------------------------------------------------------
 
 
@@ -919,10 +1024,15 @@ def test_a_table_that_cannot_be_written_raises_rollup_error(aws, monkeypatch):
 # --- the judge ------------------------------------------------------------------------------------
 
 
-def pair(aws, subject, judge=None, human=None):
-    for sk, verdict in (("judge", judge), ("human", human)):
+def pair(aws, subject, judge=None, human=None, *, judged_text=None, decided_text=None):
+    """The subject's pair rows; `judged_text` and `decided_text`, the text of an article each verdict
+    was given on (its `rewrite_number`), left out as a Finding's are and as rows written before it was
+    kept."""
+    for sk, verdict, text in (("judge", judge, judged_text), ("human", human, decided_text)):
         if verdict is not None:
             item = {"entity": f"pair#{subject}", "sk": sk, "verdict": verdict, "delta": 2}
+            if text is not None:
+                item["rewrite_number"] = text
             aws.Table("Evals").put_item(Item=item)
 
 
@@ -937,6 +1047,20 @@ def test_the_judges_agreement_comes_from_the_pair_rows_holding_both_verdicts(aws
 
     assert (summary["judge_agreement"], summary["judge_pairs"], summary["calibrated"]) == (0.6667, 3, False)
     assert plain(index(aws))["judge_agreement"] == 0.6667 and plain(index(aws))["judge_pairs"] == 3
+
+
+def test_a_judges_verdict_and_a_persons_pair_only_when_given_on_the_same_text_of_an_article(aws):
+    pair(aws, "same", "good", "good", judged_text=1, decided_text=1)
+    # A person decided the first text, then a rewrite was saved and the judge judged that.
+    pair(aws, "rewritten", "bad", "good", judged_text=1, decided_text=0)
+    # A Finding is never rewritten, and its rows carry no number.
+    pair(aws, "rail-sydney#2026-10-27T02:14:09+00:00", "bad", "bad")
+    # A row written before the number was kept counts as the first text: it pairs with the first
+    # text's verdict, and never with a rewrite's.
+    pair(aws, "older", "good", "bad", decided_text=0)
+    pair(aws, "older-rewritten", "good", "good", decided_text=1)
+
+    assert evals_rollup.judge_agreement(aws.Table("Evals")) == (0.6667, 3)
 
 
 def test_the_judges_verdicts_move_the_gated_windows_only_while_it_is_calibrated(aws):

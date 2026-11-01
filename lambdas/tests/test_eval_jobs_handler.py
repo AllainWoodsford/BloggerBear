@@ -1,9 +1,9 @@
 """The eval jobs handler (eval_jobs_handler.py): `rollup` runs the rollup (from its watermark, or for
 the days an admin asked for), `judge_select` runs the judge's selector, a queue batch goes record by
-record to the judge's consumer (common/eval_judge.py, whose own tests are test_eval_judge.py), an
-unknown job is ignored, and it never raises but for a rollup's infrastructure failure, which section 6
-lets raise so eval-jobs' Errors alarm fires. It never prints what an event carried beyond a job name
-that is a code."""
+record to the judge's consumer (common/eval_judge.py, whose own tests are test_eval_judge.py) and a
+record it asks for again is named among the batch's item failures, an unknown job is ignored, and it
+never raises but for a rollup's infrastructure failure, which section 6 lets raise so eval-jobs' Errors
+alarm fires. It never prints what an event carried beyond a job name that is a code."""
 
 from __future__ import annotations
 
@@ -99,6 +99,23 @@ def test_a_queue_batch_goes_record_by_record_to_the_judges_consumer(ran, capsys)
     assert [call.args[0] for call in consume.call_args_list] == records
     assert capsys.readouterr().out == ""
     ran.assert_not_called()
+
+
+def test_a_record_its_consumer_asks_for_again_is_named_among_the_batchs_item_failures(ran):
+    """A scoring job whose run's header could not be read answers eval_judge.RETRY: the mapping reports
+    batch item failures, so naming its message id keeps it on eval-work to be delivered again. Every
+    other record is answered as before and deleted; one with no message id cannot be named."""
+    records = [
+        {"messageId": "m1", "body": '{"job": "score"}'},
+        {"messageId": "m2", "body": '{"job": "judge"}'},
+        {"body": '{"job": "score"}'},
+    ]
+    answers = [{"status": "retry"}, {"status": "judged"}, {"status": "retry"}]
+    with patch.object(eval_jobs_handler.eval_judge, "consume", side_effect=answers):
+        result = eval_jobs_handler.handler({"Records": records}, CONTEXT)
+
+    again = [{"itemIdentifier": "m1"}]
+    assert result == {"status": "consumed", "results": answers, "batchItemFailures": again}
 
 
 def test_a_record_that_fails_is_printed_by_its_repr_and_never_takes_the_next_down(capsys):

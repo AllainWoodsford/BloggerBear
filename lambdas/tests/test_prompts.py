@@ -6,14 +6,16 @@ asset served, and every way it falls back to the vanilla with its code and its e
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from datetime import UTC, datetime, timedelta
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from common import dynamo, evidence, prompts, prompts_registry
+from common import dynamo, evals, evidence, naming, prompts, prompts_registry
 from common.prompts import Prompt, PromptSpec, sha256_text
 
 REGION = "ap-southeast-2"
@@ -649,16 +651,96 @@ def test_an_invalid_prompts_row_value_is_ignored_for_its_default(aws, capsys):
     assert "prompts: ignoring invalid paused_versions='daily_cycle/draft@v2'" in out
 
 
-def test_a_failing_settings_read_falls_open_and_the_hash_check_stays_the_gate(aws, monkeypatch, capsys):
+def _throttled(config_id):
+    raise ClientError({"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}}, "GetItem")
+
+
+@pytest.mark.parametrize(
+    ("row", "code"),
+    [
+        ({"paused_versions": ["daily_cycle/draft@v2"]}, "paused"),
+        ({"prompt_assets": "off"}, "assets_off"),
+        ({"prompt_assets": "off", "paused_versions": ["daily_cycle/draft@v2"]}, "assets_off"),
+    ],
+)
+def test_a_pause_or_kill_switch_holds_while_the_settings_read_fails_after_the_ttl(
+    aws, monkeypatch, capsys, row, code
+):
+    """Section 8's failure-day recipe: `prompts pause` or `prompts set --assets off` keeps a bad
+    prompt off within 600 s. A paused version's hash row stays `live` (pausing never touches the
+    hash table), so the hash check cannot be the gate when the model-config read fails and the hash
+    table's does not: the container keeps the last row it read, even once it has expired."""
+    publish(aws, ASSET, "v2")  # live hash row
+    settings_row(aws, **row)
+    first = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert (first.source, first.fallback_code) == ("vanilla", code)
+    aws["clock"].advance(301)  # the settings cache (TTL 300 s) has expired
+    monkeypatch.setattr(dynamo, "get_config_row", _throttled)
+    capsys.readouterr()
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert (got.source, got.version, got.fallback_code) == ("vanilla", "vanilla:v1", code)
+    assert got.text == vanilla_text()
+    out = capsys.readouterr().out
+    assert "prompts: could not read the prompts settings row; keeping the last read: ClientError(" in out
+
+
+def test_a_failing_settings_read_keeps_serving_a_version_the_last_read_row_left_unpaused(aws, monkeypatch):
     publish(aws, ASSET, "v2")
+    settings_row(aws, paused_versions=["daily_cycle/draft@v9"])
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).version == "v2"
+    aws["clock"].advance(301)
+    monkeypatch.setattr(dynamo, "get_config_row", _throttled)
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert (got.source, got.version, got.fallback_code) == ("asset", "v2", None)
+
+
+def test_the_settings_row_is_read_again_once_a_failing_read_recovers(aws, monkeypatch):
+    """The last row is kept only while reads fail: nothing is written back to the cache, so the
+    next call reads the row again and sees a change made meanwhile."""
+    publish(aws, ASSET, "v2")
+    settings_row(aws, prompt_assets="off")
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "assets_off"
+    aws["clock"].advance(301)
+    real = dynamo.get_config_row
+    monkeypatch.setattr(dynamo, "get_config_row", _throttled)
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "assets_off"
+    settings_row(aws, prompt_assets="on")
+    monkeypatch.setattr(dynamo, "get_config_row", real)
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).version == "v2"
+
+
+def test_a_failing_settings_read_in_a_cold_container_fails_closed_to_the_vanilla(aws, monkeypatch, capsys):
+    """With nothing read yet in this container there is no last row: the pause list and the kill
+    switch are unknown, so the read fails closed (`assets_off`) rather than to the defaults, which
+    would serve a paused version whose hash row is still `live`."""
+    publish(aws, ASSET, "v2")
+    settings_row(aws, prompt_assets="off")
 
     def boom(config_id):
         raise RuntimeError("dynamo down")
 
     monkeypatch.setattr(dynamo, "get_config_row", boom)
-    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).source == "asset"
-    said = "prompts: could not read the prompts settings row; using defaults: RuntimeError('dynamo down')"
-    assert said in capsys.readouterr().out
+    aws["s3"].calls.clear()
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert got == Prompt(vanilla_text(), "daily_cycle/draft", "vanilla:v1", "vanilla", "assets_off")
+    assert aws["s3"].calls == {}
+    out = capsys.readouterr().out
+    said = "prompts: could not read the prompts settings row; assets off until it is read: "
+    assert said + "RuntimeError('dynamo down')" in out
+    parsed = [evidence.parse(line) for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+    assert [line["code"] for line in parsed if line and line["event"] == "prompt_fallback"] == ["assets_off"]
+
+
+def test_a_cold_container_serves_the_asset_as_soon_as_its_failing_first_read_recovers(aws, monkeypatch):
+    """The cold container's fail-closed answer is not cached: the next call reads the row again, so
+    one failed first read does not keep the assets off for the TTL, nor become the last row read."""
+    publish(aws, ASSET, "v2")
+    real = dynamo.get_config_row
+    monkeypatch.setattr(dynamo, "get_config_row", _throttled)
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "assets_off"
+    monkeypatch.setattr(dynamo, "get_config_row", real)
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert (got.source, got.version, got.fallback_code) == ("asset", "v2", None)
 
 
 def test_an_undecodable_file_falls_back_with_decode_error(aws, capsys):
@@ -705,6 +787,213 @@ def test_the_asset_text_is_normalised_to_newline_line_ends(aws):
     publish(aws, ASSET.replace("\n", "\r\n"), "v2")  # the hash row holds the \n form's sha
     got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
     assert got.source == "asset" and "\r" not in got.text
+
+
+# --- get_prompt: the fallback's evals event ----------------------------------------------------------
+
+
+class EvalsLog:
+    """The Logs client evals.emit writes through, keeping each event it is given; with `fail`, Logs
+    refuses it."""
+
+    def __init__(self):
+        self.events: list[dict] = []
+        self.fail = False
+
+    def create_log_stream(self, logGroupName, logStreamName):  # noqa: N803 - boto3's own argument names
+        pass
+
+    def put_log_events(self, logGroupName, logStreamName, logEvents):  # noqa: N803
+        if self.fail:
+            raise RuntimeError("logs down")
+        self.events.extend(json.loads(event["message"]) for event in logEvents)
+
+
+@pytest.fixture
+def evals_log(monkeypatch):
+    """Evals on, with the evals log as an EvalsLog, outside any Lambda."""
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    monkeypatch.setenv("EVALS_LOG_GROUP", "acme-dev-evals")
+    log = EvalsLog()
+    monkeypatch.setattr(evals, "_client", log)
+    monkeypatch.setattr(evals, "_stream", None)
+    return log
+
+
+def test_a_fallback_writes_one_prompt_fallback_event_for_the_version_that_fell_back_naming_no_model(
+    aws, evals_log, capsys
+):
+    publish(aws, ASSET, "v2")
+    settings_row(aws, paused_versions=["daily_cycle/draft@v2"])
+
+    with prompts.bind_run("exec-1"):
+        got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+
+    assert (got.fallback_code, got.text) == ("paused", vanilla_text())
+    [event] = evals_log.events
+    assert {name: value for name, value in event.items() if name != "timestamp"} == {
+        "schema": "evals/1",
+        "event_id": "fallback:exec-1:daily_cycle/draft",
+        "prompt_id": "daily_cycle/draft",
+        "prompt_version": "v2",
+        "performance": "neutral",
+        "rating_delta": 0,
+        "reason": "Prompt Fallback",
+        "source": "daily_cycle",
+    }
+    # The rollup reads it back as written; the evidence line the alarm counts is still there too.
+    assert evals.parse(event) == event
+    assert [(line["version"], line["code"]) for line in fallback_lines(capsys)] == [("v2", "paused")]
+
+
+def test_a_fallback_before_any_version_was_read_counts_for_the_vanilla_version(aws, evals_log, monkeypatch):
+    monkeypatch.setenv("PROMPTS_BUCKET", "no-such-bucket")
+
+    with prompts.bind_run("exec-1"):
+        assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "s3_error"
+
+    assert [(event["prompt_version"], event["event_id"]) for event in evals_log.events] == [
+        ("vanilla:v1", "fallback:exec-1:daily_cycle/draft")
+    ]
+
+
+def test_one_run_falling_back_twice_on_a_prompt_writes_one_event_id_and_unbound_calls_each_their_own(
+    aws, evals_log
+):
+    with prompts.bind_run("exec-1"):
+        for _ in range(2):
+            assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "no_files"
+    for _ in range(2):
+        assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "no_files"
+
+    ids = [event["event_id"] for event in evals_log.events]
+    # The rollup keeps one event per id, so the run counts once.
+    assert ids[:2] == ["fallback:exec-1:daily_cycle/draft"] * 2
+    assert len(set(ids[2:])) == 2 and ids[0] not in ids[2:]
+    assert all(evals.parse(event) == event for event in evals_log.events)
+
+
+@pytest.mark.parametrize("key", ["a run key with spaces", "k" * 201])
+def test_a_run_key_that_is_not_an_ids_shape_stands_in_as_its_sha256(aws, evals_log, key):
+    with prompts.bind_run(key):
+        prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+
+    [event] = evals_log.events
+    assert event["event_id"] == f"fallback:{hashlib.sha256(key.encode()).hexdigest()[:32]}:daily_cycle/draft"
+
+
+def test_a_bound_request_key_names_the_fallback_event_so_one_run_key_on_two_runs_counts_on_each(
+    aws, evals_log
+):
+    """The reviewer bear's run key is an article's id, the same on every run that asks about it; the
+    request key he binds beside it (his run's id with the article's) names the event, so the article
+    counts on each run, and once on each however often a run renders the prompt."""
+    with prompts.bind_run("article-1"):
+        for run in ("run-1", "run-2"):
+            with prompts.bind_request(f"{run}:article-1"):
+                for _ in range(2):
+                    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "no_files"
+                assert prompts.bound_run() == "article-1"
+            assert prompts.bound_request() is None
+
+    assert [event["event_id"] for event in evals_log.events] == [
+        "fallback:run-1:article-1:daily_cycle/draft",
+        "fallback:run-1:article-1:daily_cycle/draft",
+        "fallback:run-2:article-1:daily_cycle/draft",
+        "fallback:run-2:article-1:daily_cycle/draft",
+    ]
+
+
+def test_a_bound_request_key_never_moves_the_arm_the_run_key_draws(aws):
+    publish(aws, ASSET, "v2")
+    publish(aws, ASSET_B, "v3")
+    for run_key in (f"article-{i}" for i in range(20)):
+        arm = prompts.arm_index("daily_cycle/draft", 2, run_key)
+        with prompts.bind_run(run_key):
+            for request in ("run-1", "run-2", None):
+                with prompts.bind_request(f"{request}:{run_key}" if request else None):
+                    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+                assert got.version == ("v2", "v3")[arm]
+
+
+@pytest.mark.parametrize(
+    ("function", "prompt_id", "code"),
+    [
+        ("daily-cycle", "reviews/adversarial_review", "daily_cycle"),
+        ("eval-jobs", "daily_cycle/draft", "eval_jobs"),
+    ],
+)
+def test_a_fallback_inside_a_lambda_is_stamped_with_that_lambdas_code_as_its_source(
+    aws, evals_log, registry, monkeypatch, function, prompt_id, code
+):
+    """Section 4.3's source is the emitting Lambda's code, so `evals revoke --source daily_cycle`
+    takes a review prompt's fallback in the daily cycle, and `--source eval_jobs` an offline run's
+    draft, rather than the prompt's own namespace."""
+    registry.append(spec(prompt_id="reviews/adversarial_review"))
+    monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", f"{naming.environment_prefix('dev')}{function}")
+
+    assert prompts.get_prompt(prompt_id, VALUES, LOCKED).fallback_code == "no_files"
+
+    [event] = evals_log.events
+    assert (event["prompt_id"], event["source"]) == (prompt_id, code)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"AWS_LAMBDA_FUNCTION_NAME": "daily-cycle", "ENVIRONMENT_NAME": "dev"},
+        {
+            "AWS_LAMBDA_FUNCTION_NAME": f"{naming.environment_prefix('production')}daily-cycle",
+            "ENVIRONMENT_NAME": "dev",
+        },
+        {"AWS_LAMBDA_FUNCTION_NAME": f"{naming.environment_prefix('dev')}daily-cycle"},
+        {"AWS_LAMBDA_FUNCTION_NAME": f"{naming.environment_prefix('dev')}", "ENVIRONMENT_NAME": "dev"},
+    ],
+)
+def test_a_fallback_outside_a_lambda_named_as_terraform_names_them_is_stamped_with_the_prompts_lambda_id(
+    aws, evals_log, registry, monkeypatch, env
+):
+    """No function name (a test, a script), a name not built from this environment's prefix, or a
+    function not told its environment: the source falls back to the prompt's lambda id, so the event is
+    still written rather than refused for its source."""
+    registry.append(spec(prompt_id="reviews/adversarial_review"))
+    for name in ("AWS_LAMBDA_FUNCTION_NAME", "ENVIRONMENT_NAME"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    prompts.get_prompt("reviews/adversarial_review", VALUES, LOCKED)
+
+    [event] = evals_log.events
+    assert event["source"] == "reviews"
+
+
+def test_no_fallback_event_is_written_when_nothing_fell_back_or_evals_are_off(aws, evals_log, monkeypatch):
+    publish(aws, ASSET, "v2")
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).source == "asset"
+    assert prompts.get_prompt("reviews/compliance", {"draft": "d"}, {}).fallback_code is None
+    # The deployment's own switch: nothing to fall back from, as with its evidence line.
+    monkeypatch.setenv("PROMPT_AS_ASSET_ENABLED", "false")
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "assets_off"
+    monkeypatch.setenv("PROMPT_AS_ASSET_ENABLED", "true")
+    monkeypatch.setenv("EVALS_ENABLED", "false")
+    monkeypatch.setenv("PROMPTS_BUCKET", "no-such-bucket")
+    prompts._reset()
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "s3_error"
+
+    assert evals_log.events == []
+
+
+def test_logs_refusing_the_fallback_event_still_serves_the_vanilla(aws, evals_log, capsys):
+    evals_log.fail = True
+
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+
+    assert (got.fallback_code, got.text) == ("no_files", vanilla_text())
+    assert "evals: could not write an event: RuntimeError('logs down')" in capsys.readouterr().out
 
 
 # --- get_prompt: never a client when there is nothing to read ------------------------------------
@@ -777,6 +1066,7 @@ def test_a_code_only_spec_is_the_vanilla_even_when_an_asset_exists(aws, registry
 
 def test_get_prompt_never_raises_when_s3_and_dynamodb_are_both_down(aws, monkeypatch, capsys):
     publish(aws, ASSET, "v2")
+    prompts._settings()  # a warm container: it read the prompts row before the outage
 
     def down(*args, **kwargs):
         raise RuntimeError("down")
@@ -785,10 +1075,14 @@ def test_get_prompt_never_raises_when_s3_and_dynamodb_are_both_down(aws, monkeyp
     got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
     assert got.source == "vanilla" and got.fallback_code == "hash_lookup_failed"
     monkeypatch.setattr(prompts, "_s3", down)
-    prompts._reset()
+    aws["clock"].advance(301)  # every cached read has expired; the prompts row is kept as last read
     got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
     assert got == Prompt(vanilla_text(), "daily_cycle/draft", "vanilla:v1", "vanilla", "s3_error")
-    assert [line["code"] for line in fallback_lines(capsys)] == ["hash_lookup_failed", "s3_error"]
+    prompts._reset()  # a cold container has no row to keep, so it stops before S3
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert got == Prompt(vanilla_text(), "daily_cycle/draft", "vanilla:v1", "vanilla", "assets_off")
+    codes = [line["code"] for line in fallback_lines(capsys)]
+    assert codes == ["hash_lookup_failed", "s3_error", "assets_off"]
 
 
 # --- the cache -------------------------------------------------------------------------------------

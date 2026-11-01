@@ -89,8 +89,9 @@ def test_with_the_default_every_name_is_what_it_has_always_been(monkeypatch):
     ):
         assert expected in names, expected
     assert runsheets._ALARMS.where == "CloudWatch console > Alarms > filter bloggerbear-{env}-"
-    assert "(bloggerbear-<env>-edge)" in suggestions.CATALOGUE["security_incident"].action
-    assert "(bloggerbear-<env>-pipeline)" in suggestions.CATALOGUE["alarm_firing"].action
+    health = f"({naming.DEFAULT_NAME_PREFIX}-<env>-pipeline-health)"
+    assert health in suggestions.CATALOGUE["security_incident"].action
+    assert health in suggestions.CATALOGUE["alarm_firing"].action
 
 
 # --- another prefix --------------------------------------------------------------------------------
@@ -225,7 +226,7 @@ def test_another_prefix_is_what_the_alarms_and_firewall_tools_ask_for(other):
     ]
     assert other["group_label"] != "aws-waf-logs-acme-blog-dev-public-api"  # the prefix came off
     assert other["alarms_step"] == "CloudWatch console > Alarms > filter acme-blog-{env}-"
-    assert "(acme-blog-<env>-edge)" in other["suggestion"]
+    assert "(acme-blog-<env>-pipeline-health)" in other["suggestion"]
 
 
 def test_the_original_deployments_log_groups_are_refused_under_another_prefix():

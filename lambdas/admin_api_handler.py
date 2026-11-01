@@ -44,8 +44,10 @@ from botocore.exceptions import ClientError
 
 from common import (
     backup,
+    call_traces,
     dispatch,
     equipment,
+    eval_score,
     evals_adjust,
     evals_emission,
     evals_rollup,
@@ -107,8 +109,8 @@ from common.dynamo import (
     list_security_incidents,
     list_topics,
     put_feedback_config,
-    put_model,
     put_model_config,
+    put_model_if_unchanged,
     put_model_rotation_candidates,
     put_moderation_item,
     put_pipeline_config,
@@ -825,7 +827,9 @@ def _update_topic(event: dict) -> dict:
     put_topic(updated)
     _topic_changed("updated", topic, updated)
     try:
-        _apply_topic_schedules(updated, topics=topics, config=config)
+        # A topic that has just moved to the queue had its schedules deleted by _move_to_queue: a
+        # second delete would only find none, and its failure would answer 500 for a move made.
+        _apply_topic_schedules(updated, topics=topics, config=config, delete_schedules=not to_queue)
     except Exception as exc:  # noqa: BLE001 - raised again unless the topic has just left the queue
         if not from_queue:
             if isinstance(exc, ValueError):
@@ -849,12 +853,13 @@ def _move_to_queue(topic_id: str, updated: dict, *, topics: list[dict], config, 
     model-ranch-prompt-assets-evals.md, Q2), up to the row write the caller makes; returns the
     refusal to answer with, or None to go on.
 
-    The pre-flight first (dispatch.cutover_refusals: not paused, cadences the dispatcher reads, a
-    usable slug and queue id, a clean full day of shadow mode): 400 with every reason. Then 409
+    The pre-flight first (dispatch.cutover_refusals: not paused, cadences the dispatcher reads,
+    schedules written as the dispatcher would run them, a usable slug and queue id, a clean full
+    day of shadow mode): 400 with every reason. Then 409
     `confirm_required` until the caller confirms, since the schedules are deleted. They are deleted
     before the row says queue, so a failure in between leaves the topic running nowhere and said
     so, never on both paths at once (two articles in a day); the caller's _apply_topic_schedules
-    deletes them once more after the write, and finds none. Last, `updated` gains the cutover-day
+    then only records the expressions, and deletes nothing again. Last, `updated` gains the cutover-day
     claim: when today's daily turn has passed, `last_daily_dispatched_on` is today in the topic's
     zone, written by the same put that sets `dispatch_mode`, so the dispatcher does not start a
     second run today; `daily_claim_n` is left as it is."""
@@ -909,7 +914,9 @@ def _read_pipeline_config_quietly() -> dict | None:
         return None
 
 
-def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> dict:
+def _apply_topic_schedules(
+    topic: dict, *, topics: list[dict], config=None, delete_schedules: bool = True
+) -> dict:
     """Write the topic's two EventBridge Scheduler schedules with its stagger slot applied
     (common/stagger.py), DISABLED while the topic is paused, and record what was written on its
     row (`research_schedule`, `daily_schedule`), so the minute it really runs at can be read in
@@ -925,7 +932,8 @@ def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> d
     back to its schedules, is one way it can still have them. Its row still records the same
     expressions, which are what the dispatcher reads, and ValueError is raised for one the
     dispatcher could not read, so `topics reschedule` names it; its schedules are then left as they
-    are, since the dispatcher skips such a topic and they are all that runs it.
+    are, since the dispatcher skips such a topic and they are all that runs it. `delete_schedules`
+    false is for the cutover, which has just deleted them itself.
     """
     if config is None:
         config = _read_pipeline_config_quietly()
@@ -940,7 +948,8 @@ def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> d
         problem = dispatch.cadence_problem(topic, config=config, topic_count=len(topics))
         if problem:
             raise ValueError(problem)
-        delete_topic_schedules(topic["topic_id"])
+        if delete_schedules:
+            delete_topic_schedules(topic["topic_id"])
     else:
         upsert_topic_schedules(
             topic["topic_id"],
@@ -961,7 +970,8 @@ def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
     EventBridge Scheduler (the ones the dispatcher reads, for a topic on the queue) and the same in
     plain words, and the dispatcher's shadow record (common/dispatch.py): the last turns it would
     have dispatched, how many differed from what the schedules did, how many days its check could
-    not answer and how many it did."""
+    not answer and how many it did, and how many of those matched since the last mismatch or
+    unchecked day (what the cutover judges)."""
     effective = effective or {}
     research = effective.get("research") or topic.get("research_schedule") or topic.get("research_cadence")
     daily = effective.get("daily") or topic.get("daily_schedule") or topic.get("daily_cadence")
@@ -984,6 +994,7 @@ def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
         "shadow_mismatches": topic.get("shadow_mismatches"),
         "shadow_unchecked": topic.get("shadow_unchecked"),
         "shadow_checked_days": topic.get(dispatch.SHADOW_CHECKED_DAYS),
+        "shadow_clean_days": topic.get(dispatch.SHADOW_CLEAN_DAYS),
     }
 
 
@@ -1145,7 +1156,12 @@ def _set_topic_paused(event: dict, *, paused: bool) -> dict:
     written first, and both handlers refuse a paused topic whatever invoked them. Its two
     schedules are then set DISABLED or ENABLED so the heartbeats stop costing invocations; a
     schedule that could not be changed is said so in the answer, and the handlers' own check
-    still holds. The bear muses about it either way. Doing it again is a no-op."""
+    still holds. The bear muses about it either way. Doing it again is a no-op.
+
+    A topic on the queue resumed after today's daily turn has passed is given today's date as
+    `last_daily_dispatched_on` in the same write that says it is not paused (_queue_resume_day),
+    so the dispatcher starts its next run tomorrow, as a schedule enabled again after its turn
+    would."""
     topic_id = _path_param(event, "topic_id")
     topic = get_topic(topic_id)
     if topic is None:
@@ -1153,8 +1169,13 @@ def _set_topic_paused(event: dict, *, paused: bool) -> dict:
     if (topic.get("paused") is True) == paused:
         return _response(200, {"topic_id": topic_id, "paused": paused, "changed": False})
 
-    now = datetime.now(UTC).isoformat()
+    moment = datetime.now(UTC)
+    now = moment.isoformat()
     fields = {"paused": paused, "paused_at" if paused else "resumed_at": now}
+    if not paused and dispatch.dispatch_mode(topic) == dispatch.QUEUE_MODE:
+        today = _queue_resume_day(topic, moment)
+        if today:
+            fields["last_daily_dispatched_on"] = today
     set_topic_fields(topic_id, fields)
     _topic_changed("paused" if paused else "resumed", topic, {**topic, **fields})
     payload = {"topic_id": topic_id, "paused": paused, "changed": True, "at": now}
@@ -1166,6 +1187,26 @@ def _set_topic_paused(event: dict, *, paused: bool) -> dict:
         payload["schedules_error"] = str(exc)
     _post_pause_musing(topic_id, paused=paused)
     return _response(200, payload)
+
+
+def _queue_resume_day(topic: dict, now: datetime) -> str | None:
+    """What `last_daily_dispatched_on` must say when a topic on the queue is resumed at `now`:
+    today's date in its zone once today's daily turn has passed (dispatch.cutover_day, the rule a
+    cutover and a create follow), else None. Paused, the dispatcher skipped the turn, as a disabled
+    schedule would have; without this its next tick would see the turn passed and nothing
+    dispatched today, and start today's run late, which the Scheduler never does. None too when the
+    dispatcher cannot read the topic's cadences or zone: it skips such a topic every minute anyway.
+    `daily_claim_n` is left as it is, so tomorrow's run takes the next number."""
+    try:
+        return dispatch.cutover_day(
+            topic, config=_read_pipeline_config_quietly(), topic_count=len(list_topics()), now=now
+        )
+    except ValueError as exc:  # CadenceError is one; the dispatcher logs the topic every minute
+        print(
+            f"admin_api_handler: {topic.get('topic_id')} resumed with cadences the dispatcher "
+            f"cannot read: {exc!r}"
+        )
+        return None
 
 
 def _pause_topic(event: dict) -> dict:
@@ -3121,8 +3162,10 @@ def _put_model(event: dict) -> dict:
         return _error(400, "'confirm' must be a boolean if provided")
 
     # What the model catalog recorded about a model it discovered stays; its price fields go, as
-    # the price is now the one given here (common/model_catalog.py, PRICE_META_FIELDS).
-    existing = get_model(model_id) or {}
+    # the price is now the one given here (common/model_catalog.py, PRICE_META_FIELDS). Read
+    # strongly consistent, so a row `models restore` has just put back is seen.
+    read = get_model(model_id, consistent=True)
+    existing = read or {}
     # Disabling a model that is in use (common/model_fleet.py): the application's default or
     # fallback needs `confirm: true` (the CLI asks "are you sure?"); every topic's rotation, model
     # and fallback, and the shared rotation pool, are then updated to do without it.
@@ -3141,29 +3184,48 @@ def _put_model(event: dict) -> dict:
                     "roles": roles,
                 },
             )
-    item = {
-        **{field: existing[field] for field in _CATALOG_MODEL_FIELDS if existing.get(field) is not None},
-        "model_id": model_id,
-        "display_name": display_name,
-        "provider": provider,
-        "input_price_usd_per_1k_tokens": input_price,
-        "output_price_usd_per_1k_tokens": output_price,
-        "enabled": enabled,
-    }
-    if price_locked is not None:
-        item["price_locked"] = price_locked
     # Enabling a model the account may not be able to call: probe it now (one 1-token Converse
     # call, common/model_catalog.probe_access), so a denied model is said at once, not found out
     # when a topic's run falls back. It is enabled either way; the fleet never routes to it.
     warning = None
+    probed: dict = {}
     if enabled and existing.get("access") != model_catalog.GRANTED:
         access, why = model_catalog.probe_access(model_id)
-        item.update(access=access, access_checked_at=datetime.now(UTC).isoformat(), access_error=why)
-        if why is None:
-            item.pop("access_error")
+        probed = {"access": access, "access_checked_at": datetime.now(UTC).isoformat(), "access_error": why}
         if access == model_catalog.DENIED:
             warning = f"the account cannot call '{model_id}' ({why}); rotations and routing will skip it"
-    put_model(item)
+
+    def whole_row(existing: dict) -> dict:
+        item = {
+            **{field: existing[field] for field in _CATALOG_MODEL_FIELDS if existing.get(field) is not None},
+            "model_id": model_id,
+            "display_name": display_name,
+            "provider": provider,
+            "input_price_usd_per_1k_tokens": input_price,
+            "output_price_usd_per_1k_tokens": output_price,
+            "enabled": enabled,
+            **probed,
+        }
+        if item.get("access_error") is None:
+            item.pop("access_error", None)
+        if price_locked is not None:
+            item["price_locked"] = price_locked
+        return item
+
+    # The row is written whole, carrying the catalog's and the ranch's fields as read, and the
+    # probe can take seconds: another writer (the hourly rollup, an operator's `evals ungate` or
+    # `models restore`) may write the row meanwhile. So the write is made only while the row is as
+    # read, and built again once from a fresh read (the probe's answer kept) when it is not.
+    item = whole_row(existing)
+    if not put_model_if_unchanged(item, read, _CATALOG_MODEL_FIELDS):
+        read = get_model(model_id, consistent=True)
+        item = whole_row(read or {})
+        if not put_model_if_unchanged(item, read, _CATALOG_MODEL_FIELDS):
+            return _error(
+                409,
+                f"'{model_id}' was changed by another writer while this was written, twice: nothing was "
+                "written; send it again",
+            )
     if warning:
         return _response(200, {**item, "warning": warning})
     if deactivating:
@@ -3415,6 +3477,141 @@ def _review_finding_route(event: dict) -> dict:
         return _error(400, "request body must be valid JSON")
     status, answer = human_review.review(body)
     return _response(status, answer) if isinstance(answer, dict) else _error(status, answer)
+
+
+# --- Offline scoring runs (common/eval_score.py, docs/enhancements/model-ranch-prompt-assets-evals.md,
+# PR18b) ----------------------------------------------------------------------------------------------
+#
+# Starting one (with `dry_run`, only its plan: what `admin_cli evals score` shows before it asks), the
+# runs and one run's progress and results, cancelling a run and sending a scoring run's unscored
+# messages again. Each answer is eval_score's; a refusal comes back with its status and figures.
+
+_RUNS_LIMIT_DEFAULT, _RUNS_LIMIT_MAX = 20, 100
+
+
+def _evals_run_answer(action) -> dict:
+    """The route's answer: `action()`'s (status, payload), or the refusal's status, message and figures."""
+    try:
+        status, payload = action()
+    except eval_score.Refused as refused:
+        return _response(refused.status, {"error": refused.message, **refused.extra})
+    return _response(status, payload)
+
+
+def _start_evals_run_route(event: dict) -> dict:
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    return _evals_run_answer(lambda: eval_score.start(body))
+
+
+def _list_evals_runs_route(event: dict) -> dict:
+    raw = _query_param(event, "limit")
+    try:
+        limit = _RUNS_LIMIT_DEFAULT if raw is None else int(raw)
+    except ValueError:
+        limit = 0
+    if not 1 <= limit <= _RUNS_LIMIT_MAX:
+        return _error(400, f"'limit' must be a whole number from 1 to {_RUNS_LIMIT_MAX}")
+    return _response(200, eval_score.list_runs(limit))
+
+
+def _get_evals_run_route(event: dict) -> dict:
+    run_id = _path_param(event, "run_id")
+
+    def view():
+        found = eval_score.run_view(run_id)
+        if found is None:
+            raise eval_score.Refused(404, f"no run {run_id}")
+        return 200, found
+
+    return _evals_run_answer(view)
+
+
+def _cancel_evals_run_route(event: dict) -> dict:
+    return _evals_run_answer(lambda: (200, eval_score.cancel(_path_param(event, "run_id"))))
+
+
+def _resume_evals_run_route(event: dict) -> dict:
+    return _evals_run_answer(lambda: (202, eval_score.resume(_path_param(event, "run_id"))))
+
+
+# --- Call traces (common/call_traces.py; docs/enhancements/model-ranch-prompt-assets-evals.md, PR18c) --
+#
+# One article's model calls as they were sent and answered, stored while trace_calls was on: its own
+# (traces/<article_id>/), and the research calls of the Findings its lineage names
+# (traces/<topic_id>#<captured_at>/research.json). Admin only; nothing public reads traces/.
+
+# The research traces one answer reads at most, the newest Findings first.
+TRACE_RESEARCH_MAX = 24
+# How large an answer grows before the traces after it are listed without their bodies: a Lambda
+# answers at most 6 MB, and whole prompts add up.
+TRACE_ANSWER_MAX_CHARS = 5_000_000
+
+
+def _evals_traces_route(event: dict) -> dict:
+    """Every trace of one article, by stage, and those of the research behind it, each with the
+    trace as stored ({prompt_id, version, model_id, rendered_prompt, reply, tokens}) and the run that
+    stored it; a Re-Write's stage that an earlier Re-Write left is marked `superseded`
+    (call_traces.read), never shown as the later one's. 404 when there is neither an article nor a
+    trace under the id: a run that stored no article keeps its traces under the id it chose, so they
+    are still found by it."""
+    article_id = _path_param(event, "article_id")
+    if not call_traces.valid_subject(article_id) or "#" in article_id:
+        return _error(400, "article_id must be an article's id")
+    client = boto3.client("s3")
+    try:
+        article = get_article(article_id)
+        own = call_traces.read(article_id, client)
+        research, not_read = _research_traces(article, client)
+    except Exception as exc:  # noqa: BLE001 - say what failed rather than a bare 500
+        print(f"admin_api_handler: could not read the traces of {article_id}: {exc!r}")
+        return _error(502, f"could not read the traces ({type(exc).__name__})")
+    if article is None and not own:
+        return _error(404, f"no article and no traces under '{article_id}'")
+    try:
+        tracing = bool(evals_settings.get_settings()[call_traces.SETTING])
+    except Exception as exc:  # noqa: BLE001 - the traces are still worth showing
+        print(f"admin_api_handler: could not read {call_traces.SETTING}: {exc!r}")
+        tracing = None
+    used = 0
+    for entry in own + research:
+        size = len(json.dumps(entry["trace"], default=_json_number))
+        if used + size > TRACE_ANSWER_MAX_CHARS:
+            entry.update(trace=None, left_out="the answer is at its size limit")
+        else:
+            used += size
+    return _response(
+        200,
+        {
+            "article_id": article_id,
+            "article_found": article is not None,
+            call_traces.SETTING: tracing,
+            "traces": own,
+            "research": research,
+            "research_not_read": not_read,
+        },
+    )
+
+
+def _research_traces(article: dict | None, client) -> tuple[list[dict], int]:
+    """The traces of the research calls an article's lineage names (newest first, at most
+    TRACE_RESEARCH_MAX), each with its Finding's `captured_at`; and how many calls were past that."""
+    if article is None:
+        return [], 0
+    research = (article.get("lineage") or {}).get("research") or {}
+    times = {call.get("captured_at") for call in research.get("calls") or [] if isinstance(call, dict)}
+    captured = sorted((at for at in times if isinstance(at, str)), reverse=True)
+    found = []
+    for captured_at in captured[:TRACE_RESEARCH_MAX]:
+        subject = call_traces.finding_subject(str(article.get("topic_id")), captured_at)
+        if not call_traces.valid_subject(subject):
+            continue
+        entry = call_traces.read_one(subject, "research", client)
+        if entry is not None:
+            found.append({"captured_at": captured_at, **entry})
+    return found, max(len(captured) - TRACE_RESEARCH_MAX, 0)
 
 
 # --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/archive/reviewer-bear.md) -----
@@ -4192,6 +4389,12 @@ _ROUTES = {
     # A person's review of research Findings (common/human_review.py).
     "GET /evals/findings": _list_findings_to_review_route,
     "POST /evals/findings/review": _review_finding_route,
+    "POST /evals/runs": _start_evals_run_route,
+    "GET /evals/runs": _list_evals_runs_route,
+    "GET /evals/runs/{run_id}": _get_evals_run_route,
+    "DELETE /evals/runs/{run_id}": _cancel_evals_run_route,
+    "POST /evals/runs/{run_id}/resume": _resume_evals_run_route,
+    "GET /evals/traces/{article_id}": _evals_traces_route,
     "GET /reviewer-config": _get_reviewer_config_route,
     "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /prompts": _list_prompts_route,

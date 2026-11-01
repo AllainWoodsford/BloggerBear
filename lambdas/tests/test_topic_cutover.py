@@ -44,8 +44,9 @@ DAY = timedelta(days=1)
 
 def ready(topic_id="github-trending", **fields) -> dict:
     """A topic on its schedules that shadow mode has watched cleanly: one checked day, no mismatch,
-    no unchecked day, a research turn recorded, and yesterday's daily turn as the last daily record
-    (so nothing but the cutover-day claim can stop today's run)."""
+    no unchecked day, a research turn recorded and judged on time, and yesterday's daily turn as the
+    last daily record (so nothing but the cutover-day claim can stop today's run). Its schedules as
+    written are the ones the dispatcher works out for slot 1 of one topic."""
     row = {
         "topic_id": topic_id,
         "name": topic_id,
@@ -55,7 +56,10 @@ def ready(topic_id="github-trending", **fields) -> dict:
         "daily_cadence": "cron(0 9 * * ? *)",
         "daily_timezone": "Australia/Sydney",
         "stagger_slot": 1,
+        "research_schedule": "cron(5 * * * ? *)",
+        "daily_schedule": "cron(10 9 * * ? *)",
         "shadow_last_research_dispatch_at": "2026-10-24T20:05:30+00:00",
+        "shadow_research_matched_at": "2026-10-24T20:05:30+00:00",
         "shadow_last_daily_dispatch_at": "2026-10-23T22:10:30+00:00",
         "shadow_mismatches": 0,
         "shadow_unchecked": 0,
@@ -167,8 +171,8 @@ def test_a_topic_shadow_mode_watched_cleanly_moves_to_the_queue_once_confirmed(w
     status, body = update(world, BEFORE_TURN, dispatch_mode="queue", confirm=True)
 
     assert status == 200 and body["dispatch_mode"] == "queue"
-    # Deleted before the row says queue (_move_to_queue), and once more after it, finding none.
-    assert [deleted.args for deleted in world["deleted"].call_args_list] == [("github-trending",)] * 2
+    # Deleted once, before the row says queue (_move_to_queue), and not again after it.
+    assert [deleted.args for deleted in world["deleted"].call_args_list] == [("github-trending",)]
     world["upserted"].assert_not_called()  # a topic on the queue has no schedules
     row = stored()
     assert row["dispatch_mode"] == "queue"
@@ -193,13 +197,45 @@ def test_moving_to_the_queue_is_refused_until_confirmed_and_nothing_is_deleted_m
     ("fields", "reason"),
     [
         ({"paused": True}, "it is paused"),
-        ({"shadow_mismatches": 2}, "shadow mode counted 2 mismatches with its schedules"),
-        ({"shadow_unchecked": 1}, "shadow mode could not check 1 of its days"),
+        # Counted before clean days were: no clean day can be read from the row.
+        (
+            {"shadow_mismatches": 2},
+            "shadow mode has not watched a full day of it since its last mismatch or unchecked day "
+            "(2 mismatches and 0 unchecked days in all",
+        ),
+        (
+            {"shadow_unchecked": 1},
+            "shadow mode has not watched a full day of it since its last mismatch or unchecked day "
+            "(0 mismatches and 1 unchecked day in all",
+        ),
+        (
+            {"shadow_mismatches": 1, "shadow_checked_days": 5, "shadow_clean_days": 0},
+            "shadow mode has not watched a full day of it since its last mismatch or unchecked day "
+            "(1 mismatch and 0 unchecked days in all",
+        ),
+        ({"shadow_clean_days": "lots"}, "its shadow record is unreadable (shadow_clean_days)"),
         ({"shadow_checked_days": 0}, "shadow mode has not yet watched a full day of it"),
         # A row from before the dispatcher counted checked days: never taken for a day watched.
         ({"shadow_checked_days": None}, "shadow mode has not yet watched a full day of it"),
         ({"shadow_checked_days": "lots"}, "its shadow record is unreadable (shadow_checked_days)"),
-        ({"shadow_last_research_dispatch_at": None}, "shadow mode has recorded none of its research turns"),
+        # Recorded but not yet judged proves nothing; a drifted heartbeat is never judged on time.
+        (
+            {"shadow_research_matched_at": None},
+            "shadow mode has seen none of its research turns taken on time (a heartbeat running off",
+        ),
+        (
+            {"shadow_research_mismatch_at": "2026-10-24T21:05:30+00:00"},
+            "shadow mode has seen none of its research turns taken on time since its last research "
+            "mismatch, the turn at 2026-10-24T21:05:30+00:00",
+        ),
+        (
+            {"shadow_research_mismatch_at": "2026-10-24T20:05:30+00:00"},
+            "since its last research mismatch, the turn at 2026-10-24T20:05:30+00:00",
+        ),
+        (
+            {"shadow_research_matched_at": "lots"},
+            "its shadow record is unreadable (shadow_research_matched_at)",
+        ),
         (
             {"daily_cadence": "cron(0 9 * 1 ? *)"},
             "the dispatcher cannot read its daily cadence 'cron(0 9 * 1 ? *)' (written as "
@@ -225,10 +261,15 @@ def test_moving_to_the_queue_is_refused_until_confirmed_and_nothing_is_deleted_m
         "paused",
         "mismatches",
         "unchecked_days",
+        "no_clean_day_since_the_last_mismatch",
+        "unreadable_clean_days",
         "no_checked_day",
         "checked_days_never_counted",
         "unreadable_count",
-        "no_research_turn_recorded",
+        "no_research_turn_judged_on_time",
+        "research_mismatch_since_the_last_turn_on_time",
+        "research_mismatch_on_the_last_turn_judged",
+        "unreadable_research_turn",
         "daily_cadence_unreadable",
         "research_cadence_unreadable",
         "daily_rate_hidden_by_the_stagger",
@@ -243,12 +284,17 @@ def test_the_pre_flight_refuses_a_move_to_the_queue_with_its_reason(world, field
 
     assert status == 400
     assert reason in body["error"] and any(reason in line for line in body["reasons"])
+    # Each case is refused for its one reason alone: an unreadable cadence is not also reported as
+    # written schedules that differ, since mending it writes the schedules again.
+    assert len(body["reasons"]) == 1
     world["deleted"].assert_not_called()
     assert stored() == before
 
 
 def test_every_reason_is_given_at_once(world):
-    put_topics(ready(paused=True, shadow_mismatches=1, shadow_unchecked=3))
+    put_topics(
+        ready(paused=True, shadow_mismatches=1, shadow_unchecked=3, shadow_research_matched_at=None)
+    )
 
     status, body = update(world, BEFORE_TURN, dispatch_mode="queue", confirm=True)
 
@@ -297,18 +343,174 @@ def test_a_topic_id_too_long_for_the_manual_deduplication_id_is_refused(world):
 
 def test_a_rate_research_cadence_is_judged_by_its_parse_and_its_daily_record_alone(world):
     """rate(30 minutes) stays a rate through the stagger: shadow mode records its turns but never
-    judges them, so no research turn recorded is no refusal; a daily mismatch still is."""
-    put_topics(ready(research_cadence="rate(30 minutes)", shadow_last_research_dispatch_at=None))
+    judges them, so no research turn judged is no refusal; a daily mismatch still is."""
+    put_topics(
+        ready(
+            research_cadence="rate(30 minutes)",
+            research_schedule="rate(30 minutes)",
+            shadow_last_research_dispatch_at=None,
+            shadow_research_matched_at=None,
+        )
+    )
 
     status, _ = update(world, BEFORE_TURN, dispatch_mode="queue", confirm=True)
     assert status == 200
 
-    put_topics(ready("hacker-news", stagger_slot=2, research_cadence="rate(30 minutes)", shadow_mismatches=1))
+    put_topics(
+        ready(
+            "hacker-news",
+            stagger_slot=2,
+            research_cadence="rate(30 minutes)",
+            research_schedule="rate(30 minutes)",
+            daily_schedule="cron(20 9 * * ? *)",  # slot 2 of two topics
+            shadow_mismatches=1,
+        )
+    )
     status, body = update(world, BEFORE_TURN, topic_id="hacker-news", dispatch_mode="queue", confirm=True)
     assert status == 400
     assert body["reasons"] == [
-        "shadow mode counted 1 mismatch with its schedules (`topics schedule` shows the record)"
+        "shadow mode has not watched a full day of it since its last mismatch or unchecked day "
+        "(1 mismatch and 0 unchecked days in all; one clean day checked is enough, and "
+        "`topics schedule` shows the record)"
     ]
+
+
+def test_an_old_mismatch_holds_the_cutover_back_only_until_a_clean_day_is_checked_after_it(world):
+    """The pre-flight judges the recent stretch: a day checked and matched since the last mismatch or
+    unchecked day. Judged on the whole history, one mismatch (or a record from before a cadence
+    change) refused the cutover until someone cleared the row by hand."""
+    put_topics(ready(shadow_mismatches=3, shadow_unchecked=1, shadow_checked_days=9, shadow_clean_days=1))
+
+    status, body = update(world, BEFORE_TURN, dispatch_mode="queue", confirm=True)
+
+    assert status == 200 and body["dispatch_mode"] == "queue"
+    assert stored()["shadow_mismatches"] == 3  # the history stays, for `topics schedule`
+
+
+# --- the schedules as written and as the dispatcher works them out ---------------------------------
+#
+# The daily offset is (topic count + slot) * stagger_minutes, and adding or deleting a topic writes
+# only that topic's schedules: every other topic's Scheduler expression (`daily_schedule` on its row)
+# stays as it was until `topics reschedule`, while the dispatcher works its turn out again from the
+# new count. A move made between the two minutes would give the topic two daily runs that day, or
+# none, so the pre-flight refuses a move while the two differ.
+
+MOVED_AT = datetime(2026, 10, 24, 22, 12, tzinfo=UTC)  # 09:12 in Sydney
+TURN_WITH_TWO_TOPICS = datetime(2026, 10, 24, 22, 15, tzinfo=UTC)  # 09:15: slot 1 of 2
+DRIFTED = "the schedules written for it are not the ones the dispatcher would run"
+
+
+def delete(world, at: datetime, topic_id: str) -> tuple[int, dict]:
+    world["clock"]["now"] = at
+    result = admin_api_handler.handler(
+        _event("DELETE /topics/{topic_id}", path_params={"topic_id": topic_id}), None
+    )
+    return result["statusCode"], json.loads(result["body"])
+
+
+def test_a_move_after_a_topic_was_added_is_refused_until_its_schedules_are_written_again(world):
+    # Written while it was the only topic: the Scheduler runs its daily cycle at 09:10.
+    put_topics(ready())
+    status, _ = create(
+        world,
+        BEFORE_TURN,
+        topic_id="hacker-news",
+        name="Hacker News",
+        adapter="github_trending",
+        research_cadence="rate(1 hour)",
+        daily_cadence="cron(0 9 * * ? *)",
+        daily_timezone="Australia/Sydney",
+    )
+    assert status == 201
+    # Only the new topic's schedules were written: github-trending's Scheduler still says 09:10,
+    # while the dispatcher, counting two topics now, works its turn out as 09:15.
+    assert [call.args[0] for call in world["upserted"].call_args_list] == ["hacker-news"]
+    assert stored()["daily_schedule"] == "cron(10 9 * * ? *)"
+    assert dispatch.effective_cadences(stored(), config=None, topic_count=2)["daily"] == "cron(15 9 * * ? *)"
+
+    # 09:10: the Scheduler starts today's run (no tick sees it). 09:12: the move. Let through, the
+    # dispatcher would start a second run at 09:15.
+    status, body = update(world, MOVED_AT, dispatch_mode="queue", confirm=True)
+
+    assert status == 400
+    assert body["reasons"] == [
+        f"{DRIFTED} (daily written as 'cron(10 9 * * ? *)', read as 'cron(15 9 * * ? *)'), so the "
+        "move cannot tell whether today's daily cycle has run: run `topics reschedule` first, and make "
+        "a cadence or slot change in an update of its own"
+    ]
+    world["deleted"].assert_not_called()
+    assert "dispatch_mode" not in stored()
+
+    assert reschedule()[0] == 200
+    assert stored()["daily_schedule"] == "cron(15 9 * * ? *)"
+    status, _ = update(world, AFTER_TURN, dispatch_mode="queue", confirm=True)
+    assert status == 200 and stored()["last_daily_dispatched_on"] == "2026-10-25"
+    tick(world, AFTER_TURN + timedelta(minutes=1), TURN_WITH_TWO_TOPICS + DAY)
+    assert started(world) == ["github-trending-2026-10-26-1"]
+
+
+def test_a_move_after_a_topic_was_deleted_is_refused_until_its_schedules_are_written_again(world):
+    # Written while there were two topics: the Scheduler runs github-trending's daily cycle at 09:15.
+    put_topics(
+        ready(daily_schedule="cron(15 9 * * ? *)"),
+        ready(
+            "hacker-news",
+            stagger_slot=2,
+            research_schedule="cron(10 * * * ? *)",
+            daily_schedule="cron(20 9 * * ? *)",
+        ),
+    )
+    assert delete(world, BEFORE_TURN, "hacker-news")[0] == 200
+    # Deleting a topic writes no other topic's schedules: github-trending's still says 09:15, while
+    # the dispatcher, counting one topic now, works its turn out as 09:10.
+    world["upserted"].assert_not_called()
+    assert dispatch.effective_cadences(stored(), config=None, topic_count=1)["daily"] == "cron(10 9 * * ? *)"
+    world["deleted"].reset_mock()
+
+    # 09:12: let through, the move would write today's claim (09:10 has passed) and delete the
+    # schedules before the Scheduler's 09:15 run: nothing would run the topic today.
+    status, body = update(world, MOVED_AT, dispatch_mode="queue", confirm=True)
+
+    assert status == 400 and DRIFTED in body["error"]
+    assert "daily written as 'cron(15 9 * * ? *)', read as 'cron(10 9 * * ? *)'" in body["error"]
+    world["deleted"].assert_not_called()
+    assert "last_daily_dispatched_on" not in stored()
+
+
+@pytest.mark.parametrize(
+    ("fields", "named"),
+    [
+        ({"research_schedule": None, "daily_schedule": None}, "research not recorded; daily not recorded"),
+        ({"research_schedule": "cron(10 * * * ? *)"}, "research written as 'cron(10 * * * ? *)', read as"),
+        # The same update changes the cadence: the Scheduler ran today on the old one.
+        ({"daily_cadence": "cron(0 10 * * ? *)"}, "daily written as 'cron(10 9 * * ? *)', read as"),
+    ],
+    ids=["never_recorded", "stagger_changed", "cadence_changed_in_the_same_update"],
+)
+def test_a_move_whose_schedules_as_written_cannot_be_matched_is_refused(world, fields, named):
+    stored_fields = {key: value for key, value in fields.items() if key.endswith("_schedule")}
+    put_topics(ready(**stored_fields))
+    change = {key: value for key, value in fields.items() if not key.endswith("_schedule")}
+
+    status, body = update(world, AFTER_TURN, dispatch_mode="queue", confirm=True, **change)
+
+    assert status == 400 and DRIFTED in body["error"] and named in body["error"]
+    world["deleted"].assert_not_called()
+    assert "dispatch_mode" not in stored()
+
+
+def test_a_move_made_is_answered_as_made_whatever_a_second_delete_would_have_done(world):
+    """The schedules are deleted once, before the row says queue. A second delete after the write
+    could only find none, and when the Scheduler refused it the move that had been made was
+    answered 500."""
+    put_topics(ready())
+    world["deleted"].side_effect = [None, RuntimeError("Scheduler throttled")]
+
+    status, body = update(world, BEFORE_TURN, dispatch_mode="queue", confirm=True)
+
+    assert status == 200 and body["dispatch_mode"] == "queue"
+    assert world["deleted"].call_count == 1
+    assert stored()["dispatch_mode"] == "queue" and stored()["daily_schedule"] == "cron(10 9 * * ? *)"
 
 
 def test_a_delete_that_fails_leaves_the_topic_on_its_schedules_and_says_so(world):
@@ -403,6 +605,70 @@ def test_queue_schedule_queue_after_the_daily_turn_starts_no_second_run(world):
     assert started(world) == ["github-trending-2026-10-25-1"]
     tick(world, DAILY_TURN + 2 * DAY)
     assert started(world) == ["github-trending-2026-10-25-1", "github-trending-2026-10-27-2"]
+
+
+# --- resuming a topic on the queue -------------------------------------------------------------------
+
+
+def resume(world, at: datetime, monkeypatch, topic_id="github-trending") -> tuple[int, dict]:
+    """POST /topics/<id>/resume at `at`, with the schedules' state and the bear's musing faked."""
+    monkeypatch.setattr(admin_api_handler, "set_topic_schedules_state", MagicMock(return_value=[]))
+    monkeypatch.setattr(admin_api_handler, "generate_and_store_pause_musing", MagicMock())
+    world["clock"]["now"] = at
+    result = admin_api_handler.handler(
+        _event("POST /topics/{topic_id}/resume", path_params={"topic_id": topic_id}), None
+    )
+    return result["statusCode"], json.loads(result["body"])
+
+
+def test_resumed_on_the_queue_after_the_daily_turn_it_starts_nothing_today_and_runs_tomorrow(
+    world, monkeypatch
+):
+    """Paused through the morning's turn, a schedule would have been disabled at it and fire next
+    tomorrow; the dispatcher must not start today's run late on the first tick after the resume."""
+    put_topics(
+        ready(dispatch_mode="queue", paused=True, daily_claim_n=3, last_daily_dispatched_on="2026-10-23")
+    )
+
+    status, body = resume(world, AFTER_TURN, monkeypatch)
+
+    assert status == 200 and body["paused"] is False
+    row = stored()
+    assert row["paused"] is False and row["last_daily_dispatched_on"] == "2026-10-25"
+    assert row["daily_claim_n"] == 3  # tomorrow's run takes the next number
+    tick(world, AFTER_TURN + timedelta(minutes=1), AFTER_TURN + timedelta(hours=5))
+    assert started(world) == []
+    tick(world, DAILY_TURN + DAY)
+    assert started(world) == ["github-trending-2026-10-26-4"]
+
+
+def test_resumed_on_the_queue_before_the_daily_turn_it_runs_today(world, monkeypatch):
+    put_topics(ready(dispatch_mode="queue", paused=True, last_daily_dispatched_on="2026-10-23"))
+
+    assert resume(world, BEFORE_TURN, monkeypatch)[0] == 200
+
+    assert stored()["last_daily_dispatched_on"] == "2026-10-23"
+    tick(world, DAILY_TURN, AFTER_TURN)
+    assert started(world) == ["github-trending-2026-10-25-1"]
+
+
+def test_a_topic_on_its_schedules_is_resumed_as_before(world, monkeypatch):
+    # Its schedules are enabled again and fire at their next turn; the dispatcher's claim is not
+    # its to write.
+    put_topics(ready(paused=True))
+
+    assert resume(world, AFTER_TURN, monkeypatch)[0] == 200
+
+    assert stored()["paused"] is False and "last_daily_dispatched_on" not in stored()
+
+
+def test_a_topic_on_the_queue_the_dispatcher_cannot_read_is_still_resumed(world, monkeypatch, capsys):
+    put_topics(ready(dispatch_mode="queue", paused=True, daily_timezone="Mars/Olympus"))
+
+    assert resume(world, AFTER_TURN, monkeypatch)[0] == 200
+
+    assert stored()["paused"] is False and "last_daily_dispatched_on" not in stored()
+    assert "resumed with cadences the dispatcher cannot read" in capsys.readouterr().out
 
 
 # --- the way back ------------------------------------------------------------------------------------
@@ -868,7 +1134,8 @@ def test_a_manual_research_run_with_no_work_queue_deployed_says_so(world, monkey
 def test_topics_schedule_shows_each_topic_s_dispatch_mode_and_checked_days(world):
     old = ready("older", stagger_slot=3)
     del old["shadow_checked_days"]
-    put_topics(ready("alpha", dispatch_mode="queue"), ready("bravo", stagger_slot=2), old)
+    bravo = ready("bravo", stagger_slot=2, shadow_clean_days=1)
+    put_topics(ready("alpha", dispatch_mode="queue"), bravo, old)
 
     result = admin_api_handler.handler(_event("GET /topics/schedule"), None)
 
@@ -879,3 +1146,4 @@ def test_topics_schedule_shows_each_topic_s_dispatch_mode_and_checked_days(world
         ("older", "schedule"),
     ]
     assert [row["shadow_checked_days"] for row in rows] == [1, 1, None]
+    assert [row["shadow_clean_days"] for row in rows] == [None, 1, None]  # what the cutover judges

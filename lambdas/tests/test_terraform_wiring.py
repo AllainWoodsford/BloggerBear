@@ -8,6 +8,7 @@ they are checked here.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shutil
@@ -164,6 +165,19 @@ def test_the_zone_lives_in_bootstrap_and_cannot_be_destroyed_by_accident():
     assert 'output "hosted_zone_id"' in outputs and 'output "hosted_zone_name_servers"' in outputs
 
 
+def test_the_bootstrap_domain_says_its_default_creates_a_zone_and_empty_creates_none():
+    """The default is a real domain, so an apply that does not pass domain_name creates a zone for
+    it. The description once said empty was the default and created nothing, which tells a fork
+    that leaving it out makes no zone."""
+    variable = _read("bootstrap", "variables.tf").split('variable "domain_name" {')[1].split("\n}\n")[0]
+    default = re.search(r'^  default\s*=\s*"([^"]*)"$', variable, re.M).group(1)
+    description = " ".join(variable.split("<<-EOT\n")[1].split("\n  EOT\n")[0].split())
+    assert default != ""
+    assert not re.search(r"empty \(the default\)|default is empty", description, re.I)
+    assert "The default is the original deployment's domain" in description
+    assert '`-var="domain_name="` (empty), which creates no zone' in description
+
+
 # --- production keeps its data ---------------------------------------------------------------------
 
 
@@ -212,17 +226,120 @@ def test_the_content_bucket_is_versioned_and_old_versions_expire():
 # --- Cleanup PR: snapshots expire, TTLs were added, log retention was set ---------------------
 
 
+def _lifecycle_rule(env: str, rule_id: str) -> str:
+    """One `rule { ... }` of the content bucket's lifecycle, whole and no more: from its opening to
+    its own closing brace, so a test of one rule never reads the rule that follows it."""
+    text = _uncommented(_read("environments", env, "main.tf"))
+    lifecycle = _resource_block(text, "aws_s3_bucket_lifecycle_configuration", "content")
+    assert "bucket = aws_s3_bucket.content.id" in lifecycle, env
+    rules = re.findall(r"^  rule \{\n(.*?)^  \}$", lifecycle, re.S | re.M)
+    [rule] = [body for body in rules if re.search(rf'^\s*id\s*=\s*"{re.escape(rule_id)}"$', body, re.M)]
+    return rule
+
+
 @pytest.mark.parametrize("env", ["dev", "production"])
 def test_raw_source_snapshots_expire_separately_from_the_rest_of_the_bucket(env):
     """21 days, not the Findings table's own 14-day FINDING_TTL_DAYS -- a safety margin over how
     long a DynamoDB TTL deletion can lag past a Finding's actual expiry, so a live Finding's
     raw_snapshot_s3_key is never left pointing at an already-deleted object."""
-    text = _read("environments", env, "main.tf")
-    start = re.search(r'id\s*=\s*"expire-old-snapshots"', text).start()
-    rule = text[start : start + 400]
+    rule = _lifecycle_rule(env, "expire-old-snapshots")
 
     assert 'prefix = "snapshots/"' in rule
-    assert "days = 21" in rule
+    assert re.search(r"^\s*days = 21$", rule, re.M)
+    assert 'status = "Enabled"' in rule
+
+
+# --- PR18c: call traces (lambdas/common/call_traces.py) ----------------------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_call_traces_expire_after_14_days_in_both_environments(env):
+    """Traces hold whole prompts and replies: two weeks to read them back, then gone. Production's
+    bucket is versioned, so its rule also drops the noncurrent copy an expiry or a later trace
+    leaves, a day on, rather than after the whole bucket's 30 days."""
+    rule = _lifecycle_rule(env, "expire-call-traces")
+
+    assert 'prefix = "traces/"' in rule
+    assert re.search(r"^\s*days = 14$", rule, re.M)
+    assert 'status = "Enabled"' in rule
+    if env == "production":
+        assert re.search(r"^\s*noncurrent_days = 1$", rule, re.M)
+
+
+@pytest.mark.parametrize(("env", "default"), [("dev", "true"), ("production", "false")])
+def test_trace_calls_is_on_by_default_in_dev_and_off_in_production(env, default):
+    """Section 4.5: trace_calls is false, and the dev root sets it true. The root's say is the
+    TRACE_CALLS_DEFAULT every pipeline Lambda is given (common/evals_settings.defaults reads it)."""
+    main = _uncommented(_read("environments", env, "main.tf"))
+    shared = main.split("  lambda_env_variables = {")[1].split("\n}\n")[0]
+
+    assert re.findall(r'^\s*TRACE_CALLS_DEFAULT\s*=\s*"(\w+)"$', shared, re.M) == [default]
+
+
+# The resource types that may name the content bucket in a root (dev's has no versioning): none of
+# them can make an object readable by anyone outside the account.
+_CONTENT_BUCKET_SETTINGS = {
+    "aws_s3_bucket_ownership_controls",
+    "aws_s3_bucket_public_access_block",
+    "aws_s3_bucket_versioning",
+    "aws_s3_bucket_lifecycle_configuration",
+}
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_no_public_path_reaches_the_content_buckets_call_traces(env):
+    """Call traces sit in the content bucket under traces/, and hold whole prompts and replies, so
+    nothing public may read them. The bucket has no public path at all: no CloudFront distribution
+    takes it as an origin (the site's takes the site bucket, through its OAC policy on that bucket
+    alone; the API's takes the public API), it has no bucket policy and every public access is
+    blocked, and the only role besides lambda_exec that may read it (the assistant's) reads named
+    prefixes, never traces/. The public API's own reads are held in test_call_traces.py. A bucket
+    policy, an origin or a broader grant added later fails here."""
+    main = _uncommented(_read("environments", env, "main.tf"))
+
+    names_it = re.compile(r"aws_s3_bucket\.content\.(id|bucket|arn)\b")
+    resources = re.findall(r'^resource "(\w+)" "\w+" \{\n(.*?)^\}', main, re.S | re.M)
+    settings = {kind for kind, body in resources if names_it.search(body)}
+    assert "aws_s3_bucket_public_access_block" in settings and settings <= _CONTENT_BUCKET_SETTINGS, env
+    # Besides those, only lambda_exec's own policy documents (an identity policy grants no one else).
+    data = re.findall(r'^data "(\w+)" "(\w+)" \{\n(.*?)^\}', main, re.S | re.M)
+    assert {(kind, name) for kind, name, body in data if names_it.search(body)} == {
+        ("aws_iam_policy_document", "lambda_exec")
+    }, env
+    blocked = _resource_block(main, "aws_s3_bucket_public_access_block", "content")
+    for setting in (
+        "block_public_acls",
+        "block_public_policy",
+        "ignore_public_acls",
+        "restrict_public_buckets",
+    ):
+        assert re.search(rf"^\s*{setting}\s*=\s*true$", blocked, re.M), (env, setting)
+    # The modules a root hands the bucket to: the assistant alone.
+    modules = re.findall(r'^module "(\w+)" \{\n(.*?)^\}', main, re.S | re.M)
+    handed = {name for name, body in modules if "aws_s3_bucket.content" in body}
+    assert handed == {"ops_assistant"}, env
+
+    # Every CloudFront origin in the tree, and what it is.
+    origins = []
+    for path in terraform_files():
+        text = _uncommented(path.read_text(encoding="utf-8"))
+        origins += re.findall(r"^  origin \{\n(.*?)^  \}", text, re.S | re.M)
+    domains = sorted(re.search(r"^\s*domain_name\s*=\s*(\S+)$", origin, re.M).group(1) for origin in origins)
+    assert domains == ["aws_s3_bucket.site.bucket_regional_domain_name", "var.api_domain"]
+    site = _uncommented(_read("modules", "static-site", "main.tf"))
+    policy = _resource_block(site, "aws_s3_bucket_policy", "site")
+    assert "bucket = aws_s3_bucket.site.id" in policy
+    assert re.findall(r"^\s*Resource\s*=\s*(.+)$", policy, re.M) == ['"${aws_s3_bucket.site.arn}/*"']
+
+    # The assistant's grants on the bucket name their prefixes, and none is the bucket itself.
+    granted = []
+    for path in sorted((INFRA / "modules" / "ops-assistant").glob("*.tf")):
+        text = _uncommented(path.read_text(encoding="utf-8"))
+        granted += re.findall(r"\$\{var\.content_bucket_arn\}([^\"]*)\"", text)
+        assert not re.search(r"[=\[,]\s*var\.content_bucket_arn\b", text), path.name
+    assert len(granted) >= 2
+    for resource in granted:
+        assert re.match(r"/(articles|snapshots)/", resource), resource
 
 
 def test_four_more_tables_gained_a_ttl_in_the_cleanup_pr():
@@ -674,21 +791,7 @@ def test_every_lambda_has_a_log_group_made_before_it(env):
 # --- dashboards --------------------------------------------------------------------------------
 
 
-def test_the_dashboards_open_on_a_span_that_shows_something():
-    module = _read("modules", "observability", "main.tf")
-    pipeline = re.search(r'resource "aws_cloudwatch_dashboard" "pipeline" \{(.*?)\n\}\n', module, re.S).group(
-        1
-    )
-    runs = re.search(r'resource "aws_cloudwatch_dashboard" "lambda_runs" \{(.*?)\n\}\n', module, re.S).group(
-        1
-    )
-
-    assert 'start          = "-P7D"' in pipeline and "period = 3600" in pipeline
-    assert 'yAxis = "right"' in pipeline  # duration off the count axis
-    assert "setPeriodToTimeRange = true" in runs
-
-
-def test_the_runs_dashboard_counts_match_the_handlers_log_lines():
+def test_the_feedback_funnel_counts_match_the_handlers_log_lines():
     module = _read("modules", "observability", "main.tf")
     handler = (ROOT / "lambdas" / "public_api_handler.py").read_text(encoding="utf-8")
 
@@ -706,33 +809,186 @@ def _dashboards() -> str:
     return _read("modules", "observability", "api_waf_dashboards.tf")
 
 
-def _dashboard_resource(name: str) -> str:
-    pattern = rf'resource "aws_cloudwatch_dashboard" "{name}" \{{(.*?)\n\}}\n'
-    return re.search(pattern, _dashboards(), re.S).group(1)
+def _pipeline_health() -> str:
+    return _read("modules", "observability", "pipeline_health.tf")
 
 
-def test_one_edge_dashboard_opens_on_a_week_of_hourly_points():
-    body = _dashboard_resource("edge")
-
-    assert 'start          = "-P7D"' in body
-    assert 'dashboard_name = "bloggerbear-${var.environment_name}-edge"' in body
-    assert "concat(local.api_gateway_widgets, local.waf_widgets)" in body
-    assert "period = 3600" in _dashboards()
-    # One dashboard, not one each: every dashboard past the account's first three is US$3 a month.
-    assert _dashboards().count('resource "aws_cloudwatch_dashboard"') == 1
+def _ranch_and_prompts() -> str:
+    return _read("modules", "evals", "dashboard.tf")
 
 
-def test_the_edge_dashboard_is_created_in_production_only():
-    assert "var.edge_dashboard_enabled &&" in _dashboard_resource("edge")
-    variables = _read("modules", "observability", "variables.tf")
-    variable = re.search(r'variable "edge_dashboard_enabled" \{(.*?)\n\}', variables, re.S).group(1)
-    assert "default     = false" in variable
-    assert "edge_dashboard_enabled = true" in _read("environments", "production", "main.tf")
-    assert "edge_dashboard_enabled = true" not in _read("environments", "dev", "main.tf")
+def test_two_dashboards_in_all_one_per_environment_and_one_while_evals_are_on():
+    """Every dashboard past an account's first three is about US$3 a month: pipeline health in
+    each environment and ranch-and-prompts while evals are on make four where dev and production
+    share an account. The pipeline, lambda-runs and edge dashboards, and the edge switch, are gone;
+    the API Gateway and firewall widgets stay as locals."""
+    dashboard = re.compile(r'^resource "aws_cloudwatch_dashboard" "(\w+)"', re.M)
+    made = {}
+    for path in terraform_files():
+        if found := dashboard.findall(read_terraform(path)):
+            made[path.relative_to(INFRA).as_posix()] = found
+    assert made == {
+        "modules/observability/pipeline_health.tf": ["pipeline_health"],
+        "modules/evals/dashboard.tf": ["ranch_and_prompts"],
+    }
+    pipeline = _resource_block(_pipeline_health(), "aws_cloudwatch_dashboard", "pipeline_health")
+    assert f'dashboard_name = "{DEFAULT_PREFIX}-${{var.environment_name}}-pipeline-health"' in pipeline
+    assert not re.search(r"^  count\s*=", pipeline, re.M)
+    ranch = _resource_block(_ranch_and_prompts(), "aws_cloudwatch_dashboard", "ranch_and_prompts")
+    assert f'dashboard_name = "{DEFAULT_PREFIX}-${{var.environment_name}}-ranch-and-prompts"' in ranch
+    assert re.search(r"^  count\s*=\s*var\.enabled \? 1 : 0$", ranch, re.M)
+    assert "api_gateway_widgets = flatten(" in _dashboards() and "waf_widgets = flatten(" in _dashboards()
+    for path in terraform_files():
+        assert "edge_dashboard_enabled" not in path.read_text(encoding="utf-8"), path
+
+
+def test_the_model_catalog_row_reads_fields_the_evidence_line_carries():
+    """Section 2's counters from model_catalog_job lines (common/evidence.py): "reverted" is a
+    review's reverted plus its unconfirmed, drops are its review_dropped, and the line's own
+    `dropped` (the fields that failed their checks) is never counted."""
+    from common import evidence
+
+    text = _pipeline_health()
+    counters = dict(re.findall(r'^    (\w+)\s*=\s*"(ModelCatalog\w+)"$', text, re.M))
+    tiles = re.findall(r'^    \["(ModelCatalog\w+)", "([a-z]+)"\],$', text, re.M)
+
+    fields = evidence.EVENTS["model_catalog_job"]
+    assert set(counters) <= set(fields) and all(fields[field] == "int" for field in counters)
+    assert "dropped" not in counters
+    assert counters["reverted"] == counters["unconfirmed"] == "ModelCatalogReverted"
+    assert counters["review_dropped"] == "ModelCatalogDropped"
+    assert [label for _, label in tiles] == [
+        "discovered", "pruned", "classified", "denied", "repriced", "reverted", "dropped",
+    ]
+    assert {metric for metric, _ in tiles} == set(counters.values())
+    metric_filter = _resource_block(text, "aws_cloudwatch_log_metric_filter", "model_catalog")
+    assert 'pattern        = "{ $.event = \\"model_catalog_job\\" && $.${each.key} >= 0 }"' in metric_filter
+    assert 'value     = "$.${each.key}"' in metric_filter
+    assert "default_value" not in metric_filter
+    for env in ("dev", "production"):
+        (block,) = _module_blocks(_read("environments", env, "main.tf"), "modules/observability")
+        group = r"aws_cloudwatch_log_group\.lambda\[aws_lambda_function\.model_catalog\.function_name\]\.name"
+        assert re.search(rf"^  model_catalog_log_group_name = {group}$", block, re.M), env
+
+
+def test_each_operator_tile_names_a_metric_a_filter_makes():
+    """The four tiles name their metrics alone, two of them another module's: a renamed metric
+    would leave a tile reading nothing, so each name is held to the filter that makes it."""
+    listed = _pipeline_health().split("operator_tiles = [", 1)[1].split("\n  ]\n", 1)[0]
+    tiles = re.findall(r'^    \["([A-Za-z]+)", "[a-z -]+"\],$', listed, re.M)
+    namespace = 'namespace = "BloggerBear/${var.environment_name}"'
+    by_local = "namespace = local.metric_namespace"
+    made = set()
+    for path in terraform_files():
+        for transformation in re.findall(r"metric_transformation \{(.*?)\n  \}", read_terraform(path), re.S):
+            # The evals module names the namespace through a local of the same value.
+            spaced = re.sub(r"\s+", " ", transformation).replace(by_local, namespace)
+            if namespace in spaced:
+                made |= set(re.findall(r'name\s*=\s*"(\w+)"', transformation))
+
+    assert tiles == ["DispatcherTicks", "EvalRollups", "PromptFallback", "SecurityHighSeverityIncidents"]
+    assert set(tiles) <= made
+
+
+def test_the_ranch_dashboard_reads_only_the_evals_events_fields():
+    """Its queries group by an event's own fields (common/evals.py), which hold codes and ids only."""
+    from common import evals
+
+    text = _ranch_and_prompts()
+    assert f'filter schema = \\"{evals.SCHEMA}\\"' in text
+    assert 'filter reason = \\"Prompt Fallback\\"' in text and "Prompt Fallback" in evals.REASONS
+    assert 'filter performance = \\"bad\\"' in text and "bad" in evals.PERFORMANCES
+    queries = re.findall(r'query  = "\$\{local\.evals_source\} \| (.*)"$', text, re.M)
+    assert len(queries) == 7
+    named = set()
+    for query in queries:
+        named |= set(re.findall(r"\b(?:by|ispresent\(|sum\(|fields @timestamp,)\s*([a-z_, ]+)", query))
+    words = {word.strip() for group in named for word in group.split(",")} - {"", "bin"}
+    assert words and words <= set(evals.FIELDS), words - set(evals.FIELDS)
+    assert "var.prompt_fallback_metric.namespace, var.prompt_fallback_metric.name" in text
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
-def test_both_dashboards_cover_both_apis_and_every_web_acl(env):
+def test_pipeline_health_is_given_every_pipeline_lambdas_timeout(env):
+    """The duration panel scales each function by its own timeout. The root lists the functions as
+    objects (the name count above stays one per function) beside the modules' own timeouts, and the
+    dashboard's precondition refuses a function left out at plan; this keeps the lists the same."""
+    main = _read("environments", env, "main.tf")
+    timeouts = main.split("pipeline_lambda_timeouts = merge(", 1)[1].split("\n  )\n", 1)[0]
+    names = main.split("pipeline_lambda_function_names = concat([", 1)[1].split("\n}\n", 1)[0]
+
+    assert re.findall(r"aws_lambda_function\.(\w+),", timeouts) == re.findall(
+        r"aws_lambda_function\.(\w+)\.function_name,", names
+    )
+    assert "], aws_lambda_function.reviewer) : function.function_name => function.timeout }" in timeouts
+    modules = "module.evals.function_timeouts,\n    module.work_queue.function_timeouts,"
+    assert timeouts.rstrip().endswith(modules)
+    (block,) = _module_blocks(main, "modules/observability")
+    assert re.search(r"^  lambda_timeouts\s*=\s*local\.pipeline_lambda_timeouts$", block, re.M)
+    for module in ("evals", "work-queue"):
+        outputs = _read("modules", module, "outputs.tf")
+        assert 'output "function_timeouts" {' in outputs, module
+    precondition = _resource_block(_pipeline_health(), "aws_cloudwatch_dashboard", "pipeline_health")
+    assert "contains(keys(var.lambda_timeouts), name)" in precondition
+
+
+def _local_value(text: str, name: str) -> str:
+    """A string local's value, from whichever `locals { ... }` block sets it."""
+    for block in re.findall(r"^locals \{\n(.*?)^\}", text, re.S | re.M):
+        if found := re.search(rf'^  {name}\s*=\s*"([^"]+)"$', block, re.M):
+            return found.group(1)
+    raise AssertionError(f"no local {name}")
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_module_test_plans_pipeline_health_with_the_roots_functions_timeouts_apis_and_web_acls(env):
+    """The module test caps pipeline health at 50 metrics for its own inputs: a search per twelve
+    functions on each per-Lambda panel, one more per distinct timeout, and widgets per API and web
+    ACL. Its inputs are written out, so they are held to the roots': every pipeline Lambda by name
+    with its timeout (the modules' two included), and as many APIs and web ACLs. A root that gains
+    any of these then fails here until the module test plans it too, and is counted against 50."""
+    main = _read("environments", env, "main.tf")
+    timeouts = main.split("pipeline_lambda_timeouts = merge(", 1)[1].split("\n  )\n", 1)[0]
+    seconds = r"^  timeout\s*=\s*(\d+)$"
+    roots = {}
+    for resource in re.findall(r"aws_lambda_function\.(\w+)", timeouts):
+        block = _resource_block(main, "aws_lambda_function", resource)
+        name = re.search(r'^  function_name\s*=\s*"([^"]+)"$', block, re.M).group(1)
+        roots[name.removeprefix(f"{DEFAULT_PREFIX}-{env}-")] = int(re.search(seconds, block, re.M).group(1))
+    for module, resource in (("evals", "eval_jobs"), ("work-queue", "dispatcher")):
+        text = _read("modules", module, "main.tf")
+        block = _resource_block(text, "aws_lambda_function", resource)
+        local = re.search(r"^  function_name\s*=\s*local\.(\w+)$", block, re.M).group(1)
+        name = _local_value(text, local).removeprefix(f"{DEFAULT_PREFIX}-${{var.environment_name}}-")
+        roots[name] = int(re.search(seconds, block, re.M).group(1))
+
+    fixture = (INFRA / "modules" / "observability" / "tests" / "observability.tftest.hcl").read_text(
+        encoding="utf-8"
+    )
+    inputs = fixture.split("\nrun ", 1)[0]  # the file's own variables, before any run changes them
+    names = inputs.split("lambda_function_names = [", 1)[1].split("\n  ]\n", 1)[0]
+    tested = inputs.split("lambda_timeouts = {", 1)[1].split("\n  }\n", 1)[0]
+    assert sorted(re.findall(r'"acme-test-([a-z-]+)"', names)) == sorted(roots)
+    assert dict(re.findall(r'^    "acme-test-([a-z-]+)"\s*=\s*(\d+)$', tested, re.M)) == {
+        name: str(timeout) for name, timeout in roots.items()
+    }
+
+    (block,) = _module_blocks(main, "modules/observability")
+    apis = re.compile(r"\bapi_name\s*=")
+    acls = re.compile(r"\bmetric_name\s*=")
+    assert len(apis.findall(inputs.split("api_dashboard_apis = [", 1)[1].split("\n  ]\n", 1)[0])) == len(
+        apis.findall(block.split("api_dashboard_apis = [", 1)[1].split("\n  ]\n", 1)[0])
+    )
+    assert len(acls.findall(inputs.split("waf_regional_acls = [", 1)[1].split("\n  ]\n", 1)[0])) == len(
+        acls.findall(block.split("waf_regional_acls = concat(", 1)[1].split("\n  )\n", 1)[0])
+    )
+    assert re.search(r"^  waf_cloudfront_acl\s*=\s*\{", inputs, re.M)
+    assert re.search(r"^  waf_cloudfront_acl\s*=\s*(var\.waf_site_enabled \? )?\{", block, re.M)
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_roots_give_the_observability_module_both_apis_and_every_web_acl(env):
+    """What pipeline health's API and firewall panels draw, from the kept widget locals."""
     text = _read("environments", env, "main.tf")
     block = re.search(r'^module "observability" \{\n(.*?)^\}', text, re.S | re.M).group(1)
 
@@ -771,7 +1027,9 @@ def test_every_cloudfront_widget_reads_us_east_1_with_the_global_region_dimensio
     assert "{AWS/WAFV2,Region,Rule,WebACL}" in cloudfront_acl
 
 
-def test_the_api_dashboard_has_every_widget_the_operator_asked_for():
+def test_the_kept_api_gateway_widgets_hold_latency_percentiles_throttles_statuses_and_the_cdn():
+    """Pipeline health draws only each API's requests-and-errors widget from these locals; the rest
+    stays because the spec keeps api_waf_dashboards.tf's widget locals (PR11b)."""
     text = _dashboards()
 
     for metric in ("Count", "4XXError", "5XXError", "Latency", "IntegrationLatency"):
@@ -784,7 +1042,9 @@ def test_the_api_dashboard_has_every_widget_the_operator_asked_for():
     assert '"AWS/CloudFront", "Requests"' in text  # always: the CDN against API Gateway
 
 
-def test_the_waf_dashboard_has_totals_per_rule_and_the_top_blocked_requests():
+def test_the_kept_firewall_widgets_hold_totals_per_rule_and_the_top_blocked_requests():
+    """Pipeline health draws only each web ACL's blocked-per-rule widget from these locals; the rest
+    stays because the spec keeps api_waf_dashboards.tf's widget locals (PR11b)."""
     text = _dashboards()
 
     for metric in ("AllowedRequests", "BlockedRequests", "CountedRequests"):
@@ -1427,8 +1687,8 @@ def test_no_bootstrap_resource_puts_a_whole_data_source_into_a_string():
     """A resource whose for_each is a data source gets that data source's whole object as
     each.value, and only each.value.json, the policy, is a string. `"${each.value}"` in a name or a
     description passes `terraform validate`, which cannot know the value yet, and stops every plan
-    of the bootstrap. CI never plans the bootstrap (the owner applies it by hand), so nothing but
-    this test would see it before the owner's apply did."""
+    of the bootstrap. The owner applies the bootstrap by hand and CI never does; pr-checks plans it
+    with a mocked provider (infra/bootstrap/tests, the next test), and this names the line."""
     code = _uncommented(_read("bootstrap", "main.tf"))
     found = []
     for match in re.finditer(r'^resource "[^"]+" "([^"]+)" \{\n(.*?)^\}', code, re.S | re.M):
@@ -1436,6 +1696,40 @@ def test_no_bootstrap_resource_puts_a_whole_data_source_into_a_string():
             found.append(match.group(1))
             assert re.findall(r"each\.value[\w.]*", match.group(2)) == ["each.value.json"], match.group(1)
     assert sorted(found) == ["gha_deploy_other_environment", "gha_prompts"]
+
+
+@pytest.mark.parametrize(
+    ("workflow", "job", "next_job"),
+    [
+        ("pr-checks.yml", "validate", "secret-scan"),
+        ("on-demand-scan.yml", "terraform", "code-and-dependencies"),
+    ],
+)
+def test_pull_requests_and_the_on_demand_scan_plan_the_bootstrap_with_a_mocked_provider(
+    workflow, job, next_job
+):
+    """The bootstrap is applied once, by hand (project rule 6), so before this nothing planned it
+    ahead of the owner, and the for_each above passed validate and failed at plan. Its tests plan
+    it with a mocked AWS provider, and pr-checks runs them beside the modules' with no credentials,
+    as the on-demand scan, the thorough one, does too: the job signs in to nothing and reads no
+    secret, and nothing in it plans or applies a real configuration."""
+    tests = sorted((INFRA / "bootstrap" / "tests").glob("*.tftest.hcl"))
+    assert tests
+    for path in tests:
+        text = path.read_text(encoding="utf-8")
+        assert re.search(r'^mock_provider "aws" \{', text, re.M), path.name
+        commands = re.findall(r"^\s*command\s*=\s*(\w+)", text, re.M)
+        assert commands and set(commands) == {"plan"}, path.name
+
+    source = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    body = source.split(f"\n  {job}:\n")[1].split(f"\n  {next_job}:\n")[0]
+    step = body.split("- name: Terraform test (bootstrap and modules with tests)\n")[1]
+    assert "for dir in infra/bootstrap infra/modules/*; do" in step
+    assert 'terraform -chdir="$dir" init -backend=false -input=false' in step
+    assert 'terraform -chdir="$dir" test' in step
+    for text in ("configure-aws-credentials", "id-token", "secrets.", "AWS_"):
+        assert text not in body, text
+    assert not re.search(r"^\s*terraform [^\n]*\b(plan|apply)\b", body, re.M)
 
 
 def test_the_deploy_roles_may_create_the_evals_log_group_before_the_module_that_needs_it():
@@ -1684,8 +1978,159 @@ def test_the_prompt_fallback_alarm_reads_the_evidence_line_from_every_pipeline_l
         block = re.search(
             r'^module "observability" \{\n(.*?)^\}', _read("environments", env, "main.tf"), re.S | re.M
         ).group(1)
-        groups = "prompt_fallback_log_groups = [for group in aws_cloudwatch_log_group.lambda : group.name]"
+        groups = (
+            "  prompt_fallback_log_groups = concat(\n"
+            "    [for group in aws_cloudwatch_log_group.lambda : group.name],\n"
+            "    module.evals.function_log_group_names,\n"
+            "  )\n"
+        )
         assert groups in block, env
+
+
+def _argument(block: str, name: str) -> str:
+    """One argument's whole expression in a block, across lines while a bracket is open."""
+    start = re.search(rf"^\s*{name}\s*=\s*", block, re.M)
+    assert start, name
+    depth = 0
+    for end in range(start.end(), len(block)):
+        if block[end] in "([{":
+            depth += 1
+        elif block[end] in ")]}":
+            depth -= 1
+        elif block[end] == "\n" and depth == 0:
+            break
+    return block[start.end() : end].strip()
+
+
+def _log_group_name(module_dir: str, resource: str, env: str) -> str:
+    """A module's aws_cloudwatch_log_group's name as it deploys in `env`, its locals written in."""
+    main = _read("modules", module_dir, "main.tf")
+    block = _resource_block(main, "aws_cloudwatch_log_group", resource)
+    text = re.search(r'^\s*name\s*=\s*"([^"]+)"', block, re.M).group(1)
+    # From the locals blocks only: work-queue's local is `name`, and so is many a resource's argument.
+    locals_text = "".join(re.findall(r"^locals \{\n(.*?)^\}", main, re.S | re.M))
+    for local in re.findall(r"\$\{local\.(\w+)\}", text):
+        value = re.search(rf'^\s*{local}\s*=\s*"([^"]+)"', locals_text, re.M).group(1)
+        text = text.replace(f"${{local.{local}}}", value)
+    return text.replace("${var.environment_name}", env)
+
+
+def _prompt_fallback_log_group_names(env: str) -> set[str]:
+    """The log groups a root's prompt_fallback_log_groups names (one PromptFallback metric filter
+    each, infra/modules/observability): the root's own Lambda log groups when it reads
+    aws_cloudwatch_log_group.lambda, and every aws_cloudwatch_log_group a module output it reads
+    holds."""
+    root = _read("environments", env, "main.tf")
+    block = re.search(r'^module "observability" \{\n(.*?)^\}', root, re.S | re.M).group(1)
+    expression = _argument(block, "prompt_fallback_log_groups")
+    names: set[str] = set()
+    if "aws_cloudwatch_log_group.lambda" in expression:
+        listed = re.search(r"lambda_log_group_function_names = \[(.*?)\]", root, re.S).group(1)
+        names |= {f"/aws/lambda/{name}" for name in re.findall(r'"([^"]+)"', listed)}
+    for module, output in re.findall(r"module\.(\w+)\.(\w+)", expression):
+        call = re.search(rf'^module "{module}" \{{\n(.*?)^\}}', root, re.S | re.M).group(1)
+        module_dir = re.search(r'source\s*=\s*"\.\./\.\./modules/([^"]+)"', call).group(1)
+        outputs = _read("modules", module_dir, "outputs.tf")
+        value = re.search(rf'^output "{output}" \{{\n(.*?)^\}}', outputs, re.S | re.M).group(1)
+        for resource in re.findall(r"aws_cloudwatch_log_group\.(\w+)", value):
+            names.add(_log_group_name(module_dir, resource, env))
+    return names
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_prompt_fallback_alarm_reads_eval_jobs_whose_scoring_renders_an_asset_prompt(env):
+    """Spec P0: the PromptFallback metric filter runs across the pipeline log groups. eval-jobs is one
+    (module.evals.function_names is in local.pipeline_lambda_function_names), and its offline scoring
+    drafts each item's live version through prompts.get_prompt("daily_cycle/draft"), an asset prompt
+    (common/eval_score.py, _live_draft), so a fallback there prints a prompt_fallback line into
+    eval-jobs' own log group, which infra/modules/evals makes. Unless that group has a filter too, the
+    prompt-fallback alarm stays OK and GET /evals/status counts the fallback as none."""
+    from common import eval_score, prompts
+
+    assert prompts.spec_for(eval_score.DRAFT_PROMPT_ID).asset  # may fall back, and print the line
+    source = (ROOT / "lambdas" / "common" / "eval_score.py").read_text(encoding="utf-8")
+    assert "prompts.get_prompt(DRAFT_PROMPT_ID, values, locked)" in source
+    root = _read("environments", env, "main.tf")
+    assert "module.evals.function_names" in root  # a pipeline Lambda: its errors alarm is observability's
+
+    eval_jobs = _log_group_name("evals", "eval_jobs", env)
+    assert eval_jobs == f"/aws/lambda/{DEFAULT_PREFIX}-{env}-eval-jobs"
+    names = _prompt_fallback_log_group_names(env)
+    assert eval_jobs in names, f"{env}: {eval_jobs} has no prompt_fallback metric filter"
+    # The root's own Lambdas keep theirs.
+    assert f"/aws/lambda/{DEFAULT_PREFIX}-{env}-daily-cycle" in names
+
+
+def _lambdas_import_closure(module: str) -> set[str]:
+    """Every lambdas/ module `module` imports, however deep, counting an import inside a function:
+    a lazy import renders a prompt at run time as surely as a top-level one. Read from the source,
+    not by importing, because this process has imported common.prompts for other tests already."""
+    seen: set[str] = set()
+    todo = [module]
+    while todo:
+        name = todo.pop()
+        base = (ROOT / "lambdas").joinpath(*name.split("."))
+        path = next((p for p in (base.with_suffix(".py"), base / "__init__.py") if p.is_file()), None)
+        if name in seen or path is None:
+            continue  # read already, or not a lambdas/ module (the standard library, boto3, a class)
+        seen.add(name)
+        package = name.split(".") if path.name == "__init__.py" else name.split(".")[:-1]
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                todo += [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                # `from .dynamo import x` in common/backup.py is common.dynamo.
+                parts = package[: len(package) - node.level + 1] if node.level else []
+                stem = ".".join([*parts, *([node.module] if node.module else [])])
+                todo += [stem, *(f"{stem}.{alias.name}" for alias in node.names)]
+    return seen
+
+
+# The modules a root hands the shared Lambda environment whose Lambdas render no prompt, so their
+# log groups need no PromptFallback filter. The test below checks each reason still holds.
+_RENDERS_NO_PROMPT = {
+    "work_queue": "the dispatcher starts runs and sends jobs; dispatcher_handler reaches no common.prompts",
+}
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_module_lambda_given_the_prompt_assets_is_read_by_the_prompt_fallback_alarm_or_renders_none(
+    env,
+):
+    """local.lambda_env_variables carries PROMPT_AS_ASSET_ENABLED, PROMPTS_BUCKET and
+    PROMPT_HASHES_TABLE. A root Lambda's log group is filtered with the rest of
+    aws_cloudwatch_log_group.lambda, but a module Lambda's is its module's own, which is how
+    eval-jobs' fallbacks went uncounted. So each module the root hands that environment either has
+    every function log group among the PromptFallback filters, which it must when its handler
+    reaches common.prompts, or is named in _RENDERS_NO_PROMPT, which it may only while it does not."""
+    root = _uncommented(_read("environments", env, "main.tf"))
+    filtered = _prompt_fallback_log_group_names(env)
+    given = set()
+    for label, call in re.findall(r'^module "(\w+)" \{\n(.*?)^\}', root, re.S | re.M):
+        if "local.lambda_env_variables" not in call:  # under any argument name, merged or not
+            continue
+        given.add(label)
+        module_dir = re.search(r'source\s*=\s*"\.\./\.\./modules/([^"]+)"', call).group(1)
+        main = _read("modules", module_dir, "main.tf")
+        functions = re.findall(r'^resource "aws_lambda_function" "\w+" \{\n(.*?)^\}', main, re.S | re.M)
+        assert functions, f"{env}: module {label} is given the Lambda environment but makes no function"
+        for function in functions:
+            handler = re.search(r'^\s*handler\s*=\s*"(\w+)\.\w+"', function, re.M).group(1)
+            # A module Lambda owns its log group (spec section 6), the one it waits for in depends_on.
+            depends = re.search(r"^\s*depends_on\s*=\s*\[aws_cloudwatch_log_group\.(\w+)", function, re.M)
+            assert depends, f"{env}: {handler} in module {label} does not depend on its own log group"
+            group = _log_group_name(module_dir, depends.group(1), env)
+            if "common.prompts" in _lambdas_import_closure(handler):
+                assert group in filtered, f"{env}: {group} ({handler}) has no prompt_fallback metric filter"
+                assert label not in _RENDERS_NO_PROMPT, f"{env}: {handler} reaches common.prompts now"
+            else:
+                assert label in _RENDERS_NO_PROMPT or group in filtered, (
+                    f"{env}: module {label} is given the prompt assets: filter {group} or say in "
+                    "_RENDERS_NO_PROMPT why its Lambdas render no prompt"
+                )
+    # Both are found, so a pattern that matches nothing cannot pass, and no exemption outlives its module.
+    assert {"work_queue", "evals"} <= given, given
+    assert set(_RENDERS_NO_PROMPT) <= given
 
 
 # --- prompts as assets: the bucket and the hash table (PR4) -------------------------------------------
@@ -2105,9 +2550,9 @@ def test_dashboard_widget_lists_never_branch_on_a_conditional():
     """`cond ? [] : concat(...)` over widgets of different shapes passes validate and fails every
     plan ("Inconsistent conditional result types"), which broke the dev apply once. The idiom that
     works is `flatten([for _ in (cond ? [] : [1]) : ...])`; the module's terraform test plans it."""
-    text = _dashboards()
-
-    assert not re.search(r"= .*\? \[\] : concat\(", text)
+    for text in (_dashboards(), _pipeline_health(), _ranch_and_prompts()):
+        assert not re.search(r"= .*\? \[\] : concat\(", text)
+        assert not re.search(r"\? \[\{", text)
     assert (ROOT / "infra" / "modules" / "observability" / "tests" / "observability.tftest.hcl").exists()
     assert "terraform -chdir=\"$dir\" test" in (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(
         encoding="utf-8"
@@ -2685,6 +3130,8 @@ def test_both_roots_always_call_the_evals_module_with_their_own_names_and_role(e
         "lambda_environment": "local.lambda_env_variables",
         "pipeline_dlq_arn": "aws_sqs_queue.pipeline_dlq.arn",
         "alerts_topic_arn": "module.observability.sns_topic_arn",
+        # The ranch-and-prompts dashboard's fallbacks panel reads the observability module's metric.
+        "prompt_fallback_metric": "module.observability.prompt_fallback_metric",
     }
     if env == "production":
         expected["protect_data"] = "true"  # like module.app_data's: dev's tables are disposable
@@ -3483,10 +3930,10 @@ def test_the_vision_policy_reads_one_workers_log_and_the_running_states_only_whe
 
 
 def test_the_assistant_is_told_the_evals_switch_its_catalogue_reads():
-    """eval-jobs, the eval-work queue and their schedules exist only while evals are on. The MCP
-    server is told the switch under the pipeline's own name and form (EVALS_ENABLED, the exact word
-    "true" for on), and the catalogue's switch_env reads it, so with evals off a log review neither
-    reads nor refuses eval-jobs' log group."""
+    """eval-jobs, the eval-work queue, their schedules and the ranch-and-prompts dashboard exist
+    only while evals are on. The MCP server is told the switch under the pipeline's own name and
+    form (EVALS_ENABLED, the exact word "true" for on), and the catalogue's switch_env reads it, so
+    with evals off a log review neither reads nor refuses eval-jobs' log group."""
     variable = re.search(
         r'variable "evals_enabled" \{(.*?)\n\}', _read("modules", "ops-assistant", "variables.tf"), re.S
     ).group(1)
@@ -3505,7 +3952,7 @@ def test_the_assistant_is_told_the_evals_switch_its_catalogue_reads():
     agent = _uncommented(_resource_block(_agent_module(), "aws_lambda_function", "ops_agent"))
     assert "EVALS_ENABLED" not in agent
     architecture = (ROOT / "lambdas" / "ops_mcp" / "architecture.py").read_text(encoding="utf-8")
-    assert architecture.count('switch_env="EVALS_ENABLED"') == 4
+    assert architecture.count('switch_env="EVALS_ENABLED"') == 5
     assert '{"EVALS_ENABLED": ("evals", "evals_enabled")}' in architecture
 
 
@@ -4624,7 +5071,12 @@ def test_everything_the_page_and_the_browser_are_told_follows_the_region():
     )
     dashboards = _dashboards()
     assert "\n  api_region = var.aws_region\n" in dashboards
-    assert 'region = "' not in _uncommented(_read("modules", "observability", "main.tf"))
+    for parts in [
+        ("observability", "main.tf"),
+        ("observability", "pipeline_health.tf"),
+        ("evals", "dashboard.tf"),
+    ]:
+        assert 'region = "' not in _uncommented(_read("modules", *parts)), parts
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])

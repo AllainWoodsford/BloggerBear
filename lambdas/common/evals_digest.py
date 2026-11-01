@@ -50,6 +50,11 @@ _VERSION = re.compile(r"(?:vanilla:)?v[1-9][0-9]{0,5}")
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 _ZONE = re.compile(r"[A-Za-z0-9_+/-]{1,64}")
 _WINDOW = re.compile(r"[a-z]{1,10}")
+# Why a model below a gate is served all the same (evals_status.digest's `gate` and `role`), in this
+# module's words; a state or role outside these is written as unread, never as gated.
+_SERVED_ROLES = ("default", "fallback", "judge")
+_HELD_OPEN_WORDS = "held open by an override"
+_UNREAD_WORDS = "its gate could not be read"
 
 # eval-jobs has 900 seconds; a publish that hangs is given up on well before, and tried next hour.
 CLIENT_CONFIG = Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2})
@@ -92,6 +97,25 @@ def _bounded(lines: list[str]) -> list[str]:
     return [*lines[:MAX_LINES], f"  and {len(lines) - MAX_LINES} more (`admin_cli evals digest` shows all)"]
 
 
+def _gate(entry: dict) -> str:
+    """What a model's line says of its gate: the windows that gate it while the rotation guard holds
+    it back (`gated`), else the windows below their gate and why it is served all the same."""
+    gated = [window for window in entry.get("gated") or [] if _shaped(_WINDOW, window)]
+    if gated:
+        return ", gated: " + ", ".join(gated)
+    below = [window for window in entry.get("below_gate") or [] if _shaped(_WINDOW, window)]
+    if not below:
+        return ""
+    state, role = entry.get("gate"), entry.get("role")
+    if state == evals_status.PROTECTED and role in _SERVED_ROLES:
+        why = f"kept as the {role}"
+    elif state == evals_status.HELD_OPEN:
+        why = _HELD_OPEN_WORDS
+    else:
+        why = _UNREAD_WORDS
+    return f", below gate: {', '.join(below)} ({why})"
+
+
 def render(digest: dict, environment: str) -> tuple[str, str]:
     """The email's subject and body for one digest (evals_status.digest's answer)."""
     since = _shaped(_DAY, digest.get("since")) or "-"
@@ -105,8 +129,7 @@ def render(digest: dict, environment: str) -> tuple[str, str]:
         model_id = _shaped(_MODEL, entry.get("model_id"))
         if model_id is None:
             continue
-        gated = [window for window in entry.get("gated") or [] if _shaped(_WINDOW, window)]
-        flags = (", gated: " + ", ".join(gated)) if gated else ""
+        flags = _gate(entry)
         flags += "" if entry.get("in_registry", True) else ", not in the registry"
         models.append(f"  {model_id}: {_totals(entry)}{flags}")
     prompts = []

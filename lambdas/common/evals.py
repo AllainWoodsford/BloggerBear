@@ -7,7 +7,7 @@ reader voted, a person or the judge reviewed one), the code that knows writes on
 `<prefix>-<env>-evals` log group, and the hourly rollup (common/evals_rollup.py, PR13) adds the
 events up into the evals table. An article stored, a person's approve, reject or rewrite and a
 reader's vote emit through common/evals_emission.py; the judge's reviews through
-common/eval_judge.py.
+common/eval_judge.py; a prompt's fallback to the copy in the code through common/prompts.py.
 
 **The event is a schema, not text.** Every field has a kind, and the kinds are evidence.py's (code,
 id, model id, ISO time, number) or narrower ones built here (a prompt id, a prompt version, a

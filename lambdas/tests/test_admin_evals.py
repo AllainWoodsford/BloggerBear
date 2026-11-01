@@ -49,7 +49,12 @@ ROUTES = {
     "POST /evals/adjust", "POST /evals/ungate", "POST /evals/revoke", "POST /evals/cull/apply",
     # A person's review of research Findings (PR19; its own tests are test_human_review.py's).
     "GET /evals/findings", "POST /evals/findings/review",
+    # Offline scoring runs (PR18b; test_admin_eval_runs.py).
+    "POST /evals/runs", "GET /evals/runs", "GET /evals/runs/{run_id}", "DELETE /evals/runs/{run_id}",
+    "POST /evals/runs/{run_id}/resume",
 }  # fmt: skip
+# PR18c's call traces (test_call_traces.py tests the route itself).
+ROUTES.add("GET /evals/traces/{article_id}")
 
 
 @pytest.fixture
@@ -582,9 +587,13 @@ def test_the_digest_adds_each_models_and_prompts_days_up_from_a_day(aws):
     assert (alpha["perf"], alpha["events"], alpha["good"], alpha["bad"]) == (-2, 5, 0, 3)
     assert alpha["n"] == 3 and alpha["interval"][0] == 0.0 and alpha["in_registry"] is True
     assert alpha["by_reason"]["User Feedback"]["perf"] == -6
-    # What the gates say of the registry row's windows now, not of the digest's own sum of -2.
-    assert alpha["gated"] == ["daily"]
+    # What the gates say of the registry row's windows now, not of the digest's own sum of -2: below
+    # the daily gate, but ALPHA is BEDROCK_MODEL_ID, the default, which the gate never holds back.
+    assert (alpha["below_gate"], alpha["gate"], alpha["role"], alpha["gated"]) == (
+        ["daily"], "protected", "default", [],
+    )  # fmt: skip
     assert (gone["model_id"], gone["in_registry"], gone["gated"]) == ("maker.gone-v1:0", False, [])
+    assert (gone["below_gate"], gone["gate"], gone["role"]) == ([], None, None)
     assert body["prompts"] == [
         {
             "prompt_id": "daily_cycle/draft", "version": "v2", "perf": 2, "events": 1, "good": 0, "bad": 0,
@@ -592,6 +601,58 @@ def test_the_digest_adds_each_models_and_prompts_days_up_from_a_day(aws):
             "by_reason": {"Article Completion": {"perf": 2, "events": 1, "good": 0, "bad": 0}},
         }
     ]  # fmt: skip
+
+
+def test_the_digest_calls_gated_only_what_status_and_get_models_call_gated(aws, queue):
+    """The digest (and the Friday email written from it) says which models are gated as the rotation
+    guard decides it (common/model_ranch.py, as status and GET /models do): the default, the fallback
+    and the judge are never gated, nor a model an operator's ungated_until holds open."""
+    default, judge, forgiven = "maker.default-v1:0", "maker.judge-v1:0", "maker.forgiven-v1:0"
+    aws.Table("ModelConfig").put_item(Item={"config_id": "default", "model_id": default})
+    aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "judge_model_id": judge})
+    for model_id in (ALPHA, default, judge, "maker.poor-v1:0"):
+        put_gated(aws, model_id)
+    put_gated(aws, forgiven, ungated_until="2099-01-01T00:00:00Z")
+    for model_id in (ALPHA, default, judge, forgiven, "maker.poor-v1:0"):
+        day_row(aws, f"model#{model_id}", "2026-10-26", -6, 3, bad=3)
+
+    _, status = call("GET /evals/status")
+    _, listed = call("GET /models")
+    with patch.object(evals_status, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 27, 3, 0, tzinfo=UTC)
+        code, body = call("GET /evals/digest", query={"since": "2026-10-24"})
+
+    assert code == 200 and len(body["models"]) == 5
+    part = status["gated_models"]
+    assert [model["model_id"] for model in part["gated"]] == listed["ranch"]["gated"] == ["maker.poor-v1:0"]
+    assert {model["model_id"] for model in part["held_open"]} == {forgiven}
+    assert {model["model_id"] for model in part["protected"]} == {ALPHA, default, judge}
+    by_id = {model["model_id"]: model for model in body["models"]}
+    assert sorted(model_id for model_id, model in by_id.items() if model["gate"] == "gated") == (
+        listed["ranch"]["gated"]
+    )
+    assert [model_id for model_id, model in by_id.items() if model["gated"]] == listed["ranch"]["gated"]
+    assert {model_id: (model["gate"], model["role"]) for model_id, model in by_id.items()} == {
+        ALPHA: ("protected", "default"), default: ("protected", "default"), judge: ("protected", "judge"),
+        forgiven: ("held_open", None), "maker.poor-v1:0": ("gated", None),
+    }  # fmt: skip
+    assert all(model["below_gate"] == ["daily"] for model in body["models"])
+
+
+def test_a_digest_whose_default_row_cannot_be_read_fails_rather_than_guess_what_is_gated(aws, monkeypatch):
+    """The default row says which models the gate never applies to. Without it the digest fails, as
+    its judge summary's read of the same row does when no judge_model_id is set (so the Friday email
+    gives its claim back and tries the next hour), rather than call a model gated, or not, on a guess."""
+    aws.Table("ModelConfig").put_item(Item={"config_id": "evals", "judge_model_id": "maker.judge-v1:0"})
+    put_gated(aws, "maker.poor-v1:0")
+    day_row(aws, "model#maker.poor-v1:0", "2026-10-26", -6, 3, bad=3)
+
+    def unreadable():
+        raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "GetItem")
+
+    monkeypatch.setattr(evals_status.dynamo, "get_model_config", unreadable)
+    with pytest.raises(ClientError):
+        evals_status.digest("2026-10-24", datetime(2026, 10, 27, 3, 0, tzinfo=UTC))
 
 
 def test_the_digest_covers_the_last_week_by_default_and_refuses_a_day_it_cannot(aws):
@@ -867,6 +928,47 @@ def test_an_adjustment_of_a_model_not_in_the_registry_is_refused(logs, aws):
 
     assert status == 404 and GONE in body["error"]
     assert adjust_rows(aws) == [] and logs.lines == []
+
+
+@pytest.mark.parametrize(
+    ("prompt_id", "version", "said"),
+    [
+        # Well formed, so the event's own checks pass it: only the registry knows it is not a prompt.
+        ("daily_cycle/drafts", "v2", "no prompt 'daily_cycle/drafts' in the registry"),
+        # A code-only prompt is never read from the bucket, so no asset version of it can exist.
+        ("reviews/compliance", "v2", "'reviews/compliance' is code-only"),
+        # Past the registry's own vanilla: a version no deployment has served yet.
+        (DRAFT, "vanilla:v2", f"'{DRAFT}' has no vanilla:v2: its vanilla is vanilla:v1"),
+        ("ops_agent/system", "vanilla:v3", "its vanilla is vanilla:v2"),
+    ],
+)
+def test_an_adjustment_of_a_prompt_version_the_registry_cannot_have_is_refused(
+    logs, aws, prompt_id, version, said
+):
+    adjustment = {**PROMPT_ADJUST, "prompt_id": prompt_id, "version": version}
+
+    status, body = call("POST /evals/adjust", adjustment)
+
+    assert status == 404 and said in body["error"]
+    assert adjust_rows(aws) == [] and logs.lines == []
+
+
+@pytest.mark.parametrize(
+    ("prompt_id", "version"),
+    [
+        (DRAFT, "v7"),  # any asset version: the publisher's, which the registry does not list
+        (DRAFT, "vanilla:v1"),  # the registry's own vanilla
+        ("reviews/compliance", "vanilla:v1"),  # a code-only prompt at its vanilla
+        ("ops_agent/system", "vanilla:v1"),  # a vanilla the registry's v2 replaced
+    ],
+)
+def test_an_adjustment_of_a_prompt_version_the_registry_can_have_is_written(logs, aws, prompt_id, version):
+    status, body = call("POST /evals/adjust", {**PROMPT_ADJUST, "prompt_id": prompt_id, "version": version})
+
+    assert status == 201 and (body["prompt_id"], body["version"]) == (prompt_id, version)
+    assert [row["entity"] for row in adjust_rows(aws)] == [f"adjust#prompt#{prompt_id}#{version}"]
+    [event] = events_of(logs, "Admin Punish")
+    assert (event["prompt_id"], event["prompt_version"]) == (prompt_id, version)
 
 
 @pytest.mark.parametrize(

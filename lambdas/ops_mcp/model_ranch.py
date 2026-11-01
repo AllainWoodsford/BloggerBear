@@ -24,12 +24,12 @@ into the window's n, mean or good share.
 but not calibrated (`judge_uncalibrated`), a cull proposal waiting (`cull_proposed`; while culling is
 off its card names `evals set --cull on` first, suggestions.VARIANTS) and a prompt that fell back to
 the copy in the code in the last FALLBACK_DAYS days (`prompt_fallback`, about its prompt id: the
-`Prompt Fallback` events its day rows count). Nothing emits those events yet: section 4.3 defines
-them (`fallback:<request_id>:<prompt_id>`), but common/prompts.py's fallback writes only its
-`prompt_fallback` evidence line to the calling function's log. So this card, and the memory's
-follow-up of it (fallback_check), stay quiet until an emitter lands beside that line. The evidence
-lines themselves could be read through ops_mcp/logs.py under the role's existing logs grant; these
-tools read the two tables only.
+`Prompt Fallback` events its day rows count). common/prompts.py emits one beside each
+`prompt_fallback` evidence line (`fallback:<request_id>:<prompt_id>`, section 4.3, with the
+invocation's key as the request id: the run's, or the reviewer bear's run and article), naming the
+version that fell back and no model, so the rollup counts it on that version's day row alone. This
+card and the memory's follow-up of it (fallback_check) read those counts; these tools read the two
+tables only.
 
 **What is said.** Everything here is an id, a code or a number: model ids, prompt ids and versions as
 the rollup keyed them (each matched to its shape again before it is used), purposes and roles as
@@ -64,8 +64,10 @@ DAYS_DEFAULT = 30
 # The digest's limit too (evals_status.DIGEST_MAX_DAYS): the evals log keeps 120 days.
 DAYS_MAX = evals_status.DIGEST_MAX_DAYS
 WEEK_DAYS = 7
-# Recent enough for a prompt's fallbacks to be a finding: today and yesterday.
-FALLBACK_DAYS = 2
+# Recent enough for a prompt's fallbacks to be a finding: today and the two days before. The
+# reviewer bear runs every second day, so with today and yesterday alone his fallback read as fixed
+# on the day between his runs, before he had run again.
+FALLBACK_DAYS = 3
 # One call answers inside the agent's turn, which API Gateway ends at 29 seconds: at most this many
 # Queries of the evals table, each a few milliseconds.
 READS_MAX = 150
@@ -340,13 +342,24 @@ def _has_scores(entry: dict) -> bool:
     return bool(any(w["n"] for w in windows.values()) or windows["total"]["perf"] or entry["gate"]["windows"])
 
 
-def _cull(settings: dict, now: datetime) -> dict | None:
+def _cull(settings: dict, now: datetime, registry: dict[str, dict]) -> dict | None:
     """The weekly cull proposal in place (model-catalog-state's `cull_proposal`), its ids and numbers
-    only; None before the first."""
-    proposal = model_catalog.get_state().get(model_fleet.CULL_PROPOSAL_FIELD)
+    only; None before the first. Its models are those still waiting for `evals cull --apply`: an
+    apply leaves the proposal in place until the next cycle (common/model_cull.py), so once it has
+    been applied (`last_cull_apply` names the same proposal) only the ones it left over its cap are,
+    and never one that has left the registry (`registry`, model_ranch's scan, by canonical id). A
+    model culled and then put back by `models restore` is held open, so an apply would keep it."""
+    state = model_catalog.get_state()
+    proposal = state.get(model_fleet.CULL_PROPOSAL_FIELD)
     if not isinstance(proposal, dict):
         return None
     expires = _parse(proposal.get("expires_at"))
+    applied = state.get(model_fleet.LAST_CULL_FIELD)
+    left = None
+    if isinstance(applied, dict) and proposal.get("proposed_at") and (
+        applied.get("proposed_at") == proposal.get("proposed_at")
+    ):
+        left = {model_id for model_id in applied.get("left") or [] if isinstance(model_id, str)}
     models = [
         {
             "model_id": entry["model_id"],
@@ -354,7 +367,10 @@ def _cull(settings: dict, now: datetime) -> dict | None:
             "events": evals_rollup.count_of(entry.get("events")),
         }
         for entry in proposal.get("models") or []
-        if isinstance(entry, dict) and _model_id(entry.get("model_id"))
+        if isinstance(entry, dict)
+        and _model_id(entry.get("model_id"))
+        and canonical_model_id(entry["model_id"]) in registry
+        and (left is None or entry["model_id"] in left)
     ]
     return {
         "proposed_at": _iso(proposal.get("proposed_at")),
@@ -484,7 +500,8 @@ def model_ranch(*, now: datetime | None = None) -> dict:
     week_entities = set().union(*(found for day, found in by_day.items() if day >= week_from))
 
     entries, unscored = [], 0
-    for key, row in sorted(_registry().items()):
+    registry = _registry()
+    for key, row in sorted(registry.items()):
         entry = {
             "model_id": row["model_id"],
             "purpose": row["model_purpose"] if row.get("model_purpose") in model_catalog.PURPOSES else None,
@@ -532,7 +549,7 @@ def model_ranch(*, now: datetime | None = None) -> dict:
                 weakest = (entry["model_id"], cell)
 
     judge = evals_status.judge_summary(settings, index)
-    cull = _cull(settings, now)
+    cull = _cull(settings, now, registry)
     findings = [
         _gated_finding(entry["model_id"], entry["gate"]["windows"])
         for entry in entries
@@ -673,7 +690,7 @@ def _metrics_spoken(prompts: list[dict], days: int, settings: dict, asked: str |
         sentences.append(f"{len(split)} {are} split between versions: {_ids(split)}.")
     fell_back = [p["prompt_id"] for p in prompts if any(v["recent_fallbacks"] for v in p["versions"])]
     if fell_back:
-        sentences.append(f"{_ids(fell_back)} fell back to the copy in the code in the last two days.")
+        sentences.append(f"{_ids(fell_back)} fell back to the copy in the code in the last three days.")
     more = "" if complete else " Not every version was read: ask about one prompt for all of it."
     sentences.append(
         f"The table is on screen; ask about one prompt for each version against each model.{more}"
@@ -769,7 +786,7 @@ def prompt_metrics(prompt_id: str | None = None, days=DAYS_DEFAULT, *, now: date
             findings.append(
                 finding(
                     "prompt_fallback",
-                    f"Fell back to the copy in the code {recent} time(s) in the last two days",
+                    f"Fell back to the copy in the code {recent} time(s) in the last three days",
                     prompt["prompt_id"],
                     prompt=prompt["prompt_id"],
                     versions=", ".join(fell),

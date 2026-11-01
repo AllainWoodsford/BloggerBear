@@ -17,8 +17,9 @@
 # way, so switching never changes the role.
 #
 # Only while enabled: the eval-work queue, the eval-jobs function with its log group, its two
-# schedules and its queue mapping, the metric filters on the evals log group, and the alarms. With
-# evals off nothing reads or writes the table, emit() writes nothing, and nothing is invoked.
+# schedules and its queue mapping, the metric filters on the evals log group, the alarms, and the
+# ranch-and-prompts dashboard (dashboard.tf). With evals off nothing reads or writes the table,
+# emit() writes nothing, and nothing is invoked.
 #
 # Rights. Every pipeline Lambda runs as lambda_exec, so the grants are on that role, in one inline
 # policy, given here as var.lambda_exec_role_name: writing events and querying the log group, the
@@ -332,13 +333,17 @@ resource "aws_scheduler_schedule" "judge" {
 
 # One job per invocation, two at most at once (the smallest maximum_concurrency SQS accepts), so
 # offline runs never crowd the pipeline's model calls. The rights come first: Lambda checks them
-# when it makes the mapping.
+# when it makes the mapping. eval-jobs never raises on a job; a record it wants delivered again (a
+# scoring job whose run's header it could not read, so it cannot count it, or one that failed, before
+# its claim or after, and could not be counted finished) it names among the answer's
+# batchItemFailures, and the queue's redrive takes it to the DLQ after three receives.
 resource "aws_lambda_event_source_mapping" "eval_work" {
-  count            = var.enabled ? 1 : 0
-  event_source_arn = aws_sqs_queue.eval_work[0].arn
-  function_name    = aws_lambda_function.eval_jobs[0].arn
-  batch_size       = 1
-  depends_on       = [aws_iam_role_policy.evals]
+  count                   = var.enabled ? 1 : 0
+  event_source_arn        = aws_sqs_queue.eval_work[0].arn
+  function_name           = aws_lambda_function.eval_jobs[0].arn
+  batch_size              = 1
+  function_response_types = ["ReportBatchItemFailures"]
+  depends_on              = [aws_iam_role_policy.evals]
 
   scaling_config {
     maximum_concurrency = 2
@@ -350,7 +355,8 @@ resource "aws_lambda_event_source_mapping" "eval_work" {
 # -----------------------------------------------------------------------
 
 # The sum of every event's rating_delta, by performance (good, bad, neutral), and the count of
-# events: the raw flow of scores, for the dashboard (PR11b), before any rollup.
+# events: the raw flow of scores before any rollup (the ranch-and-prompts dashboard's panels read
+# the log group itself; pipeline health's operator tiles count EvalRollups below).
 resource "aws_cloudwatch_log_metric_filter" "eval_rating_delta" {
   count          = var.enabled ? 1 : 0
   name           = "${var.unique_name_prefix}-${var.environment_name}-eval-rating-delta"

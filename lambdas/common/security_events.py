@@ -113,8 +113,9 @@ PLAYBOOK: dict[str, tuple[str, int, str]] = {
         HIGH,
         1,
         "Local/remote file inclusion or path traversal attempt (e.g. ../../etc/passwd), blocked. "
-        "Check the edge dashboard for other rules this client tripped; if it is persistent, block "
-        "it with an IP-set rule. Confirm no Lambda reads a file path taken from a request.",
+        "Check the web ACL's WAF log (aws-waf-logs-*) in CloudWatch Logs Insights around this "
+        "incident's time for other rules this client tripped; if it is persistent, block it with "
+        "an IP-set rule. Confirm no Lambda reads a file path taken from a request.",
     ),
     "ssrf": (
         HIGH,

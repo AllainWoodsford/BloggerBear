@@ -597,8 +597,9 @@ def _dispatch_line(topic: dict) -> str:
 def _shadow_line(topic: dict) -> str:
     """The dispatcher's shadow record for one topic, in words, or "" before its first shadow turn:
     the mismatches with what the schedules did, the days the check could not answer (neither counts
-    as a match), the days it did (moving to the queue needs at least one), and the last turns it
-    would have dispatched."""
+    as a match), the days it did, how many of those matched in a row since the last mismatch or
+    unchecked day when the dispatcher has counted them (moving to the queue needs one), and the last
+    turns it would have dispatched."""
     research = topic.get("shadow_last_research_dispatch_at")
     daily = topic.get("shadow_last_daily_dispatch_at")
     if not research and not daily:
@@ -611,6 +612,9 @@ def _shadow_line(topic: dict) -> str:
         f"{unchecked} unchecked day{'s' if unchecked != 1 else ''}",
         f"{checked} checked day{'s' if checked != 1 else ''}",
     ]
+    if topic.get("shadow_clean_days") is not None:
+        clean = int(topic["shadow_clean_days"])
+        parts.append(f"{clean} clean in a row")
     if research:
         parts.append(f"last research turn {research}")
     if daily:
@@ -3014,16 +3018,25 @@ def build_parser() -> argparse.ArgumentParser:
     register_prompt_commands(subparsers, _prompt_helpers())
 
     # The eval commands (continuous evals, the Model Ranch) live in scripts/admin_cli_evals.py. It is
-    # handed this module's request helper and error type rather than importing them, and is imported
+    # handed this module's request helpers and error type rather than importing them, and is imported
     # here rather than at the top, so the two modules never import each other at load time (a cycle
     # otherwise).
     from admin_cli_evals import register as register_eval_commands
 
-    register_eval_commands(
-        subparsers, {"do_request": _do_request, "fetch_json": _fetch_json, "CliError": CliError}
-    )
+    register_eval_commands(subparsers, _eval_helpers())
 
     return parser
+
+
+def _eval_helpers() -> dict:
+    """What admin_cli_evals.register is lent, by name. Looked up when a command runs, not when the
+    parser is built, so a test that patches one of them here reaches the eval commands too."""
+    return {
+        "do_request": lambda *args, **kwargs: _do_request(*args, **kwargs),
+        "fetch_json": lambda *args, **kwargs: _fetch_json(*args, **kwargs),
+        "get_json_or_none": lambda *args, **kwargs: _get_json_or_none(*args, **kwargs),
+        "CliError": CliError,
+    }
 
 
 def _prompt_helpers() -> dict:

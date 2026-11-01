@@ -214,9 +214,10 @@ def list_recent_findings(topic_id: str, limit: int = 5, since: str | None = None
 # Interrogating a topic's Findings (the assistant's topic_findings, the Admin API's findings route
 # and `admin_cli findings list`). Read-only, and only ever a Query on the topic's own key: a test
 # in each caller holds the table to `query` and nothing else. list_recent_findings above stays as
-# it is: the daily cycle and Re-Write read a topic that does not rotate through it, and a rotating
-# topic's window through list_findings below (up to common/findings_window.SUBJECT_READ_LIMIT, so
-# the 48-cap falls after the subject filter).
+# it is: the daily cycle reads a topic that does not rotate through it, and a rotating topic's
+# window through list_findings below (up to common/findings_window.SUBJECT_READ_LIMIT, so the
+# 48-cap falls after the subject filter). Re-Write reads an article's window through list_findings
+# whether or not its topic rotates, bounded at the article's creation (`until`).
 #
 # DynamoDB's TTL deletes an expired item lazily, up to about two days after `expires_at`, so a
 # read that wants what is still alive skips any item whose `expires_at` has passed (the daily run
@@ -1771,6 +1772,40 @@ def put_model(item: dict) -> None:
         if price_field in item and item[price_field] is not None:
             item[price_field] = Decimal(str(item[price_field]))
     table.put_item(Item=item)
+
+
+def put_model_if_unchanged(item: dict, read: dict | None, fields: tuple[str, ...]) -> bool:
+    """put_model, but only while the row is as `read` found it (None: there was no row): each of
+    `fields` still holding the value read, or still unset where it was. False, and nothing written,
+    when another writer has since created, deleted or changed the row in one of those fields."""
+    table = get_table(os.environ["MODELS_TABLE"])
+    item = dict(item)
+    for price_field in ("input_price_usd_per_1k_tokens", "output_price_usd_per_1k_tokens"):
+        if price_field in item and item[price_field] is not None:
+            item[price_field] = Decimal(str(item[price_field]))
+    names: dict = {}
+    values: dict = {}
+    if read is None:
+        conditions = ["attribute_not_exists(model_id)"]
+    else:
+        conditions = ["attribute_exists(model_id)"]
+        for index, name in enumerate(fields):
+            names[f"#e{index}"] = name
+            if read.get(name) is None:
+                # A field stored as NULL reads as None too; it is unset as far as the writer knew.
+                conditions.append(f"(attribute_not_exists(#e{index}) OR attribute_type(#e{index}, :null))")
+                values[":null"] = "NULL"
+            else:
+                conditions.append(f"#e{index} = :e{index}")
+                values[f":e{index}"] = _floats_to_decimal(read[name])
+    kwargs = {"ExpressionAttributeNames": names} if names else {}
+    if values:
+        kwargs["ExpressionAttributeValues"] = values
+    try:
+        table.put_item(Item=item, ConditionExpression=" AND ".join(conditions), **kwargs)
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
 
 
 def list_models() -> list[dict]:

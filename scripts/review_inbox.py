@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import textwrap
@@ -65,6 +66,11 @@ _FINANCIAL_REASON = "financial topic"
 # lambdas/common/rewrite.py's SENT_BACK_REASON: on an item `articles rewrite` made, whose rewrite
 # then failed. It says why the article is here, not what is wrong (rewrite_instructions does).
 _SENT_BACK_REASON = "sent back by a person for a rewrite"
+# A fresh-data review note that flags a claim (lambdas/common/fresh_review.py review_notes). Its
+# other notes say something about the review, not the text, so a Re-Write is not given them to fix
+# (lambdas/common/rewrite.py rewrite_issues), and they alone do not offer one.
+_FRESH_REVIEW_NOTE = "fresh-data review"
+_CLAIM_NOTE = re.compile(r" -- (?:stale|contradicted|unsupported) \((?:minor|major)\)")
 
 HELP_LINE = "[y] Approve | [r] Reject | [z] Skip | [v] View all | [q] Quit -> "
 REWRITE_HELP_LINE = "[y] Approve | [r] Reject | [w] Re-Write | [z] Skip | [v] View all | [q] Quit -> "
@@ -251,7 +257,7 @@ class ModerationSource(ContentSource):
             notes=notes,
             routine=bool(routine) and not flagged and not notes and not sent_back,
             caution=bool(flagged or notes or sent_back),
-            can_rewrite=bool(flagged or notes or instructions),
+            can_rewrite=bool(flagged or any(map(_is_problem_note, notes)) or instructions),
             ref={
                 "queue_id": row.get("queue_id"),
                 "article_id": row.get("article_id"),
@@ -446,12 +452,19 @@ def _finding_item(source: str, key: str, row: dict) -> Item:
     )
 
 
+def _is_problem_note(note: str) -> bool:
+    return not note.startswith(_FRESH_REVIEW_NOTE) or bool(_CLAIM_NOTE.search(note))
+
+
 def _rewrite_fact(rewrite: dict) -> str:
     """One line saying this is a rewritten article: which rewrite, by what, for how much."""
     cost = rewrite.get("cost_aud")
     cost_text = f"~${float(cost):.3f} AUD" if isinstance(cost, int | float) else "cost: no data"
     model = rewrite.get("model_label") or rewrite.get("model_id")
     line = f"Re-Write #{rewrite.get('number', '?')} by {model} ({cost_text})"
+    edits, kept = rewrite.get("edits"), rewrite.get("kept_percent")
+    if isinstance(edits, int | float) and isinstance(kept, int | float):  # older rewrites have neither
+        line += f"; {int(edits)} passage{'' if edits == 1 else 's'} edited, {int(kept)}% kept as it was"
     previous = rewrite.get("previous_title")
     line += f'; was titled "{_short(previous, 60)}"' if previous else ""
     instructions = rewrite.get("instructions")

@@ -15,7 +15,7 @@ import pytest
 from moto import mock_aws
 from table_schemas import KEYS
 
-from common import dynamo, model_fleet
+from common import dynamo, evals_settings, model_cull, model_fleet
 from ops_agent import policy
 from ops_mcp import memory, model_ranch, suggestions
 
@@ -397,6 +397,125 @@ def test_an_expired_or_empty_proposal_is_no_card(ranch, proposal):
     assert "cull_proposed" not in [kind for kind, _ in kinds(model_ranch.model_ranch(now=NOW))]
 
 
+@pytest.fixture
+def culling(ranch, monkeypatch):
+    """The ranch with culling on, and the Topics table an apply reads (model_fleet.cull_roles)."""
+    monkeypatch.setenv("TOPICS_TABLE", "Topics")
+    ranch.meta.client.create_table(
+        TableName="Topics",
+        KeySchema=[{"AttributeName": "topic_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "topic_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ranch.Table("ModelConfig").put_item(Item={"config_id": "evals", "cull_enabled": True})
+    return ranch
+
+
+BELOW_THE_TOTAL_GATE = {"total": -1500, "events": {"daily": 0, "weekly": 0, "monthly": 0, "total": 40}}
+
+
+def cull_card(result) -> dict | None:
+    return next((found for found in result["findings"] if found["kind"] == "cull_proposed"), None)
+
+
+def test_a_proposal_the_apply_already_culled_is_no_card_and_is_not_said(culling):
+    """PR16's apply leaves `cull_proposal` on the state row until the next weekly cycle; what it culled
+    has left the registry, so there is nothing waiting: no card, no `evals cull --apply`, not said."""
+    put_model(culling, QUIET, **BELOW_THE_TOTAL_GATE)
+    put_proposal(culling)
+    assert cull_card(model_ranch.model_ranch(now=NOW)) is not None  # the proposal is waiting
+
+    assert model_cull.apply(NOW)["culled_ids"] == [QUIET]
+
+    later = NOW + timedelta(hours=1)
+    result = model_ranch.model_ranch(now=later)
+    assert cull_card(result) is None
+    assert "A cull proposal" not in result["spoken"]
+    assert result["cull_proposal"]["models"] == []
+    assert model_cull.apply(later)["culled_ids"] == []  # applying again culls nothing: it is gone
+
+
+def test_after_an_apply_up_to_the_cap_only_what_the_next_apply_takes_is_waiting(culling):
+    """An apply culls at most `cull_max_per_run`; those it left passed every check and are what
+    another `evals cull --apply` takes, so they are what the card counts."""
+    culling.Table("ModelConfig").put_item(
+        Item={"config_id": "evals", "cull_enabled": True, "cull_max_per_run": 3}
+    )
+    poor = [f"maker.poor{n}-v1:0" for n in range(4)]
+    for model_id in poor:
+        put_model(culling, model_id, **BELOW_THE_TOTAL_GATE)
+    put_proposal(culling, models=[{"model_id": m, "total_perf": -1500, "events": 40} for m in poor])
+    assert cull_card(model_ranch.model_ranch(now=NOW))["where"]["models"] == 4
+
+    assert model_cull.apply(NOW)["left"] == [poor[3]]
+
+    result = model_ranch.model_ranch(now=NOW + timedelta(hours=1))
+    assert cull_card(result)["where"]["models"] == 1
+    assert [entry["model_id"] for entry in result["cull_proposal"]["models"]] == [poor[3]]
+    assert "A cull proposal of 1 model is waiting." in result["spoken"]
+
+
+def test_a_proposed_model_that_left_the_registry_some_other_way_is_not_waiting(ranch):
+    """Discover's prune, or a hand delete, takes a model out of the registry with no apply: an apply
+    would keep it ("it is no longer in the registry"), so it is not counted."""
+    gone = "maker.pruned-v1:0"
+    put_proposal(
+        ranch,
+        models=[
+            {"model_id": QUIET, "total_perf": -1500, "events": 40},
+            {"model_id": gone, "total_perf": -1800, "events": 40},
+        ],
+    )
+
+    result = model_ranch.model_ranch(now=NOW)
+
+    assert [entry["model_id"] for entry in result["cull_proposal"]["models"]] == [QUIET]
+    assert cull_card(result)["where"]["models"] == 1
+    assert "A cull proposal of 1 model is waiting; culling is off." in result["spoken"]
+
+
+def test_a_culled_model_put_back_by_a_restore_is_not_waiting_to_be_culled_again(culling):
+    """`models restore` puts a culled model back in the registry, held open for 7 days, while the
+    applied proposal still names it: an apply would keep it, so nothing is waiting."""
+    put_model(culling, QUIET, **BELOW_THE_TOTAL_GATE)
+    put_proposal(culling)
+    assert model_cull.apply(NOW)["culled_ids"] == [QUIET]
+
+    model_cull.restore(QUIET, NOW + timedelta(minutes=30))
+
+    later = NOW + timedelta(hours=1)
+    assert QUIET in [row["model_id"] for row in dynamo.list_models()]
+    result = model_ranch.model_ranch(now=later)
+    assert cull_card(result) is None and "A cull proposal" not in result["spoken"]
+    assert model_cull.apply(later)["culled_ids"] == []
+
+
+def test_the_next_cycles_proposal_after_an_earlier_apply_is_waiting_in_full(culling):
+    """The weekly cycle updates `cull_proposal` alone, so the last apply's `last_cull_apply` stays on
+    the state row beside the new proposal. That apply belongs to the earlier proposal, so its leftovers
+    must not stand in for the new one: every model the new proposal names is waiting."""
+    put_model(culling, QUIET, **BELOW_THE_TOTAL_GATE)
+    put_proposal(culling)
+    assert model_cull.apply(NOW)["culled_ids"] == [QUIET]
+
+    later_model = "maker.later-v1:0"
+    put_model(culling, later_model, **BELOW_THE_TOTAL_GATE)
+    # The real writer, at the time the first proposal expires: next Friday's cycle.
+    next_cycle = datetime(2026, 11, 5, 17, 0, tzinfo=UTC)
+    assert model_fleet.cull_proposal(evals_settings.get_settings(), next_cycle)["proposed"] == 1
+    state = dynamo.get_config_row(model_fleet.STATE_ID)
+    # Were the row replaced, the earlier apply would be gone and this test would pass whatever the
+    # ranch's match of the apply to its proposal did.
+    assert state["last_cull_apply"]["proposed_at"] == "2026-10-30T04:00:00+11:00"
+    assert state["cull_proposal"]["proposed_at"] == next_cycle.isoformat()
+
+    result = model_ranch.model_ranch(now=NOW + timedelta(days=7))
+
+    assert cull_card(result)["where"]["models"] == 1
+    assert [entry["model_id"] for entry in result["cull_proposal"]["models"]] == [later_model]
+    assert "A cull proposal of 1 model is waiting." in result["spoken"]
+
+
 def test_what_is_said_names_the_gated_model_and_the_weakest_pairing_in_under_120_words(ranch):
     spoken = model_ranch.model_ranch(now=NOW)["spoken"]
 
@@ -415,6 +534,7 @@ def test_many_gated_models_are_said_as_a_few_ids_and_a_count(aws):
             aws, f"maker.m{n:02d}-v1:0", weekly=-500, total=-500,
             events={"daily": 0, "weekly": 30, "monthly": 30, "total": 30},
         )  # fmt: skip
+    put_model(aws, QUIET)  # what the proposal names: one no longer in the registry is not waiting
     put_proposal(aws)
 
     result = model_ranch.model_ranch(now=NOW)
@@ -620,7 +740,7 @@ def test_a_prompt_that_fell_back_lately_is_a_card_about_its_id(prompts):
     assert (card["kind"], card["id"]) == ("prompt_fallback", DRAFT)
     assert card["where"] == {"prompt": DRAFT, "versions": "v3"}
     assert card["suggestion"]["command"] == f"{suggestions.ADMIN_CLI} prompts list"
-    assert "fell back to the copy in the code in the last two days" in result["spoken"]
+    assert "fell back to the copy in the code in the last three days" in result["spoken"]
 
 
 def test_the_window_is_one_to_120_days_and_a_short_one_leaves_older_days_out(prompts):
@@ -709,16 +829,19 @@ def test_a_prompts_fallback_card_is_remembered_dismissed_and_followed_up_by_its_
     assert memory.dismiss(ALICE, "prompt_fallback", "not a prompt", now=NOW)["dismissed"] is False
 
 
-def test_a_prompts_fallback_card_stays_open_the_next_day_and_clears_by_itself_once_two_days_old(prompts):
+def test_a_prompts_fallback_card_stays_open_two_days_on_and_clears_by_itself_once_three_days_old(prompts):
     memory.remember(ALICE, model_ranch.prompt_metrics(now=NOW), now=NOW)
-    # v3 still runs on the two days after, without falling back.
+    # v3 still runs on the three days after, without falling back.
     still_running = row(2, 3, 2, 1, Admin_Review=(2, 3, 2, 1))
-    put_days(prompts, f"prompt#{DRAFT}#v3", {-1: still_running, -2: still_running})
+    put_days(prompts, f"prompt#{DRAFT}#v3", {-1: still_running, -2: still_running, -3: still_running})
 
-    # The next day, yesterday's fallback still counts.
-    still = memory.follow_up(ALICE, now=NOW + timedelta(days=1))
-    assert [(entry["kind"], entry["id"]) for entry in still["open"]] == [("prompt_fallback", DRAFT)]
+    # The reviewer bear runs every second day: the next day, and the day after, when he runs again,
+    # the fallback still counts, so his card is not read as fixed between two of his runs.
+    for later in (1, 2):
+        still = memory.follow_up(ALICE, now=NOW + timedelta(days=later))
+        open_cards = [(entry["kind"], entry["id"]) for entry in still["open"]]
+        assert open_cards == [("prompt_fallback", DRAFT)], later
 
-    done = memory.follow_up(ALICE, now=NOW + timedelta(days=2))
+    done = memory.follow_up(ALICE, now=NOW + timedelta(days=3))
     assert [(entry["kind"], entry["id"]) for entry in done["cleared"]] == [("prompt_fallback", DRAFT)]
     assert done["open"] == [] and done["fixed"] == []  # they stopped by themselves: never "you fixed"
