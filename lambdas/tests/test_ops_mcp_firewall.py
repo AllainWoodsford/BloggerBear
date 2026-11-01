@@ -177,7 +177,8 @@ def test_a_spike_is_a_finding_that_suggests_opening_an_incident(production):
     assert len(result["findings"]) == 3
     spike = result["findings"][0]
     assert spike["kind"] == "firewall_spike"
-    assert "edge dashboard" in spike["suggestion"]["action"]
+    assert "pipeline health dashboard" in spike["suggestion"]["action"]
+    assert "-<env>-pipeline-health)" in spike["suggestion"]["action"]
     # Something unusual that is not an incident yet: the command puts it on record. Fixed words,
     # for the operator to edit; nothing from the log is in it.
     assert spike["suggestion"]["command"] == (

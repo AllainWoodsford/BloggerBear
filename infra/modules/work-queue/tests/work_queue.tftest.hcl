@@ -371,7 +371,7 @@ run "the_alarms_are_named_for_the_environment_and_notify_the_alerts_topic" {
   }
 
   assert {
-    condition     = output.function_names == ["acme-dev-dispatcher"] && output.work_queue_url == "https://sqs.eu-west-1.amazonaws.com/111111111111/acme-dev-work.fifo"
-    error_message = "what the roots read: the function for observability, the URL for every Lambda"
+    condition     = output.function_names == ["acme-dev-dispatcher"] && output.function_timeouts == { "acme-dev-dispatcher" = 60 } && output.work_queue_url == "https://sqs.eu-west-1.amazonaws.com/111111111111/acme-dev-work.fifo"
+    error_message = "what the roots read: the function and its timeout for observability, the URL for every Lambda"
   }
 }
