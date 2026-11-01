@@ -853,8 +853,9 @@ def _move_to_queue(topic_id: str, updated: dict, *, topics: list[dict], config, 
     model-ranch-prompt-assets-evals.md, Q2), up to the row write the caller makes; returns the
     refusal to answer with, or None to go on.
 
-    The pre-flight first (dispatch.cutover_refusals: not paused, cadences the dispatcher reads, a
-    usable slug and queue id, a clean full day of shadow mode): 400 with every reason. Then 409
+    The pre-flight first (dispatch.cutover_refusals: not paused, cadences the dispatcher reads,
+    schedules written as the dispatcher would run them, a usable slug and queue id, a clean full
+    day of shadow mode): 400 with every reason. Then 409
     `confirm_required` until the caller confirms, since the schedules are deleted. They are deleted
     before the row says queue, so a failure in between leaves the topic running nowhere and said
     so, never on both paths at once (two articles in a day); the caller's _apply_topic_schedules

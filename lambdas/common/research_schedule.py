@@ -28,6 +28,11 @@ MAX_RESEARCH_INTERVAL_HOURS = 168  # a week
 # see 1h59m59s between ticks and skip a whole heartbeat.
 DUE_TOLERANCE = timedelta(minutes=5)
 
+# The Topics row field a research tick stamps once it has found the topic due, before it asks the
+# source, beside `last_research_at`, which only a successful check stamps (and which is all is_due
+# reads). The dispatcher's shadow mode reads both (common/dispatch.py).
+LAST_RESEARCH_ATTEMPT_AT = "last_research_attempt_at"
+
 
 def _as_hours(value) -> int | None:
     """`value` as a whole number of hours in range, else None. Accepts the

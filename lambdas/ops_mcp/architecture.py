@@ -550,7 +550,7 @@ CATALOGUE: tuple[Component, ...] = (
         f"on the queue (dispatch_mode queue), on each research job on {PREFIX}{ENV}-work.fifo, "
         "at most worker_concurrency at once",
         details=(
-            ("Writes", "findings; topics.last_research_at"),
+            ("Writes", "findings; topics.last_research_at, last_research_attempt_at"),
             ("Schedules", f"{PREFIX}{ENV}-<topic_id>-research-tick"),
         ),
         alarms=(_PROMPT_FALLBACK_ALARM,),

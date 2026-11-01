@@ -360,19 +360,38 @@ def test_a_claim_never_recreates_a_deleted_topic(aws_resources):
     assert stored("gone") == {}
 
 
-def test_releasing_a_daily_claim_puts_back_what_was_there_and_keeps_the_number(aws_resources):
+def test_releasing_a_daily_claim_puts_back_what_was_there_and_gives_the_number_back(aws_resources):
+    """The retry after a failed start sends the same execution name, so Step Functions drops it if
+    the failed start had reached it after all (spec 4.7)."""
     put_topics(topic())
     table = topics_table()
     dispatch.claim_daily(table, "github-trending", "2026-10-24")
     claim = dispatch.claim_daily(table, "github-trending", "2026-10-25")
 
     dispatch.release_daily(table, "github-trending", "2026-10-25", claim.previous)
-    assert stored()["last_daily_dispatched_on"] == "2026-10-24" and stored()["daily_claim_n"] == 2
+    assert stored()["last_daily_dispatched_on"] == "2026-10-24" and stored()["daily_claim_n"] == 1
+    assert dispatch.claim_daily(table, "github-trending", "2026-10-25") == Claim(previous="2026-10-24", n=2)
 
     put_topics(topic())
     first = dispatch.claim_daily(table, "github-trending", "2026-10-25")
     dispatch.release_daily(table, "github-trending", "2026-10-25", first.previous)
-    assert "last_daily_dispatched_on" not in stored() and stored()["daily_claim_n"] == 1
+    assert "last_daily_dispatched_on" not in stored() and stored()["daily_claim_n"] == 0
+
+
+def test_a_daily_release_is_one_conditional_update_that_gives_the_number_back():
+    table = MagicMock()
+
+    dispatch.release_daily(table, "github-trending", "2026-10-25", "2026-10-24")
+    dispatch.release_daily(table, "github-trending", "2026-10-25", None)
+
+    first, second = (call.kwargs for call in table.update_item.call_args_list)
+    assert first["UpdateExpression"] == (
+        "SET last_daily_dispatched_on = :previous ADD daily_claim_n :minus_one"
+    )
+    assert second["UpdateExpression"] == "REMOVE last_daily_dispatched_on ADD daily_claim_n :minus_one"
+    for kwargs in (first, second):
+        assert kwargs["ConditionExpression"] == "last_daily_dispatched_on = :today"
+        assert kwargs["ExpressionAttributeValues"][":minus_one"] == -1
 
 
 def test_a_release_leaves_a_claim_someone_else_now_holds(aws_resources):
@@ -645,7 +664,7 @@ def test_a_throttled_start_releases_the_claim_and_raises_so_the_alarm_fires(aws_
 
     row = stored()
     assert "last_daily_dispatched_on" not in row
-    assert row["daily_claim_n"] == 1  # the number moves on: the name is never reused
+    assert row["daily_claim_n"] == 0  # given back: the retry sends the same name
 
 
 def test_any_other_start_failure_is_that_topics_problem_only(aws_resources, capsys):
@@ -663,6 +682,33 @@ def test_any_other_start_failure_is_that_topics_problem_only(aws_resources, caps
     assert "last_daily_dispatched_on" not in stored("alpha")
     assert stored("beta")["last_daily_dispatched_on"] == "2026-10-25"
     assert "dispatcher: topic_id=alpha skipped: ClientError(" in capsys.readouterr().out
+
+
+def test_a_start_refused_for_an_infrastructure_reason_lets_the_other_topics_run_then_raises(
+    aws_resources, capsys
+):
+    """AccessDenied on alpha's start is no fault of alpha's, and lasts until someone mends the role.
+    Raised there and then, it would end the tick at alpha every minute, so beta's research and its
+    daily start would never go out and last_tick would never move. The tick finishes every topic,
+    writes last_tick, and raises after the loop, so the Errors alarm still fires."""
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(topic("alpha", stagger_slot=1), topic("beta", stagger_slot=2))
+    sqs, sfn = MagicMock(), MagicMock()
+    sfn.start_execution.side_effect = [
+        ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "StartExecution"),
+        {"executionArn": "arn"},
+    ]
+    now = at("2026-10-24T23:00:00")  # 10:00 Sydney: both research turns and both daily turns
+
+    with pytest.raises(DispatchError, match="alpha"):
+        dispatcher(sqs=sqs, sfn=sfn).tick(now)
+
+    assert "last_daily_dispatched_on" not in stored("alpha")  # released: the next tick tries again
+    assert stored("beta")["last_daily_dispatched_on"] == "2026-10-25"
+    assert [call.kwargs["MessageGroupId"] for call in sqs.send_message.call_args_list] == ["alpha", "beta"]
+    assert pipeline_row()["last_tick"] == "2026-10-24T23:00:00+00:00"
+    out = capsys.readouterr().out
+    assert "dispatcher: topic_id=alpha start refused: StartRefused(" in out and "AccessDeniedException" in out
 
 
 # --- a tick: who is considered -----------------------------------------------------------------------------
@@ -903,6 +949,18 @@ def test_a_recorded_turn_is_judged_once_five_minutes_on_against_when_last_resear
         row("not-moved", last_research_at=(turn - timedelta(hours=1)).isoformat()),
         row("early", last_research_at=(turn - timedelta(minutes=7)).isoformat()),
         row("never"),
+        # The Scheduler path's tick took the turn, but its fetch failed, so only its attempt moved.
+        row(
+            "fetch-failed",
+            last_research_at=(turn - timedelta(hours=1)).isoformat(),
+            last_research_attempt_at=(turn + timedelta(seconds=40)).isoformat(),
+        ),
+        # Its attempt is last hour's: this turn was never taken.
+        row(
+            "attempted-last-hour",
+            last_research_at=(turn - timedelta(hours=2)).isoformat(),
+            last_research_attempt_at=(turn - timedelta(hours=1)).isoformat(),
+        ),
     )
     dynamo.update_config_row("pipeline", {"last_tick": (turn + timedelta(minutes=4)).isoformat()})
     run = dispatcher()
@@ -910,9 +968,9 @@ def test_a_recorded_turn_is_judged_once_five_minutes_on_against_when_last_resear
     run.tick(turn + timedelta(minutes=5))
     run.tick(turn + timedelta(minutes=6))  # judged once: the next window no longer holds it
 
-    counted = {name: stored(name).get("shadow_mismatches", 0) for name in
-               ("agreed", "stamped-first", "not-moved", "early", "never")}
-    assert counted == {"agreed": 0, "stamped-first": 0, "not-moved": 1, "early": 1, "never": 1}
+    expected = {"agreed": 0, "stamped-first": 0, "not-moved": 1, "early": 1, "never": 1,
+                "fetch-failed": 0, "attempted-last-hour": 1}  # fmt: skip
+    assert {name: stored(name).get("shadow_mismatches", 0) for name in expected} == expected
     # Each judged turn is dated on its row: what the cutover's pre-flight compares.
     fields = ("shadow_research_matched_at", "shadow_research_mismatch_at")
     names = ("agreed", "stamped-first", "never")
@@ -1364,6 +1422,8 @@ def test_a_heartbeat_drifted_late_on_a_cadence_longer_than_its_interval_never_pa
             dispatch_mode="schedule",
             research_cadence="cron(0 */4 * * ? *)",
             research_interval_hours=2,
+            research_schedule="cron(0 */4 * * ? *)",
+            daily_schedule="cron(0 9 * * ? *)",
             last_research_at=at("2026-10-23T20:10:00").isoformat(),
             shadow_last_daily_dispatch_at=YESTERDAY_TURN.isoformat(),
             shadow_last_research_dispatch_at=at("2026-10-23T20:00:30").isoformat(),
@@ -1413,6 +1473,8 @@ def test_one_missed_heartbeat_holds_the_cutover_until_a_full_day_after_it_is_che
             dispatch_mode="schedule",
             research_cadence="cron(0 * * * ? *)",
             research_interval_hours=1,
+            research_schedule="cron(0 * * * ? *)",
+            daily_schedule="cron(0 9 * * ? *)",
             last_research_at=at("2026-10-24T19:00:05").isoformat(),
             shadow_last_research_dispatch_at=at("2026-10-24T19:00:30").isoformat(),
             shadow_research_matched_at=at("2026-10-24T19:00:30").isoformat(),
@@ -1490,3 +1552,60 @@ def test_a_research_mismatch_judged_in_the_daily_check_s_own_tick_counts_no_clea
     assert dispatch.shadow_problems(row, research_is_rate=False)[0].startswith(
         "shadow mode has not watched a full day of it since its last mismatch"
     )
+
+
+# --- a daily start whose answer was lost ------------------------------------------------------------
+
+
+class _StepFunctions:
+    """Step Functions as StartExecution answers a name: a new name starts a run; the same name and
+    input while that run is RUNNING returns success and starts nothing; any other repeat of a name
+    is ExecutionAlreadyExists. The first `lose_responses` calls create the run and then fail, as a
+    request that reached Step Functions but whose answer never came back (a 5xx after botocore's
+    retries, a dropped connection)."""
+
+    def __init__(self, lose_responses: int, error: Exception):
+        self.runs: dict[str, str] = {}
+        self.lose_responses = lose_responses
+        self.error = error
+
+    def start_execution(self, *, stateMachineArn, name, input):
+        if name in self.runs:
+            if self.runs[name] == input:
+                return {"executionArn": f"{stateMachineArn}:{name}"}  # RUNNING, same input
+            exists = {"Error": {"Code": "ExecutionAlreadyExists", "Message": name}}
+            raise ClientError(exists, "StartExecution")
+        self.runs[name] = input
+        if self.lose_responses:
+            self.lose_responses -= 1
+            raise self.error
+        return {"executionArn": f"{stateMachineArn}:{name}"}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ClientError({"Error": {"Code": "ServiceUnavailable", "Message": "try later"}}, "StartExecution"),
+        ClientError({"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "StartExecution"),
+        ConnectionError("connection reset after the request was sent"),
+    ],
+    ids=["5xx", "throttled_on_retry", "connection"],
+)
+def test_a_start_that_reached_step_functions_but_failed_is_not_run_twice_on_the_retry(aws_resources, error):
+    """Spec 4.7: the execution name is the daily start's idempotency (the same name while RUNNING
+    is success; an existing name is consumed). The release gives the claim's number back, so the
+    retry sends the same name, and a start whose answer was lost does not run the day twice."""
+    put_topics(topic())
+    sfn = _StepFunctions(lose_responses=1, error=error)
+
+    try:
+        dispatcher(sfn=sfn).tick(DAILY_TURN)  # the run is created, the answer is lost, the day released
+    except DispatchError:
+        pass
+    assert "last_daily_dispatched_on" not in stored()  # released: the next tick tries again
+
+    dispatcher(sfn=sfn).tick(DAILY_TURN + timedelta(minutes=1))
+
+    assert list(sfn.runs) == ["github-trending-2026-10-25-1"]  # one daily run for the day
+    assert stored()["last_daily_dispatched_on"] == "2026-10-25"
+    assert stored()["daily_claim_n"] == 1

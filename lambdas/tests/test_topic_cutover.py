@@ -45,7 +45,8 @@ DAY = timedelta(days=1)
 def ready(topic_id="github-trending", **fields) -> dict:
     """A topic on its schedules that shadow mode has watched cleanly: one checked day, no mismatch,
     no unchecked day, a research turn recorded and judged on time, and yesterday's daily turn as the
-    last daily record (so nothing but the cutover-day claim can stop today's run)."""
+    last daily record (so nothing but the cutover-day claim can stop today's run). Its schedules as
+    written are the ones the dispatcher works out for slot 1 of one topic."""
     row = {
         "topic_id": topic_id,
         "name": topic_id,
@@ -55,6 +56,8 @@ def ready(topic_id="github-trending", **fields) -> dict:
         "daily_cadence": "cron(0 9 * * ? *)",
         "daily_timezone": "Australia/Sydney",
         "stagger_slot": 1,
+        "research_schedule": "cron(5 * * * ? *)",
+        "daily_schedule": "cron(10 9 * * ? *)",
         "shadow_last_research_dispatch_at": "2026-10-24T20:05:30+00:00",
         "shadow_research_matched_at": "2026-10-24T20:05:30+00:00",
         "shadow_last_daily_dispatch_at": "2026-10-23T22:10:30+00:00",
@@ -341,6 +344,7 @@ def test_a_rate_research_cadence_is_judged_by_its_parse_and_its_daily_record_alo
     put_topics(
         ready(
             research_cadence="rate(30 minutes)",
+            research_schedule="rate(30 minutes)",
             shadow_last_research_dispatch_at=None,
             shadow_research_matched_at=None,
         )
@@ -349,7 +353,16 @@ def test_a_rate_research_cadence_is_judged_by_its_parse_and_its_daily_record_alo
     status, _ = update(world, BEFORE_TURN, dispatch_mode="queue", confirm=True)
     assert status == 200
 
-    put_topics(ready("hacker-news", stagger_slot=2, research_cadence="rate(30 minutes)", shadow_mismatches=1))
+    put_topics(
+        ready(
+            "hacker-news",
+            stagger_slot=2,
+            research_cadence="rate(30 minutes)",
+            research_schedule="rate(30 minutes)",
+            daily_schedule="cron(20 9 * * ? *)",  # slot 2 of two topics
+            shadow_mismatches=1,
+        )
+    )
     status, body = update(world, BEFORE_TURN, topic_id="hacker-news", dispatch_mode="queue", confirm=True)
     assert status == 400
     assert body["reasons"] == [
@@ -369,6 +382,118 @@ def test_an_old_mismatch_holds_the_cutover_back_only_until_a_clean_day_is_checke
 
     assert status == 200 and body["dispatch_mode"] == "queue"
     assert stored()["shadow_mismatches"] == 3  # the history stays, for `topics schedule`
+
+
+# --- the schedules as written and as the dispatcher works them out ---------------------------------
+#
+# The daily offset is (topic count + slot) * stagger_minutes, and adding or deleting a topic writes
+# only that topic's schedules: every other topic's Scheduler expression (`daily_schedule` on its row)
+# stays as it was until `topics reschedule`, while the dispatcher works its turn out again from the
+# new count. A move made between the two minutes would give the topic two daily runs that day, or
+# none, so the pre-flight refuses a move while the two differ.
+
+MOVED_AT = datetime(2026, 10, 24, 22, 12, tzinfo=UTC)  # 09:12 in Sydney
+TURN_WITH_TWO_TOPICS = datetime(2026, 10, 24, 22, 15, tzinfo=UTC)  # 09:15: slot 1 of 2
+DRIFTED = "the schedules written for it are not the ones the dispatcher would run"
+
+
+def delete(world, at: datetime, topic_id: str) -> tuple[int, dict]:
+    world["clock"]["now"] = at
+    result = admin_api_handler.handler(
+        _event("DELETE /topics/{topic_id}", path_params={"topic_id": topic_id}), None
+    )
+    return result["statusCode"], json.loads(result["body"])
+
+
+def test_a_move_after_a_topic_was_added_is_refused_until_its_schedules_are_written_again(world):
+    # Written while it was the only topic: the Scheduler runs its daily cycle at 09:10.
+    put_topics(ready())
+    status, _ = create(
+        world,
+        BEFORE_TURN,
+        topic_id="hacker-news",
+        name="Hacker News",
+        adapter="github_trending",
+        research_cadence="rate(1 hour)",
+        daily_cadence="cron(0 9 * * ? *)",
+        daily_timezone="Australia/Sydney",
+    )
+    assert status == 201
+    # Only the new topic's schedules were written: github-trending's Scheduler still says 09:10,
+    # while the dispatcher, counting two topics now, works its turn out as 09:15.
+    assert [call.args[0] for call in world["upserted"].call_args_list] == ["hacker-news"]
+    assert stored()["daily_schedule"] == "cron(10 9 * * ? *)"
+    assert dispatch.effective_cadences(stored(), config=None, topic_count=2)["daily"] == "cron(15 9 * * ? *)"
+
+    # 09:10: the Scheduler starts today's run (no tick sees it). 09:12: the move. Let through, the
+    # dispatcher would start a second run at 09:15.
+    status, body = update(world, MOVED_AT, dispatch_mode="queue", confirm=True)
+
+    assert status == 400
+    assert body["reasons"] == [
+        f"{DRIFTED} (daily written as 'cron(10 9 * * ? *)', read as 'cron(15 9 * * ? *)'), so the "
+        "move cannot tell whether today's daily cycle has run: run `topics reschedule` first, and make "
+        "a cadence or slot change in an update of its own"
+    ]
+    world["deleted"].assert_not_called()
+    assert "dispatch_mode" not in stored()
+
+    assert reschedule()[0] == 200
+    assert stored()["daily_schedule"] == "cron(15 9 * * ? *)"
+    status, _ = update(world, AFTER_TURN, dispatch_mode="queue", confirm=True)
+    assert status == 200 and stored()["last_daily_dispatched_on"] == "2026-10-25"
+    tick(world, AFTER_TURN + timedelta(minutes=1), TURN_WITH_TWO_TOPICS + DAY)
+    assert started(world) == ["github-trending-2026-10-26-1"]
+
+
+def test_a_move_after_a_topic_was_deleted_is_refused_until_its_schedules_are_written_again(world):
+    # Written while there were two topics: the Scheduler runs github-trending's daily cycle at 09:15.
+    put_topics(
+        ready(daily_schedule="cron(15 9 * * ? *)"),
+        ready(
+            "hacker-news",
+            stagger_slot=2,
+            research_schedule="cron(10 * * * ? *)",
+            daily_schedule="cron(20 9 * * ? *)",
+        ),
+    )
+    assert delete(world, BEFORE_TURN, "hacker-news")[0] == 200
+    # Deleting a topic writes no other topic's schedules: github-trending's still says 09:15, while
+    # the dispatcher, counting one topic now, works its turn out as 09:10.
+    world["upserted"].assert_not_called()
+    assert dispatch.effective_cadences(stored(), config=None, topic_count=1)["daily"] == "cron(10 9 * * ? *)"
+    world["deleted"].reset_mock()
+
+    # 09:12: let through, the move would write today's claim (09:10 has passed) and delete the
+    # schedules before the Scheduler's 09:15 run: nothing would run the topic today.
+    status, body = update(world, MOVED_AT, dispatch_mode="queue", confirm=True)
+
+    assert status == 400 and DRIFTED in body["error"]
+    assert "daily written as 'cron(15 9 * * ? *)', read as 'cron(10 9 * * ? *)'" in body["error"]
+    world["deleted"].assert_not_called()
+    assert "last_daily_dispatched_on" not in stored()
+
+
+@pytest.mark.parametrize(
+    ("fields", "named"),
+    [
+        ({"research_schedule": None, "daily_schedule": None}, "research not recorded; daily not recorded"),
+        ({"research_schedule": "cron(10 * * * ? *)"}, "research written as 'cron(10 * * * ? *)', read as"),
+        # The same update changes the cadence: the Scheduler ran today on the old one.
+        ({"daily_cadence": "cron(0 10 * * ? *)"}, "daily written as 'cron(10 9 * * ? *)', read as"),
+    ],
+    ids=["never_recorded", "stagger_changed", "cadence_changed_in_the_same_update"],
+)
+def test_a_move_whose_schedules_as_written_cannot_be_matched_is_refused(world, fields, named):
+    stored_fields = {key: value for key, value in fields.items() if key.endswith("_schedule")}
+    put_topics(ready(**stored_fields))
+    change = {key: value for key, value in fields.items() if not key.endswith("_schedule")}
+
+    status, body = update(world, AFTER_TURN, dispatch_mode="queue", confirm=True, **change)
+
+    assert status == 400 and DRIFTED in body["error"] and named in body["error"]
+    world["deleted"].assert_not_called()
+    assert "dispatch_mode" not in stored()
 
 
 def test_a_move_made_is_answered_as_made_whatever_a_second_delete_would_have_done(world):

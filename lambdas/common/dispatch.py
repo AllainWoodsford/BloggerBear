@@ -19,7 +19,9 @@ A **claim** is what stops two overlapping ticks queueing the same work twice: da
 `SET last_daily_dispatched_on = :today ADD daily_claim_n :one` only when the row does not already
 say today; research `SET research_claimed_at = :now` only when the last claim is older than the
 research interval. A send or start that fails after its claim releases it, so the next tick tries
-again. The claim strings are constants here, and the tests hold them to the spec.
+again; a daily release also gives the claim's number back, so the retry sends the same execution
+name, and Step Functions drops it if the failed start had reached it after all. The claim strings
+are constants here, and the tests hold them to the spec.
 
 **Shadow mode** (`dispatch_shadow`, on by default): a topic still on its schedules is never sent
 or started; the tick records what it would have done on the row (`shadow_last_research_dispatch_at`,
@@ -33,9 +35,12 @@ counted where the two paths really disagreed:
   no record younger than the claim's expiry, research_claim_expiry), or when the Scheduler path's
   own research tick, which fires in the same minute and may read the row first, has already
   stamped `last_research_at` within SHADOW_TOLERANCE of now. A recorded turn is judged once, by the
-  tick whose window `(last_tick, now]` holds the turn plus SHADOW_TOLERANCE: a mismatch when
-  `last_research_at` is missing or more than SHADOW_TOLERANCE from the turn (the research tick
-  stamps its start within its 120 s timeout). Judging after the fact rather than at the next turn
+  tick whose window `(last_tick, now]` holds the turn plus SHADOW_TOLERANCE: a mismatch when the
+  Scheduler path's tick took no turn within SHADOW_TOLERANCE of it (_research_taken_at). The
+  research tick stamps `last_research_attempt_at` once it has found the topic due, before it asks
+  the source, and its start as `last_research_at` only when the source answers, so a tick whose
+  fetch failed still took the turn, as a queue job would have, failing the same way; either stamp
+  lands within its 120 s timeout. Judging after the fact rather than at the next turn
   means neither order of the two ticks miscounts, and a missed turn is seen before the next turn's
   stamp can overwrite the evidence. A `rate(...)` research cadence is recorded the same way (once
   an interval) but never judged: every minute is its turn, the Scheduler's firing minute for a rate
@@ -77,14 +82,19 @@ counted a mismatch or an unchecked day (shadow_problems).
 
 **The cutover** (Q2, the admin API's `topics update <id> --dispatch-mode queue`): before a topic's
 two schedules are deleted, cutover_refusals must find nothing wrong (it is not paused, the
-dispatcher reads its cadences and zone, its slug and queue ids are usable, and shadow mode watched
-it as above), and every cadence of a topic on the queue must stay readable (cadence_problem).
+dispatcher reads its cadences and zone, the schedules written for it are the ones the dispatcher
+would run, its slug and queue ids are usable, and shadow mode watched it as above), and every
+cadence of a topic on the queue must stay readable (cadence_problem).
 
 **Cutover day.** The Scheduler may already have run today's daily cycle when a topic is flipped to
 the queue. The live path counts a same-day shadow daily record as today's dispatch (a live topic
 never writes one, so it can only mean the Scheduler owned today), and the Q2 flip also writes
 `last_daily_dispatched_on` (today, in the topic's zone) when today's turn has already passed
-(cutover_day), which covers a flip made while shadow mode was off.
+(cutover_day), which covers a flip made while shadow mode was off. Both judge today's turn by the
+expression the dispatcher works out, so the pre-flight first asks that the expressions written to
+the Scheduler are the same (written_schedule_problem): a topic added or deleted, or a stagger
+changed, moves the daily minute for every topic, but only `topics reschedule` writes them all
+again.
 
 **Settings** are two more fields of the `pipeline` config row (SETTINGS below, the model catalog's
 pattern): `dispatch_shadow` and `daily_starts_per_tick` (1 to 10). `last_tick` on the same row is
@@ -92,9 +102,12 @@ the window's start for the next tick.
 
 **Errors.** A failure of the whole tick (the Topics scan, the queue send, Step Functions
 throttling) raises DispatchError, so the dispatcher's Errors alarm fires; a failure of one topic
-(an unreadable zone, a missing field) is printed and the next topic is considered. A cadence the
-matcher refuses is printed as `dispatcher: cadence unparsable topic_id=... expression=...` and
-counted in `skipped_unparsable`, never guessed at.
+(an unreadable zone, a missing field, an execution name or input Step Functions refuses) is printed
+and the next topic is considered. A daily start Step Functions refuses for any other reason (the
+role, the state machine, the service) is no fault of the topic's and likely every queue topic's:
+the tick finishes the other topics, so their research still goes out, and raises DispatchError
+once it is done. A cadence the matcher refuses is printed as `dispatcher: cadence unparsable
+topic_id=... expression=...` and counted in `skipped_unparsable`, never guessed at.
 
 The dispatcher Lambda (dispatcher_handler.py, every minute from infra/modules/work-queue) runs one
 tick and emits the `dispatcher_tick` evidence line from the counts it returns. Topic-agnostic:
@@ -115,7 +128,12 @@ from botocore.exceptions import ClientError
 
 from common import cron_match, dynamo, stagger
 from common.cron_match import CadenceError
-from common.research_schedule import DUE_TOLERANCE, is_due, resolve_interval_hours
+from common.research_schedule import (
+    DUE_TOLERANCE,
+    LAST_RESEARCH_ATTEMPT_AT,
+    is_due,
+    resolve_interval_hours,
+)
 from common.scheduler import DEFAULT_TIMEZONE
 
 # The pipeline config row (common/dynamo.get_pipeline_config; its id, as dynamo spells it).
@@ -167,27 +185,41 @@ RESEARCH_CLAIM_CONDITION = (
     "attribute_not_exists(research_claimed_at) OR research_claimed_at < :expiry"
 )
 # A release puts the claimed field back (REMOVE when there was nothing before) only while it still
-# holds this tick's value. daily_claim_n is left as it is: the name it numbered may have reached
-# Step Functions, and a name is never reused.
+# holds this tick's value. A daily release gives daily_claim_n back too, in the same write: the start
+# that failed may have reached Step Functions all the same, and the retry must send the same name,
+# which Step Functions answers with success while that run is RUNNING and ExecutionAlreadyExists
+# (consumed) once it has closed. A new name would start the day's run a second time.
 DAILY_RELEASE_CONDITION = "last_daily_dispatched_on = :today"
+DAILY_RELEASE_ADD = "ADD daily_claim_n :minus_one"
 RESEARCH_RELEASE_CONDITION = "research_claimed_at = :now"
 
-# A research mismatch in shadow mode: the recorded turn and the minute last_research_at moved differ
-# by more than this. It is also how long after a turn the turn is judged, and how recent a stamp
-# must be to say the Scheduler path's tick took this very turn.
+# A research mismatch in shadow mode: the recorded turn and the minute the Scheduler path's tick took
+# it (_research_taken_at) differ by more than this. It is also how long after a turn the turn is
+# judged, and how recent a stamp must be to say the Scheduler path's tick took this very turn.
 SHADOW_TOLERANCE = timedelta(minutes=5)
 # How many pages of executions the daily shadow check reads back before giving up (newest first,
 # 100 a page).
 _MAX_EXECUTION_PAGES = 10
-# Step Functions error codes that mean "try again later", which the tick raises on so the alarm
-# fires; everything else about a start is that topic's problem.
+# Step Functions error codes for a daily start. Throttling means "try again later": the tick raises
+# at once, so the alarm fires. The codes about what only this topic gives a start (its execution
+# name, its input) are that topic's problem. Any other refusal is about what every topic shares
+# (the role, the state machine, the service): the tick runs the other topics and raises once it is
+# done (StartRefused). The topic's own are the short list, so a code nobody listed alarms rather
+# than going quiet.
 _THROTTLED = frozenset({"ThrottlingException", "TooManyRequestsException", "ExecutionLimitExceeded"})
+_TOPICS_OWN = frozenset({"InvalidName", "InvalidExecutionInput", "ValidationException"})
 _ALREADY_EXISTS = "ExecutionAlreadyExists"
 
 
 class DispatchError(RuntimeError):
-    """The tick could not do its job (the scan, a send, a throttled start): raised out of
-    Dispatcher.tick so the dispatcher's Errors alarm fires."""
+    """The tick could not do its job (the scan, a send, a throttled start, a start refused for a
+    reason no one topic causes): raised out of Dispatcher.tick so the dispatcher's Errors alarm
+    fires."""
+
+
+class StartRefused(RuntimeError):
+    """Step Functions refused a daily start for a reason that is not the topic's own (_TOPICS_OWN):
+    the tick goes on to the other topics and raises DispatchError once it has finished with them."""
 
 
 # --- settings -------------------------------------------------------------------------------------
@@ -335,7 +367,8 @@ def claim_daily(table, topic_id: str, today: str) -> Claim | None:
 
 
 def release_daily(table, topic_id: str, today: str, previous: str | None) -> None:
-    """Give today's claim back after a start that failed, if the row still carries it."""
+    """Give today's claim back after a start that failed, if the row still carries it, and its
+    number with it, so the next try sends the same execution name (DAILY_RELEASE_ADD)."""
     _release(
         table,
         topic_id,
@@ -343,6 +376,7 @@ def release_daily(table, topic_id: str, today: str, previous: str | None) -> Non
         condition=DAILY_RELEASE_CONDITION,
         held={":today": today},
         previous=previous,
+        add=(DAILY_RELEASE_ADD, {":minus_one": -1}),
     )
 
 
@@ -379,11 +413,16 @@ def release_research(table, topic_id: str, now: datetime, previous: str | None) 
     )
 
 
-def _release(table, topic_id: str, *, field: str, condition: str, held: dict, previous) -> None:
+def _release(
+    table, topic_id: str, *, field: str, condition: str, held: dict, previous, add: tuple | None = None
+) -> None:
     if previous is None:
         expression, values = f"REMOVE {field}", held
     else:
         expression, values = f"SET {field} = :previous", {**held, ":previous": previous}
+    if add is not None:
+        clause, add_values = add
+        expression, values = f"{expression} {clause}", {**values, **add_values}
     try:
         table.update_item(
             Key={"topic_id": topic_id},
@@ -477,6 +516,25 @@ def _in_window(moment: datetime, last_tick: datetime | None, now: datetime) -> b
     return start < moment <= now
 
 
+def _research_taken_at(topic: dict) -> datetime | None:
+    """When the Scheduler path's research tick last took a turn: the later of `last_research_at`,
+    which it stamps only once the source has answered, and `last_research_attempt_at`, which it
+    stamps once it has found the topic due (or been forced), before it asks the source. A tick
+    whose fetch failed took its turn all the same: a queue job sent at that minute would have asked
+    the same source and failed the same way, so the two paths agreed. None when neither is stamped."""
+    stamps = [_parse_time(topic.get(field)) for field in ("last_research_at", LAST_RESEARCH_ATTEMPT_AT)]
+    return max((stamp for stamp in stamps if stamp is not None), default=None)
+
+
+def _research_stamps(topic: dict) -> str:
+    """The two research stamps _research_taken_at reads, for a log line: the attempt only when
+    there is one, since rows from before it was stamped have none."""
+    stamped = _parse_time(topic.get("last_research_at"))
+    attempted = _parse_time(topic.get(LAST_RESEARCH_ATTEMPT_AT))
+    text = f"last_research_at={_iso(stamped) if stamped else None}"
+    return f"{text} {LAST_RESEARCH_ATTEMPT_AT}={_iso(attempted)}" if attempted else text
+
+
 def _daily_done(topic: dict, today: date, zone: tzinfo) -> bool:
     """Whether the topic's daily cycle has had today's turn: the dispatcher claimed it, or shadow
     mode recorded today's turn while the topic was still on its schedules (the cutover day; a live
@@ -506,7 +564,9 @@ class Dispatcher:
 
     def tick(self, now: datetime | None = None) -> dict:
         """Consider every topic once and return the counts (Tick.as_dict). Raises DispatchError when
-        the tick as a whole could not run; a topic's own trouble is printed and skipped."""
+        the tick as a whole could not run, or, once every topic has been considered and last_tick
+        written, when Step Functions refused a daily start for a reason that is not the topic's
+        own; a topic's own trouble is printed and skipped."""
         now = now or datetime.now(UTC)
         try:
             config = dynamo.get_pipeline_config() or {}
@@ -516,6 +576,7 @@ class Dispatcher:
         settings = effective_settings(config)
         last_tick = _parse_time(config.get(LAST_TICK))
         counts = Tick()
+        refused: list[StartRefused] = []
         for topic in sorted(topics, key=lambda item: item.get("topic_id") or ""):
             topic_id = topic.get("topic_id") or ""
             if topic.get("paused") is True:
@@ -540,9 +601,19 @@ class Dispatcher:
                 counts.skipped_unparsable += 1
             except DispatchError:
                 raise
+            except StartRefused as exc:
+                # Likely every queue topic's trouble, and it lasts until someone mends it: raised
+                # here, it would end every tick at this topic, and the topics after it would get no
+                # research and no start either.
+                print(f"dispatcher: topic_id={topic_id} start refused: {exc!r}")
+                refused.append(exc)
             except Exception as exc:  # noqa: BLE001 - one topic's trouble never stops the rest
                 print(f"dispatcher: topic_id={topic_id} skipped: {exc!r}")
         dynamo.update_config_row(PIPELINE_CONFIG_ID, {LAST_TICK: _iso(now)})
+        if refused:
+            raise DispatchError(
+                f"Step Functions refused {len(refused)} daily start(s); the first: {refused[0]}"
+            ) from refused[0]
         return counts.as_dict()
 
     def _consider(
@@ -615,7 +686,9 @@ class Dispatcher:
             release_daily(self.topics_table, topic_id, today, claim.previous)
             if code in _THROTTLED:
                 raise DispatchError(f"StartExecution throttled for topic_id={topic_id}: {exc!r}") from exc
-            raise
+            if code in _TOPICS_OWN:
+                raise
+            raise StartRefused(f"StartExecution refused for topic_id={topic_id}: {exc!r}") from exc
         except Exception as exc:
             release_daily(self.topics_table, topic_id, today, claim.previous)
             raise DispatchError(f"could not start the daily cycle for topic_id={topic_id}: {exc!r}") from exc
@@ -641,16 +714,16 @@ class Dispatcher:
 
     def _judge_research(self, topic: dict, last_tick: datetime | None, now: datetime) -> str | None:
         """Judge the recorded research turn once, on the tick whose window holds the turn plus
-        SHADOW_TOLERANCE: by then the Scheduler path's tick of that minute has stamped
-        last_research_at (its start, within its 120 s timeout), and the next turn's stamp has not
-        yet replaced it. A mismatch when last_research_at is missing or more than SHADOW_TOLERANCE
-        from the turn. Each judged turn dates itself on the row: a match in
+        SHADOW_TOLERANCE: by then the Scheduler path's tick of that minute has stamped the turn it
+        took (_research_taken_at, within its 120 s timeout), and the next turn's stamp has not yet
+        replaced it. A mismatch when it has taken none, or none within SHADOW_TOLERANCE of the
+        turn. Each judged turn dates itself on the row: a match in
         `shadow_research_matched_at`, a mismatch in `shadow_research_mismatch_at`, whose turn is
         returned (else None). Never called for a rate cadence (see the module docstring)."""
         turn = _parse_time(topic.get("shadow_last_research_dispatch_at"))
         if turn is None or not _in_window(turn + SHADOW_TOLERANCE, last_tick, now):
             return None
-        moved = _parse_time(topic.get("last_research_at"))
+        moved = _research_taken_at(topic)
         if moved is not None and abs(moved - turn) <= SHADOW_TOLERANCE:
             # On time: what the pre-flight asks for since the last research mismatch.
             self.topics_table.update_item(
@@ -665,12 +738,12 @@ class Dispatcher:
             # operator's run-now stamps there, and it replaced the turn's evidence. Not a mismatch.
             print(
                 f"dispatcher: shadow research turn not judged topic_id={topic['topic_id']} "
-                f"turn={_iso(turn)} last_research_at={_iso(moved)}: stamped since by a run-now"
+                f"turn={_iso(turn)} {_research_stamps(topic)}: stamped since by a run-now"
             )
             return None
         print(
             f"dispatcher: shadow research mismatch topic_id={topic['topic_id']} "
-            f"turn={_iso(turn)} last_research_at={_iso(moved) if moved else None}"
+            f"turn={_iso(turn)} {_research_stamps(topic)}"
         )
         # The clean stretch starts again, and the turn is dated: the next daily check counts no
         # clean day over a stretch that holds it, and the pre-flight waits for a turn judged on time
@@ -867,6 +940,35 @@ def queue_id_problem(topic_id: str) -> str | None:
     )
 
 
+def written_schedule_problem(topic: dict, *, config: dict | None, topic_count: int) -> str | None:
+    """Why the expressions written to EventBridge Scheduler for the topic (`research_schedule`,
+    `daily_schedule` on its row) are not the ones the dispatcher works out for it now, or None.
+
+    The cutover judges today's daily turn by the dispatcher's expression (cutover_day, and the
+    shadow record _daily_done reads), but the Scheduler ran today by the written one. They part
+    whenever a topic is added or deleted (the daily offset counts the topics) or the stagger
+    changes, since only `topics reschedule` writes every topic's schedules again. A move between
+    the two minutes would start a second run that day, or none at all. A row with no record of what
+    was written cannot be judged, and is refused the same way. `topic` is the row as it would be
+    written, so a cadence or slot changed in the same update is refused too: the Scheduler ran
+    today on the old one."""
+    effective = effective_cadences(topic, config=config, topic_count=topic_count)
+    differences = []
+    for kind in ("research", "daily"):
+        written = topic.get(f"{kind}_schedule")
+        if not written:
+            differences.append(f"{kind} not recorded")
+        elif written != effective[kind]:
+            differences.append(f"{kind} written as {written!r}, read as {effective[kind]!r}")
+    if not differences:
+        return None
+    return (
+        "the schedules written for it are not the ones the dispatcher would run "
+        f"({'; '.join(differences)}), so the move cannot tell whether today's daily cycle has run: "
+        "run `topics reschedule` first, and make a cadence or slot change in an update of its own"
+    )
+
+
 def _shadow_count(topic: dict, field: str) -> int | None:
     """A shadow counter as a number (none yet is 0), or None when the row holds something else."""
     value = topic.get(field)
@@ -940,6 +1042,12 @@ def cutover_refusals(topic: dict, *, topics: list[dict], config: dict | None) ->
     problem = cadence_problem(topic, config=config, topic_count=len(topics))
     if problem:
         reasons.append(problem)
+    else:
+        # Only for cadences the dispatcher reads: an update that mends one writes the schedules
+        # again, so the written ones would differ only until then.
+        problem = written_schedule_problem(topic, config=config, topic_count=len(topics))
+        if problem:
+            reasons.append(problem)
     topic_id = topic.get("topic_id") or ""
     reasons.extend(check for check in (slug_problem(topic_id, topics), queue_id_problem(topic_id)) if check)
     research = effective_cadences(topic, config=config, topic_count=len(topics))["research"]
