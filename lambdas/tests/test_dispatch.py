@@ -667,21 +667,27 @@ def test_a_throttled_start_releases_the_claim_and_raises_so_the_alarm_fires(aws_
     assert row["daily_claim_n"] == 0  # given back: the retry sends the same name
 
 
-def test_any_other_start_failure_is_that_topics_problem_only(aws_resources, capsys):
+# Written out rather than read from dispatch._TOPICS_OWN, so a code dropped from the set fails here.
+@pytest.mark.parametrize("code", ["InvalidName", "InvalidExecutionInput", "ValidationException"])
+def test_a_start_refused_for_the_topics_own_name_or_input_is_that_topics_problem_only(
+    aws_resources, capsys, code
+):
     dynamo.put_pipeline_config(stagger_minutes=0)
     put_topics(topic("alpha", stagger_slot=1), topic("beta", stagger_slot=2))
     sfn = MagicMock()
     sfn.start_execution.side_effect = [
-        ClientError({"Error": {"Code": "InvalidName", "Message": "bad"}}, "StartExecution"),
+        ClientError({"Error": {"Code": code, "Message": "bad"}}, "StartExecution"),
         {"executionArn": "arn"},
     ]
 
-    counts = dispatcher(sfn=sfn).tick(at("2026-10-24T23:30:00"))
+    counts = dispatcher(sfn=sfn).tick(at("2026-10-24T23:30:00"))  # returns: no DispatchError
 
     assert counts["started"] == 1 and counts["considered"] == 2
     assert "last_daily_dispatched_on" not in stored("alpha")
+    assert stored("alpha")["daily_claim_n"] == 0  # given back: the next try sends the same name
     assert stored("beta")["last_daily_dispatched_on"] == "2026-10-25"
-    assert "dispatcher: topic_id=alpha skipped: ClientError(" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "dispatcher: topic_id=alpha skipped: ClientError(" in out and "start refused" not in out
 
 
 def test_a_start_refused_for_an_infrastructure_reason_lets_the_other_topics_run_then_raises(
@@ -1002,6 +1008,35 @@ def test_a_run_now_that_lands_after_the_turns_tolerance_is_never_a_mismatch(aws_
         "dispatcher: shadow research turn not judged topic_id=github-trending turn=2026-10-25T04:05:30+00:00 "
         "last_research_at=2026-10-25T04:10:35+00:00: stamped since by a run-now"
     ) in capsys.readouterr().out
+
+
+def test_a_run_now_whose_fetch_failed_after_the_turns_tolerance_is_never_a_mismatch(aws_resources, capsys):
+    """A forced run-now at 04:11:30 whose source failed stamps only its attempt, after the 04:05:30
+    turn's tolerance and before the tick that judges it: the turn's own evidence is gone, and a
+    run-now is never counted, whichever of the two stamps it moved."""
+    turn = at("2026-10-25T04:05:30")
+    put_topics(
+        topic(
+            dispatch_mode="schedule",
+            shadow_last_research_dispatch_at=turn.isoformat(),
+            last_research_at=(turn - timedelta(hours=1)).isoformat(),
+            last_research_attempt_at=(turn + timedelta(minutes=6)).isoformat(),
+        )
+    )
+    dynamo.update_config_row("pipeline", {"last_tick": (turn + timedelta(minutes=4)).isoformat()})
+
+    dispatcher().tick(turn + timedelta(minutes=8))
+
+    row = stored()
+    assert row.get("shadow_mismatches", 0) == 0
+    assert "shadow_research_matched_at" not in row and "shadow_research_mismatch_at" not in row
+    out = capsys.readouterr().out
+    assert (
+        "dispatcher: shadow research turn not judged topic_id=github-trending turn=2026-10-25T04:05:30+00:00 "
+        "last_research_at=2026-10-25T03:05:30+00:00 last_research_attempt_at=2026-10-25T04:11:30+00:00: "
+        "stamped since by a run-now"
+    ) in out
+    assert "shadow research mismatch" not in out
 
 
 def test_a_run_now_the_hour_before_or_inside_the_tolerance_is_never_a_mismatch(aws_resources):

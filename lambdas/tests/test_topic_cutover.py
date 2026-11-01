@@ -284,6 +284,9 @@ def test_the_pre_flight_refuses_a_move_to_the_queue_with_its_reason(world, field
 
     assert status == 400
     assert reason in body["error"] and any(reason in line for line in body["reasons"])
+    # Each case is refused for its one reason alone: an unreadable cadence is not also reported as
+    # written schedules that differ, since mending it writes the schedules again.
+    assert len(body["reasons"]) == 1
     world["deleted"].assert_not_called()
     assert stored() == before
 
