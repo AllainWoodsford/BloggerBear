@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import ast
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import boto3
@@ -701,7 +703,11 @@ def test_with_record_each_verdict_is_one_offline_review_event_for_the_candidate(
 def test_the_candidate_is_judged_by_its_own_draft_wherever_it_is_shown(aws, written):
     for n in range(6):
         put_article(aws, f"a{n}", created_at=f"2026-10-2{6 - n}T21:00:00+00:00")
-    run_id, queue = started(aws, sample=6, record=True, yes=True)
+    # The run id's random suffix decides each item's position, and about one run in 32 put all six
+    # on the same side. An all-zero suffix shows the candidate as A for items 0-2 and 5 and as B for
+    # items 3-4. Only eval_score's own name is replaced, so nothing else's uuid4 changes.
+    with patch.object(eval_score, "uuid", SimpleNamespace(uuid4=lambda: uuid.UUID(int=0))):
+        run_id, queue = started(aws, sample=6, record=True, yes=True)
 
     with patch.object(eval_score, "invoke_model_tracked", side_effect=FakeModels(prefer_live=True)):
         consume_all(queue.records())

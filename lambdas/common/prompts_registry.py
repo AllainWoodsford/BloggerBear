@@ -208,11 +208,13 @@ _REVISION = (
 
 # The compliance review (`compliance.review_draft`) is rule 3's publish gate, so it is code-only
 # (asset=False): never read from S3, always `vanilla:v1`, registered so lineage names it like any
-# other prompt. `reviews/compliance` is the review a draft gets with the research it was written
-# from (a daily draft's findings, a Re-Write's); `reviews/compliance_legacy` is the original
-# one-argument review, still sent when there is no research to show (a Re-Write of an article whose
-# findings have aged out, say). Why the current one asks the model only to nominate, and how code
-# decides, is said in common/compliance.py.
+# other prompt. `reviews/compliance` is the review a draft gets when there is material to check it
+# against: the research it was written from (a daily draft's findings, a Re-Write's) and, for a
+# Re-Write, the fresh data it was corrected from (compliance._source_text).
+# `reviews/compliance_legacy` is the original one-argument review, still sent when there is neither
+# (a Re-Write of an article whose findings have aged out, on a topic with no adapter or whose fetch
+# failed, say). Why the current one asks the model only to nominate, and how code decides, is said
+# in common/compliance.py.
 _COMPLIANCE = """You are a compliance reviewer for a blog publishing platform.
 Check the draft below and report on it, one item per line, each line starting with one of these
 labels and nothing else:
@@ -265,8 +267,11 @@ Draft:
 # a review renders are its draft (up to fresh_review.DRAFT_MAX_CHARS, with a title), its findings
 # (FINDINGS_MAX_CHARS), the adapter's evidence (base.REVIEW_EVIDENCE_MAX_CHARS) and, for the
 # revision, up to MAX_CLAIMS claims of two MAX_FIELD_CHARS fields each: under 50,000 at their
-# limits. The compliance review is a whole draft (a retry's 8,192 tokens) and its research
-# (compliance.MAX_SOURCE_CHARS): under 50,000 too.
+# limits. The compliance review is a whole draft (a retry's 8,192 tokens), its research
+# (compliance.MAX_SOURCE_CHARS) and, for a Re-Write, the adapter's evidence as fresh data
+# (base.REVIEW_EVIDENCE_MAX_CHARS): under 55,000. A Re-Write's corrected article may run half as
+# long again as the one it corrects (rewrite.REWRITE_BODY_LENGTH_BOUNDS), which puts its review near
+# 70,000; that is a render, which max_chars does not bound.
 _REVIEWS_MAX_CHARS = 64_000
 
 REVIEW_SPECS = (

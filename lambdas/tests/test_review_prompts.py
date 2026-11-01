@@ -742,7 +742,8 @@ def test_the_largest_realistic_render_of_each_prompt_stays_well_under_its_templa
     adapter's evidence at REVIEW_EVIDENCE_MAX_CHARS (with its truncation mark), a tolerance rule,
     MAX_CLAIMS claims of two MAX_FIELD_CHARS fields each, the crypto feed's figure guidance, an
     operator's note at REVIEW_STEERING_MAX_CHARS; for compliance a whole draft at a retry's token
-    limit (four characters a token) and the research at MAX_SOURCE_CHARS."""
+    limit (four characters a token), the research at MAX_SOURCE_CHARS and, as a Re-Write's review
+    sends it, the fresh data at REVIEW_EVIDENCE_MAX_CHARS."""
     specs = {spec.prompt_id: spec for spec in prompts_registry.all_specs()}
     name, title = "N" * 100, "T" * fr.MAX_TITLE_CHARS
     draft, findings = "d" * (fr.DRAFT_MAX_CHARS * 2), "f" * (fr.FINDINGS_MAX_CHARS * 2)
@@ -769,7 +770,10 @@ def test_the_largest_realistic_render_of_each_prompt_stays_well_under_its_templa
     invoke, sent = _sent("common.compliance", "NONE")
     with invoke:
         research = _words(handler.SUMMARIES_MAX_CHARS)
-        compliance.review_draft(whole_draft, {"topic_id": "t"}, "m", source_material=research)
+        # A Re-Write's review sends the fresh data too, so its render is the largest compliance sends.
+        compliance.review_draft(
+            whole_draft, {"topic_id": "t"}, "m", source_material=research, fresh_data=evidence_text
+        )
         compliance.review_draft(whole_draft, {"topic_id": "t"}, "m")
     renders["reviews/compliance"], renders["reviews/compliance_legacy"] = sent
 
