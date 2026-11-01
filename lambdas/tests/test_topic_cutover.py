@@ -44,8 +44,8 @@ DAY = timedelta(days=1)
 
 def ready(topic_id="github-trending", **fields) -> dict:
     """A topic on its schedules that shadow mode has watched cleanly: one checked day, no mismatch,
-    no unchecked day, a research turn recorded, and yesterday's daily turn as the last daily record
-    (so nothing but the cutover-day claim can stop today's run)."""
+    no unchecked day, a research turn recorded and judged on time, and yesterday's daily turn as the
+    last daily record (so nothing but the cutover-day claim can stop today's run)."""
     row = {
         "topic_id": topic_id,
         "name": topic_id,
@@ -56,6 +56,7 @@ def ready(topic_id="github-trending", **fields) -> dict:
         "daily_timezone": "Australia/Sydney",
         "stagger_slot": 1,
         "shadow_last_research_dispatch_at": "2026-10-24T20:05:30+00:00",
+        "shadow_research_matched_at": "2026-10-24T20:05:30+00:00",
         "shadow_last_daily_dispatch_at": "2026-10-23T22:10:30+00:00",
         "shadow_mismatches": 0,
         "shadow_unchecked": 0,
@@ -214,7 +215,24 @@ def test_moving_to_the_queue_is_refused_until_confirmed_and_nothing_is_deleted_m
         # A row from before the dispatcher counted checked days: never taken for a day watched.
         ({"shadow_checked_days": None}, "shadow mode has not yet watched a full day of it"),
         ({"shadow_checked_days": "lots"}, "its shadow record is unreadable (shadow_checked_days)"),
-        ({"shadow_last_research_dispatch_at": None}, "shadow mode has recorded none of its research turns"),
+        # Recorded but not yet judged proves nothing; a drifted heartbeat is never judged on time.
+        (
+            {"shadow_research_matched_at": None},
+            "shadow mode has seen none of its research turns taken on time (a heartbeat running off",
+        ),
+        (
+            {"shadow_research_mismatch_at": "2026-10-24T21:05:30+00:00"},
+            "shadow mode has seen none of its research turns taken on time since its last research "
+            "mismatch, the turn at 2026-10-24T21:05:30+00:00",
+        ),
+        (
+            {"shadow_research_mismatch_at": "2026-10-24T20:05:30+00:00"},
+            "since its last research mismatch, the turn at 2026-10-24T20:05:30+00:00",
+        ),
+        (
+            {"shadow_research_matched_at": "lots"},
+            "its shadow record is unreadable (shadow_research_matched_at)",
+        ),
         (
             {"daily_cadence": "cron(0 9 * 1 ? *)"},
             "the dispatcher cannot read its daily cadence 'cron(0 9 * 1 ? *)' (written as "
@@ -245,7 +263,10 @@ def test_moving_to_the_queue_is_refused_until_confirmed_and_nothing_is_deleted_m
         "no_checked_day",
         "checked_days_never_counted",
         "unreadable_count",
-        "no_research_turn_recorded",
+        "no_research_turn_judged_on_time",
+        "research_mismatch_since_the_last_turn_on_time",
+        "research_mismatch_on_the_last_turn_judged",
+        "unreadable_research_turn",
         "daily_cadence_unreadable",
         "research_cadence_unreadable",
         "daily_rate_hidden_by_the_stagger",
@@ -266,7 +287,7 @@ def test_the_pre_flight_refuses_a_move_to_the_queue_with_its_reason(world, field
 
 def test_every_reason_is_given_at_once(world):
     put_topics(
-        ready(paused=True, shadow_mismatches=1, shadow_unchecked=3, shadow_last_research_dispatch_at=None)
+        ready(paused=True, shadow_mismatches=1, shadow_unchecked=3, shadow_research_matched_at=None)
     )
 
     status, body = update(world, BEFORE_TURN, dispatch_mode="queue", confirm=True)
@@ -316,8 +337,14 @@ def test_a_topic_id_too_long_for_the_manual_deduplication_id_is_refused(world):
 
 def test_a_rate_research_cadence_is_judged_by_its_parse_and_its_daily_record_alone(world):
     """rate(30 minutes) stays a rate through the stagger: shadow mode records its turns but never
-    judges them, so no research turn recorded is no refusal; a daily mismatch still is."""
-    put_topics(ready(research_cadence="rate(30 minutes)", shadow_last_research_dispatch_at=None))
+    judges them, so no research turn judged is no refusal; a daily mismatch still is."""
+    put_topics(
+        ready(
+            research_cadence="rate(30 minutes)",
+            shadow_last_research_dispatch_at=None,
+            shadow_research_matched_at=None,
+        )
+    )
 
     status, _ = update(world, BEFORE_TURN, dispatch_mode="queue", confirm=True)
     assert status == 200

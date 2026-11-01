@@ -27,8 +27,9 @@ one line per row (`{"t": "item", "table", "item"}`, the item in DynamoDB's own t
 number and set comes back exactly) or object (`{"t": "object", "key", "content_type", "text" |
 "data"}`), and an `end` line with the counts. A file without its end line is refused by restore.
 Restoring writes every row and object back under its own key, so it can be run any number of times.
-One field of one kind of row is not written back as it was: a topic on the dispatcher's queue is
-given today's daily claim once today's daily turn has passed (_restored_topics says why).
+One field of one kind of row is not written back as it was: a topic on the dispatcher's queue keeps
+the newest daily claim of the snapshot's, the live row's and today's once today's daily turn has
+passed (_restored_topics says why).
 
 **The jobs.** A snapshot, a restore or an export can be thousands of articles, more than one
 30-second Admin API invocation. Each runs as a job inside that same Lambda: a step does ~20 seconds
@@ -61,6 +62,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from . import dispatch, dynamo
 from .dynamo import ARTICLES_BY_STATUS_INDEX
 from .naming import NAME_PREFIX
+from .scheduler import DEFAULT_TIMEZONE
 
 FORMAT = "BloggerBear snapshot"
 FORMAT_VERSION = 1
@@ -681,21 +683,40 @@ def _write_rows(table: str, items: list[dict]) -> None:
 
 
 _TYPES = TypeDeserializer()
+# A daily claim's day (dispatch.DAILY_CLAIM_UPDATE writes the topic's local date, YYYY-MM-DD), the
+# only shape of it compared: such days order as strings.
+_CLAIM_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _newest_claim(topic: dict, live: dict | None, today: str | None) -> str | None:
+    """The day a restored queue topic's `last_daily_dispatched_on` must say: the newest of the
+    snapshot's, the live row's and `today` (dispatch.cutover_day's, or None), or None when none is a
+    day. The live row's counts only in the same zone as the restored one, since another zone's date
+    can be tomorrow here."""
+    days = [topic.get("last_daily_dispatched_on"), today]
+    zone = topic.get("daily_timezone") or DEFAULT_TIMEZONE
+    if live is not None and (live.get("daily_timezone") or DEFAULT_TIMEZONE) == zone:
+        days.append(live.get("last_daily_dispatched_on"))
+    days = [day for day in days if isinstance(day, str) and _CLAIM_DAY.fullmatch(day)]
+    return max(days) if days else None
 
 
 def _restored_topics(items: list[dict], now: datetime) -> list[dict]:
     """Topics rows (low-level) from a snapshot, as they are written back. A topic on the dispatcher's
     queue arrives on it now, as a cutover or a create brings one (dispatch.cutover_day): once today's
     daily turn has passed in its zone, its `last_daily_dispatched_on` says today, whatever the
-    snapshot's says. Kept as it was, an older day there would have the next tick start a second
-    daily run today for a topic that has had one, and a run its schedules, restored the same way,
-    would leave to tomorrow. Before the turn the snapshot's day stands, and today's run starts at
+    snapshot's says. Before the turn, an older day is still never written over a newer one the live
+    row already holds (the dispatcher claimed today there, under a cadence, a stagger slot or a
+    topic count that put the turn earlier than the snapshot's does). Kept as it was, an older day
+    would have the next tick start a second daily run today for a topic that has had one, and a run
+    its schedules, restored the same way, would leave to tomorrow. Otherwise today's run starts at
     the turn. `daily_claim_n` is left as the snapshot has it: an execution name carries the date.
 
     Done here, in the put that writes the row, because the dispatcher ticks every minute and the
     restore's later phases come many steps on. The turn is judged with this deployment's pipeline
     row and every topic it will hold, the live ones and these (Topics rows come first in the file,
-    so up to 100 topics all arrive in the first batch)."""
+    so up to 100 topics all arrive in the first batch). A claim the dispatcher makes between the
+    listing below and the put is still written over: a batch put cannot be conditional."""
     plain = [_TYPES.deserialize({"M": item}) for item in items]
     if not any(dispatch.dispatch_mode(topic) == dispatch.QUEUE_MODE for topic in plain):
         return items
@@ -704,11 +725,12 @@ def _restored_topics(items: list[dict], now: datetime) -> list[dict]:
     except Exception as exc:  # noqa: BLE001 - the stagger's defaults judge the turn instead
         print(f"backup: could not read the pipeline config; judging daily turns with its defaults: {exc!r}")
         config = None
-    ids = {topic.get("topic_id") for topic in plain}
+    live: dict = {}
     try:
-        ids |= {topic.get("topic_id") for topic in dynamo.list_topics()}
-    except Exception as exc:  # noqa: BLE001 - the snapshot's own topics are counted instead
+        live = {topic.get("topic_id"): topic for topic in dynamo.list_topics()}
+    except Exception as exc:  # noqa: BLE001 - the snapshot's own topics, and days, are used instead
         print(f"backup: could not list this deployment's topics; counting the snapshot's: {exc!r}")
+    ids = {topic.get("topic_id") for topic in plain} | set(live)
     restored = []
     for item, topic in zip(items, plain, strict=True):
         if dispatch.dispatch_mode(topic) == dispatch.QUEUE_MODE:
@@ -717,8 +739,9 @@ def _restored_topics(items: list[dict], now: datetime) -> list[dict]:
             except ValueError as exc:  # CadenceError is one; the dispatcher skips such a topic
                 print(f"backup: {topic.get('topic_id')} is on the queue, its cadences unreadable: {exc!r}")
                 today = None
-            if today:
-                item = {**item, "last_daily_dispatched_on": {"S": today}}
+            day = _newest_claim(topic, live.get(topic.get("topic_id")), today)
+            if day and day != topic.get("last_daily_dispatched_on"):
+                item = {**item, "last_daily_dispatched_on": {"S": day}}
         restored.append(item)
     return restored
 

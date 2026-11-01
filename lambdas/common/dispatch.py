@@ -42,15 +42,17 @@ counted where the two paths really disagreed:
   cannot be derived from the expression, and the first due minute sits exactly DUE_TOLERANCE
   before the next heartbeat, so any comparison would sit on the tolerance edge.
 - **a drifted heartbeat** (decided in Q1): a Scheduler heartbeat that runs more than
-  SHADOW_TOLERANCE off the computed minute, early or late, is not detected beyond the first turn
-  after the drift began, which is counted once. From then on the topic is not due at the computed
-  minute (just researched, or its interval not yet out), so those turns are neither recorded nor
-  judged. A research mismatch therefore also takes the judged turn off the row, and the cutover
-  waits until a turn is recorded again, which a drifted heartbeat never gives; a drift that was
-  there before shadow mode began leaves no research turn recorded at all, which the Q2 pre-flight
-  refuses too. Missing it costs little: at cutover the research minute moves to the computed one,
-  the stagger's own. Counting more would mean judging every move of `last_research_at`, and every
-  operator run-now moves it.
+  SHADOW_TOLERANCE off the computed minute, early or late, is counted at the first turn after the
+  drift began. When the topic's research interval is shorter than its cadence's period, every
+  later turn finds it due again and is judged a mismatch too; otherwise the topic is not due at
+  the computed minute (just researched, or its interval not yet out), so its later turns are
+  neither recorded nor judged. Either way each research mismatch dates itself on the row
+  (`shadow_research_mismatch_at`, the judged turn), and the Q2 pre-flight waits for a research
+  turn judged on time since (`shadow_research_matched_at`), which a drifted heartbeat never gives;
+  a drift that was there before shadow mode began gives none at all. Missing the later turns
+  costs little: at cutover the research minute moves to the computed one, the stagger's own.
+  Counting more would mean judging every move of `last_research_at`, and every operator run-now
+  moves it.
 - **a run-now** is never a mismatch. A stamp that lands within SHADOW_TOLERANCE of a turn is that
   turn's; one later than that when the turn is judged (the judging tick runs within a minute of
   the tolerance running out) is a run-now made since, which replaced the turn's own evidence, so
@@ -63,11 +65,15 @@ counted where the two paths really disagreed:
   shadow day that had nothing to compare yet.
 
 The counts above are the topic's whole history, and are only ever shown. What the Q2 pre-flight
-judges is the recent stretch: `shadow_clean_days`, the days checked and found to match since the
-last mismatch or unchecked day (either one sets it back to 0), must be at least one. So one old
-mismatch, or a record from before a cadence change, holds the cutover back for a day at most,
-never until someone clears the row by hand. A row whose days were checked before the count
-existed is read as clean when it never counted a mismatch or an unchecked day (shadow_problems).
+judges is the recent stretch. `shadow_clean_days` counts the daily checks in a row that found the
+previous day's run with no research mismatch since the daily record before, so each one stands for
+a full day, record to record, with no mismatch of either kind; a mismatch of either kind, or an
+unchecked day, sets it back to 0. The pre-flight asks for at least one, and for a cron research
+cadence a research turn judged on time since the last research mismatch. So one old mismatch, or
+a record from before a cadence change, holds the cutover back until a full day after it has been
+watched clean (a day or two, by where in the day it fell), never until someone clears the row by
+hand. A row whose days were checked before the count existed is read as clean when it never
+counted a mismatch or an unchecked day (shadow_problems).
 
 **The cutover** (Q2, the admin API's `topics update <id> --dispatch-mode queue`): before a topic's
 two schedules are deleted, cutover_refusals must find nothing wrong (it is not paused, the
@@ -147,6 +153,9 @@ MANUAL_TOKEN_CHARS = 32
 # mismatch or unchecked day (see the module docstring).
 SHADOW_CHECKED_DAYS = "shadow_checked_days"
 SHADOW_CLEAN_DAYS = "shadow_clean_days"
+# The turn of the last research mismatch, and of the last research turn judged on time.
+SHADOW_RESEARCH_MISMATCH_AT = "shadow_research_mismatch_at"
+SHADOW_RESEARCH_MATCHED_AT = "shadow_research_matched_at"
 
 # The claims (spec 4.7), word for word.
 DAILY_CLAIM_UPDATE = "SET last_daily_dispatched_on = :today ADD daily_claim_n :one"
@@ -551,7 +560,11 @@ class Dispatcher:
                     counts.dispatched += 1
         else:
             if not research.is_rate:
-                self._judge_research(topic, last_tick, now)
+                mismatched = self._judge_research(topic, last_tick, now)
+                if mismatched:
+                    # The daily check below reads the row as this tick found it, so it must be
+                    # handed the mismatch just counted, or the same tick would count a clean day.
+                    topic = {**topic, SHADOW_RESEARCH_MISMATCH_AT: mismatched}
             if research_turn:
                 self._shadow_research(topic, now, interval_hours, is_rate=research.is_rate)
 
@@ -626,18 +639,27 @@ class Dispatcher:
         if stamped_this_turn or is_due(now, topic.get("last_research_at"), interval_hours):
             self._write_shadow(topic["topic_id"], "shadow_last_research_dispatch_at", now, 0)
 
-    def _judge_research(self, topic: dict, last_tick: datetime | None, now: datetime) -> None:
+    def _judge_research(self, topic: dict, last_tick: datetime | None, now: datetime) -> str | None:
         """Judge the recorded research turn once, on the tick whose window holds the turn plus
         SHADOW_TOLERANCE: by then the Scheduler path's tick of that minute has stamped
         last_research_at (its start, within its 120 s timeout), and the next turn's stamp has not
         yet replaced it. A mismatch when last_research_at is missing or more than SHADOW_TOLERANCE
-        from the turn. Never called for a rate cadence (see the module docstring)."""
+        from the turn. Each judged turn dates itself on the row: a match in
+        `shadow_research_matched_at`, a mismatch in `shadow_research_mismatch_at`, whose turn is
+        returned (else None). Never called for a rate cadence (see the module docstring)."""
         turn = _parse_time(topic.get("shadow_last_research_dispatch_at"))
         if turn is None or not _in_window(turn + SHADOW_TOLERANCE, last_tick, now):
-            return
+            return None
         moved = _parse_time(topic.get("last_research_at"))
         if moved is not None and abs(moved - turn) <= SHADOW_TOLERANCE:
-            return
+            # On time: what the pre-flight asks for since the last research mismatch.
+            self.topics_table.update_item(
+                Key={"topic_id": topic["topic_id"]},
+                UpdateExpression=f"SET {SHADOW_RESEARCH_MATCHED_AT} = :turn",
+                ConditionExpression="attribute_exists(topic_id)",
+                ExpressionAttributeValues={":turn": _iso(turn)},
+            )
+            return None
         if moved is not None and moved > turn + SHADOW_TOLERANCE:
             # Stamped after the turn's own tolerance ran out and before this tick: only an
             # operator's run-now stamps there, and it replaced the turn's evidence. Not a mismatch.
@@ -645,31 +667,36 @@ class Dispatcher:
                 f"dispatcher: shadow research turn not judged topic_id={topic['topic_id']} "
                 f"turn={_iso(turn)} last_research_at={_iso(moved)}: stamped since by a run-now"
             )
-            return
+            return None
         print(
             f"dispatcher: shadow research mismatch topic_id={topic['topic_id']} "
             f"turn={_iso(turn)} last_research_at={_iso(moved) if moved else None}"
         )
-        # The clean stretch starts again, and the judged turn leaves the row: the pre-flight then
-        # waits for a turn recorded since, which a heartbeat drifted off its minute never gives.
+        # The clean stretch starts again, and the turn is dated: the next daily check counts no
+        # clean day over a stretch that holds it, and the pre-flight waits for a turn judged on time
+        # since, which a heartbeat drifted off its minute never gives.
         self.topics_table.update_item(
             Key={"topic_id": topic["topic_id"]},
             UpdateExpression=(
-                f"SET {SHADOW_CLEAN_DAYS} = :zero ADD shadow_mismatches :n "
-                "REMOVE shadow_last_research_dispatch_at"
+                f"SET {SHADOW_CLEAN_DAYS} = :zero, {SHADOW_RESEARCH_MISMATCH_AT} = :turn "
+                "ADD shadow_mismatches :n"
             ),
             ConditionExpression="attribute_exists(topic_id)",
-            ExpressionAttributeValues={":n": 1, ":zero": 0},
+            ExpressionAttributeValues={":n": 1, ":zero": 0, ":turn": _iso(turn)},
         )
+        return _iso(turn)
 
     def _shadow_daily(self, topic: dict, now: datetime, today: date, zone: tzinfo) -> None:
         """Record today's turn, and count a mismatch when the previous recorded day saw no execution
         of this topic on the Scheduler path. A check that could not run is no mismatch, and no match
         either: it counts one day in `shadow_unchecked`. A check that answered, either way, counts
         one day in `shadow_checked_days`: the first shadow day has nothing to compare, and must not
-        pass for a day watched. A match adds a day to `shadow_clean_days`; a mismatch or an
-        unchecked day sets it back to 0."""
+        pass for a day watched. A match adds a day to `shadow_clean_days` only when no research
+        turn since the previous record was a mismatch, so the day counted is a full day, record to
+        record, with none of either kind; a mismatch of either kind or an unchecked day sets it
+        back to 0."""
         previous = _parse_time(topic.get("shadow_last_daily_dispatch_at"))
+        research_mismatch = _parse_time(topic.get(SHADOW_RESEARCH_MISMATCH_AT))
         mismatch = unchecked = checked = 0
         if previous is not None:
             previous_day = previous.astimezone(zone).date()
@@ -688,7 +715,14 @@ class Dispatcher:
                         f"dispatcher: shadow daily mismatch topic_id={topic['topic_id']} "
                         f"local_date={previous_day.isoformat()}"
                     )
-        clean = 0 if mismatch or unchecked else (1 if checked else None)
+        if mismatch or unchecked:
+            clean = 0
+        elif checked:
+            # A research mismatch whose turn came at the previous record or later fell in the day
+            # this check stands for.
+            clean = 0 if research_mismatch is not None and research_mismatch >= previous else 1
+        else:
+            clean = None
         self._write_shadow(
             topic["topic_id"],
             "shadow_last_daily_dispatch_at",
@@ -845,15 +879,20 @@ def shadow_problems(topic: dict, *, research_is_rate: bool) -> list[str]:
     """What shadow mode has not yet shown about this topic, judged on its recent stretch (the
     module docstring): a full day watched since its last mismatch or unchecked day
     (`shadow_clean_days` at least one; a check that could not run never passes as a match), and for
-    a cron research cadence a research turn recorded since its last research mismatch: a heartbeat
-    that drifted off its computed minute records none, before shadow mode began or after. A
-    `rate(...)` research cadence is recorded but never judged (the module docstring), so such a
-    topic is judged by its daily record alone. The whole-history counts only word the reason."""
+    a cron research cadence a research turn judged on time since its last research mismatch: a
+    heartbeat that drifted off its computed minute never gives one, before shadow mode began or
+    after, and a turn recorded but not yet judged proves nothing. A `rate(...)` research cadence is
+    recorded but never judged (the module docstring), so such a topic is judged by its daily record
+    alone. The whole-history counts only word the reason."""
     counts = {
         field: _shadow_count(topic, field)
         for field in ("shadow_mismatches", "shadow_unchecked", SHADOW_CHECKED_DAYS, SHADOW_CLEAN_DAYS)
     }
-    unreadable = sorted(field for field, count in counts.items() if count is None)
+    turns = {field: topic.get(field) for field in (SHADOW_RESEARCH_MISMATCH_AT, SHADOW_RESEARCH_MATCHED_AT)}
+    unreadable = sorted(
+        [field for field, count in counts.items() if count is None]
+        + [field for field, value in turns.items() if value is not None and _parse_time(value) is None]
+    )
     if unreadable:
         return [f"its shadow record is unreadable ({', '.join(unreadable)})"]
     reasons = []
@@ -875,11 +914,20 @@ def shadow_problems(topic: dict, *, research_is_rate: bool) -> list[str]:
             f"day{'s' if unchecked != 1 else ''} in all; one clean day checked is enough, and "
             "`topics schedule` shows the record)"
         )
-    if not research_is_rate and not topic.get("shadow_last_research_dispatch_at"):
-        reasons.append(
-            "shadow mode has recorded none of its research turns since its last research mismatch, "
-            "if any (a heartbeat running off the dispatcher's minute records none)"
-        )
+    if not research_is_rate:
+        mismatched = _parse_time(turns[SHADOW_RESEARCH_MISMATCH_AT])
+        matched = _parse_time(turns[SHADOW_RESEARCH_MATCHED_AT])
+        if mismatched is not None and (matched is None or matched <= mismatched):
+            reasons.append(
+                "shadow mode has seen none of its research turns taken on time since its last research "
+                f"mismatch, the turn at {_iso(mismatched)} (a heartbeat running off the dispatcher's "
+                "minute never is)"
+            )
+        elif matched is None:
+            reasons.append(
+                "shadow mode has seen none of its research turns taken on time (a heartbeat running off "
+                "the dispatcher's minute never is)"
+            )
     return reasons
 
 

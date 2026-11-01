@@ -4,9 +4,10 @@
 # resource whose for_each is a data source gets that data source's whole object as each.value,
 # which validate cannot see yet, and a name built from "${each.value}" passed validate and stopped
 # every plan. Preconditions, too, run only at plan. Held here: the roles and policies plan with the
-# defaults, the separation policies follow their switch, and a state bucket the separation would
-# refuse is stopped before anything is made. The prefix is another deployment's, so every name is
-# seen to follow it.
+# defaults (the top-level domain_name = "" leaves the zone out of the first runs), the separation
+# policies follow their switch, a state bucket the separation would refuse is stopped before
+# anything is made, and the zone and the budget the owner's apply creates (a domain and a budget
+# email set) plan too. The prefix is another deployment's, so every name is seen to follow it.
 
 mock_provider "aws" {
   mock_data "aws_iam_policy_document" {
@@ -95,4 +96,25 @@ run "a_state_bucket_the_separation_would_refuse_to_one_role_is_stopped_at_plan" 
   }
 
   expect_failures = [aws_iam_policy.gha_deploy_other_environment]
+}
+
+# Planning this run also evaluates the zone's two outputs on their one-zone path; their values are
+# computed, so unknown under the mock, and are not asserted.
+run "with_a_domain_and_a_budget_email_the_zone_and_the_budget_plan_from_the_prefix" {
+  command = plan
+
+  variables {
+    domain_name        = "example.org"
+    budget_alert_email = "ops@example.org"
+  }
+
+  assert {
+    condition = (
+      length(aws_route53_zone.site) == 1
+      && aws_route53_zone.site[0].name == "example.org"
+      && length(aws_budgets_budget.bedrock_spend) == 1
+      && aws_budgets_budget.bedrock_spend[0].name == "acme-blog-bedrock-spend"
+    )
+    error_message = "a domain plans its zone, and a budget email the Bedrock budget named from the prefix"
+  }
 }

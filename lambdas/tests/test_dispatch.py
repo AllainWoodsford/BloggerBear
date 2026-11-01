@@ -913,6 +913,15 @@ def test_a_recorded_turn_is_judged_once_five_minutes_on_against_when_last_resear
     counted = {name: stored(name).get("shadow_mismatches", 0) for name in
                ("agreed", "stamped-first", "not-moved", "early", "never")}
     assert counted == {"agreed": 0, "stamped-first": 0, "not-moved": 1, "early": 1, "never": 1}
+    # Each judged turn is dated on its row: what the cutover's pre-flight compares.
+    fields = ("shadow_research_matched_at", "shadow_research_mismatch_at")
+    names = ("agreed", "stamped-first", "never")
+    dated = {name: tuple(stored(name).get(field) for field in fields) for name in names}
+    assert dated == {
+        "agreed": ("2026-10-25T04:05:30+00:00", None),
+        "stamped-first": ("2026-10-25T04:05:30+00:00", None),
+        "never": (None, "2026-10-25T04:05:30+00:00"),
+    }
 
 
 def test_a_run_now_that_lands_after_the_turns_tolerance_is_never_a_mismatch(aws_resources, capsys):
@@ -1210,8 +1219,8 @@ def test_the_first_shadow_day_has_nothing_to_compare_and_a_day_is_recorded_once(
 
 def _shadowed_days(sfn, *, days: int, **fields) -> list[dict]:
     """Tick the 09:00 Sydney daily turn of `days` days from 2026-10-24 for a topic on its schedules,
-    researched for the week with a research turn already recorded (so only the daily turn is in
-    play), and return the row after each day."""
+    researched for the week with a research turn already judged on time (so only the daily turn is
+    in play), and return the row after each day."""
     dynamo.put_pipeline_config(stagger_minutes=0)
     put_topics(
         topic(
@@ -1220,6 +1229,7 @@ def _shadowed_days(sfn, *, days: int, **fields) -> list[dict]:
             research_interval_hours=168,
             last_research_at=at("2026-10-23T20:30:10").isoformat(),
             shadow_last_research_dispatch_at=at("2026-10-23T20:30:00").isoformat(),
+            shadow_research_matched_at=at("2026-10-23T20:30:00").isoformat(),
             **fields,
         )
     )
@@ -1279,23 +1289,24 @@ def test_matching_days_add_up_and_a_row_counted_before_clean_days_reads_as_clean
 
     assert [row.get("shadow_clean_days") for row in rows] == [None, 1, 2]
     legacy = {"shadow_mismatches": 0, "shadow_unchecked": 0, "shadow_checked_days": 3,
-              "shadow_last_research_dispatch_at": "2026-10-24T20:30:00+00:00"}  # fmt: skip
+              "shadow_research_matched_at": "2026-10-24T20:30:00+00:00"}  # fmt: skip
     assert dispatch.shadow_problems(legacy, research_is_rate=False) == []
     assert dispatch.shadow_problems({**legacy, "shadow_mismatches": 1}, research_is_rate=False)
 
 
-def test_a_research_mismatch_starts_the_clean_count_again_and_takes_the_judged_turn_off_the_row(
+def test_a_research_mismatch_starts_the_clean_count_again_and_holds_the_cutover_until_a_turn_is_on_time(
     aws_resources, capsys
 ):
-    """A drifted heartbeat is judged once, and its later turns are neither recorded nor judged: with
-    the judged turn gone from the row, the cutover waits for a turn recorded since, which only a
-    heartbeat back on its minute gives."""
+    """A drifted heartbeat is judged once, and when its interval matches its cadence its later
+    turns are neither recorded nor judged: the mismatch is dated, and the cutover waits for a
+    research turn judged on time since, which only a heartbeat back on its minute gives."""
     turn = at("2026-10-25T04:05:30")
     put_topics(
         topic(
             dispatch_mode="schedule",
             shadow_last_research_dispatch_at=turn.isoformat(),
             last_research_at=(turn - timedelta(minutes=12)).isoformat(),  # the drifted heartbeat
+            shadow_research_matched_at=(turn - timedelta(hours=1)).isoformat(),
             shadow_mismatches=0,
             shadow_unchecked=0,
             shadow_checked_days=3,
@@ -1308,7 +1319,174 @@ def test_a_research_mismatch_starts_the_clean_count_again_and_takes_the_judged_t
 
     row = stored()
     assert (row["shadow_mismatches"], row["shadow_clean_days"]) == (1, 0)
-    assert "shadow_last_research_dispatch_at" not in row
+    assert row["shadow_research_mismatch_at"] == "2026-10-25T04:05:30+00:00"
+    assert row["shadow_last_research_dispatch_at"] == "2026-10-25T04:05:30+00:00"  # the record stays
     assert "shadow research mismatch topic_id=github-trending" in capsys.readouterr().out
     reasons = dispatch.shadow_problems(row, research_is_rate=False)
-    assert len(reasons) == 2 and reasons[1].startswith("shadow mode has recorded none of its research turns")
+    assert len(reasons) == 2 and reasons[1].startswith(
+        "shadow mode has seen none of its research turns taken on time since its last research "
+        "mismatch, the turn at 2026-10-25T04:05:30+00:00"
+    )
+    # A turn judged on time since answers the research half; a clean day still has to be checked.
+    later = {**row, "shadow_research_matched_at": "2026-10-25T05:05:30+00:00"}
+    assert len(dispatch.shadow_problems(later, research_is_rate=False)) == 1
+    assert dispatch.shadow_problems({**later, "shadow_clean_days": 1}, research_is_rate=False) == []
+
+
+def _executions_daily(*first_days: datetime) -> MagicMock:
+    """A Step Functions client that lists one run of this topic at each of `first_days` (newest
+    first, as Step Functions lists them)."""
+    sfn = MagicMock()
+    newest_first = sorted(first_days, reverse=True)
+    sfn.list_executions.return_value = {
+        "executions": [_execution(f"arn:x:{n}", moment) for n, moment in enumerate(newest_first)]
+    }
+    sfn.describe_execution.return_value = {"input": json.dumps({"topic_id": "github-trending"})}
+    return sfn
+
+
+def _refusals() -> list[str]:
+    row = stored()
+    return dispatch.cutover_refusals(row, topics=[row], config=pipeline_row())
+
+
+def test_a_heartbeat_drifted_late_on_a_cadence_longer_than_its_interval_never_passes_the_pre_flight(
+    aws_resources,
+):
+    """Every four hours with a two-hour interval, the Scheduler's heartbeat ten minutes late: each
+    turn finds the topic due, is recorded, and is judged a mismatch five minutes later. No day,
+    record to record, is free of one, so no clean day is ever counted, and the pre-flight refuses
+    at every moment, the minute after a turn is recorded included (counting the daily check alone
+    once let it through there)."""
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(
+        topic(
+            dispatch_mode="schedule",
+            research_cadence="cron(0 */4 * * ? *)",
+            research_interval_hours=2,
+            last_research_at=at("2026-10-23T20:10:00").isoformat(),
+            shadow_last_daily_dispatch_at=YESTERDAY_TURN.isoformat(),
+            shadow_last_research_dispatch_at=at("2026-10-23T20:00:30").isoformat(),
+            shadow_research_matched_at=at("2026-10-23T16:00:30").isoformat(),  # before the drift
+            shadow_research_mismatch_at=at("2026-10-23T20:00:30").isoformat(),  # the drift's first turn
+            shadow_mismatches=1,
+            shadow_unchecked=0,
+            shadow_checked_days=3,
+            shadow_clean_days=0,
+        )
+    )
+    dynamo.update_config_row("pipeline", {"last_tick": at("2026-10-23T23:59:30").isoformat()})
+    run = dispatcher(sfn=_executions_daily(*(at(f"2026-10-{day}T22:00:40") for day in (23, 24, 25, 26))))
+    seen = []
+
+    recorded, minute_after, judged = (timedelta(seconds=s) for s in (30, 90, 330))
+    for hour in range(0, 3 * 24 + 1):
+        turn = at("2026-10-24T00:00:00") + timedelta(hours=hour)
+        if turn.hour % 4 == 0:
+            for offset in (recorded, minute_after, judged):
+                run.tick(turn + offset)
+                seen.append((turn + offset, stored().get("shadow_clean_days"), _refusals()))
+            topics_table().update_item(  # the Scheduler path's heartbeat, ten minutes late
+                Key={"topic_id": "github-trending"},
+                UpdateExpression="SET last_research_at = :t",
+                ExpressionAttributeValues={":t": (turn + timedelta(minutes=10)).isoformat()},
+            )
+        if turn.hour == 22:  # 09:00 Sydney: the daily turn, and the minute after it
+            for offset in (recorded, minute_after):
+                run.tick(turn + offset)
+                seen.append((turn + offset, stored().get("shadow_clean_days"), _refusals()))
+
+    assert stored()["shadow_checked_days"] == 6 and stored()["shadow_mismatches"] == 20
+    assert [moment for moment, clean, _ in seen if clean] == []
+    assert [moment for moment, _, refusals in seen if not refusals] == []
+
+
+def test_one_missed_heartbeat_holds_the_cutover_until_a_full_day_after_it_is_checked_clean(aws_resources):
+    """Hourly research, the Scheduler's 20:00 UTC heartbeat missed (a mismatch at 20:05), every
+    other turn on time, and the daily turn at 22:00 UTC (09:00 Sydney). That day's 22:00 check
+    finds yesterday's run, but its day, record to record, held the mismatch: no clean day, and the
+    pre-flight refuses even with the 22:00 research turn recorded and judged on time. The next
+    day's check stands for a day with none, and counts the first clean day."""
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(
+        topic(
+            dispatch_mode="schedule",
+            research_cadence="cron(0 * * * ? *)",
+            research_interval_hours=1,
+            last_research_at=at("2026-10-24T19:00:05").isoformat(),
+            shadow_last_research_dispatch_at=at("2026-10-24T19:00:30").isoformat(),
+            shadow_research_matched_at=at("2026-10-24T19:00:30").isoformat(),
+            shadow_last_daily_dispatch_at=YESTERDAY_TURN.isoformat(),
+            shadow_mismatches=0,
+            shadow_unchecked=0,
+            shadow_checked_days=3,
+            shadow_clean_days=3,
+        )
+    )
+    dynamo.update_config_row("pipeline", {"last_tick": at("2026-10-24T19:05:30").isoformat()})
+    run = dispatcher(sfn=_executions_daily(at("2026-10-23T22:00:40"), at("2026-10-24T22:00:40")))
+    after = {}
+
+    for hour in range(1, 28):  # 20:00 on the 24th to 22:00 on the 25th
+        turn = at("2026-10-24T19:00:00") + timedelta(hours=hour)
+        if turn != at("2026-10-24T20:00:00"):  # the heartbeat the Scheduler missed
+            topics_table().update_item(
+                Key={"topic_id": "github-trending"},
+                UpdateExpression="SET last_research_at = :t",
+                ExpressionAttributeValues={":t": (turn + timedelta(seconds=5)).isoformat()},
+            )
+        for offset in (timedelta(seconds=30), timedelta(minutes=5, seconds=30)):
+            run.tick(turn + offset)
+            after[turn + offset] = (stored(), _refusals())
+
+    missed, _ = after[at("2026-10-24T20:05:30")]
+    assert (missed["shadow_mismatches"], missed["shadow_clean_days"]) == (1, 0)
+    for moment in (at("2026-10-24T22:00:30"), at("2026-10-24T22:05:30")):
+        row, refusals = after[moment]
+        assert (row["shadow_checked_days"], row["shadow_clean_days"]) == (4, 0)
+        assert [reason[:46] for reason in refusals] == ["shadow mode has not watched a full day of it s"]
+    held = [refusals for moment, (_, refusals) in after.items() if moment < at("2026-10-25T22:00:30")]
+    assert all(held[1:])  # from the tick that judged the miss on (20:00:30 could not know of it yet)
+    row, refusals = after[at("2026-10-25T22:00:30")]
+    assert (row["shadow_mismatches"], row["shadow_checked_days"], row["shadow_clean_days"]) == (1, 5, 1)
+    assert refusals == []
+
+
+def test_a_research_mismatch_judged_in_the_daily_check_s_own_tick_counts_no_clean_day(aws_resources):
+    """With one topic and the default stagger, the 09:05 Sydney heartbeat is judged at 09:10, the
+    minute the daily check runs. The check reads the row as the tick found it, so it is handed the
+    mismatch just counted: setting the count to 0 and then adding the day would read 1 straight
+    after a mismatch."""
+    turn = at("2026-10-24T22:05:00")
+    put_topics(
+        topic(
+            dispatch_mode="schedule",
+            shadow_last_research_dispatch_at=turn.isoformat(),
+            last_research_at=(turn - timedelta(hours=1)).isoformat(),  # the 09:05 heartbeat missed
+            shadow_research_matched_at=(turn - timedelta(hours=1)).isoformat(),
+            shadow_last_daily_dispatch_at=at("2026-10-23T22:10:00").isoformat(),
+            shadow_mismatches=0,
+            shadow_unchecked=0,
+            shadow_checked_days=3,
+            shadow_clean_days=3,
+        )
+    )
+    dynamo.update_config_row("pipeline", {"last_tick": (DAILY_TURN - timedelta(minutes=1)).isoformat()})
+    run = dispatcher(sfn=_executions_daily(at("2026-10-23T22:10:10")))
+
+    run.tick(DAILY_TURN)
+
+    row = stored()
+    assert (row["shadow_mismatches"], row["shadow_checked_days"], row["shadow_clean_days"]) == (1, 4, 0)
+    # The next heartbeat lands on time and its turn is recorded: still no clean day to cut over on.
+    topics_table().update_item(
+        Key={"topic_id": "github-trending"},
+        UpdateExpression="SET last_research_at = :t",
+        ExpressionAttributeValues={":t": (turn + timedelta(hours=1, seconds=5)).isoformat()},
+    )
+    run.tick(turn + timedelta(hours=1, seconds=30))
+    row = stored()
+    assert row["shadow_last_research_dispatch_at"] == "2026-10-24T23:05:30+00:00"
+    assert dispatch.shadow_problems(row, research_is_rate=False)[0].startswith(
+        "shadow mode has not watched a full day of it since its last mismatch"
+    )
