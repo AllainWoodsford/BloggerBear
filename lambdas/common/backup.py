@@ -27,6 +27,8 @@ one line per row (`{"t": "item", "table", "item"}`, the item in DynamoDB's own t
 number and set comes back exactly) or object (`{"t": "object", "key", "content_type", "text" |
 "data"}`), and an `end` line with the counts. A file without its end line is refused by restore.
 Restoring writes every row and object back under its own key, so it can be run any number of times.
+One field of one kind of row is not written back as it was: a topic on the dispatcher's queue is
+given today's daily claim once today's daily turn has passed (_restored_topics says why).
 
 **The jobs.** A snapshot, a restore or an export can be thousands of articles, more than one
 30-second Admin API invocation. Each runs as a job inside that same Lambda: a step does ~20 seconds
@@ -54,7 +56,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 import boto3
+from boto3.dynamodb.types import TypeDeserializer
 
+from . import dispatch, dynamo
 from .dynamo import ARTICLES_BY_STATUS_INDEX
 from .naming import NAME_PREFIX
 
@@ -676,6 +680,49 @@ def _write_rows(table: str, items: list[dict]) -> None:
             raise RuntimeError(f"DynamoDB kept {len(requests.get(table, []))} rows of {table} unprocessed")
 
 
+_TYPES = TypeDeserializer()
+
+
+def _restored_topics(items: list[dict], now: datetime) -> list[dict]:
+    """Topics rows (low-level) from a snapshot, as they are written back. A topic on the dispatcher's
+    queue arrives on it now, as a cutover or a create brings one (dispatch.cutover_day): once today's
+    daily turn has passed in its zone, its `last_daily_dispatched_on` says today, whatever the
+    snapshot's says. Kept as it was, an older day there would have the next tick start a second
+    daily run today for a topic that has had one, and a run its schedules, restored the same way,
+    would leave to tomorrow. Before the turn the snapshot's day stands, and today's run starts at
+    the turn. `daily_claim_n` is left as the snapshot has it: an execution name carries the date.
+
+    Done here, in the put that writes the row, because the dispatcher ticks every minute and the
+    restore's later phases come many steps on. The turn is judged with this deployment's pipeline
+    row and every topic it will hold, the live ones and these (Topics rows come first in the file,
+    so up to 100 topics all arrive in the first batch)."""
+    plain = [_TYPES.deserialize({"M": item}) for item in items]
+    if not any(dispatch.dispatch_mode(topic) == dispatch.QUEUE_MODE for topic in plain):
+        return items
+    try:
+        config = dynamo.get_pipeline_config()
+    except Exception as exc:  # noqa: BLE001 - the stagger's defaults judge the turn instead
+        print(f"backup: could not read the pipeline config; judging daily turns with its defaults: {exc!r}")
+        config = None
+    ids = {topic.get("topic_id") for topic in plain}
+    try:
+        ids |= {topic.get("topic_id") for topic in dynamo.list_topics()}
+    except Exception as exc:  # noqa: BLE001 - the snapshot's own topics are counted instead
+        print(f"backup: could not list this deployment's topics; counting the snapshot's: {exc!r}")
+    restored = []
+    for item, topic in zip(items, plain, strict=True):
+        if dispatch.dispatch_mode(topic) == dispatch.QUEUE_MODE:
+            try:
+                today = dispatch.cutover_day(topic, config=config, topic_count=len(ids), now=now)
+            except ValueError as exc:  # CadenceError is one; the dispatcher skips such a topic
+                print(f"backup: {topic.get('topic_id')} is on the queue, its cadences unreadable: {exc!r}")
+                today = None
+            if today:
+                item = {**item, "last_daily_dispatched_on": {"S": today}}
+        restored.append(item)
+    return restored
+
+
 def _put_object(line: dict) -> None:
     body = line["text"].encode("utf-8") if "text" in line else base64.b64decode(line["data"])
     _s3().put_object(
@@ -751,6 +798,8 @@ def _restore_load(job: dict, time_left_ms) -> None:
     def flush():
         nonlocal pending_count
         for name, items in pending.items():
+            if name == "topics":
+                items = _restored_topics(items, datetime.now(UTC))
             _write_rows(os.environ[TABLES[name]], items)
         pending.clear()
         pending_count = 0

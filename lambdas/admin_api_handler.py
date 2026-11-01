@@ -827,7 +827,9 @@ def _update_topic(event: dict) -> dict:
     put_topic(updated)
     _topic_changed("updated", topic, updated)
     try:
-        _apply_topic_schedules(updated, topics=topics, config=config)
+        # A topic that has just moved to the queue had its schedules deleted by _move_to_queue: a
+        # second delete would only find none, and its failure would answer 500 for a move made.
+        _apply_topic_schedules(updated, topics=topics, config=config, delete_schedules=not to_queue)
     except Exception as exc:  # noqa: BLE001 - raised again unless the topic has just left the queue
         if not from_queue:
             if isinstance(exc, ValueError):
@@ -856,7 +858,7 @@ def _move_to_queue(topic_id: str, updated: dict, *, topics: list[dict], config, 
     `confirm_required` until the caller confirms, since the schedules are deleted. They are deleted
     before the row says queue, so a failure in between leaves the topic running nowhere and said
     so, never on both paths at once (two articles in a day); the caller's _apply_topic_schedules
-    deletes them once more after the write, and finds none. Last, `updated` gains the cutover-day
+    then only records the expressions, and deletes nothing again. Last, `updated` gains the cutover-day
     claim: when today's daily turn has passed, `last_daily_dispatched_on` is today in the topic's
     zone, written by the same put that sets `dispatch_mode`, so the dispatcher does not start a
     second run today; `daily_claim_n` is left as it is."""
@@ -911,7 +913,9 @@ def _read_pipeline_config_quietly() -> dict | None:
         return None
 
 
-def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> dict:
+def _apply_topic_schedules(
+    topic: dict, *, topics: list[dict], config=None, delete_schedules: bool = True
+) -> dict:
     """Write the topic's two EventBridge Scheduler schedules with its stagger slot applied
     (common/stagger.py), DISABLED while the topic is paused, and record what was written on its
     row (`research_schedule`, `daily_schedule`), so the minute it really runs at can be read in
@@ -927,7 +931,8 @@ def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> d
     back to its schedules, is one way it can still have them. Its row still records the same
     expressions, which are what the dispatcher reads, and ValueError is raised for one the
     dispatcher could not read, so `topics reschedule` names it; its schedules are then left as they
-    are, since the dispatcher skips such a topic and they are all that runs it.
+    are, since the dispatcher skips such a topic and they are all that runs it. `delete_schedules`
+    false is for the cutover, which has just deleted them itself.
     """
     if config is None:
         config = _read_pipeline_config_quietly()
@@ -942,7 +947,8 @@ def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> d
         problem = dispatch.cadence_problem(topic, config=config, topic_count=len(topics))
         if problem:
             raise ValueError(problem)
-        delete_topic_schedules(topic["topic_id"])
+        if delete_schedules:
+            delete_topic_schedules(topic["topic_id"])
     else:
         upsert_topic_schedules(
             topic["topic_id"],
@@ -963,7 +969,8 @@ def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
     EventBridge Scheduler (the ones the dispatcher reads, for a topic on the queue) and the same in
     plain words, and the dispatcher's shadow record (common/dispatch.py): the last turns it would
     have dispatched, how many differed from what the schedules did, how many days its check could
-    not answer and how many it did."""
+    not answer and how many it did, and how many of those matched since the last mismatch or
+    unchecked day (what the cutover judges)."""
     effective = effective or {}
     research = effective.get("research") or topic.get("research_schedule") or topic.get("research_cadence")
     daily = effective.get("daily") or topic.get("daily_schedule") or topic.get("daily_cadence")
@@ -986,6 +993,7 @@ def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
         "shadow_mismatches": topic.get("shadow_mismatches"),
         "shadow_unchecked": topic.get("shadow_unchecked"),
         "shadow_checked_days": topic.get(dispatch.SHADOW_CHECKED_DAYS),
+        "shadow_clean_days": topic.get(dispatch.SHADOW_CLEAN_DAYS),
     }
 
 
@@ -1147,7 +1155,12 @@ def _set_topic_paused(event: dict, *, paused: bool) -> dict:
     written first, and both handlers refuse a paused topic whatever invoked them. Its two
     schedules are then set DISABLED or ENABLED so the heartbeats stop costing invocations; a
     schedule that could not be changed is said so in the answer, and the handlers' own check
-    still holds. The bear muses about it either way. Doing it again is a no-op."""
+    still holds. The bear muses about it either way. Doing it again is a no-op.
+
+    A topic on the queue resumed after today's daily turn has passed is given today's date as
+    `last_daily_dispatched_on` in the same write that says it is not paused (_queue_resume_day),
+    so the dispatcher starts its next run tomorrow, as a schedule enabled again after its turn
+    would."""
     topic_id = _path_param(event, "topic_id")
     topic = get_topic(topic_id)
     if topic is None:
@@ -1155,8 +1168,13 @@ def _set_topic_paused(event: dict, *, paused: bool) -> dict:
     if (topic.get("paused") is True) == paused:
         return _response(200, {"topic_id": topic_id, "paused": paused, "changed": False})
 
-    now = datetime.now(UTC).isoformat()
+    moment = datetime.now(UTC)
+    now = moment.isoformat()
     fields = {"paused": paused, "paused_at" if paused else "resumed_at": now}
+    if not paused and dispatch.dispatch_mode(topic) == dispatch.QUEUE_MODE:
+        today = _queue_resume_day(topic, moment)
+        if today:
+            fields["last_daily_dispatched_on"] = today
     set_topic_fields(topic_id, fields)
     _topic_changed("paused" if paused else "resumed", topic, {**topic, **fields})
     payload = {"topic_id": topic_id, "paused": paused, "changed": True, "at": now}
@@ -1168,6 +1186,26 @@ def _set_topic_paused(event: dict, *, paused: bool) -> dict:
         payload["schedules_error"] = str(exc)
     _post_pause_musing(topic_id, paused=paused)
     return _response(200, payload)
+
+
+def _queue_resume_day(topic: dict, now: datetime) -> str | None:
+    """What `last_daily_dispatched_on` must say when a topic on the queue is resumed at `now`:
+    today's date in its zone once today's daily turn has passed (dispatch.cutover_day, the rule a
+    cutover and a create follow), else None. Paused, the dispatcher skipped the turn, as a disabled
+    schedule would have; without this its next tick would see the turn passed and nothing
+    dispatched today, and start today's run late, which the Scheduler never does. None too when the
+    dispatcher cannot read the topic's cadences or zone: it skips such a topic every minute anyway.
+    `daily_claim_n` is left as it is, so tomorrow's run takes the next number."""
+    try:
+        return dispatch.cutover_day(
+            topic, config=_read_pipeline_config_quietly(), topic_count=len(list_topics()), now=now
+        )
+    except ValueError as exc:  # CadenceError is one; the dispatcher logs the topic every minute
+        print(
+            f"admin_api_handler: {topic.get('topic_id')} resumed with cadences the dispatcher "
+            f"cannot read: {exc!r}"
+        )
+        return None
 
 
 def _pause_topic(event: dict) -> dict:

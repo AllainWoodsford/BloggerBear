@@ -45,11 +45,12 @@ counted where the two paths really disagreed:
   SHADOW_TOLERANCE off the computed minute, early or late, is not detected beyond the first turn
   after the drift began, which is counted once. From then on the topic is not due at the computed
   minute (just researched, or its interval not yet out), so those turns are neither recorded nor
-  judged. One mismatch is enough to stop the cutover; a drift that was there before shadow mode
-  began leaves no research turn recorded at all, which the Q2 pre-flight refuses too. Missing
-  it costs little: at cutover the research minute moves to the computed one, the stagger's own.
-  Counting more would mean judging every move of `last_research_at`, and every operator run-now
-  moves it.
+  judged. A research mismatch therefore also takes the judged turn off the row, and the cutover
+  waits until a turn is recorded again, which a drifted heartbeat never gives; a drift that was
+  there before shadow mode began leaves no research turn recorded at all, which the Q2 pre-flight
+  refuses too. Missing it costs little: at cutover the research minute moves to the computed one,
+  the stagger's own. Counting more would mean judging every move of `last_research_at`, and every
+  operator run-now moves it.
 - **a run-now** is never a mismatch. A stamp that lands within SHADOW_TOLERANCE of a turn is that
   turn's; one later than that when the turn is judged (the judging tick runs within a minute of
   the tolerance running out) is a run-now made since, which replaced the turn's own evidence, so
@@ -59,8 +60,14 @@ counted where the two paths really disagreed:
   day the check could not answer (Step Functions refused, or its pages ran out) is counted in
   `shadow_unchecked`, never as a match: a missing grant must not pass as zero mismatches. A day it
   did answer is counted in `shadow_checked_days`, so a full day watched can be told from a first
-  shadow day that had nothing to compare yet. The Q2 pre-flight asks for zero mismatches, zero
-  unchecked days and at least one checked day.
+  shadow day that had nothing to compare yet.
+
+The counts above are the topic's whole history, and are only ever shown. What the Q2 pre-flight
+judges is the recent stretch: `shadow_clean_days`, the days checked and found to match since the
+last mismatch or unchecked day (either one sets it back to 0), must be at least one. So one old
+mismatch, or a record from before a cadence change, holds the cutover back for a day at most,
+never until someone clears the row by hand. A row whose days were checked before the count
+existed is read as clean when it never counted a mismatch or an unchecked day (shadow_problems).
 
 **The cutover** (Q2, the admin API's `topics update <id> --dispatch-mode queue`): before a topic's
 two schedules are deleted, cutover_refusals must find nothing wrong (it is not paused, the
@@ -136,8 +143,10 @@ _SQS_ID_MAX_CHARS = 128
 _SQS_ID = re.compile(r"[A-Za-z0-9!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~]+")
 MANUAL_TOKEN_CHARS = 32
 
-# The day count the daily check answered (see the module docstring).
+# The day count the daily check answered, and the days it answered with a match since the last
+# mismatch or unchecked day (see the module docstring).
 SHADOW_CHECKED_DAYS = "shadow_checked_days"
+SHADOW_CLEAN_DAYS = "shadow_clean_days"
 
 # The claims (spec 4.7), word for word.
 DAILY_CLAIM_UPDATE = "SET last_daily_dispatched_on = :today ADD daily_claim_n :one"
@@ -641,11 +650,16 @@ class Dispatcher:
             f"dispatcher: shadow research mismatch topic_id={topic['topic_id']} "
             f"turn={_iso(turn)} last_research_at={_iso(moved) if moved else None}"
         )
+        # The clean stretch starts again, and the judged turn leaves the row: the pre-flight then
+        # waits for a turn recorded since, which a heartbeat drifted off its minute never gives.
         self.topics_table.update_item(
             Key={"topic_id": topic["topic_id"]},
-            UpdateExpression="ADD shadow_mismatches :n",
+            UpdateExpression=(
+                f"SET {SHADOW_CLEAN_DAYS} = :zero ADD shadow_mismatches :n "
+                "REMOVE shadow_last_research_dispatch_at"
+            ),
             ConditionExpression="attribute_exists(topic_id)",
-            ExpressionAttributeValues={":n": 1},
+            ExpressionAttributeValues={":n": 1, ":zero": 0},
         )
 
     def _shadow_daily(self, topic: dict, now: datetime, today: date, zone: tzinfo) -> None:
@@ -653,7 +667,8 @@ class Dispatcher:
         of this topic on the Scheduler path. A check that could not run is no mismatch, and no match
         either: it counts one day in `shadow_unchecked`. A check that answered, either way, counts
         one day in `shadow_checked_days`: the first shadow day has nothing to compare, and must not
-        pass for a day watched."""
+        pass for a day watched. A match adds a day to `shadow_clean_days`; a mismatch or an
+        unchecked day sets it back to 0."""
         previous = _parse_time(topic.get("shadow_last_daily_dispatch_at"))
         mismatch = unchecked = checked = 0
         if previous is not None:
@@ -673,12 +688,13 @@ class Dispatcher:
                         f"dispatcher: shadow daily mismatch topic_id={topic['topic_id']} "
                         f"local_date={previous_day.isoformat()}"
                     )
+        clean = 0 if mismatch or unchecked else (1 if checked else None)
         self._write_shadow(
             topic["topic_id"],
             "shadow_last_daily_dispatch_at",
             now,
             mismatch,
-            daily_counts={"unchecked": unchecked, "checked": checked},
+            daily_counts={"unchecked": unchecked, "checked": checked, "clean": clean},
         )
 
     def _daily_ran(self, topic_id: str, day: date, zone: tzinfo) -> bool | None:
@@ -728,11 +744,20 @@ class Dispatcher:
     ) -> None:
         """Record a shadow turn and add to the counts. A daily record also adds to
         `shadow_unchecked` and `shadow_checked_days` (`daily_counts`; zero included, so the fields
-        are there from the first shadow day)."""
-        update, values = "SET #f = :t ADD shadow_mismatches :n", {":t": _iso(now), ":n": mismatch}
+        are there from the first shadow day), and moves `shadow_clean_days` (`clean`: 1 adds a day,
+        0 sets it back to 0, None, a day with nothing to compare, leaves it)."""
+        sets, adds = ["#f = :t"], ["shadow_mismatches :n"]
+        values = {":t": _iso(now), ":n": mismatch}
         if daily_counts is not None:
-            update = f"{update}, shadow_unchecked :u, {SHADOW_CHECKED_DAYS} :c"
+            adds += ["shadow_unchecked :u", f"{SHADOW_CHECKED_DAYS} :c"]
             values = {**values, ":u": daily_counts["unchecked"], ":c": daily_counts["checked"]}
+            if daily_counts.get("clean") == 1:
+                adds.append(f"{SHADOW_CLEAN_DAYS} :clean")
+                values[":clean"] = 1
+            elif daily_counts.get("clean") == 0:
+                sets.append(f"{SHADOW_CLEAN_DAYS} = :clean")
+                values[":clean"] = 0
+        update = f"SET {', '.join(sets)} ADD {', '.join(adds)}"
         self.topics_table.update_item(
             Key={"topic_id": topic_id},
             UpdateExpression=update,
@@ -817,40 +842,43 @@ def _shadow_count(topic: dict, field: str) -> int | None:
 
 
 def shadow_problems(topic: dict, *, research_is_rate: bool) -> list[str]:
-    """What shadow mode has not yet shown about this topic: a full day watched (one day its daily
-    check answered), no mismatch, no day it could not check (a check that could not run never
-    passes as a match), and for a cron research cadence at least one research turn recorded: a
-    heartbeat that drifted off its computed minute before shadow mode began records none, and is
-    otherwise never seen. A `rate(...)` research cadence is recorded but never judged (the module
-    docstring), so such a topic is judged by its daily record alone."""
+    """What shadow mode has not yet shown about this topic, judged on its recent stretch (the
+    module docstring): a full day watched since its last mismatch or unchecked day
+    (`shadow_clean_days` at least one; a check that could not run never passes as a match), and for
+    a cron research cadence a research turn recorded since its last research mismatch: a heartbeat
+    that drifted off its computed minute records none, before shadow mode began or after. A
+    `rate(...)` research cadence is recorded but never judged (the module docstring), so such a
+    topic is judged by its daily record alone. The whole-history counts only word the reason."""
     counts = {
         field: _shadow_count(topic, field)
-        for field in ("shadow_mismatches", "shadow_unchecked", SHADOW_CHECKED_DAYS)
+        for field in ("shadow_mismatches", "shadow_unchecked", SHADOW_CHECKED_DAYS, SHADOW_CLEAN_DAYS)
     }
     unreadable = sorted(field for field, count in counts.items() if count is None)
     if unreadable:
         return [f"its shadow record is unreadable ({', '.join(unreadable)})"]
     reasons = []
     mismatches, unchecked = counts["shadow_mismatches"], counts["shadow_unchecked"]
-    if mismatches:
-        reasons.append(
-            f"shadow mode counted {mismatches} mismatch{'es' if mismatches != 1 else ''} with its "
-            "schedules (`topics schedule` shows the record)"
-        )
-    if unchecked:
-        reasons.append(
-            f"shadow mode could not check {unchecked} of its days, and a day it could not check "
-            "never counts as a match"
-        )
+    clean = counts[SHADOW_CLEAN_DAYS]
+    if topic.get(SHADOW_CLEAN_DAYS) is None and not mismatches and not unchecked:
+        # Checked before clean days were counted, and never a mismatch or an unchecked day: every
+        # checked day was a clean one.
+        clean = counts[SHADOW_CHECKED_DAYS]
     if counts[SHADOW_CHECKED_DAYS] < 1:
         reasons.append(
             "shadow mode has not yet watched a full day of it (its first check runs at its second "
             "shadow daily turn)"
         )
+    elif clean < 1:
+        reasons.append(
+            "shadow mode has not watched a full day of it since its last mismatch or unchecked day "
+            f"({mismatches} mismatch{'es' if mismatches != 1 else ''} and {unchecked} unchecked "
+            f"day{'s' if unchecked != 1 else ''} in all; one clean day checked is enough, and "
+            "`topics schedule` shows the record)"
+        )
     if not research_is_rate and not topic.get("shadow_last_research_dispatch_at"):
         reasons.append(
-            "shadow mode has recorded none of its research turns (a heartbeat running off the "
-            "dispatcher's minute records none)"
+            "shadow mode has recorded none of its research turns since its last research mismatch, "
+            "if any (a heartbeat running off the dispatcher's minute records none)"
         )
     return reasons
 

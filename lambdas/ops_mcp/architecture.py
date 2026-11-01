@@ -566,8 +566,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "Writes",
                 "topics.research_claimed_at, last_daily_dispatched_on and daily_claim_n; in shadow mode "
                 "topics.shadow_last_research_dispatch_at, shadow_last_daily_dispatch_at, "
-                "shadow_mismatches, shadow_unchecked and shadow_checked_days; last_tick on the "
-                "model-config pipeline row",
+                "shadow_mismatches, shadow_unchecked, shadow_checked_days and shadow_clean_days; "
+                "last_tick on the model-config pipeline row",
             ),
             (
                 "Sends",

@@ -1673,8 +1673,8 @@ def test_no_bootstrap_resource_puts_a_whole_data_source_into_a_string():
     """A resource whose for_each is a data source gets that data source's whole object as
     each.value, and only each.value.json, the policy, is a string. `"${each.value}"` in a name or a
     description passes `terraform validate`, which cannot know the value yet, and stops every plan
-    of the bootstrap. CI never plans the bootstrap (the owner applies it by hand), so nothing but
-    this test would see it before the owner's apply did."""
+    of the bootstrap. The owner applies the bootstrap by hand and CI never does; pr-checks plans it
+    with a mocked provider (infra/bootstrap/tests, the next test), and this names the line."""
     code = _uncommented(_read("bootstrap", "main.tf"))
     found = []
     for match in re.finditer(r'^resource "[^"]+" "([^"]+)" \{\n(.*?)^\}', code, re.S | re.M):
@@ -1682,6 +1682,31 @@ def test_no_bootstrap_resource_puts_a_whole_data_source_into_a_string():
             found.append(match.group(1))
             assert re.findall(r"each\.value[\w.]*", match.group(2)) == ["each.value.json"], match.group(1)
     assert sorted(found) == ["gha_deploy_other_environment", "gha_prompts"]
+
+
+def test_pull_requests_plan_the_bootstrap_with_a_mocked_provider_and_never_apply_it():
+    """The bootstrap is applied once, by hand (project rule 6), so before this nothing planned it
+    ahead of the owner, and the for_each above passed validate and failed at plan. Its tests plan
+    it with a mocked AWS provider, and pr-checks runs them beside the modules' with no credentials:
+    the validate job signs in to nothing and reads no secret, and nothing in it plans or applies a
+    real configuration."""
+    tests = sorted((INFRA / "bootstrap" / "tests").glob("*.tftest.hcl"))
+    assert tests
+    for path in tests:
+        text = path.read_text(encoding="utf-8")
+        assert re.search(r'^mock_provider "aws" \{', text, re.M), path.name
+        commands = re.findall(r"^\s*command\s*=\s*(\w+)", text, re.M)
+        assert commands and set(commands) == {"plan"}, path.name
+
+    pr_checks = (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(encoding="utf-8")
+    validate = pr_checks.split("\n  validate:\n")[1].split("\n  secret-scan:\n")[0]
+    step = validate.split("- name: Terraform test (bootstrap and modules with tests)\n")[1]
+    assert "for dir in infra/bootstrap infra/modules/*; do" in step
+    assert 'terraform -chdir="$dir" init -backend=false -input=false' in step
+    assert 'terraform -chdir="$dir" test' in step
+    for text in ("configure-aws-credentials", "id-token", "secrets.", "AWS_"):
+        assert text not in validate, text
+    assert not re.search(r"^\s*terraform [^\n]*\b(plan|apply)\b", validate, re.M)
 
 
 def test_the_deploy_roles_may_create_the_evals_log_group_before_the_module_that_needs_it():

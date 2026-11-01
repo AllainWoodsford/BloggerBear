@@ -17,6 +17,7 @@ from table_schemas import KEYS, create_table
 
 import admin_api_handler
 from common import backup
+from common.dispatch import Dispatcher
 
 REGION = "ap-southeast-2"
 BACKUP_BUCKET = "state-bucket"
@@ -368,6 +369,82 @@ def test_a_restore_must_name_a_snapshot_in_an_allowed_bucket(seeded):
         backup.start_restore("x.jsonl.gz", bucket="someone-elses-bucket")
     with pytest.raises(backup.BackupError, match="no snapshot"):
         backup.start_restore("backup/missing.jsonl.gz")
+
+
+# A topic on the dispatcher's queue (common/dispatch.py). Sydney on 2026-10-25 (AEDT, UTC+11): with
+# the seed's topic beside it, slot 1 and the seed's 5-minute stagger, its daily turn is 09:15.
+QUEUE_TOPIC = {
+    "topic_id": "rail",
+    "name": "Rail",
+    "dispatch_mode": "queue",
+    "research_cadence": "rate(1 hour)",
+    "daily_cadence": "cron(0 9 * * ? *)",
+    "daily_timezone": "Australia/Sydney",
+    "stagger_slot": Decimal(1),
+    "last_daily_dispatched_on": "2026-10-23",
+    "daily_claim_n": Decimal(3),
+}
+BEFORE_TURN = datetime(2026, 10, 24, 21, 0, tzinfo=UTC)  # 08:00
+DAILY_TURN = datetime(2026, 10, 24, 22, 15, tzinfo=UTC)  # 09:15
+AFTER_TURN = datetime(2026, 10, 24, 23, 0, tzinfo=UTC)  # 10:00
+
+
+def _restore_at(monkeypatch, moment: datetime, key: str) -> dict:
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment if tz is None else moment.astimezone(tz)
+
+    monkeypatch.setattr(backup, "datetime", _Clock)
+    job = _run(backup.start_restore(key), hooks=_hooks())
+    assert job["status"] == "succeeded", job
+    return _table("topics").get_item(Key={"topic_id": "rail"})["Item"]
+
+
+def _daily_runs_started(*moments: datetime) -> list[str]:
+    sfn = MagicMock()
+    run = Dispatcher(
+        sqs=MagicMock(), sfn=sfn, queue_url="https://queue", state_machine_arn="arn:aws:states:x"
+    )
+    for moment in moments:
+        run.tick(moment)
+    return [call.kwargs["name"] for call in sfn.start_execution.call_args_list]
+
+
+def test_a_topic_on_the_queue_restored_after_its_daily_turn_starts_no_second_run_that_day(
+    seeded, monkeypatch
+):
+    """The snapshot is from before today's run, which has started since (the live row says today).
+    Written back as it was, the older day would have the next tick start today's run again."""
+    _table("topics").put_item(Item=QUEUE_TOPIC)
+    key = _snapshot(seeded)["result"]["key"]
+    _table("topics").put_item(
+        Item={**QUEUE_TOPIC, "last_daily_dispatched_on": "2026-10-25", "daily_claim_n": 4}
+    )
+
+    row = _restore_at(monkeypatch, AFTER_TURN, key)
+
+    assert row == {**QUEUE_TOPIC, "last_daily_dispatched_on": "2026-10-25"}
+    assert _daily_runs_started(AFTER_TURN + timedelta(minutes=1), AFTER_TURN + timedelta(hours=3)) == []
+    assert _daily_runs_started(DAILY_TURN + timedelta(days=1)) == ["rail-2026-10-26-4"]
+
+
+def test_a_topic_on_the_queue_restored_before_its_daily_turn_runs_today(seeded, monkeypatch):
+    _table("topics").put_item(Item=QUEUE_TOPIC)
+    key = _snapshot(seeded)["result"]["key"]
+
+    row = _restore_at(monkeypatch, BEFORE_TURN, key)
+
+    assert row == QUEUE_TOPIC
+    assert _daily_runs_started(DAILY_TURN) == ["rail-2026-10-25-4"]
+
+
+def test_a_topic_on_its_schedules_is_restored_exactly_as_it_was_whatever_the_time(seeded, monkeypatch):
+    on_schedules = {key: value for key, value in QUEUE_TOPIC.items() if key != "dispatch_mode"}
+    _table("topics").put_item(Item=on_schedules)
+    key = _snapshot(seeded)["result"]["key"]
+
+    assert _restore_at(monkeypatch, AFTER_TURN, key) == on_schedules
 
 
 # --- export ------------------------------------------------------------------------------------

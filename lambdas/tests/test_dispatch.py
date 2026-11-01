@@ -1203,3 +1203,112 @@ def test_the_first_shadow_day_has_nothing_to_compare_and_a_day_is_recorded_once(
     sfn.list_executions.assert_not_called()
     assert stored()["shadow_last_daily_dispatch_at"] == "2026-10-24T22:00:00+00:00"
     assert stored()["shadow_mismatches"] == 0
+
+
+# --- the recent stretch the cutover judges ---------------------------------------------------------
+
+
+def _shadowed_days(sfn, *, days: int, **fields) -> list[dict]:
+    """Tick the 09:00 Sydney daily turn of `days` days from 2026-10-24 for a topic on its schedules,
+    researched for the week with a research turn already recorded (so only the daily turn is in
+    play), and return the row after each day."""
+    dynamo.put_pipeline_config(stagger_minutes=0)
+    put_topics(
+        topic(
+            dispatch_mode="schedule",
+            research_cadence="cron(30 * * * ? *)",
+            research_interval_hours=168,
+            last_research_at=at("2026-10-23T20:30:10").isoformat(),
+            shadow_last_research_dispatch_at=at("2026-10-23T20:30:00").isoformat(),
+            **fields,
+        )
+    )
+    run, rows = dispatcher(sfn=sfn), []
+    for day in range(days):
+        run.tick(YESTERDAY_TURN + timedelta(days=day))
+        rows.append(stored())
+    return rows
+
+
+def test_a_mismatch_day_starts_the_clean_count_again_and_the_next_matching_day_counts_one(aws_resources):
+    """Day one has nothing to compare; day two finds no run on the Scheduler path (a mismatch); day
+    three finds one. The history keeps the mismatch, and the pre-flight passes on day three."""
+    sfn = MagicMock()
+    # One run on the Scheduler path, on 2026-10-25 (Sydney): none on the 24th.
+    sfn.list_executions.return_value = {"executions": [_execution("arn:x:ours", at("2026-10-24T22:00:10"))]}
+    sfn.describe_execution.return_value = {"input": json.dumps({"topic_id": "github-trending"})}
+
+    first, second, third = _shadowed_days(sfn, days=3)
+
+    assert "shadow_clean_days" not in first and first["shadow_checked_days"] == 0
+    assert (second["shadow_mismatches"], second["shadow_clean_days"]) == (1, 0)
+    assert dispatch.shadow_problems(second, research_is_rate=False) == [
+        "shadow mode has not watched a full day of it since its last mismatch or unchecked day "
+        "(1 mismatch and 0 unchecked days in all; one clean day checked is enough, and "
+        "`topics schedule` shows the record)"
+    ]
+    assert (third["shadow_mismatches"], third["shadow_checked_days"], third["shadow_clean_days"]) == (1, 2, 1)
+    assert dispatch.shadow_problems(third, research_is_rate=False) == []
+
+
+def test_an_unchecked_day_starts_the_clean_count_again(aws_resources):
+    sfn = MagicMock()
+    sfn.list_executions.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException"}}, "ListExecutions"
+    )
+
+    rows = _shadowed_days(sfn, days=2, shadow_checked_days=4, shadow_clean_days=4)
+
+    assert (rows[-1]["shadow_unchecked"], rows[-1]["shadow_clean_days"]) == (1, 0)
+    assert dispatch.shadow_problems(rows[-1], research_is_rate=False)
+
+
+def test_matching_days_add_up_and_a_row_counted_before_clean_days_reads_as_clean_without_a_problem(
+    aws_resources,
+):
+    sfn = MagicMock()
+    sfn.list_executions.return_value = {  # a run on the 24th and on the 25th (Sydney), newest first
+        "executions": [
+            _execution("arn:x:second", at("2026-10-24T22:00:10")),
+            _execution("arn:x:first", at("2026-10-23T22:00:10")),
+        ]
+    }
+    sfn.describe_execution.return_value = {"input": json.dumps({"topic_id": "github-trending"})}
+
+    rows = _shadowed_days(sfn, days=3)
+
+    assert [row.get("shadow_clean_days") for row in rows] == [None, 1, 2]
+    legacy = {"shadow_mismatches": 0, "shadow_unchecked": 0, "shadow_checked_days": 3,
+              "shadow_last_research_dispatch_at": "2026-10-24T20:30:00+00:00"}  # fmt: skip
+    assert dispatch.shadow_problems(legacy, research_is_rate=False) == []
+    assert dispatch.shadow_problems({**legacy, "shadow_mismatches": 1}, research_is_rate=False)
+
+
+def test_a_research_mismatch_starts_the_clean_count_again_and_takes_the_judged_turn_off_the_row(
+    aws_resources, capsys
+):
+    """A drifted heartbeat is judged once, and its later turns are neither recorded nor judged: with
+    the judged turn gone from the row, the cutover waits for a turn recorded since, which only a
+    heartbeat back on its minute gives."""
+    turn = at("2026-10-25T04:05:30")
+    put_topics(
+        topic(
+            dispatch_mode="schedule",
+            shadow_last_research_dispatch_at=turn.isoformat(),
+            last_research_at=(turn - timedelta(minutes=12)).isoformat(),  # the drifted heartbeat
+            shadow_mismatches=0,
+            shadow_unchecked=0,
+            shadow_checked_days=3,
+            shadow_clean_days=3,
+        )
+    )
+    dynamo.update_config_row("pipeline", {"last_tick": (turn + timedelta(minutes=4)).isoformat()})
+
+    dispatcher().tick(turn + timedelta(minutes=5))
+
+    row = stored()
+    assert (row["shadow_mismatches"], row["shadow_clean_days"]) == (1, 0)
+    assert "shadow_last_research_dispatch_at" not in row
+    assert "shadow research mismatch topic_id=github-trending" in capsys.readouterr().out
+    reasons = dispatch.shadow_problems(row, research_is_rate=False)
+    assert len(reasons) == 2 and reasons[1].startswith("shadow mode has recorded none of its research turns")
