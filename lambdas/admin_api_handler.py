@@ -109,8 +109,8 @@ from common.dynamo import (
     list_security_incidents,
     list_topics,
     put_feedback_config,
-    put_model,
     put_model_config,
+    put_model_if_unchanged,
     put_model_rotation_candidates,
     put_moderation_item,
     put_pipeline_config,
@@ -3123,8 +3123,10 @@ def _put_model(event: dict) -> dict:
         return _error(400, "'confirm' must be a boolean if provided")
 
     # What the model catalog recorded about a model it discovered stays; its price fields go, as
-    # the price is now the one given here (common/model_catalog.py, PRICE_META_FIELDS).
-    existing = get_model(model_id) or {}
+    # the price is now the one given here (common/model_catalog.py, PRICE_META_FIELDS). Read
+    # strongly consistent, so a row `models restore` has just put back is seen.
+    read = get_model(model_id, consistent=True)
+    existing = read or {}
     # Disabling a model that is in use (common/model_fleet.py): the application's default or
     # fallback needs `confirm: true` (the CLI asks "are you sure?"); every topic's rotation, model
     # and fallback, and the shared rotation pool, are then updated to do without it.
@@ -3143,29 +3145,48 @@ def _put_model(event: dict) -> dict:
                     "roles": roles,
                 },
             )
-    item = {
-        **{field: existing[field] for field in _CATALOG_MODEL_FIELDS if existing.get(field) is not None},
-        "model_id": model_id,
-        "display_name": display_name,
-        "provider": provider,
-        "input_price_usd_per_1k_tokens": input_price,
-        "output_price_usd_per_1k_tokens": output_price,
-        "enabled": enabled,
-    }
-    if price_locked is not None:
-        item["price_locked"] = price_locked
     # Enabling a model the account may not be able to call: probe it now (one 1-token Converse
     # call, common/model_catalog.probe_access), so a denied model is said at once, not found out
     # when a topic's run falls back. It is enabled either way; the fleet never routes to it.
     warning = None
+    probed: dict = {}
     if enabled and existing.get("access") != model_catalog.GRANTED:
         access, why = model_catalog.probe_access(model_id)
-        item.update(access=access, access_checked_at=datetime.now(UTC).isoformat(), access_error=why)
-        if why is None:
-            item.pop("access_error")
+        probed = {"access": access, "access_checked_at": datetime.now(UTC).isoformat(), "access_error": why}
         if access == model_catalog.DENIED:
             warning = f"the account cannot call '{model_id}' ({why}); rotations and routing will skip it"
-    put_model(item)
+
+    def whole_row(existing: dict) -> dict:
+        item = {
+            **{field: existing[field] for field in _CATALOG_MODEL_FIELDS if existing.get(field) is not None},
+            "model_id": model_id,
+            "display_name": display_name,
+            "provider": provider,
+            "input_price_usd_per_1k_tokens": input_price,
+            "output_price_usd_per_1k_tokens": output_price,
+            "enabled": enabled,
+            **probed,
+        }
+        if item.get("access_error") is None:
+            item.pop("access_error", None)
+        if price_locked is not None:
+            item["price_locked"] = price_locked
+        return item
+
+    # The row is written whole, carrying the catalog's and the ranch's fields as read, and the
+    # probe can take seconds: another writer (the hourly rollup, an operator's `evals ungate` or
+    # `models restore`) may write the row meanwhile. So the write is made only while the row is as
+    # read, and built again once from a fresh read (the probe's answer kept) when it is not.
+    item = whole_row(existing)
+    if not put_model_if_unchanged(item, read, _CATALOG_MODEL_FIELDS):
+        read = get_model(model_id, consistent=True)
+        item = whole_row(read or {})
+        if not put_model_if_unchanged(item, read, _CATALOG_MODEL_FIELDS):
+            return _error(
+                409,
+                f"'{model_id}' was changed by another writer while this was written, twice: nothing was "
+                "written; send it again",
+            )
     if warning:
         return _response(200, {**item, "warning": warning})
     if deactivating:

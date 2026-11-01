@@ -47,8 +47,12 @@ CULL_OFF = (
     "culling is off (cull_enabled is false): nothing was archived or deleted. `evals set --cull on` "
     "turns it on; the proposal in place stays until it expires"
 )
+# The weekly cycle writes the proposal, so a cycle an operator paused (`model-catalog set --cycle
+# off`) writes none: each refusal that waits on a proposal names the switch that runs it again.
+CYCLE_RUNS = "while the cycle runs (`model-catalog set --cycle on`)"
 NO_PROPOSAL = (
-    "there is no cull proposal: the weekly cycle (Fridays 04:00 Sydney time) writes one while evals are on"
+    "there is no cull proposal: the weekly cycle (Fridays 04:00 Sydney time) writes one while evals are "
+    f"on, and only {CYCLE_RUNS}"
 )
 
 
@@ -67,7 +71,7 @@ def _proposal(state: dict, now: datetime) -> dict:
         raise Refused(
             409,
             f"the cull proposal made {proposal.get('proposed_at')} expired at {proposal.get('expires_at')}: "
-            "the next weekly cycle proposes again",
+            f"the next weekly cycle proposes again {CYCLE_RUNS}",
         )
     return proposal
 

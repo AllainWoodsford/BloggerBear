@@ -340,13 +340,24 @@ def _has_scores(entry: dict) -> bool:
     return bool(any(w["n"] for w in windows.values()) or windows["total"]["perf"] or entry["gate"]["windows"])
 
 
-def _cull(settings: dict, now: datetime) -> dict | None:
+def _cull(settings: dict, now: datetime, registry: dict[str, dict]) -> dict | None:
     """The weekly cull proposal in place (model-catalog-state's `cull_proposal`), its ids and numbers
-    only; None before the first."""
-    proposal = model_catalog.get_state().get(model_fleet.CULL_PROPOSAL_FIELD)
+    only; None before the first. Its models are those still waiting for `evals cull --apply`: an
+    apply leaves the proposal in place until the next cycle (common/model_cull.py), so once it has
+    been applied (`last_cull_apply` names the same proposal) only the ones it left over its cap are,
+    and never one that has left the registry (`registry`, model_ranch's scan, by canonical id). A
+    model culled and then put back by `models restore` is held open, so an apply would keep it."""
+    state = model_catalog.get_state()
+    proposal = state.get(model_fleet.CULL_PROPOSAL_FIELD)
     if not isinstance(proposal, dict):
         return None
     expires = _parse(proposal.get("expires_at"))
+    applied = state.get(model_fleet.LAST_CULL_FIELD)
+    left = None
+    if isinstance(applied, dict) and proposal.get("proposed_at") and (
+        applied.get("proposed_at") == proposal.get("proposed_at")
+    ):
+        left = {model_id for model_id in applied.get("left") or [] if isinstance(model_id, str)}
     models = [
         {
             "model_id": entry["model_id"],
@@ -354,7 +365,10 @@ def _cull(settings: dict, now: datetime) -> dict | None:
             "events": evals_rollup.count_of(entry.get("events")),
         }
         for entry in proposal.get("models") or []
-        if isinstance(entry, dict) and _model_id(entry.get("model_id"))
+        if isinstance(entry, dict)
+        and _model_id(entry.get("model_id"))
+        and canonical_model_id(entry["model_id"]) in registry
+        and (left is None or entry["model_id"] in left)
     ]
     return {
         "proposed_at": _iso(proposal.get("proposed_at")),
@@ -484,7 +498,8 @@ def model_ranch(*, now: datetime | None = None) -> dict:
     week_entities = set().union(*(found for day, found in by_day.items() if day >= week_from))
 
     entries, unscored = [], 0
-    for key, row in sorted(_registry().items()):
+    registry = _registry()
+    for key, row in sorted(registry.items()):
         entry = {
             "model_id": row["model_id"],
             "purpose": row["model_purpose"] if row.get("model_purpose") in model_catalog.PURPOSES else None,
@@ -532,7 +547,7 @@ def model_ranch(*, now: datetime | None = None) -> dict:
                 weakest = (entry["model_id"], cell)
 
     judge = evals_status.judge_summary(settings, index)
-    cull = _cull(settings, now)
+    cull = _cull(settings, now, registry)
     findings = [
         _gated_finding(entry["model_id"], entry["gate"]["windows"])
         for entry in entries

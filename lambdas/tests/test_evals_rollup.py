@@ -31,7 +31,7 @@ import pytest
 from moto import mock_aws
 from table_schemas import KEYS
 
-from common import dynamo, evals, evals_rollup, evidence
+from common import dynamo, evals, evals_rollup, evidence, model_fleet
 
 ROOT = Path(__file__).resolve().parents[2]
 REGION = "ap-southeast-2"
@@ -766,6 +766,44 @@ def test_a_purpose_another_job_writes_while_bedrock_is_listed_is_kept(aws):
     beta = model_row(aws, BETA)
     assert beta["model_purpose"] == "image" and "model_inputs" not in beta
     assert (summary["classify"], summary["classified"], summary["unknown"]) == ("done", 0, 0)
+
+
+def test_the_rollup_never_calls_a_model_bedrock_lists_by_its_arn_unknown(aws):
+    """Registry rows keyed by ARNs, from before purposes were recorded. Bedrock lists the application
+    inference profile (typeEquals=APPLICATION), so it takes its base model's purpose; it lists the
+    custom model through a call the catalog does not make, so that row keeps no purpose and the
+    pricing-unit rule (model_fleet.suitable) keeps judging it. Neither is marked `unknown`, which
+    would make it unsuitable everywhere, and the custom model alone never sends the rollup back to
+    Bedrock hour after hour."""
+    arn = "arn:aws:bedrock:ap-southeast-2:123456789012:application-inference-profile/abcd1234efgh"
+    custom = "arn:aws:bedrock:ap-southeast-2:123456789012:custom-model/maker.writer-v1:0/abcd1234efgh"
+    for model_id in (arn, custom):
+        put_model(aws, model_id, pricing_unit="tokens")
+        aws.Table("Models").update_item(Key={"model_id": model_id}, UpdateExpression="REMOVE model_purpose")
+    base = {
+        "modelId": "maker.writer-v1:0", "outputModalities": ["TEXT"], "inputModalities": ["TEXT"],
+        "modelLifecycle": {"status": "ACTIVE"},
+    }  # fmt: skip
+
+    class WithApplicationProfile(FakeBedrock):
+        def list_inference_profiles(self, typeEquals=None, nextToken=None):  # noqa: N803 - boto3's names
+            if typeEquals != "APPLICATION":
+                return super().list_inference_profiles()
+            route = {"modelArn": "arn:aws:bedrock:ap-southeast-2::foundation-model/maker.writer-v1:0"}
+            profile = {"inferenceProfileArn": arn, "type": "APPLICATION", "models": [route]}
+            return {"inferenceProfileSummaries": [profile]}
+
+    summary = rollup(FakeLogs(), bedrock=WithApplicationProfile([base]))
+
+    assert (summary["classify"], summary["classified"], summary["unknown"]) == ("done", 1, 0)
+    row = model_row(aws, arn)
+    assert (row["model_purpose"], row["model_inputs"]) == ("text", ["TEXT"])
+    assert model_fleet.suitable(row)
+    left = model_row(aws, custom)
+    assert "model_purpose" not in left and model_fleet.suitable(left)
+
+    again = WithApplicationProfile([base])
+    assert rollup(FakeLogs(), bedrock=again)["classify"] == "none" and again.listings == 0
 
 
 # --- excluded sources -----------------------------------------------------------------------------
