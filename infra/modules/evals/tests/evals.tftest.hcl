@@ -134,8 +134,8 @@ run "switched_off_it_makes_the_table_the_log_group_and_the_rights_and_nothing_el
   }
 
   assert {
-    condition     = output.work_queue_url == "" && output.function_names == [] && output.function_timeouts == {} && output.alarm_names == []
-    error_message = "and an empty queue URL, no function or timeout for observability, no alarm"
+    condition     = output.work_queue_url == "" && output.function_names == [] && output.function_log_group_names == [] && output.function_timeouts == {} && output.alarm_names == []
+    error_message = "and an empty queue URL, no function, log group or timeout for observability, no alarm"
   }
 }
 
@@ -437,10 +437,11 @@ run "switched_on_it_makes_everything" {
     condition = (
       output.work_queue_url == "https://sqs.eu-west-1.amazonaws.com/111111111111/acme-dev-eval-work" &&
       output.function_names == ["acme-dev-eval-jobs"] &&
+      output.function_log_group_names == ["/aws/lambda/acme-dev-eval-jobs"] &&
       output.function_timeouts == { "acme-dev-eval-jobs" = 900 } &&
       output.alarm_names == ["acme-dev-eval-rollup-heartbeat", "acme-dev-eval-work-age"]
     )
-    error_message = "what the roots read: the queue's URL for every Lambda, the function for observability, the alarms"
+    error_message = "what the roots read: the queue's URL for every Lambda, the function and its log group for observability, the alarms"
   }
 }
 

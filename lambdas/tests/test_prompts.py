@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from common import dynamo, evals, evidence, naming, prompts, prompts_registry
@@ -650,16 +651,96 @@ def test_an_invalid_prompts_row_value_is_ignored_for_its_default(aws, capsys):
     assert "prompts: ignoring invalid paused_versions='daily_cycle/draft@v2'" in out
 
 
-def test_a_failing_settings_read_falls_open_and_the_hash_check_stays_the_gate(aws, monkeypatch, capsys):
+def _throttled(config_id):
+    raise ClientError({"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}}, "GetItem")
+
+
+@pytest.mark.parametrize(
+    ("row", "code"),
+    [
+        ({"paused_versions": ["daily_cycle/draft@v2"]}, "paused"),
+        ({"prompt_assets": "off"}, "assets_off"),
+        ({"prompt_assets": "off", "paused_versions": ["daily_cycle/draft@v2"]}, "assets_off"),
+    ],
+)
+def test_a_pause_or_kill_switch_holds_while_the_settings_read_fails_after_the_ttl(
+    aws, monkeypatch, capsys, row, code
+):
+    """Section 8's failure-day recipe: `prompts pause` or `prompts set --assets off` keeps a bad
+    prompt off within 600 s. A paused version's hash row stays `live` (pausing never touches the
+    hash table), so the hash check cannot be the gate when the model-config read fails and the hash
+    table's does not: the container keeps the last row it read, even once it has expired."""
+    publish(aws, ASSET, "v2")  # live hash row
+    settings_row(aws, **row)
+    first = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert (first.source, first.fallback_code) == ("vanilla", code)
+    aws["clock"].advance(301)  # the settings cache (TTL 300 s) has expired
+    monkeypatch.setattr(dynamo, "get_config_row", _throttled)
+    capsys.readouterr()
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert (got.source, got.version, got.fallback_code) == ("vanilla", "vanilla:v1", code)
+    assert got.text == vanilla_text()
+    out = capsys.readouterr().out
+    assert "prompts: could not read the prompts settings row; keeping the last read: ClientError(" in out
+
+
+def test_a_failing_settings_read_keeps_serving_a_version_the_last_read_row_left_unpaused(aws, monkeypatch):
     publish(aws, ASSET, "v2")
+    settings_row(aws, paused_versions=["daily_cycle/draft@v9"])
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).version == "v2"
+    aws["clock"].advance(301)
+    monkeypatch.setattr(dynamo, "get_config_row", _throttled)
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert (got.source, got.version, got.fallback_code) == ("asset", "v2", None)
+
+
+def test_the_settings_row_is_read_again_once_a_failing_read_recovers(aws, monkeypatch):
+    """The last row is kept only while reads fail: nothing is written back to the cache, so the
+    next call reads the row again and sees a change made meanwhile."""
+    publish(aws, ASSET, "v2")
+    settings_row(aws, prompt_assets="off")
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "assets_off"
+    aws["clock"].advance(301)
+    real = dynamo.get_config_row
+    monkeypatch.setattr(dynamo, "get_config_row", _throttled)
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "assets_off"
+    settings_row(aws, prompt_assets="on")
+    monkeypatch.setattr(dynamo, "get_config_row", real)
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).version == "v2"
+
+
+def test_a_failing_settings_read_in_a_cold_container_fails_closed_to_the_vanilla(aws, monkeypatch, capsys):
+    """With nothing read yet in this container there is no last row: the pause list and the kill
+    switch are unknown, so the read fails closed (`assets_off`) rather than to the defaults, which
+    would serve a paused version whose hash row is still `live`."""
+    publish(aws, ASSET, "v2")
+    settings_row(aws, prompt_assets="off")
 
     def boom(config_id):
         raise RuntimeError("dynamo down")
 
     monkeypatch.setattr(dynamo, "get_config_row", boom)
-    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).source == "asset"
-    said = "prompts: could not read the prompts settings row; using defaults: RuntimeError('dynamo down')"
-    assert said in capsys.readouterr().out
+    aws["s3"].calls.clear()
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert got == Prompt(vanilla_text(), "daily_cycle/draft", "vanilla:v1", "vanilla", "assets_off")
+    assert aws["s3"].calls == {}
+    out = capsys.readouterr().out
+    said = "prompts: could not read the prompts settings row; assets off until it is read: "
+    assert said + "RuntimeError('dynamo down')" in out
+    parsed = [evidence.parse(line) for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+    assert [line["code"] for line in parsed if line and line["event"] == "prompt_fallback"] == ["assets_off"]
+
+
+def test_a_cold_container_serves_the_asset_as_soon_as_its_failing_first_read_recovers(aws, monkeypatch):
+    """The cold container's fail-closed answer is not cached: the next call reads the row again, so
+    one failed first read does not keep the assets off for the TTL, nor become the last row read."""
+    publish(aws, ASSET, "v2")
+    real = dynamo.get_config_row
+    monkeypatch.setattr(dynamo, "get_config_row", _throttled)
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "assets_off"
+    monkeypatch.setattr(dynamo, "get_config_row", real)
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert (got.source, got.version, got.fallback_code) == ("asset", "v2", None)
 
 
 def test_an_undecodable_file_falls_back_with_decode_error(aws, capsys):
@@ -985,6 +1066,7 @@ def test_a_code_only_spec_is_the_vanilla_even_when_an_asset_exists(aws, registry
 
 def test_get_prompt_never_raises_when_s3_and_dynamodb_are_both_down(aws, monkeypatch, capsys):
     publish(aws, ASSET, "v2")
+    prompts._settings()  # a warm container: it read the prompts row before the outage
 
     def down(*args, **kwargs):
         raise RuntimeError("down")
@@ -993,10 +1075,14 @@ def test_get_prompt_never_raises_when_s3_and_dynamodb_are_both_down(aws, monkeyp
     got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
     assert got.source == "vanilla" and got.fallback_code == "hash_lookup_failed"
     monkeypatch.setattr(prompts, "_s3", down)
-    prompts._reset()
+    aws["clock"].advance(301)  # every cached read has expired; the prompts row is kept as last read
     got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
     assert got == Prompt(vanilla_text(), "daily_cycle/draft", "vanilla:v1", "vanilla", "s3_error")
-    assert [line["code"] for line in fallback_lines(capsys)] == ["hash_lookup_failed", "s3_error"]
+    prompts._reset()  # a cold container has no row to keep, so it stops before S3
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert got == Prompt(vanilla_text(), "daily_cycle/draft", "vanilla:v1", "vanilla", "assets_off")
+    codes = [line["code"] for line in fallback_lines(capsys)]
+    assert codes == ["hash_lookup_failed", "s3_error", "assets_off"]
 
 
 # --- the cache -------------------------------------------------------------------------------------

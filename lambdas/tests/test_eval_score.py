@@ -730,6 +730,35 @@ def test_the_live_version_is_drafted_once_per_item_for_every_combination(aws, mo
     assert meta(aws, run_id)["status"] == "done"
 
 
+def test_a_scoring_item_whose_live_asset_fails_a_check_prints_a_prompt_fallback_line(aws, models, monkeypatch,
+                                                                                      capsys):  # fmt: skip
+    """eval-jobs drafts each item's live version through prompts.get_prompt, so with assets on a live
+    daily_cycle/draft file whose hash was never approved is a fallback: the item is scored against the
+    vanilla and eval-jobs prints the prompt_fallback evidence line the PromptFallback filters count,
+    into its own log group (infra/modules/evals), not one of the root's."""
+    from common import evidence
+
+    monkeypatch.setenv("PROMPT_AS_ASSET_ENABLED", "true")
+    prompts._reset()
+    put_article(aws)
+    # latest/v2.txt as a bad publish leaves it: tagged, but with no approved hash row.
+    put_object(PROMPTS_BUCKET, f"{DRAFT}/latest/v2.txt", asset_of_the_draft("Unapproved."),
+               Tagging="version=v2")  # fmt: skip
+    run_id, queue = started(aws)
+    capsys.readouterr()
+
+    [result] = consume_all(queue.records())
+
+    assert result["status"] == "scored"
+    [live] = rows(aws, run_id, "live#")
+    assert live["prompt_version"] == VANILLA  # compared against the vanilla, not the live asset
+    out = capsys.readouterr().out
+    lines = [evidence.parse(line) for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+    fallbacks = [line for line in lines if line and line["event"] == "prompt_fallback"]
+    assert fallbacks and fallbacks[0]["lambda_id"] == "daily_cycle" and fallbacks[0]["prompt_name"] == "draft"
+    assert fallbacks[0]["code"] == "hash_unapproved"
+
+
 def test_a_candidate_version_is_drafted_from_its_versions_file(aws, models):
     put_article(aws)
     publish(aws, "v2", asset_of_the_draft("Write it as a limerick."))

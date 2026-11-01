@@ -690,7 +690,8 @@ CATALOGUE: tuple[Component, ...] = (
         f"on each job on {PREFIX}{ENV}-eval-work, two at most at once",
         details=(("Exists", "only while evals are switched on (evals_enabled)"),),
         dashboards=(_RANCH_DASHBOARD,),
-        alarms=(f"{PREFIX}{ENV}-eval-rollup-heartbeat",),
+        # Offline scoring drafts through the live daily_cycle/draft asset, so it can fall back too.
+        alarms=(f"{PREFIX}{ENV}-eval-rollup-heartbeat", _PROMPT_FALLBACK_ALARM),
         aliases=("evals-jobs", "evals-rollup"),
         # Made only while evals are on (the deployment tells the assistant EVALS_ENABLED): with
         # them off it is not deployed here, so a log review neither reads nor refuses its log.

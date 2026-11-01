@@ -3200,8 +3200,12 @@ module "observability" {
   # Every pipeline Lambda's log group, for the prompt-fallback alarm: a Lambda that cannot use a
   # prompt asset prints one prompt_fallback evidence line and carries on with the copy in its
   # code (docs/enhancements/model-ranch-prompt-assets-evals.md). The log group resources, not
-  # names built by hand, so the metric filters depend on them.
-  prompt_fallback_log_groups = [for group in aws_cloudwatch_log_group.lambda : group.name]
+  # names built by hand, so the metric filters depend on them. eval-jobs' group is the evals
+  # module's own, so it comes from that module: offline scoring drafts through the live asset.
+  prompt_fallback_log_groups = concat(
+    [for group in aws_cloudwatch_log_group.lambda : group.name],
+    module.evals.function_log_group_names,
+  )
 
   # Each API's requests, errors and latency, and each web ACL's blocks per rule, on pipeline
   # health (and in the module's API Gateway and firewall widgets, api_waf_dashboards.tf).

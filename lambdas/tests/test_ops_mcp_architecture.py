@@ -225,6 +225,13 @@ def test_every_alarm_the_catalogue_names_exists_and_every_alarm_is_named_somewhe
         assert names.endswith(", module.evals.function_names, module.work_queue.function_names)"), environment
 
 
+def test_the_catalogue_names_the_prompt_fallback_alarm_on_eval_jobs_whose_log_feeds_it():
+    """eval-jobs' log group has a PromptFallback filter (its offline scoring drafts through the live
+    daily_cycle/draft asset; test_terraform_wiring.py pins the filter), so the assistant names the
+    prompt-fallback alarm on it."""
+    assert f"{PREFIX}{ENV}-prompt-fallback" in _of_kind("function")["eval-jobs"].alarms
+
+
 def test_the_apis_and_log_groups_are_named_as_the_terraform_names_them():
     dev = _read("environments", "dev", "main.tf")
     for key in ("public-api", "admin-api"):
