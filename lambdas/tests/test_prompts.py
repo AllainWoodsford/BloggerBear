@@ -6,6 +6,7 @@ asset served, and every way it falls back to the vanilla with its code and its e
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -13,7 +14,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from common import dynamo, evidence, prompts, prompts_registry
+from common import dynamo, evals, evidence, naming, prompts, prompts_registry
 from common.prompts import Prompt, PromptSpec, sha256_text
 
 REGION = "ap-southeast-2"
@@ -705,6 +706,213 @@ def test_the_asset_text_is_normalised_to_newline_line_ends(aws):
     publish(aws, ASSET.replace("\n", "\r\n"), "v2")  # the hash row holds the \n form's sha
     got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
     assert got.source == "asset" and "\r" not in got.text
+
+
+# --- get_prompt: the fallback's evals event ----------------------------------------------------------
+
+
+class EvalsLog:
+    """The Logs client evals.emit writes through, keeping each event it is given; with `fail`, Logs
+    refuses it."""
+
+    def __init__(self):
+        self.events: list[dict] = []
+        self.fail = False
+
+    def create_log_stream(self, logGroupName, logStreamName):  # noqa: N803 - boto3's own argument names
+        pass
+
+    def put_log_events(self, logGroupName, logStreamName, logEvents):  # noqa: N803
+        if self.fail:
+            raise RuntimeError("logs down")
+        self.events.extend(json.loads(event["message"]) for event in logEvents)
+
+
+@pytest.fixture
+def evals_log(monkeypatch):
+    """Evals on, with the evals log as an EvalsLog, outside any Lambda."""
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+    monkeypatch.setenv("EVALS_LOG_GROUP", "acme-dev-evals")
+    log = EvalsLog()
+    monkeypatch.setattr(evals, "_client", log)
+    monkeypatch.setattr(evals, "_stream", None)
+    return log
+
+
+def test_a_fallback_writes_one_prompt_fallback_event_for_the_version_that_fell_back_naming_no_model(
+    aws, evals_log, capsys
+):
+    publish(aws, ASSET, "v2")
+    settings_row(aws, paused_versions=["daily_cycle/draft@v2"])
+
+    with prompts.bind_run("exec-1"):
+        got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+
+    assert (got.fallback_code, got.text) == ("paused", vanilla_text())
+    [event] = evals_log.events
+    assert {name: value for name, value in event.items() if name != "timestamp"} == {
+        "schema": "evals/1",
+        "event_id": "fallback:exec-1:daily_cycle/draft",
+        "prompt_id": "daily_cycle/draft",
+        "prompt_version": "v2",
+        "performance": "neutral",
+        "rating_delta": 0,
+        "reason": "Prompt Fallback",
+        "source": "daily_cycle",
+    }
+    # The rollup reads it back as written; the evidence line the alarm counts is still there too.
+    assert evals.parse(event) == event
+    assert [(line["version"], line["code"]) for line in fallback_lines(capsys)] == [("v2", "paused")]
+
+
+def test_a_fallback_before_any_version_was_read_counts_for_the_vanilla_version(aws, evals_log, monkeypatch):
+    monkeypatch.setenv("PROMPTS_BUCKET", "no-such-bucket")
+
+    with prompts.bind_run("exec-1"):
+        assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "s3_error"
+
+    assert [(event["prompt_version"], event["event_id"]) for event in evals_log.events] == [
+        ("vanilla:v1", "fallback:exec-1:daily_cycle/draft")
+    ]
+
+
+def test_one_run_falling_back_twice_on_a_prompt_writes_one_event_id_and_unbound_calls_each_their_own(
+    aws, evals_log
+):
+    with prompts.bind_run("exec-1"):
+        for _ in range(2):
+            assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "no_files"
+    for _ in range(2):
+        assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "no_files"
+
+    ids = [event["event_id"] for event in evals_log.events]
+    # The rollup keeps one event per id, so the run counts once.
+    assert ids[:2] == ["fallback:exec-1:daily_cycle/draft"] * 2
+    assert len(set(ids[2:])) == 2 and ids[0] not in ids[2:]
+    assert all(evals.parse(event) == event for event in evals_log.events)
+
+
+@pytest.mark.parametrize("key", ["a run key with spaces", "k" * 201])
+def test_a_run_key_that_is_not_an_ids_shape_stands_in_as_its_sha256(aws, evals_log, key):
+    with prompts.bind_run(key):
+        prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+
+    [event] = evals_log.events
+    assert event["event_id"] == f"fallback:{hashlib.sha256(key.encode()).hexdigest()[:32]}:daily_cycle/draft"
+
+
+def test_a_bound_request_key_names_the_fallback_event_so_one_run_key_on_two_runs_counts_on_each(
+    aws, evals_log
+):
+    """The reviewer bear's run key is an article's id, the same on every run that asks about it; the
+    request key he binds beside it (his run's id with the article's) names the event, so the article
+    counts on each run, and once on each however often a run renders the prompt."""
+    with prompts.bind_run("article-1"):
+        for run in ("run-1", "run-2"):
+            with prompts.bind_request(f"{run}:article-1"):
+                for _ in range(2):
+                    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "no_files"
+                assert prompts.bound_run() == "article-1"
+            assert prompts.bound_request() is None
+
+    assert [event["event_id"] for event in evals_log.events] == [
+        "fallback:run-1:article-1:daily_cycle/draft",
+        "fallback:run-1:article-1:daily_cycle/draft",
+        "fallback:run-2:article-1:daily_cycle/draft",
+        "fallback:run-2:article-1:daily_cycle/draft",
+    ]
+
+
+def test_a_bound_request_key_never_moves_the_arm_the_run_key_draws(aws):
+    publish(aws, ASSET, "v2")
+    publish(aws, ASSET_B, "v3")
+    for run_key in (f"article-{i}" for i in range(20)):
+        arm = prompts.arm_index("daily_cycle/draft", 2, run_key)
+        with prompts.bind_run(run_key):
+            for request in ("run-1", "run-2", None):
+                with prompts.bind_request(f"{request}:{run_key}" if request else None):
+                    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+                assert got.version == ("v2", "v3")[arm]
+
+
+@pytest.mark.parametrize(
+    ("function", "prompt_id", "code"),
+    [
+        ("daily-cycle", "reviews/adversarial_review", "daily_cycle"),
+        ("eval-jobs", "daily_cycle/draft", "eval_jobs"),
+    ],
+)
+def test_a_fallback_inside_a_lambda_is_stamped_with_that_lambdas_code_as_its_source(
+    aws, evals_log, registry, monkeypatch, function, prompt_id, code
+):
+    """Section 4.3's source is the emitting Lambda's code, so `evals revoke --source daily_cycle`
+    takes a review prompt's fallback in the daily cycle, and `--source eval_jobs` an offline run's
+    draft, rather than the prompt's own namespace."""
+    registry.append(spec(prompt_id="reviews/adversarial_review"))
+    monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", f"{naming.environment_prefix('dev')}{function}")
+
+    assert prompts.get_prompt(prompt_id, VALUES, LOCKED).fallback_code == "no_files"
+
+    [event] = evals_log.events
+    assert (event["prompt_id"], event["source"]) == (prompt_id, code)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"AWS_LAMBDA_FUNCTION_NAME": "daily-cycle", "ENVIRONMENT_NAME": "dev"},
+        {
+            "AWS_LAMBDA_FUNCTION_NAME": f"{naming.environment_prefix('production')}daily-cycle",
+            "ENVIRONMENT_NAME": "dev",
+        },
+        {"AWS_LAMBDA_FUNCTION_NAME": f"{naming.environment_prefix('dev')}daily-cycle"},
+        {"AWS_LAMBDA_FUNCTION_NAME": f"{naming.environment_prefix('dev')}", "ENVIRONMENT_NAME": "dev"},
+    ],
+)
+def test_a_fallback_outside_a_lambda_named_as_terraform_names_them_is_stamped_with_the_prompts_lambda_id(
+    aws, evals_log, registry, monkeypatch, env
+):
+    """No function name (a test, a script), a name not built from this environment's prefix, or a
+    function not told its environment: the source falls back to the prompt's lambda id, so the event is
+    still written rather than refused for its source."""
+    registry.append(spec(prompt_id="reviews/adversarial_review"))
+    for name in ("AWS_LAMBDA_FUNCTION_NAME", "ENVIRONMENT_NAME"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    prompts.get_prompt("reviews/adversarial_review", VALUES, LOCKED)
+
+    [event] = evals_log.events
+    assert event["source"] == "reviews"
+
+
+def test_no_fallback_event_is_written_when_nothing_fell_back_or_evals_are_off(aws, evals_log, monkeypatch):
+    publish(aws, ASSET, "v2")
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).source == "asset"
+    assert prompts.get_prompt("reviews/compliance", {"draft": "d"}, {}).fallback_code is None
+    # The deployment's own switch: nothing to fall back from, as with its evidence line.
+    monkeypatch.setenv("PROMPT_AS_ASSET_ENABLED", "false")
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "assets_off"
+    monkeypatch.setenv("PROMPT_AS_ASSET_ENABLED", "true")
+    monkeypatch.setenv("EVALS_ENABLED", "false")
+    monkeypatch.setenv("PROMPTS_BUCKET", "no-such-bucket")
+    prompts._reset()
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "s3_error"
+
+    assert evals_log.events == []
+
+
+def test_logs_refusing_the_fallback_event_still_serves_the_vanilla(aws, evals_log, capsys):
+    evals_log.fail = True
+
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+
+    assert (got.fallback_code, got.text) == ("no_files", vanilla_text())
+    assert "evals: could not write an event: RuntimeError('logs down')" in capsys.readouterr().out
 
 
 # --- get_prompt: never a client when there is nothing to read ------------------------------------

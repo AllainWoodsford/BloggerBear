@@ -752,9 +752,10 @@ def test_the_largest_realistic_render_of_each_prompt_stays_well_under_its_templa
     read's 600-character cut keep them under 0.9 * max_chars. Every other input is at the most the
     code lets it be: a comment at comment_screening.MAX_COMMENT_CHARS, a theme at gear.MAX_THEME_CHARS
     and model_catalog.WEB_SEARCH_MAX_RESULTS results with long titles and links (which no code cuts).
-    The weekly reflection's comments are each at most MAX_COMMENT_CHARS, but no code caps how many a
-    week has (only the feedback limits' daily count, an operator setting), so it is given a busy week
-    of fifty, which is realistic, not a bound. The agent's prompt takes no values."""
+    The weekly reflection's comments are each at most MAX_COMMENT_CHARS, and a week can hold any
+    number of them (the feedback limits' daily count is an operator setting), so it is given a week of
+    far more than its block lists: only weekly_reflection_handler.COMMENTS_MAX_CHARS keeps it under.
+    The agent's prompt takes no values."""
     specs = {spec.prompt_id: spec for spec in prompts_registry.all_specs()}
     screen_title = "t" * specs["comment_screening/screen"].max_chars
     guidance = "g" * specs["gear/theme"].max_chars
@@ -765,7 +766,8 @@ def test_the_largest_realistic_render_of_each_prompt_stays_well_under_its_templa
     assert len(snippet) > specs["model_catalog/web_price"].max_chars * 0.9
 
     topic_id = "t" * 64
-    week = [{"vote": "down", "comment": _words(cs.MAX_COMMENT_CHARS)} for _ in range(50)]
+    week = [{"vote": "down", "comment": _words(cs.MAX_COMMENT_CHARS)} for _ in range(500)]
+    assert sum(len(f["comment"]) for f in week) > specs["weekly_reflection/reflection"].max_chars * 0.9
     results = [
         {"title": "T" * 300, "url": "https://example.com/" + "u" * 2_000, "snippet": snippet}
         for _ in range(model_catalog.WEB_SEARCH_MAX_RESULTS)

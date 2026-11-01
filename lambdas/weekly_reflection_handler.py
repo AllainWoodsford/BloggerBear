@@ -129,17 +129,44 @@ def _group_feedback_by_topic(feedback_items: list[dict]) -> dict[str, list[dict]
 
 _COMMENTS_TAG = re.compile(r"<(/?)comments", re.IGNORECASE)
 
+# The most the comments' block lists, counted on its lines as sent. Nothing else bounds how many
+# comments a week holds (the feedback limits' daily count is an operator's setting, up to a million),
+# and one topic's prompt longer than the model takes would make its call raise and end the run, so
+# no topic would have a proposal that week. Well under the reflection's 64,000-character template
+# ceiling with the rest of the prompt, and over forty comments at comment_screening.MAX_COMMENT_CHARS.
+COMMENTS_MAX_CHARS = 48_000
+
 
 def _defang(text: str) -> str:
     """Break our own <comments> delimiter inside a comment, so it cannot close the block early."""
     return _COMMENTS_TAG.sub(lambda m: f"< {m.group(1)}comments", str(text))
 
 
+def _comment_lines(topic_feedback: list[dict]) -> list[str]:
+    """The comments' lines for the prompt, in the order they came: every comment while they fit in
+    COMMENTS_MAX_CHARS. Past it, the newest that fit, and a last line saying how many older ones
+    were left out (the tally still counts every vote). A line is never longer than the block."""
+    comments = [f for f in topic_feedback if f.get("comment")]
+    lines = [f"- {_defang(f['comment'])}"[: COMMENTS_MAX_CHARS - 1] for f in comments]
+    if sum(len(line) + 1 for line in lines) <= COMMENTS_MAX_CHARS:
+        return lines
+    newest_first = sorted(
+        range(len(lines)), key=lambda i: str(comments[i].get("created_at") or ""), reverse=True
+    )
+    kept, used = [], 0
+    for i in newest_first:
+        used += len(lines[i]) + 1
+        if used > COMMENTS_MAX_CHARS:
+            break
+        kept.append(i)
+    return [lines[i] for i in sorted(kept)] + [f"({len(lines) - len(kept)} older comment(s) left out)"]
+
+
 def _reflect_on_topic(topic_id: str, topic_feedback: list[dict], model_id: str) -> tuple[str, str]:
     up_votes = sum(1 for f in topic_feedback if f.get("vote") == "up")
     down_votes = sum(1 for f in topic_feedback if f.get("vote") == "down")
-    comments = [f.get("comment") for f in topic_feedback if f.get("comment")]
-    listed = "\n".join(f"- {_defang(c)}" for c in comments) if comments else "(no comments)"
+    lines = _comment_lines(topic_feedback)
+    listed = "\n".join(lines) if lines else "(no comments)"
 
     prompt = prompts.get_prompt(
         REFLECTION_PROMPT_ID,

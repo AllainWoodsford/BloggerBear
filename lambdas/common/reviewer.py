@@ -315,6 +315,42 @@ _DEFANG_REPLY_RULE = (
 )
 
 
+# The two blocks his questions set their material down in: the article (its title and text) and its
+# numbered flags. Both are untrusted, as the reviews' material is (common/fresh_review.py): the
+# article was drafted from what research read on the web, and its flags quote the article and the
+# web. His verdicts approve and publish, so nothing in the material may pose as the end of the
+# article, as flags of its own, or as a reply. Each block is a value with its tags inside it, built
+# here, so an asset can place a block but can neither rename its tags nor set the material down
+# outside them; and _break_delimiters breaks exactly these tags inside the material, so it cannot
+# close its block early. Each flag is put on one line before it is numbered, so every numbered line
+# in the flags' block is one this code numbered. The names are ones no honest article holds (one on
+# HTML may well write <article>): a quote for the final review's cut is matched against the article
+# as written (cut_sentences), so only a sentence that holds one of these tags is quoted differently,
+# and that article waits for a person.
+_DELIMITER_TAG = re.compile(r"<(/?)(article_text|review_flags)", re.IGNORECASE)
+
+
+def _break_delimiters(text: str) -> str:
+    """Break any of his blocks' tags inside the material, so it cannot close a block early."""
+    return _DELIMITER_TAG.sub(lambda m: f"< {m.group(1)}{m.group(2)}", text)
+
+
+def _article_block(title: str, body: str) -> str:
+    """The article as his questions are given it: its title and its text cut to BODY_MAX_CHARS."""
+    article = _break_delimiters(f"Title: {title}\n\n{body[:BODY_MAX_CHARS]}")
+    return f"<article_text>\n{article}\n</article_text>"
+
+
+def _flags_block(majors: list[str]) -> str:
+    """The flags as his questions are given them, numbered here, in code, because the verdicts answer
+    by those numbers. A flag can hold line breaks (a compliance reply with no labels is one reason of
+    many lines, its own list among them), and a line after one would read as a flag with a number of
+    its own, whose verdict judge_majors and judge_defang would map onto another flag; so each flag's
+    whitespace, line breaks included, is closed up to single spaces first."""
+    listed = "\n".join(f"{n}. {' '.join(str(flag).split())}" for n, flag in enumerate(majors, 1))
+    return f"<review_flags>\n{_break_delimiters(listed)}\n</review_flags>"
+
+
 def _ask_about(
     ask: Callable[[str], str],
     prompt_id: str,
@@ -324,12 +360,10 @@ def _ask_about(
     body: str,
     majors: list[str] | None = None,
 ) -> dict | None:
-    """Put one of his questions to the model and read its JSON answer (None when there is none).
-    The article is cut to BODY_MAX_CHARS and the flags numbered here, in code, because the verdicts
-    answer by those numbers."""
-    values = {"topic_name": topic_name, "title": title, "body": body[:BODY_MAX_CHARS]}
+    """Put one of his questions to the model and read its JSON answer (None when there is none)."""
+    values = {"topic_name": topic_name, "article_block": _article_block(title, body)}
     if majors is not None:
-        values["flags"] = "\n".join(f"{n}. {flag}" for n, flag in enumerate(majors, 1))
+        values["flags_block"] = _flags_block(majors)
     prompt = prompts.get_prompt(prompt_id, values, {"reply_rule": reply_rule})
     return _json_answer(ask(prompt.text))
 
@@ -941,7 +975,12 @@ def tick(state: dict, hands: Hands, now: datetime, settings: dict | None = None)
     counts = dict(state.get("counts") or {})
     mentions = list(state.get("mentions") or [])
     for task in batch:
-        outcome = do_task(task, hands, now, joke=int(counts.get("rejected") or 0), settings=settings)
+        # A prompt's fallback counts once per article on each run (common/prompts.bind_request): the
+        # article's id alone, which do_task binds for its arms, is the same on every run that asks
+        # about it, and the evals rollup keeps one event per id.
+        request = ":".join(str(part) for part in (state.get("run_id"), task.get("article_id")) if part)
+        with prompts.bind_request(request or None):
+            outcome = do_task(task, hands, now, joke=int(counts.get("rejected") or 0), settings=settings)
         counts[outcome] = int(counts.get(outcome) or 0) + 1
         if outcome in _LINKED + _REWRITES and task.get("article_id"):
             mentions.append({"outcome": outcome, "article_id": task["article_id"]})

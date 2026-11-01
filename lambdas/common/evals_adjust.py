@@ -22,8 +22,11 @@ counted them), and `total_gate` beside them: information only, which refuses not
 adjustment is checked as the event it will be (evals.event) before anything is written, so a row
 never stands for an event the schema would refuse. A model must be in the registry, whose row may be
 kept under the model's id or under an inference profile's ARN for it (_registry_row); its adjust#
-row and its event always name the canonical id, the key the rollup reads. The row is written only
-where none is (the same target at the same microsecond), so one adjustment never replaces another.
+row and its event always name the canonical id, the key the rollup reads. A prompt version must be
+one the registry (common/prompts_registry.py) can have (_registry_error): a registered prompt id, a
+code-only prompt only at a `vanilla:` version, and a `vanilla:` version no later than the registry's
+own. The row is written only where none is (the same target at the same microsecond), so one
+adjustment never replaces another.
 
 **ungate** sets `ungated_until` on the model's registry row (found as an adjustment finds it) for
 some hours (0 ends the override now): the model's gates are held open until then
@@ -42,7 +45,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 
-from common import dynamo, evals, evals_rollup, evals_settings, evidence
+from common import dynamo, evals, evals_rollup, evals_settings, evidence, prompts_registry
 from common.model_pricing import canonical_model_id
 
 TARGETS = ("model", "prompt")
@@ -118,6 +121,30 @@ def _registry_row(given: str, model_id: str) -> dict | None:
     )
 
 
+def _vanilla_number(version: str) -> int | None:
+    """N of a `vanilla:vN` version, or None for an asset's `vN`."""
+    return int(version.removeprefix("vanilla:v")) if version.startswith("vanilla:") else None
+
+
+def _registry_error(prompt_id: str, version: str) -> str | None:
+    """Why the registry can have no prompt version `prompt_id` at `version`, in words, or None when
+    it can. An asset's `vN` is whatever the publisher put out, which the registry does not list, so
+    any is taken for an asset prompt; a code-only prompt is never read from the bucket, so it has
+    only its vanilla's versions; and a vanilla is numbered up to the registry's own, the earlier
+    ones being the vanillas it replaced."""
+    spec = next((spec for spec in prompts_registry.all_specs() if spec.prompt_id == prompt_id), None)
+    if spec is None:
+        return f"no prompt '{prompt_id}' in the registry (`prompts list` shows them)"
+    number = _vanilla_number(version)
+    if number is None and not spec.asset:
+        return f"'{prompt_id}' is code-only: its only versions are vanilla:v<N> (`prompts list` shows it)"
+    if number is not None and number > int(spec.vanilla_version.removeprefix("v")):
+        return (
+            f"'{prompt_id}' has no {version}: its vanilla is {spec.vanilla_label} (`prompts list` shows it)"
+        )
+    return None
+
+
 def timestamp(now: datetime) -> str:
     """An adjustment's time, UTC to the microsecond: its row's `ts#` and its event's id and time."""
     return now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -187,6 +214,10 @@ def adjust(body: dict, now: datetime | None = None) -> dict:
     if refused:
         raise Refused(400, _FIELD_ERRORS.get(refused, f"not a valid {reason} event ({refused})"))
 
+    if "prompt_id" in fields:
+        unknown = _registry_error(fields["prompt_id"], fields["prompt_version"])
+        if unknown is not None:
+            raise Refused(404, unknown)
     table = evals_rollup.evals_table()
     totals = {}
     if "model_id" in fields:
