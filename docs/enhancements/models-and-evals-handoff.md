@@ -329,6 +329,16 @@ commits identical to `dev`'s.
     left (`SECOND_EDIT`).
   - **PR19 (#408):** `review_inbox.py` keeps both `FindingsSource` and #412's `_is_problem_note`.
   - **PR18b (#409):** already carries the run-id pin in `test_eval_score.py` (ad471b5).
+- **#417 is coming** (open at 15:20 UTC, from another session, base `dev`): "Split rewrite into Fix
+  (edits) and Re-Write (new article) modes". It rewrites `common/rewrite.py` (230 lines added, 114
+  removed) and changes `common/reviewer.py`, `scripts/review_inbox.py`, `admin_api_handler.py`,
+  `scripts/admin_cli.py` and `cli_reference.json`. If it reaches `dev` before PR9, the
+  `rewrite/rewrite` migration must follow it again, as it did for #412. That means re-checking the
+  following against #417's code, not #412's:
+  - the PR9 and PR21 v1 text and sha, possibly with a second prompt for the new mode;
+  - PR21 part B's reviewer-bear blocks in `reviewer.py`;
+  - PR14's rewrite-route events;
+  - PR19's `review_inbox.py`.
 - **#414** makes CI run `pytest lambdas/ scripts/ -n auto --dist loadfile` and pins pytest-xdist
   3.8.0 and execnet 2.1.2. PR21 merged it, and the whole suite passes in parallel there.
 - **#401** is on `dev`, and the branches built after 2026-10-31 carry it. The 20 older ones don't
