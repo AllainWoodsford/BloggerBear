@@ -509,10 +509,11 @@ def model_inputs(input_modalities: list[str] | None) -> list[str]:
     return list(dict.fromkeys(str(m).upper() for m in (input_modalities or [])))
 
 
-def _system_profiles(client) -> list[dict]:
-    """Every system-defined inference profile Bedrock lists, page by page."""
+def _inference_profiles(client, kind: str = "SYSTEM_DEFINED") -> list[dict]:
+    """Every inference profile of `kind` Bedrock lists, page by page: the system-defined ones by
+    default, or the APPLICATION ones this account made."""
     profiles = []
-    kwargs = {"typeEquals": "SYSTEM_DEFINED"}
+    kwargs = {"typeEquals": kind}
     while True:
         page = client.list_inference_profiles(**kwargs)
         profiles.extend(page.get("inferenceProfileSummaries") or [])
@@ -554,7 +555,7 @@ def account_models(region: str, client=None) -> list[dict]:
             candidates[summary["modelId"]] = summary
 
     profiles = {}
-    for profile in _system_profiles(client):
+    for profile in _inference_profiles(client):
         if profile.get("status", "ACTIVE") != "ACTIVE":
             continue
         base = _profile_base(profile, active_models)
@@ -568,18 +569,38 @@ def account_models(region: str, client=None) -> list[dict]:
 def listed_models(region: str, client=None) -> dict[str, dict]:
     """{model id: registry-shaped} for every model Bedrock lists in `region`, however it is called
     and whatever its lifecycle: every foundation model (on demand or only through a profile; ACTIVE
-    or LEGACY, which still writes what it wrote), and every system-defined inference profile whose
-    base model is among them. What classify takes a model's purpose from, and the meaning of
-    "listed" there; discover adds only from account_models. A purpose says what a model writes,
-    not whether it can be called: the access probe and `enabled` say that."""
+    or LEGACY, which still writes what it wrote), every system-defined inference profile whose
+    base model is among them, and every application inference profile this account made over one
+    of them, by its ARN (the id Converse takes for it), writing what its base model writes. What
+    classify takes a model's purpose from, and the meaning of "listed" there; discover adds only
+    from account_models. A purpose says what a model writes, not whether it can be called: the
+    access probe and `enabled` say that."""
     client = client or boto3.client("bedrock", region_name=region)
     summaries = {s["modelId"]: s for s in client.list_foundation_models().get("modelSummaries") or []}
     listed = dict(summaries)
-    for profile in _system_profiles(client):
+    for profile in _inference_profiles(client):
         base = _profile_base(profile, summaries)
         if base is not None:
             listed[profile["inferenceProfileId"]] = base
+    for profile in _inference_profiles(client, "APPLICATION"):
+        base = _profile_base(profile, summaries)
+        if base is not None and profile.get("inferenceProfileArn"):
+            listed[profile["inferenceProfileArn"]] = base
     return {model_id: _registry_shaped(model_id, summary) for model_id, summary in sorted(listed.items())}
+
+
+# The ARNs a listing (listed_models) holds as they are: application inference profiles'. Foundation
+# models and system profiles it holds by the id canonical_model_id takes from their ARN. Bedrock
+# lists any other model ARN (a custom, provisioned or imported model's) through calls the catalog
+# does not make, so the catalog cannot say what such a model writes.
+_APPLICATION_PROFILE_ARN = re.compile(r"^arn:[^:]*:bedrock:[^:]*:[^:]*:application-inference-profile/.+$")
+
+
+def listable(model_id: str) -> bool:
+    """Whether a listing (listed_models) can say what `model_id` writes, or that Bedrock no longer
+    lists it: true for every id but an ARN of a kind a listing never holds."""
+    canonical = canonical_model_id(model_id)
+    return not str(canonical).startswith("arn:") or bool(_APPLICATION_PROFILE_ARN.match(canonical))
 
 
 # --- runs -----------------------------------------------------------------------------------------
@@ -1354,8 +1375,12 @@ def discover(trigger: str, settings: dict, now: datetime, *, bedrock=None, probe
 
 def purpose_fields(model_id: str, listed: dict[str, dict]) -> dict:
     """What classifying one registry model writes, from a listing (listed_models): its purpose and
-    inputs when Bedrock lists it, else the purpose `unknown` (its inputs left as they are). Shared
-    by classify and the evals rollup, which classifies the models no one has yet."""
+    inputs when Bedrock lists it, else the purpose `unknown` (its inputs left as they are). Nothing
+    for an ARN no listing holds (listable): Bedrock may well list that model, so it is not
+    `unknown`, and with no purpose the pricing-unit rule keeps judging it. Shared by classify and
+    the evals rollup, which classifies the models no one has yet."""
+    if not listable(model_id):
+        return {}
     found = listed.get(canonical_model_id(model_id))
     if found is None:
         return {"model_purpose": UNKNOWN_PURPOSE}
@@ -1368,10 +1393,11 @@ def classify(trigger: str, now: datetime, *, bedrock=None) -> dict:
     purposes were recorded is judged by them (model_fleet.suitable) and not by its pricing unit.
     Listed means anywhere in Bedrock's answer, whatever the model's lifecycle and however it is
     called: a LEGACY model, or one called only through a profile, keeps its purpose. A model in
-    neither the foundation models nor the system profiles (an inference-profile ARN is looked up by
-    the profile it names) gets the purpose `unknown` and keeps its inputs. A row already saying the
-    same is left alone, so the job may be run any number of times; a listing that fails writes
-    nothing (the exception is the handler's)."""
+    none of the foundation models, the system profiles and the application profiles (an
+    inference-profile ARN is looked up by the profile it names) gets the purpose `unknown` and
+    keeps its inputs; an ARN no listing holds (listable) is left as it is and counted unchanged. A
+    row already saying the same is left alone, so the job may be run any number of times; a
+    listing that fails writes nothing (the exception is the handler's)."""
     listed = listed_models(_region(), bedrock)
     models = dynamo.list_models()
     classified, unknown, unchanged = [], [], 0

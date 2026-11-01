@@ -53,6 +53,9 @@ from common import (
 from common.model_pricing import canonical_model_id
 
 COULD_NOT_CHECK = "could not check"
+# Where a model with a window below its gate stands (_gate_state): held back, served as the default,
+# the fallback or the judge, or served because an operator's `ungated_until` holds its gate open.
+GATED, PROTECTED, HELD_OPEN = "gated", "protected", "held_open"
 # The queues whose depth and age status shows, by the name it shows each under, and the variable
 # that holds each one's URL. "Queue depth and age" could mean either, so both are shown: eval-work
 # (the judge's and offline scoring's jobs; empty while evals are off) and work.fifo (the topics'
@@ -234,6 +237,25 @@ def _topics_by_dispatch_mode() -> dict:
     return counts
 
 
+def _guard(settings: dict, now: datetime) -> model_ranch.Guard:
+    """The rotation guard as status and the digest apply it: from the evals settings they read and
+    one read of the model-config default row (which may raise)."""
+    config = dynamo.get_model_config() or {}
+    return model_ranch.Guard(
+        settings=settings, protected=model_ranch.never_gated(settings, config), config=config, now=now
+    )
+
+
+def _gate_state(guard: model_ranch.Guard, row: dict) -> tuple[str, str | None]:
+    """Where a model with a window below its gate stands, as the guard decides it: (PROTECTED, its
+    role) for the default, the fallback or the judge; (GATED, None) when it is held back; else
+    (HELD_OPEN, None), an operator's `ungated_until` holding its gate open."""
+    role = guard.role(row["model_id"])
+    if role is not None:
+        return PROTECTED, role
+    return (GATED, None) if guard.gated(row) else (HELD_OPEN, None)
+
+
 def _gated_models(settings: dict, now: datetime) -> dict:
     """The models below a gate (gated_windows), each in one list, decided as the rotation guard
     decides it (common/model_ranch.py: Guard.gated, gate and held_open), so this part's `gated`
@@ -246,14 +268,10 @@ def _gated_models(settings: dict, now: datetime) -> dict:
     * `held_open`: an operator's `ungated_until` holds its gate open, a time still ahead, or a value
       that is not a time (`ungated_until_unreadable`), which the guard does not gate either.
 
-    It builds its own Guard from the settings status read and one read of the model-config default
-    row, rather than model_ranch.load_guard, which reads nothing while evals are off and protects
-    nothing when a read fails: status answers whatever the switch says, and a read that fails says
-    "could not check"."""
-    config = dynamo.get_model_config() or {}
-    guard = model_ranch.Guard(
-        settings=settings, protected=model_ranch.never_gated(settings, config), config=config, now=now
-    )
+    It builds its own Guard (_guard), rather than model_ranch.load_guard, which reads nothing while
+    evals are off and protects nothing when a read fails: status answers whatever the switch says,
+    and a read that fails says "could not check"."""
+    guard = _guard(settings, now)
     gated, held_open, protected = [], [], []
     for row in sorted(dynamo.list_models(), key=lambda model: model["model_id"]):
         windows = model_ranch.gated_windows(row, settings)
@@ -265,10 +283,10 @@ def _gated_models(settings: dict, now: datetime) -> dict:
             **{field: _number(row.get(field)) for field in ("daily_perf", "weekly_perf", "total_perf")},
             "perf_events": _number(row.get("perf_events")),
         }
-        role = guard.role(row["model_id"])
-        if role is not None:
+        state, role = _gate_state(guard, row)
+        if state == PROTECTED:
             protected.append({**entry, "role": role})
-        elif guard.gated(row):
+        elif state == GATED:
             gated.append(entry)
         else:
             held = {**entry, "ungated_until": _number(row.get("ungated_until"))}
@@ -416,7 +434,15 @@ def sum_days(rows: list[dict]) -> dict:
 def digest(since, now: datetime | None = None) -> dict | str:
     """The day rows added up from `since` (a date or an ISO time; a week ago, today included, when
     not given) to today, per model and per prompt version. A string, the reason, when `since` is not
-    a date in range."""
+    a date in range.
+
+    Each model also says where its registry row's windows stand now, as status does (_gate_state):
+    `below_gate`, the windows below their gate; `gate`, GATED, PROTECTED (with its `role`) or
+    HELD_OPEN when there are any (None otherwise, and for a model with no row); and `gated`, those
+    windows only while the guard holds it back. A model-config default row that cannot be read
+    (it says what the gate never applies to) fails the digest, as the judge's summary reading the
+    same row does, rather than call models gated or not on a guess: the route answers 500 and the
+    Friday email tries again the next hour."""
     now = now or datetime.now(UTC)
     settings = evals_settings.get_settings()
     zone = evals_settings.zone(settings)
@@ -427,6 +453,7 @@ def digest(since, now: datetime | None = None) -> dict | str:
     table = evals_rollup.evals_table()
     entities = set().union(*evals_rollup.day_entities(first, today, table).values())
     registry = {canonical_model_id(row["model_id"]): row for row in dynamo.list_models()}
+    guard = _guard(settings, now)
     span = Key("sk").between(f"{evals_rollup.DAY}{first}", f"{evals_rollup.DAY}{today}")
     models, prompts = [], []
     for entity in sorted(entities):
@@ -436,8 +463,19 @@ def digest(since, now: datetime | None = None) -> dict | str:
         totals = sum_days(evals_rollup.query_all(table, Key("entity").eq(entity) & span))
         if kind == "model":
             row = registry.get(rest)
-            gated = evals_settings.gated_windows(row, settings) if row else []
-            models.append({"model_id": rest, "in_registry": row is not None, "gated": gated, **totals})
+            windows = model_ranch.gated_windows(row, settings) if row else []
+            state, role = _gate_state(guard, row) if windows else (None, None)
+            models.append(
+                {
+                    "model_id": rest,
+                    "in_registry": row is not None,
+                    "gated": windows if state == GATED else [],
+                    "below_gate": windows,
+                    "gate": state,
+                    "role": role,
+                    **totals,
+                }
+            )
         else:
             prompt_id, _, version = rest.rpartition("#")
             prompts.append({"prompt_id": prompt_id, "version": version, **totals})

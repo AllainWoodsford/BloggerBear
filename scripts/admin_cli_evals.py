@@ -193,7 +193,10 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
             raise cli_error("there is no cull proposal with models in it to apply (`evals cull` shows it)")
         if cull.get("expired"):
             expired = proposal.get("expires_at")
-            raise cli_error(f"the cull proposal expired at {expired}: the next weekly cycle proposes again")
+            raise cli_error(
+                f"the cull proposal expired at {expired}: the next weekly cycle proposes again while the "
+                "cycle runs (`model-catalog set --cycle on`)"
+            )
         print(f"The cull proposal of {proposal.get('proposed_at')} (until {proposal.get('expires_at')}):")
         for entry in proposal["models"]:
             total, events = entry.get("total_perf"), entry.get("events")

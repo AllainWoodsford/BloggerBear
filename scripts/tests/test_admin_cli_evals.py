@@ -301,7 +301,11 @@ def test_cull_apply_with_yes_sends_at_once_without_showing_or_asking():
     [
         ({"proposal": None, "detail": "no cull proposal yet"}, "there is no cull proposal"),
         ({"proposal": {**PROPOSAL, "models": []}, "expired": False}, "there is no cull proposal"),
-        ({"proposal": PROPOSAL, "expired": True}, "expired at 2026-10-29T17:00:00"),
+        (
+            {"proposal": PROPOSAL, "expired": True},
+            r"expired at 2026-10-29T17:00:00.*: the next weekly cycle proposes again while the cycle runs "
+            r"\(`model-catalog set --cycle on`\)",
+        ),
         ({"status": "could not check", "error": "RuntimeError"}, "could not read the cull proposal"),
     ],
 )

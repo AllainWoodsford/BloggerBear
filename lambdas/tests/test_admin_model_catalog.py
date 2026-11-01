@@ -203,3 +203,119 @@ def test_models_add_on_an_existing_row_keeps_what_the_ranch_recorded(aws):
     assert (row["enabled"], row["display_name"]) == (True, "M1 renamed")
     assert {field: row[field] for field in RANCH} == RANCH  # a zero total and a negative week included
     assert {field: body[field] for field in RANCH} == RANCH
+
+
+def put_m1(aws, **fields):
+    aws.Table("Models").put_item(
+        Item={
+            "model_id": "m1",
+            "display_name": "M1",
+            "provider": "test",
+            "enabled": False,
+            "pricing_unit": "tokens",
+            "input_price_usd_per_1k_tokens": Decimal("0.001"),
+            "output_price_usd_per_1k_tokens": Decimal("0.005"),
+            **fields,
+        }
+    )
+
+
+ADD_M1 = {
+    "model_id": "m1",
+    "display_name": "M1",
+    "provider": "test",
+    "input_price_usd_per_1k_tokens": 0.001,
+    "output_price_usd_per_1k_tokens": 0.005,
+}
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        # `evals ungate --model m1 --hours 48` (common/evals_adjust.ungate)
+        {"ungated_until": "2026-11-03T09:00:00+00:00"},
+        # the hourly rollup's windows and roles (common/evals_rollup.update_models)
+        {"weekly_perf": -150, "perf_updated_at": "2026-10-20T18:00:00+00:00", "model_roles": ["default"]},
+    ],
+    ids=["an operators override", "the rollups hour"],
+)
+def test_models_add_keeps_a_ranch_field_written_while_it_probes_access(aws, monkeypatch, written):
+    """`models add` reads the row, probes Bedrock (seconds), then writes the whole row. A ranch field
+    another writer sets in that window (always through dynamo.set_model_fields) must still be there
+    after (section 4.6: preserved by every writer): the write is made only while the row is as it was
+    read, and read again once when it is not."""
+    from common import dynamo
+
+    put_m1(aws, **RANCH)
+    probes = []
+
+    def probe_while_another_writer_writes(model_id, client=None):
+        probes.append(model_id)
+        assert dynamo.set_model_fields(model_id, written, expected={})
+        return model_catalog.GRANTED, None
+
+    monkeypatch.setattr(model_catalog, "probe_access", probe_while_another_writer_writes)
+
+    status, body = call("POST /models", ADD_M1)
+
+    assert status == 200 and probes == ["m1"]  # probed once: its answer is kept for the second write
+    row = aws.Table("Models").get_item(Key={"model_id": "m1"})["Item"]
+    assert (row["enabled"], row["access"]) == (True, model_catalog.GRANTED)
+    assert {field: row[field] for field in written} == written
+    assert {field: body[field] for field in written} == written
+    kept = {field: value for field, value in RANCH.items() if field not in written}
+    assert {field: row[field] for field in kept} == kept
+
+
+def test_models_add_keeps_the_row_a_restore_puts_back_while_it_probes_access(aws, monkeypatch):
+    """A row created between the read and the write (`models restore`, with its 7-day hold) is not
+    overwritten with one built from nothing: it is read again, and its ranch fields are carried."""
+    from common import dynamo
+
+    def restored_while_probing(model_id, client=None):
+        assert dynamo.add_model_if_missing({"model_id": model_id, **RANCH})
+        return model_catalog.GRANTED, None
+
+    monkeypatch.setattr(model_catalog, "probe_access", restored_while_probing)
+
+    status, _ = call("POST /models", ADD_M1)
+
+    assert status == 200
+    row = aws.Table("Models").get_item(Key={"model_id": "m1"})["Item"]
+    assert (row["display_name"], row["enabled"]) == ("M1", True)
+    assert {field: row[field] for field in RANCH} == RANCH
+
+
+def test_models_add_that_meets_another_writer_twice_answers_409_and_writes_nothing(aws, monkeypatch):
+    """Read again once; a row that has changed again by then is left to the other writer, and the
+    operator is told to send it again."""
+    from common import dynamo
+
+    put_m1(aws, **RANCH)
+    read = admin_api_handler.get_model
+    moves = iter(range(1, 10))
+
+    def read_then_moved(model_id, **kwargs):
+        found = read(model_id, **kwargs)
+        assert dynamo.set_model_fields(model_id, {"total_perf": -next(moves)}, expected={})
+        return found
+
+    monkeypatch.setattr(admin_api_handler, "get_model", read_then_moved)
+
+    status, body = call("POST /models", ADD_M1)
+
+    assert status == 409 and "send it again" in body["error"]
+    row = aws.Table("Models").get_item(Key={"model_id": "m1"})["Item"]
+    assert (row["enabled"], row["total_perf"]) == (False, -2)  # the other writer's last value
+
+
+def test_models_add_on_a_row_holding_a_null_field_is_written(aws):
+    """A field stored as NULL reads as missing; the write's check takes it as unset, not as changed,
+    so such a row is never refused for good."""
+    put_m1(aws, region=None, **RANCH)
+
+    status, _ = call("POST /models", ADD_M1)
+
+    assert status == 200
+    row = aws.Table("Models").get_item(Key={"model_id": "m1"})["Item"]
+    assert row["enabled"] is True and "region" not in row

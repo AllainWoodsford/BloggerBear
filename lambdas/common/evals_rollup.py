@@ -596,9 +596,15 @@ def update_models(
 
 def classify_unclassified(registry: list[dict], region: str, bedrock=None) -> tuple[str, int, int]:
     """Classify the registry models with no purpose yet, from one listing of everything Bedrock
-    lists (model_catalog.listed_models), only while each still has none. (status, classified,
-    unknown); status `none` when every model has a purpose, `failed` when the listing failed."""
-    unclassified = [model for model in registry if not model.get("model_purpose")]
+    lists (model_catalog.listed_models), only while each still has none. A model whose ARN no
+    listing holds (model_catalog.listable) stays as it is: listing for it would write nothing, hour
+    after hour. (status, classified, unknown); status `none` when every other model has a purpose,
+    `failed` when the listing failed."""
+    unclassified = [
+        model
+        for model in registry
+        if not model.get("model_purpose") and model_catalog.listable(model["model_id"])
+    ]
     if not unclassified:
         return "none", 0, 0
     try:

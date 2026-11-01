@@ -992,6 +992,83 @@ def test_classify_counts_every_model_bedrock_lists_whatever_its_lifecycle_or_rou
     assert topic_id == "r" and fields["model_id_candidates"][0] == "apac.old.model-v1"
 
 
+# An application inference profile this account made (a form a topic's model may take): Converse
+# needs its ARN, which canonical_model_id leaves as it is. Bedrock lists it by that ARN.
+APP_PROFILE_ARN = "arn:aws:bedrock:ap-southeast-2:123456789012:application-inference-profile/abcd1234efgh"
+# A custom model's ARN: Bedrock lists it too, but through a call the catalog does not make.
+CUSTOM_MODEL_ARN = "arn:aws:bedrock:ap-southeast-2:123456789012:custom-model/maker.base-v1:0/abcd1234efgh"
+
+
+class ApplicationProfileBedrock(FakeBedrock):
+    """FakeBedrock, plus a text model called only through a profile, and that application inference
+    profile routing to it (ListInferenceProfiles with typeEquals=APPLICATION)."""
+
+    def list_foundation_models(self):
+        listing = super().list_foundation_models()
+        listing["modelSummaries"].append(
+            {
+                "modelId": "maker.writer-v1:0",
+                "modelName": "Writer",
+                "providerName": "Maker",
+                "inputModalities": ["TEXT", "IMAGE"],
+                "outputModalities": ["TEXT"],
+                "inferenceTypesSupported": ["INFERENCE_PROFILE"],
+                "modelLifecycle": {"status": "ACTIVE"},
+            }
+        )
+        return listing
+
+    def list_inference_profiles(self, typeEquals, nextToken=None):  # noqa: N803 - boto3's names
+        if typeEquals != "APPLICATION":
+            return super().list_inference_profiles(typeEquals, nextToken)
+        writer = "arn:aws:bedrock:ap-southeast-2::foundation-model/maker.writer-v1:0"
+        return {
+            "inferenceProfileSummaries": [
+                {
+                    "inferenceProfileName": "blog-writer",
+                    "inferenceProfileArn": APP_PROFILE_ARN,
+                    "inferenceProfileId": "abcd1234efgh",
+                    "type": "APPLICATION",
+                    "status": "ACTIVE",
+                    "models": [{"modelArn": writer}],
+                }
+            ]
+        }
+
+
+def test_classify_never_calls_a_model_bedrock_lists_by_its_arn_unknown(aws, monkeypatch):
+    """Section 4.6: `unknown` is a model Bedrock no longer lists. An application inference profile
+    is listed, and writes what its base model writes, so it stays a text model: a topic that names it
+    keeps it, and the weekly cycle keeps it in a rotation. A custom model's ARN is listed by a call
+    the catalog does not make, so its purpose is left unknown to the registry rather than `unknown`:
+    the pricing-unit rule keeps judging it, as before purposes were recorded."""
+    put_model(aws, APP_PROFILE_ARN, 0.001, 0.005, pricing_unit="tokens", enabled=True)
+    put_model(aws, CUSTOM_MODEL_ARN, 0.001, 0.005, pricing_unit="tokens", enabled=True)
+    put_model(aws, "delisted.model-v1", 0.001, 0.004, pricing_unit="tokens")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "env-default")
+    topic = {"topic_id": "t", "model_id": APP_PROFILE_ARN}
+    assert model_fleet.suitable(model(aws, APP_PROFILE_ARN))
+    assert catalog.resolve_model(topic)[0] == APP_PROFILE_ARN  # before classify: used as configured
+
+    result = catalog.classify("admin", NOW, bedrock=ApplicationProfileBedrock())
+
+    assert result["unknown_ids"] == ["delisted.model-v1"]  # only the model Bedrock does not list
+    assert (result["classified_ids"], result["unchanged"]) == ([APP_PROFILE_ARN], 1)
+    row = model(aws, APP_PROFILE_ARN)
+    assert (row["model_purpose"], list(row["model_inputs"])) == ("text", ["TEXT", "IMAGE"])
+    assert model_fleet.suitable(row)
+    assert catalog.resolve_model(topic)[0] == APP_PROFILE_ARN
+    custom = model(aws, CUSTOM_MODEL_ARN)
+    assert "model_purpose" not in custom and model_fleet.suitable(custom)
+
+    rotating = {"topic_id": "r", "model_id_candidates": [APP_PROFILE_ARN, CUSTOM_MODEL_ARN]}
+    monkeypatch.setattr(catalog.dynamo, "list_topics", lambda: [rotating])
+    written = []
+    monkeypatch.setattr(catalog.dynamo, "set_topic_model_fields", lambda *a: written.append(a))
+    assert model_fleet.cycle(SETTINGS, NOW)["dropped_inactive"] == 0
+    assert all(fields["model_id_candidates"][:2] == rotating["model_id_candidates"] for _, fields in written)
+
+
 def test_discovers_denied_count_is_whole_though_its_ids_are_cut(aws, monkeypatch, capsys):
     new = [listed(f"t{n:02d}", "text", ["TEXT"]) for n in range(30)]
     monkeypatch.setattr(catalog, "account_models", lambda region, client=None: new)

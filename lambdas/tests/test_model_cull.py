@@ -345,6 +345,12 @@ def test_apply_is_refused_without_a_proposal(evals_on, logs):
 
     assert status == 409 and body["error"].startswith("there is no cull proposal")
     assert POOR in registry()
+    # The weekly cycle writes the proposal, so a cycle paused with `model-catalog set --cycle off`
+    # writes none: the refusal names the switch that runs it again.
+    assert body["error"] == (
+        "there is no cull proposal: the weekly cycle (Fridays 04:00 Sydney time) writes one while evals "
+        "are on, and only while the cycle runs (`model-catalog set --cycle on`)"
+    )
 
 
 def test_apply_is_refused_once_the_proposal_has_expired_at_the_next_cycle(proposed, monkeypatch):
@@ -356,7 +362,7 @@ def test_apply_is_refused_once_the_proposal_has_expired_at_the_next_cycle(propos
     assert status == 409
     assert body["error"] == (
         f"the cull proposal made {AT.isoformat()} expired at {NEXT_CYCLE.isoformat()}: the next weekly "
-        "cycle proposes again"
+        "cycle proposes again while the cycle runs (`model-catalog set --cycle on`)"
     )
     assert len(registry()) == 5
 
