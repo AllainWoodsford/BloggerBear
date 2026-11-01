@@ -19,8 +19,9 @@ are (docs/enhancements/model-ranch-prompt-assets-evals.md, sections 4.3 and 5.4)
   row already there, given on the text the judge saw, stays. That narrows the spec entry's "also write
   pair#human" on purpose, so agreement is only ever measured on one text. With no mark yet the
   decision is kept: the judge judges the text as it stands when it runs, which is the text decided
-  unless a rewrite is saved first (the pair rows do not yet record which text each judged, so that
-  order still pairs two texts).
+  unless a rewrite is saved first. Both rows record which text they were given on (`rewrite_number`:
+  how many rewrites were saved before it), and the rollup pairs only rows of the same text, so in that
+  order the person's row stays unpaired until they decide the text the judge saw.
 - **Article Rewrite** (-2), from the admin API's rewrite routes when a person sent an article back:
   one event, `rewrite:<rewrite_id>`, for the model whose text it was, naming the prompt that wrote
   the text. His rewrites are left out like his decisions.
@@ -94,6 +95,9 @@ DAILY_CYCLE, ADMIN_API, PUBLIC_API = "daily_cycle", "admin_api", "public_api"
 # spelled here because this module is imported by the public API, which needs nothing else of the
 # rollup's.
 PAIR = "pair#"
+# On an article's pair rows: the text the verdict was given on (rewrite_number). The rollup reads it as
+# evals_rollup.REWRITE_NUMBER.
+REWRITE_NUMBER = "rewrite_number"
 # A person's decision on a queue item as their verdict on the article.
 VERDICTS = {"approved": "good", "rejected": "bad"}
 
@@ -267,10 +271,23 @@ def pair_key(subject: str, role: str) -> dict:
     return {"entity": f"{PAIR}{subject}", "sk": role}
 
 
-def pair_row(subject: str, role: str, verdict: str, ts: str) -> dict:
+def rewrite_number(article) -> int:
+    """Which text of `article` a verdict is given on: how many rewrites were saved before it (its
+    `rewrites`, which only a finished rewrite is added to, common/rewrite.py), 0 for the text the daily
+    cycle wrote."""
+    rewrites = article.get("rewrites") if isinstance(article, dict) else None
+    return len(rewrites) if isinstance(rewrites, list) else 0
+
+
+def pair_row(subject: str, role: str, verdict: str, ts: str, *, rewrites: int | None = None) -> dict:
     """A pair row as the rollup reads it: `verdict` (good or bad), its `delta` (section 4.3's two
-    either way) and when it was given (`ts`)."""
-    return {**pair_key(subject, role), "verdict": verdict, "delta": 2 if verdict == "good" else -2, "ts": ts}
+    either way) and when it was given (`ts`); for an article, `rewrites` is the text it was given on
+    (rewrite_number), kept as REWRITE_NUMBER, since the rollup pairs a judge's verdict with a person's
+    only on the same text (evals_rollup.judge_agreement). A Finding is never rewritten and keeps none."""
+    row = {**pair_key(subject, role), "verdict": verdict, "delta": 2 if verdict == "good" else -2, "ts": ts}
+    if rewrites is not None:
+        row[REWRITE_NUMBER] = rewrites
+    return row
 
 
 def pair_time(now: datetime) -> str:
@@ -305,11 +322,12 @@ def _rewritten_since_judged(article) -> bool:
 
 def human_article_pair(article: dict | None, *, article_id: str, queue_id: str, decision: str) -> bool:
     """A person's decision on `article` as their verdict, the `pair#<article_id>` row `human`: good for
-    `approved`, bad for `rejected`, with the queue item it was decided on. Written over the row already
-    there, so the latest decision is the one kept, but never on text the judge never saw
-    (_rewritten_since_judged): that verdict is not kept as a pair, and the row already there is left
-    alone (see the module's docstring). Only while evals are on, and only from admin_review, which is
-    called for a person's decisions alone. True when it was written. Never raises."""
+    `approved`, bad for `rejected`, with the queue item it was decided on and the text it was decided on
+    (rewrite_number). Written over the row already there, so the latest decision is the one kept, but
+    never on text rewritten since the judge's mark (_rewritten_since_judged): that verdict is not kept
+    as a pair, and the row already there is left alone (see the module's docstring). Only while evals
+    are on, and only from admin_review, which is called for a person's decisions alone. True when it
+    was written. Never raises."""
     try:
         if not evals.enabled() or decision not in VERDICTS:
             return False
@@ -319,7 +337,8 @@ def human_article_pair(article: dict | None, *, article_id: str, queue_id: str, 
                 "the judge has not judged: no human verdict kept"
             )
             return False
-        row = pair_row(article_id, HUMAN, VERDICTS[decision], pair_time(datetime.now(UTC)))
+        ts = pair_time(datetime.now(UTC))
+        row = pair_row(article_id, HUMAN, VERDICTS[decision], ts, rewrites=rewrite_number(article))
         evals_table().put_item(Item={**row, "queue_id": queue_id})
         return True
     except Exception as exc:  # noqa: BLE001 - bookkeeping never fails the work

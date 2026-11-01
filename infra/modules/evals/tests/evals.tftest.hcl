@@ -369,6 +369,11 @@ run "switched_on_it_makes_everything" {
   }
 
   assert {
+    condition     = toset(aws_lambda_event_source_mapping.eval_work[0].function_response_types) == toset(["ReportBatchItemFailures"])
+    error_message = "eval-work keeps a record eval-jobs names among its batch item failures, for it to be delivered again"
+  }
+
+  assert {
     condition = (
       aws_cloudwatch_log_metric_filter.eval_rating_delta[0].log_group_name == "acme-dev-evals" &&
       aws_cloudwatch_log_metric_filter.eval_rating_delta[0].pattern == "{ $.schema = \"evals/1\" }" &&

@@ -19,7 +19,12 @@ goes to its consumer (common/eval_judge.py: `select` and `consume`, which hands 
 common/eval_score.py). A record is answered by returning, whatever became of it, so the mapping deletes
 it: an item the day's spend cap holds back is sent to the queue again with a delay by the consumer
 itself, a judge item that failed stays unjudged for a later run to pick, and a scoring item that failed
-keeps its result row for `evals runs resume` to send again.
+keeps its result row, or is counted finished without one, for `evals runs resume` to send again. The
+only records kept are a scoring job whose run's header could not be read, and one that failed before its
+row was claimed and could not be counted finished either (eval_judge.RETRY): the answer names each among
+its `batchItemFailures` (the mapping reports batch item failures), so eval-work delivers it again after
+its visibility timeout, and after three receives moves it to the pipeline's DLQ. That is a partial batch
+response, not a raise.
 
 Never raises unhandled, like every other scheduled handler here, with one exception that section 6
 of the spec allows: a rollup that cannot read the evals log or read and write its tables
@@ -77,11 +82,30 @@ def _consume(record) -> dict:
         return {"status": "error"}
 
 
+def _delivered_again(records: list, results: list[dict]) -> list[dict]:
+    """The batch item failures (the mapping's partial batch response): each record whose consumer asked
+    for it again (eval_judge.RETRY), by its message id. A record with no message id was not delivered by
+    the mapping, so it cannot be named."""
+    return [
+        {"itemIdentifier": record["messageId"]}
+        for record, result in zip(records, results)
+        if result.get("status") == eval_judge.RETRY
+        and isinstance(record, dict)
+        and isinstance(record.get("messageId"), str)
+        and record["messageId"]
+    ]
+
+
 def handle(event: dict) -> dict:
     """One invocation's job, by the event's shape (see the module's docstring)."""
     records = event.get("Records")
     if isinstance(records, list):
-        return {"status": "consumed", "results": [_consume(record) for record in records]}
+        results = [_consume(record) for record in records]
+        answer = {"status": "consumed", "results": results}
+        again = _delivered_again(records, results)
+        if again:
+            answer["batchItemFailures"] = again
+        return answer
     # Only a job name that is a code is printed: never what the event carried otherwise.
     job = evidence.check("code", event.get("job")) or "unknown"
     if job == ROLLUP_JOB:

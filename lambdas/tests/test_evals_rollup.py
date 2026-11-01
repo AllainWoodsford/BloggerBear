@@ -12,9 +12,9 @@ time zone, Sydney's by default and across daylight saving; a model with no row i
 back, and the judge in effect is among a model's roles; a purpose written while Bedrock is listed is
 kept; excluded sources are left out and their rows deleted when a day is added up again; a window of
 10,000 rows is split and every event counted, and a minute that alone holds them raises rather than
-splitting forever; the judge's agreement comes from pair# rows, and its verdicts gate only while it
-is calibrated; readers' votes reach cells and never a gate; the line the rollup ends with is the one
-the heartbeat filter counts.
+splitting forever; the judge's agreement comes from pair# rows given on the same text (a row without
+its text counts as the first), and its verdicts gate only while it is calibrated; readers' votes
+reach cells and never a gate; the line the rollup ends with is the one the heartbeat filter counts.
 """
 
 from __future__ import annotations
@@ -1024,10 +1024,15 @@ def test_a_table_that_cannot_be_written_raises_rollup_error(aws, monkeypatch):
 # --- the judge ------------------------------------------------------------------------------------
 
 
-def pair(aws, subject, judge=None, human=None):
-    for sk, verdict in (("judge", judge), ("human", human)):
+def pair(aws, subject, judge=None, human=None, *, judged_text=None, decided_text=None):
+    """The subject's pair rows; `judged_text` and `decided_text`, the text of an article each verdict
+    was given on (its `rewrite_number`), left out as a Finding's are and as rows written before it was
+    kept."""
+    for sk, verdict, text in (("judge", judge, judged_text), ("human", human, decided_text)):
         if verdict is not None:
             item = {"entity": f"pair#{subject}", "sk": sk, "verdict": verdict, "delta": 2}
+            if text is not None:
+                item["rewrite_number"] = text
             aws.Table("Evals").put_item(Item=item)
 
 
@@ -1042,6 +1047,20 @@ def test_the_judges_agreement_comes_from_the_pair_rows_holding_both_verdicts(aws
 
     assert (summary["judge_agreement"], summary["judge_pairs"], summary["calibrated"]) == (0.6667, 3, False)
     assert plain(index(aws))["judge_agreement"] == 0.6667 and plain(index(aws))["judge_pairs"] == 3
+
+
+def test_a_judges_verdict_and_a_persons_pair_only_when_given_on_the_same_text_of_an_article(aws):
+    pair(aws, "same", "good", "good", judged_text=1, decided_text=1)
+    # A person decided the first text, then a rewrite was saved and the judge judged that.
+    pair(aws, "rewritten", "bad", "good", judged_text=1, decided_text=0)
+    # A Finding is never rewritten, and its rows carry no number.
+    pair(aws, "rail-sydney#2026-10-27T02:14:09+00:00", "bad", "bad")
+    # A row written before the number was kept counts as the first text: it pairs with the first
+    # text's verdict, and never with a rewrite's.
+    pair(aws, "older", "good", "bad", decided_text=0)
+    pair(aws, "older-rewritten", "good", "good", decided_text=1)
+
+    assert evals_rollup.judge_agreement(aws.Table("Evals")) == (0.6667, 3)
 
 
 def test_the_judges_verdicts_move_the_gated_windows_only_while_it_is_calibrated(aws):
