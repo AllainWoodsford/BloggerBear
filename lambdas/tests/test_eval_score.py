@@ -12,12 +12,13 @@ item and combination; the consumer drafts the live version once per item, render
 its versions/ file or the vanilla, scores the candidate's draft against it in either place, writes the
 item row and, only with record, one Offline Review event; at the cap it pauses the run and sends the
 message back to wait 900 s, and two messages scored at once never both take the last of the cap (a
-hold on the day's row, given back once their calls' costs are counted); a cancelled run's messages
-are dropped; a copy of a message is scored once; resume sends only what has no result (an error has
-none) and is not being scored; a verdict once written is never lost to a failure after it; a scoring
-run never trips the judge's wire; the results add up from the rows; a past article's draft prompt is
-rebuilt byte for byte as the daily cycle sent it, without a write; and no offline or judge code writes
-to S3 or the prompt-hash table.
+hold on the day's row, given back once their calls' costs are counted, and left counted, never in
+place of the paid verdict, when it cannot be); a cancelled run's messages are dropped; a copy of a
+message is scored once; resume sends only what has no result (an error has none) and is not being
+scored; a verdict once written is never lost to a failure after it; a scoring run never trips the
+judge's wire; the results add up from the rows; a past article's draft prompt is rebuilt byte for byte
+as the daily cycle sent it, without a write; and no offline or judge code writes to S3 or the
+prompt-hash table.
 """
 
 from __future__ import annotations
@@ -827,6 +828,15 @@ def test_the_cap_check_counts_a_retried_draft_so_no_one_message_takes_the_day_pa
     assert result["status"] == "paused" and models.calls == []
 
 
+def first_message_hold_aud() -> float:
+    """What the consumer holds for an item's first message: the most it can cost, two drafts (the
+    candidate's and the live one on AUTHOR) with their retries and a verdict."""
+    draft_in, draft_out = eval_score._draft_ceiling_tokens()
+    most = sum(eval_judge.call_cost_aud(model_id, draft_in, draft_out) for model_id in (CANDIDATE, AUTHOR))
+    compare_in, compare_out = eval_score.COMPARE_ESTIMATE_INPUT_TOKENS, eval_score.COMPARE_MAX_TOKENS
+    return most + eval_judge.call_cost_aud(JUDGE, compare_in, compare_out)
+
+
 def test_two_messages_scored_at_once_for_the_last_of_the_cap_only_one_is_scored_and_the_other_waits(aws):
     """eval-work's mapping runs two consumers at once. The second message comes while the first one's
     calls are being made, before their costs are counted: the first one's hold already counts, so the
@@ -834,11 +844,7 @@ def test_two_messages_scored_at_once_for_the_last_of_the_cap_only_one_is_scored_
     put_article(aws)
     run_id, queue = started(aws, model_ids=[CANDIDATE, OTHER])
     # Room for the most one message can cost (two drafts with their retries and a verdict), not two.
-    draft_in, draft_out = eval_score._draft_ceiling_tokens()
-    most = sum(eval_judge.call_cost_aud(model_id, draft_in, draft_out) for model_id in (CANDIDATE, AUTHOR))
-    compare_in, compare_out = eval_score.COMPARE_ESTIMATE_INPUT_TOKENS, eval_score.COMPARE_MAX_TOKENS
-    most += eval_judge.call_cost_aud(JUDGE, compare_in, compare_out)
-    before = round(2 - 1.5 * most, 6)
+    before = round(2 - 1.5 * first_message_hold_aud(), 6)
     spend_today(aws, str(before))
     first_record, second_record = queue.records()
     back, fake, second = FakeQueue(), FakeModels(), []
@@ -860,6 +866,41 @@ def test_two_messages_scored_at_once_for_the_last_of_the_cap_only_one_is_scored_
     calls = 2 * CANDIDATE_CALL_AUD + JUDGE_CALL_AUD
     day = evals_item(aws, "spend", "day#2026-10-27")
     assert day["spent_aud"] == pytest.approx(before + calls) and day["held_aud"] == 0
+
+
+class FailingGiveBack:
+    """The evals table, but giving a hold back (eval_judge.release's write) fails; every other call
+    reaches the table."""
+
+    def __init__(self, table):
+        self.table = table
+
+    def __getattr__(self, name):
+        return getattr(self.table, name)
+
+    def update_item(self, **kwargs):
+        if ":back" in kwargs.get("ExpressionAttributeValues", {}):
+            raise RuntimeError("ProvisionedThroughputExceededException")
+        return self.table.update_item(**kwargs)
+
+
+def test_a_hold_that_cannot_be_given_back_still_leaves_the_paid_message_scored(aws, models, capsys):
+    """The give-back runs in a finally once the calls are paid for and counted: were it to raise, it
+    would take the place of a verdict the day has already paid for. The hold stays counted instead."""
+    put_article(aws)
+    run_id, queue = started(aws)
+
+    with patch.object(evals_rollup, "evals_table", return_value=FailingGiveBack(aws.Table("Evals"))):
+        assert consume_all(queue.records()) == [{"status": "scored", "verdict": "good"}]
+
+    [row] = rows(aws, run_id)
+    assert row["outcome"] == "scored" and meta(aws, run_id)["status"] == "done"
+    out = capsys.readouterr().out
+    assert len([line for line in out.splitlines() if "could not give back a hold" in line]) == 1
+    day = evals_item(aws, "spend", "day#2026-10-27")
+    assert day["held_aud"] == pytest.approx(first_message_hold_aud())
+    calls = 2 * CANDIDATE_CALL_AUD + JUDGE_CALL_AUD
+    assert day["spent_aud"] == pytest.approx(first_message_hold_aud() + calls)
 
 
 def test_a_run_paused_by_the_cap_is_cancelled_and_its_waiting_message_is_dropped(aws, models):

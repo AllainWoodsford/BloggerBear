@@ -17,11 +17,11 @@ run's turn of
 topics after the last run's, and sends no more than the day's cap pays for; at the cap the consumer
 pauses the run and sends its item back with a delay, or counts it finished when it cannot, and two
 items judged at once never both take the last of the cap (a hold on the day's row, given back once
-the call's cost is counted); an article's pair row records the text it judged; a failure after the
-run's header is read still counts the item finished, judged when its pair row was written; the
-judge's call is never traced; a cancelled run's item is dropped; a retried message counts once; a
-run that marks more than 80% of at least 10 judged items bad turns the judge off, once; the two
-rubrics are code-only specs pinned at v1.
+the call's cost is counted, and left counted, never in place of the paid verdict, when it cannot be);
+an article's pair row records the text it judged; a failure after the run's header is read still
+counts the item finished, judged when its pair row was written; the judge's call is never traced; a
+cancelled run's item is dropped; a retried message counts once; a run that marks more than 80% of at
+least 10 judged items bad turns the judge off, once; the two rubrics are code-only specs pinned at v1.
 """
 
 from __future__ import annotations
@@ -937,6 +937,43 @@ def test_the_hold_is_given_back_when_the_judges_call_fails(aws):
 
     day = evals_item(aws, "spend", "day#2026-10-27")
     assert (day["spent_aud"], day["held_aud"]) == (0, 0)
+
+
+class FailingGiveBack:
+    """The evals table, but giving a hold back (eval_judge.release's write) fails; every other call
+    reaches the table."""
+
+    def __init__(self, table):
+        self.table = table
+
+    def __getattr__(self, name):
+        return getattr(self.table, name)
+
+    def update_item(self, **kwargs):
+        if ":back" in kwargs.get("ExpressionAttributeValues", {}):
+            raise RuntimeError("ProvisionedThroughputExceededException")
+        return self.table.update_item(**kwargs)
+
+
+def test_a_hold_that_cannot_be_given_back_still_leaves_the_paid_verdict_judged(aws, model, capsys):
+    """The give-back runs once the call is paid for and counted: were it to raise, it would take the
+    place of a verdict the day has already paid for. It prints one line instead, and the hold stays
+    counted, which costs the day some room but never takes it past the cap."""
+    put_finding(aws)
+    start_run(aws)
+
+    with patch.object(evals_rollup, "evals_table", return_value=FailingGiveBack(aws.Table("Evals"))):
+        assert consume(finding_item()) == {"status": "judged", "verdict": "good"}
+
+    assert evals_item(aws, f"pair#{SUBJECT}", "judge")["verdict"] == "good"
+    assert evals_item(aws, f"run#{RUN_ID}", "item#0#judge")["outcome"] == "judged"
+    assert (meta(aws)["status"], meta(aws)["judged"]) == ("done", 1)
+    out = capsys.readouterr().out
+    assert len([line for line in out.splitlines() if "could not give back a hold" in line]) == 1
+    cost = (1.2 * 0.001 + 0.02 * 0.005) * 1.5
+    day = evals_item(aws, "spend", "day#2026-10-27")
+    assert day["held_aud"] == pytest.approx(ESTIMATE_AUD)
+    assert day["spent_aud"] == pytest.approx(ESTIMATE_AUD + cost)
 
 
 def test_the_selector_sends_no_more_items_than_the_days_remaining_cap_pays_for(aws, model):
