@@ -1088,6 +1088,25 @@ PR18b, PR18c and PR11b merged in.
 (`test_rail_access_adapter.py`): until it reaches `dev`, CI fails that one test on any branch
 without it. PR13b, PR15, PR16 and the meeting branch carry it.
 
+**#401 and #412 are on dev** (2026-11-01). #412 (the edits-based Re-Write) changes `rewrite.py`,
+`compliance.py` and `review_inbox.py`, which PR7, PR9, PR14, PR18c and PR19 also change. PR21's
+branch merges dev and is the reference for each resolution (its merge commit 003a563 and 728670e).
+When each is retargeted to dev:
+
+- PR7 (#388): keep dev's `fresh_data`, `_FRESH_DATA_LABEL` and `_source_text`; render
+  `get_prompt("reviews/compliance", {"source": _defang(source), ...})`; `_review_verdict` reads the
+  undefanged source. The largest-render test passes `fresh_data`, and the registry's compliance
+  comments name it.
+- PR9 (#397): as PR7, plus `rewrite/rewrite` re-migrated to #412's text: `_REWRITE`, the sha
+  `d239dc3a1106cda6d065bda37cb07da7ae8ec59fe58185706b77635e851aed6d` and `v1.txt` from PR21's branch;
+  `_REPLY_RULE` is #412's edits contract; `test_rewrite_reviewer_prompts.py` re-pins `V1_SHA256` and
+  mocks an edits reply. Then PR10 (#398) takes the new PR9.
+- PR14 (#405): `test_rewrite.py`'s `_run` takes both `compliance_error` and #412's `mocks`.
+- PR18c (#410): `test_call_traces.py`'s second Re-Write quotes a passage the first left
+  (`SECOND_EDIT`).
+- PR19 (#408): `review_inbox.py` keeps both `FindingsSource` and #412's `_is_problem_note`.
+- PR18b (#409) carries the run-id pin in `test_eval_score.py` (pushed as ad471b5).
+
 **Then:** PR22, the docs sweep.
 
 **Owner actions waiting.**
