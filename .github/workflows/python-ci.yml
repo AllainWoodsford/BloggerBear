@@ -110,6 +110,10 @@ jobs:
           echo "Ruff remains blocking; apply any reported fixes to the branch and rerun CI." >&2
           exit 1
 
+      # The whole suite, across the runner's CPUs (pytest-xdist, lambdas/requirements-dev.txt).
+      # `loadfile` keeps each test file on one worker, so module-level state and fixtures behave as
+      # in a serial run; no file is big enough to unbalance it (the slowest is ~10% of the time).
+      # Every test still runs: this job is also the gate before every deploy.
       - name: Pytest
         run: |
           set -euo pipefail
@@ -117,4 +121,4 @@ jobs:
             echo "lambdas/ not present; skipping"
             exit 0
           fi
-          pytest lambdas/ scripts/
+          pytest lambdas/ scripts/ -n auto --dist loadfile
