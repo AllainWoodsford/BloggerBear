@@ -1117,9 +1117,10 @@ def _score_message(
                 return scoring.failed()
             except Exception as again:  # noqa: BLE001 - not counted finished: eval-work delivers it again
                 print(f"eval_score: item {n} of run {run_id} could not be finished after failing: {again!r}")
-                # Its row may hold its result (done's count failed, then failed()'s), which resume never
-                # sends again, so a deleted message would leave its run running for good. The copy counts a
-                # result (already_scored), and takes an error or a claim gone stale over.
+                # Its row may hold its result (done's count failed, then failed()'s, or the result's write
+                # lost its reply, so scoring.recorded is None), which resume never sends again, so a deleted
+                # message would leave its run running for good. The copy counts a result (already_scored),
+                # and takes an error or a claim gone stale over.
                 return {"status": eval_judge.RETRY}
     finally:
         eval_judge.release(table, now, settings, held)

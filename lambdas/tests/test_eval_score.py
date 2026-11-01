@@ -1498,6 +1498,44 @@ def test_a_result_whose_count_fails_twice_is_delivered_again_and_its_copy_counts
     assert (len(models.calls), len(written)) == ((0, 0) if judge_drafted else (3, 1))
 
 
+def test_a_verdict_whose_write_lost_its_reply_and_whose_count_fails_is_delivered_again(aws, models):
+    """The result's write can be made and its reply lost: failed() then finds the row is no longer its
+    claim and leaves the verdict, so the row holds a result although the message never saw it written.
+    If counting the message finished fails too, resume would never send it again, so a deleted message
+    would leave its run running for good: eval-work delivers it again, and the copy counts it
+    (already_scored) with no model call."""
+    put_article(aws)
+    run_id, queue = started(aws)
+    table = aws.Table("Evals")
+
+    class LostReply:  # as in test_a_verdict_whose_write_lost_its_reply_is_not_overwritten_by_the_failure
+        def __getattr__(self, name):
+            return getattr(table, name)
+
+        def put_item(self, **kwargs):
+            answer = table.put_item(**kwargs)
+            if kwargs["Item"].get("outcome") == "scored":
+                raise RuntimeError("ReadTimeoutError")
+            return answer
+
+    finish = throttled_first(eval_judge._finish, 1, "UpdateItem")
+
+    with (
+        patch.object(evals_rollup, "evals_table", return_value=LostReply()),
+        patch.object(eval_judge, "_finish", side_effect=finish),
+    ):
+        answers = deliver(queue.records())
+
+    assert answers[0]["batchItemFailures"] == [{"itemIdentifier": "message-0"}]
+    results = [answer["results"][0] for answer in answers]
+    assert results == [{"status": "retry"}, {"status": "dropped", "reason": "already_scored"}]
+    [row] = rows(aws, run_id)
+    assert (row["outcome"], row["verdict"]) == ("scored", "good") and "stage" not in row
+    header = meta(aws, run_id)
+    assert header["status"] == "done" and header["finished_items"] == {0}
+    assert len(models.calls) == 3  # the first delivery's: the copy made none
+
+
 def test_a_failure_marking_the_run_running_after_the_claim_is_the_messages_result(aws, models, capsys):
     """Once the row is claimed, a failure is recorded as the message's outcome (an error, which resume
     sends again), never left as a live claim that resume holds back for CLAIM_STALE."""
