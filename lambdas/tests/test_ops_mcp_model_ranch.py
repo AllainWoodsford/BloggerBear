@@ -740,7 +740,7 @@ def test_a_prompt_that_fell_back_lately_is_a_card_about_its_id(prompts):
     assert (card["kind"], card["id"]) == ("prompt_fallback", DRAFT)
     assert card["where"] == {"prompt": DRAFT, "versions": "v3"}
     assert card["suggestion"]["command"] == f"{suggestions.ADMIN_CLI} prompts list"
-    assert "fell back to the copy in the code in the last two days" in result["spoken"]
+    assert "fell back to the copy in the code in the last three days" in result["spoken"]
 
 
 def test_the_window_is_one_to_120_days_and_a_short_one_leaves_older_days_out(prompts):
@@ -829,16 +829,19 @@ def test_a_prompts_fallback_card_is_remembered_dismissed_and_followed_up_by_its_
     assert memory.dismiss(ALICE, "prompt_fallback", "not a prompt", now=NOW)["dismissed"] is False
 
 
-def test_a_prompts_fallback_card_stays_open_the_next_day_and_clears_by_itself_once_two_days_old(prompts):
+def test_a_prompts_fallback_card_stays_open_two_days_on_and_clears_by_itself_once_three_days_old(prompts):
     memory.remember(ALICE, model_ranch.prompt_metrics(now=NOW), now=NOW)
-    # v3 still runs on the two days after, without falling back.
+    # v3 still runs on the three days after, without falling back.
     still_running = row(2, 3, 2, 1, Admin_Review=(2, 3, 2, 1))
-    put_days(prompts, f"prompt#{DRAFT}#v3", {-1: still_running, -2: still_running})
+    put_days(prompts, f"prompt#{DRAFT}#v3", {-1: still_running, -2: still_running, -3: still_running})
 
-    # The next day, yesterday's fallback still counts.
-    still = memory.follow_up(ALICE, now=NOW + timedelta(days=1))
-    assert [(entry["kind"], entry["id"]) for entry in still["open"]] == [("prompt_fallback", DRAFT)]
+    # The reviewer bear runs every second day: the next day, and the day after, when he runs again,
+    # the fallback still counts, so his card is not read as fixed between two of his runs.
+    for later in (1, 2):
+        still = memory.follow_up(ALICE, now=NOW + timedelta(days=later))
+        open_cards = [(entry["kind"], entry["id"]) for entry in still["open"]]
+        assert open_cards == [("prompt_fallback", DRAFT)], later
 
-    done = memory.follow_up(ALICE, now=NOW + timedelta(days=2))
+    done = memory.follow_up(ALICE, now=NOW + timedelta(days=3))
     assert [(entry["kind"], entry["id"]) for entry in done["cleared"]] == [("prompt_fallback", DRAFT)]
     assert done["open"] == [] and done["fixed"] == []  # they stopped by themselves: never "you fixed"

@@ -17,6 +17,7 @@ from table_schemas import KEYS, create_table
 
 import admin_api_handler
 from common import backup
+from common.dispatch import Dispatcher
 
 REGION = "ap-southeast-2"
 BACKUP_BUCKET = "state-bucket"
@@ -368,6 +369,210 @@ def test_a_restore_must_name_a_snapshot_in_an_allowed_bucket(seeded):
         backup.start_restore("x.jsonl.gz", bucket="someone-elses-bucket")
     with pytest.raises(backup.BackupError, match="no snapshot"):
         backup.start_restore("backup/missing.jsonl.gz")
+
+
+# A topic on the dispatcher's queue (common/dispatch.py). Sydney on 2026-10-25 (AEDT, UTC+11): with
+# the seed's topic beside it, slot 1 and the seed's 5-minute stagger, its daily turn is 09:15.
+QUEUE_TOPIC = {
+    "topic_id": "rail",
+    "name": "Rail",
+    "dispatch_mode": "queue",
+    "research_cadence": "rate(1 hour)",
+    "daily_cadence": "cron(0 9 * * ? *)",
+    "daily_timezone": "Australia/Sydney",
+    "stagger_slot": Decimal(1),
+    "last_daily_dispatched_on": "2026-10-23",
+    "daily_claim_n": Decimal(3),
+}
+BEFORE_TURN = datetime(2026, 10, 24, 21, 0, tzinfo=UTC)  # 08:00
+DAILY_TURN = datetime(2026, 10, 24, 22, 15, tzinfo=UTC)  # 09:15
+AFTER_TURN = datetime(2026, 10, 24, 23, 0, tzinfo=UTC)  # 10:00
+
+
+def _restore_at(monkeypatch, moment: datetime, key: str) -> dict:
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment if tz is None else moment.astimezone(tz)
+
+    monkeypatch.setattr(backup, "datetime", _Clock)
+    job = _run(backup.start_restore(key), hooks=_hooks())
+    assert job["status"] == "succeeded", job
+    return _table("topics").get_item(Key={"topic_id": "rail"})["Item"]
+
+
+def _daily_runs_started(*moments: datetime) -> list[str]:
+    sfn = MagicMock()
+    run = Dispatcher(
+        sqs=MagicMock(), sfn=sfn, queue_url="https://queue", state_machine_arn="arn:aws:states:x"
+    )
+    for moment in moments:
+        run.tick(moment)
+    return [call.kwargs["name"] for call in sfn.start_execution.call_args_list]
+
+
+def test_a_topic_on_the_queue_restored_after_its_daily_turn_starts_no_second_run_that_day(
+    seeded, monkeypatch
+):
+    """The snapshot is from before today's run, which has started since (the live row says today).
+    Written back as it was, the older day would have the next tick start today's run again."""
+    _table("topics").put_item(Item=QUEUE_TOPIC)
+    key = _snapshot(seeded)["result"]["key"]
+    _table("topics").put_item(
+        Item={**QUEUE_TOPIC, "last_daily_dispatched_on": "2026-10-25", "daily_claim_n": 4}
+    )
+
+    row = _restore_at(monkeypatch, AFTER_TURN, key)
+
+    assert row == {**QUEUE_TOPIC, "last_daily_dispatched_on": "2026-10-25"}
+    assert _daily_runs_started(AFTER_TURN + timedelta(minutes=1), AFTER_TURN + timedelta(hours=3)) == []
+    assert _daily_runs_started(DAILY_TURN + timedelta(days=1)) == ["rail-2026-10-26-4"]
+
+
+def test_a_topic_on_the_queue_restored_before_its_daily_turn_runs_today(seeded, monkeypatch):
+    _table("topics").put_item(Item=QUEUE_TOPIC)
+    key = _snapshot(seeded)["result"]["key"]
+
+    row = _restore_at(monkeypatch, BEFORE_TURN, key)
+
+    assert row == QUEUE_TOPIC
+    assert _daily_runs_started(DAILY_TURN) == ["rail-2026-10-25-4"]
+
+
+def test_a_topic_on_the_queue_restored_before_its_restored_turn_after_today_s_run_starts_no_second_run(
+    seeded, monkeypatch
+):
+    """The snapshot's cadence is 10:00 (its turn 10:15); since then the topic moved to 08:00, and
+    today's run started at 08:15 (the live row says today). Restored at 09:00, before the restored
+    turn, the snapshot's older day would start a second run at 10:15, under a new name: the
+    snapshot's claim count is five behind the live row's."""
+    _table("topics").put_item(
+        Item={**QUEUE_TOPIC, "daily_cadence": "cron(0 10 * * ? *)", "last_daily_dispatched_on": "2026-10-20",
+              "daily_claim_n": Decimal(1)}
+    )  # fmt: skip
+    key = _snapshot(seeded)["result"]["key"]
+    _table("topics").put_item(
+        Item={**QUEUE_TOPIC, "daily_cadence": "cron(0 8 * * ? *)", "last_daily_dispatched_on": "2026-10-25",
+              "daily_claim_n": Decimal(6)}
+    )  # fmt: skip
+
+    row = _restore_at(monkeypatch, BEFORE_TURN + timedelta(hours=1), key)
+
+    assert (row["daily_cadence"], row["last_daily_dispatched_on"], row["daily_claim_n"]) == (
+        "cron(0 10 * * ? *)",
+        "2026-10-25",
+        1,
+    )
+    restored_turn = datetime(2026, 10, 24, 23, 15, tzinfo=UTC)  # 10:15
+    ticks = (BEFORE_TURN + timedelta(hours=1, minutes=1), restored_turn, restored_turn + timedelta(hours=3))
+    assert _daily_runs_started(*ticks) == []
+    assert _daily_runs_started(restored_turn + timedelta(days=1)) == ["rail-2026-10-26-2"]
+
+
+def test_a_topic_deleted_since_the_snapshot_moves_the_restored_turn_later_and_starts_no_second_run(
+    seeded, monkeypatch
+):
+    """The snapshot held three topics, so rail's turn was 09:20; one was deleted since, which moved
+    it to 09:15, and today's run started there. Restored at 09:17, between the two turns, with the
+    deleted topic back, the snapshot's older day would start a second run at 09:20."""
+    ferry = {**_on_schedules(), "topic_id": "ferry", "name": "Ferry", "stagger_slot": Decimal(2)}
+    claimed = {"last_daily_dispatched_on": "2026-10-20", "daily_claim_n": Decimal(1)}
+    _table("topics").put_item(Item={**QUEUE_TOPIC, **claimed})
+    _table("topics").put_item(Item=ferry)
+    key = _snapshot(seeded)["result"]["key"]
+    _table("topics").delete_item(Key={"topic_id": "ferry"})
+    claimed_today = {"last_daily_dispatched_on": "2026-10-25", "daily_claim_n": Decimal(6)}
+    _table("topics").put_item(Item={**QUEUE_TOPIC, **claimed_today})
+
+    row = _restore_at(monkeypatch, DAILY_TURN + timedelta(minutes=2), key)
+
+    assert (row["last_daily_dispatched_on"], row["daily_claim_n"]) == ("2026-10-25", 1)
+    restored_turn = DAILY_TURN + timedelta(minutes=5)  # 09:20, with the deleted topic back
+    ticks = (DAILY_TURN + timedelta(minutes=3), restored_turn, restored_turn + timedelta(hours=3))
+    assert _daily_runs_started(*ticks) == []
+    assert _daily_runs_started(restored_turn + timedelta(days=1)) == ["rail-2026-10-26-2"]
+
+
+def test_a_live_claim_made_in_another_zone_is_not_taken_for_a_day_of_the_restored_one(seeded, monkeypatch):
+    """The snapshot reads its daily turn in UTC (09:15); since then the topic moved to Sydney at
+    00:00, and its 00:15 run there was claimed as 2026-10-25, still the 24th in UTC. Restored at
+    14:00 UTC, past the restored turn, the row says the 24th: the Sydney date would have kept the
+    restored topic from running on the 25th in UTC."""
+    in_utc = {**QUEUE_TOPIC, "daily_timezone": "UTC", "last_daily_dispatched_on": "2026-10-20",
+              "daily_claim_n": Decimal(1)}  # fmt: skip
+    _table("topics").put_item(Item=in_utc)
+    key = _snapshot(seeded)["result"]["key"]
+    _table("topics").put_item(
+        Item={**QUEUE_TOPIC, "daily_cadence": "cron(0 0 * * ? *)", "last_daily_dispatched_on": "2026-10-25",
+              "daily_claim_n": 6}
+    )  # fmt: skip
+
+    row = _restore_at(monkeypatch, datetime(2026, 10, 24, 14, 0, tzinfo=UTC), key)
+
+    assert row["last_daily_dispatched_on"] == "2026-10-24"
+    assert _daily_runs_started(datetime(2026, 10, 25, 9, 15, tzinfo=UTC)) == ["rail-2026-10-25-2"]
+
+
+@pytest.mark.parametrize(
+    "unreadable",
+    [{"daily_timezone": "Mars/Olympus"}, {"daily_cadence": "cron(0 9 * 1 ? *)"}],
+    ids=["zone_unknown", "cadence_refused"],
+)
+def test_a_topic_on_the_queue_whose_cadences_cannot_be_read_is_restored_as_it_was_and_the_restore_succeeds(
+    seeded, monkeypatch, capsys, unreadable
+):
+    """The dispatcher skips such a topic, so there is no turn to judge: one row like it must not
+    fail the whole restore. The live row is renamed since, so the row read back is the snapshot's."""
+    topic = {**QUEUE_TOPIC, **unreadable}
+    _table("topics").put_item(Item=topic)
+    key = _snapshot(seeded)["result"]["key"]
+    _table("topics").put_item(Item={**topic, "name": "Renamed since"})
+
+    assert _restore_at(monkeypatch, AFTER_TURN, key) == topic
+    assert "backup: rail is on the queue, its cadences unreadable" in capsys.readouterr().out
+
+
+def test_a_restore_that_cannot_read_the_pipeline_config_judges_the_turn_with_the_stagger_s_defaults(
+    seeded, monkeypatch, capsys
+):
+    _table("topics").put_item(Item=QUEUE_TOPIC)
+    key = _snapshot(seeded)["result"]["key"]
+
+    def unreadable():
+        raise RuntimeError("throttled")
+
+    monkeypatch.setattr(backup.dynamo, "get_pipeline_config", unreadable)
+
+    # The default stagger is the seed's 5 minutes: the turn is 09:15, so at 10:00 it has passed.
+    assert _restore_at(monkeypatch, AFTER_TURN, key)["last_daily_dispatched_on"] == "2026-10-25"
+    assert "backup: could not read the pipeline config" in capsys.readouterr().out
+
+
+def _on_schedules() -> dict:
+    return {key: value for key, value in QUEUE_TOPIC.items() if key != "dispatch_mode"}
+
+
+def test_a_topic_on_its_schedules_restored_beside_one_on_the_queue_is_left_exactly_as_it_was(
+    seeded, monkeypatch
+):
+    """Only a topic on the queue is given today's claim. Three topics: rail's turn is 09:20 and
+    ferry's 09:25, both passed at 10:00, so a claim given to every row would reach ferry too."""
+    ferry = {**_on_schedules(), "topic_id": "ferry", "name": "Ferry", "stagger_slot": Decimal(2)}
+    _table("topics").put_item(Item=QUEUE_TOPIC)
+    _table("topics").put_item(Item=ferry)
+    key = _snapshot(seeded)["result"]["key"]
+
+    rail = _restore_at(monkeypatch, AFTER_TURN, key)
+
+    assert rail == {**QUEUE_TOPIC, "last_daily_dispatched_on": "2026-10-25"}
+    assert _table("topics").get_item(Key={"topic_id": "ferry"})["Item"] == ferry
+
+
+def test_a_snapshot_with_no_topic_on_the_queue_is_restored_exactly_as_it_was(seeded, monkeypatch):
+    _table("topics").put_item(Item=_on_schedules())
+    key = _snapshot(seeded)["result"]["key"]
+
+    assert _restore_at(monkeypatch, AFTER_TURN, key) == _on_schedules()
 
 
 # --- export ------------------------------------------------------------------------------------

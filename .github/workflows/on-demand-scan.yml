@@ -11,7 +11,8 @@ name: on-demand-scan
 #   PR adds (known, accepted history findings are fingerprinted in .gitleaksignore);
 # - every severity reported, LOW and up, before the same HIGH/CRITICAL gates;
 # - Checkov with every check it has, .checkov.yaml's repo-wide skips included, before the same gate;
-# - terraform fmt with diffs, validate for bootstrap too, and the module tests, verbose.
+# - terraform fmt with diffs, validate for bootstrap too, and the bootstrap's and the modules'
+#   tests, verbose.
 #
 # Every check runs even when an earlier one fails, and the summary job lists them all; the run
 # fails if any check failed. Gitleaks and Trufflehog run as pinned, checksum-verified binaries, not
@@ -54,7 +55,7 @@ jobs:
       - name: Terraform fmt (with diffs)
         run: terraform fmt -check -recursive -diff infra/
 
-      # Same as pr-checks' validate, plus infra/bootstrap (applied locally, so CI never checks it).
+      # Same as pr-checks' validate, plus infra/bootstrap (applied locally, so no deploy validates it).
       - name: Terraform validate (bootstrap and every environment)
         run: |
           set -euo pipefail
@@ -66,10 +67,12 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Terraform test (modules with tests)
+      # pr-checks' test loop, verbose: the bootstrap's tests plan it with a mocked AWS provider, as the
+      # modules' do, so this job still signs in to nothing and reads no secret.
+      - name: Terraform test (bootstrap and modules with tests)
         run: |
           set -euo pipefail
-          for dir in infra/modules/*; do
+          for dir in infra/bootstrap infra/modules/*; do
             if ls "$dir"/tests/*.tftest.hcl >/dev/null 2>&1; then
               echo "::group::test $dir"
               terraform -chdir="$dir" init -backend=false -input=false

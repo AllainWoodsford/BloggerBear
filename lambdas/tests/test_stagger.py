@@ -18,7 +18,7 @@ from test_admin_api_handler import TOPIC, _event, _put_topic
 
 import admin_api_handler
 import common.scheduler as scheduler
-from common import stagger
+from common import cron_match, stagger
 
 REGION = "ap-southeast-2"
 
@@ -133,6 +133,30 @@ def test_a_rate_that_does_not_divide_the_day_stays_a_rate(expression):
 def test_a_cron_that_names_days_is_never_carried_past_midnight(expression):
     assert stagger.staggered_expression(expression, 65) == (expression, False)
     assert stagger.staggered_expression(expression, 5)[1] is True  # within its hour it is fine
+
+
+@pytest.mark.parametrize(
+    ("offset", "expected"),
+    [
+        (65, "cron(5 23-3 * * ? *)"),  # 22, 23, 0, 1, 2 an hour later: 23, 0, 1, 2, 3
+        (125, "cron(5 0-4 * * ? *)"),  # two hours on, never 24-4
+        (185, "cron(5 1-5 * * ? *)"),
+        (1385, "cron(5 21-1 * * ? *)"),  # 23 hours on: still wraps
+    ],
+)
+def test_a_range_that_wraps_midnight_is_carried_round_the_clock_every_day(offset, expected):
+    shifted, applied = stagger.staggered_expression("cron(0 22-2 * * ? *)", offset)
+    assert (shifted, applied) == (expected, True)
+    # Every hour the matcher reads is a real hour, and the set is the old one moved on.
+    hours = {(hour + offset // 60) % 24 for hour in (22, 23, 0, 1, 2)}
+    assert cron_match.parse(shifted).hours == hours
+
+
+def test_a_range_that_wraps_midnight_on_named_days_is_never_carried():
+    # 23 is in every wrapping range, and an hour on it would land on the next day.
+    expression = "cron(0 22-2 ? * MON *)"
+    assert stagger.staggered_expression(expression, 65) == (expression, False)
+    assert stagger.staggered_expression(expression, 5) == ("cron(5 22-2 ? * MON *)", True)
 
 
 def test_no_offset_leaves_everything_alone():

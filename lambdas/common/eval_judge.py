@@ -20,20 +20,22 @@ Two halves, both run by eval-jobs (eval_jobs_handler.py):
   renders the item's rubric (`eval_judge/research_review` or `eval_judge/article_review`, code-only
   prompts in common/prompts_registry.py), calls the model once, and reads its reply against the
   locked contract, one JSON object: `{"verdict": "good"|"bad", "reason_code": <one of REASON_CODES>}`.
-  A verdict writes the `pair#<subject>` judge row (verdict, delta, ts) the rollup measures the judge's
-  agreement from, the marks on the Finding (`review_count`, `reviewed_by`, a set of role codes,
-  `last_reviewed_at`) or the Article (`eval_judged_at`), each conditional, the run's item row, and one
-  Research Review or Article Review event (+2 or -2, `by: judge`, event id `judge:<subject>:<run_id>`)
-  for the model that wrote the item and the prompt it wrote it with (`credit`: an article's text is
-  its draft's until a rewrite is saved, then its newest saved rewrite's, never a failed rewrite's: the
-  writer common/evals_emission.writer names for every other event of the article). A reply that is
-  not exactly the contract is ignored: no verdict, no mark, no event (its spend is still counted).
+  A verdict writes the `pair#<subject>` judge row (verdict, delta, ts, and for an article the text it
+  judged, `rewrite_number`) the rollup measures the judge's agreement from, the marks on the Finding
+  (`review_count`, `reviewed_by`, a set of role codes, `last_reviewed_at`) or the Article
+  (`eval_judged_at`), each conditional, the run's item row, and one Research Review or Article Review
+  event (+2 or -2, `by: judge`, event id `judge:<subject>:<run_id>`) for the model that wrote the item
+  and the prompt it wrote it with (`credit`: an article's text is its draft's until a rewrite is saved,
+  then its newest saved rewrite's, never a failed rewrite's: the writer common/evals_emission.writer
+  names for every other event of the article). A reply that is not exactly the contract is ignored: no
+  verdict, no mark, no event (its spend is still counted).
 
 **Judge is never author** (section 3, deviation 9). The judge's model is the first of the chain
 (section 4.5): `judge_model_id`, else the model-config default row's `fallback_model_id`, else
 BEDROCK_MODEL_ID, that is fit for text (model_fleet.suitable(TEXT), and not disabled; a model the
 registry has no row for is fit, as model_routing treats it) and wrote none of the item
-(evals.author_of, and the model its verdict scores). When every option wrote it, the item is skipped
+(evals.author_of, and the model its verdict scores), compared as models (`same_model`), so one model
+reached through two inference profiles is one author. When every option wrote it, the item is skipped
 with a `judge_skipped` evidence line. So is an item whose author is not recorded (a Finding from
 before research tracking): there is no model for its verdict to score.
 
@@ -45,12 +47,13 @@ calibrated. Every event is written to the evals log either way, so nothing is lo
 added to the day's spend on the evals table (entity `spend`, sk `day#<yyyy-mm-dd>` in the settings'
 time zone: `spent_aud`, `calls`) and to the run's `spent_aud`. `evals_daily_spend_cap_aud` bounds the
 day: the selector sends no more items than the remaining cap pays for at one estimated call each
-(ESTIMATE_INPUT_TOKENS in, JUDGE_MAX_TOKENS out), and the consumer checks again before each call. On a
-cap hit it marks the run `paused: spend cap`, sends the message back with DelaySeconds=900 and returns
-success, so the item waits for the next day rather than failing (an item it cannot send back is
-counted finished, unjudged, so its run still closes). A call on a model with no price is
-counted at UNPRICED_ITEM_AUD, never as free. Two items judged at once (eval-work's mapping runs two)
-can pass the check together, so a day can end one call over its cap.
+(ESTIMATE_INPUT_TOKENS in, JUDGE_MAX_TOKENS out), and the consumer holds the call's estimate on the
+day's row before each call (`reserve`, one conditional write, so two items judged at once, as
+eval-work's mapping runs two, can never both take the last of the cap) and gives it back once the
+call's cost is counted (`release`). When the hold does not fit it marks the run `paused: spend cap`,
+sends the message back with DelaySeconds=900 and returns success, so the item waits for the next day
+rather than failing (an item it cannot send back is counted finished, unjudged, so its run still
+closes). A call on a model with no price is counted at UNPRICED_ITEM_AUD, never as free.
 
 **The tripwire.** A run that ends having marked more than 80% of at least 10 items bad turns the judge
 off (`judge_enabled = false`, and `judge_paused_reason` says why) and prints a `judge_tripwire`
@@ -62,7 +65,15 @@ anything else. A message retried after a crash is dropped too once its item has 
 verdict is never counted twice; the run's progress is kept as sets of item numbers for the same reason.
 
 Never raises out of `select` or `consume` on an item's account: a failure is one printed line, and the
-item stays unjudged, so a later run picks it again.
+item stays unjudged, so a later run picks it again. A failure once the run's header is read still
+counts the item finished (judged, when its pair row was written first), so the run closes and checks
+the tripwire.
+
+**No call is traced** (common/call_traces.py, `trace_calls`). Traces are kept for the calls that build
+an article's or a Finding's lineage call (PR18c); the judge's call builds none (the run's item row
+records it), its rubrics are code-only, so the version names their whole text, and nothing of a reply
+is kept on purpose. Were it ever traced, the topic's operator note in its rubric is untrusted (PR17)
+and would be stored as its sha256, as the fresh-data review's is (fresh_review.REVIEW_UNTRUSTED).
 """
 
 from __future__ import annotations
@@ -92,12 +103,16 @@ from common.adapters.base import SEEN_KEY
 from common.bedrock import invoke_model_tracked
 from common.costing import USD_TO_AUD_RATE, call_cost_usd, pricing_for
 from common.fresh_review import resolve_review_steering
-from common.model_pricing import canonical_model_id
+from common.model_pricing import base_model_id, canonical_model_id
 from common.relevance import topic_label
 
 JUDGE_JOB = "judge"
 # Offline scoring runs' job (section 5.3), whose consumer is common/eval_score.py.
 SCORE_JOB = "score"
+# What a consumer answers for a record it could not even place in its run, or could not count finished
+# after a failure, before its claim or after it (eval_score._score): eval-jobs names that record among its
+# batch item failures, so eval-work delivers it again rather than delete it.
+RETRY = "retry"
 # The events' `source`, and the role code the judge writes as `by` and into a Finding's reviewed_by.
 SOURCE = "eval_jobs"
 ROLE = "judge"
@@ -334,11 +349,20 @@ def fit_options(settings: dict, config: dict | None = None) -> list[str]:
     return [model_id for model_id in chain(settings, config) if _fit(model_id)]
 
 
+def same_model(model_id) -> str | None:
+    """What every id of one model shares, for telling an author from a judge: its base id
+    (model_pricing.base_model_id), with no ARN and no geo prefix. model_catalog registers each system
+    inference profile (au., apac., global., ...) as a row of its own, so two ids of one model can both
+    be live, and a model is no less its own judge through another route to it. None for a non-id."""
+    return base_model_id(model_id) if isinstance(model_id, str) and model_id else None
+
+
 def pick_judge(options: list[str], authors: frozenset[str]) -> str | None:
-    """The first option that wrote none of the item (`authors`, canonical ids); None when every option
-    did."""
+    """The first option that is none of the models that wrote the item (`authors`, compared as models:
+    same_model); None when every option is one of them."""
+    wrote = {same_model(author) for author in authors}
     for model_id in options:
-        if canonical_model_id(model_id) not in authors:
+        if same_model(model_id) not in wrote:
             return model_id
     return None
 
@@ -352,7 +376,8 @@ def _spend_key(now: datetime, settings: dict) -> dict:
 
 
 def spent_today(table, now: datetime, settings: dict) -> float:
-    """What the evals jobs have spent today (A$), the settings' day."""
+    """What the evals jobs have spent today (A$), the settings' day, with what consumers hold for calls
+    they are making (reserve)."""
     item = table.get_item(Key=_spend_key(now, settings), ConsistentRead=True).get("Item") or {}
     return float(item.get("spent_aud") or 0)
 
@@ -360,6 +385,48 @@ def spent_today(table, now: datetime, settings: dict) -> float:
 def remaining_aud(table, now: datetime, settings: dict) -> float:
     """What today's cap (`evals_daily_spend_cap_aud`) has left: below zero once a day is over it."""
     return float(settings["evals_daily_spend_cap_aud"]) - spent_today(table, now, settings)
+
+
+def _aud(amount) -> Decimal:
+    return Decimal(str(round(float(amount), 6)))
+
+
+def reserve(table, now: datetime, settings: dict, amount: float) -> Decimal | None:
+    """Hold `amount` (A$) of today's cap for calls about to be made, or None when that would take the day
+    past it. One conditional write on the day's spend row adds the hold to `spent_aud` (and to
+    `held_aud`, so a hold is told from a cost) only while `spent_aud` is at most the cap less the hold:
+    two consumers can no longer both read the same room and both spend it, since the second's write
+    already counts the first's hold. The caller gives the hold back with `release` once each call's
+    real cost is counted (_record_spend), or no call was made; a consumer that dies in between leaves
+    its hold counted until the day ends, which errs towards spending less."""
+    held = _aud(amount)
+    limit = Decimal(str(settings["evals_daily_spend_cap_aud"])) - held
+    if limit < 0:
+        return None
+    try:
+        table.update_item(
+            Key=_spend_key(now, settings),
+            UpdateExpression="ADD spent_aud :held, held_aud :held SET updated_at = :now",
+            ConditionExpression="attribute_not_exists(spent_aud) OR spent_aud <= :limit",
+            ExpressionAttributeValues={":held": held, ":limit": limit, ":now": _iso(now)},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return None
+    return held
+
+
+def release(table, now: datetime, settings: dict, held: Decimal) -> None:
+    """Give back a hold `reserve` took (on the same day's row: `now` is the one it was taken with).
+    Never raises: a hold that cannot be given back stays counted until the day ends, which costs the
+    day some of its room but never takes it past the cap."""
+    try:
+        table.update_item(
+            Key=_spend_key(now, settings),
+            UpdateExpression="ADD spent_aud :back, held_aud :back",
+            ExpressionAttributeValues={":back": -held},
+        )
+    except Exception as exc:  # noqa: BLE001 - the hold stays counted; the day only spends less
+        print(f"eval_judge: could not give back a hold of A${held} on today's spend cap: {exc!r}")
 
 
 def call_cost_aud(model_id: str, input_tokens: int, output_tokens: int) -> float:
@@ -755,7 +822,10 @@ def _emit(item: dict, scored: dict, run_id: str, delta: int, now: datetime) -> b
 
 
 def _judge(body: str, run_id: str, item: dict, now: datetime, sqs) -> dict:
-    """Judge one item of run `run_id` (see the module's docstring for the order of things)."""
+    """Judge one item of run `run_id` (see the module's docstring for the order of things). Once the
+    run's header is read, a failure nothing below expects (a spend write, the item row's) still counts
+    the item finished, so its run closes and checks the tripwire; judged, with its verdict, when the
+    pair row was written before it failed, since that verdict stands."""
     table = evals_rollup.evals_table()
     meta = table.get_item(Key=_run_key(run_id), ConsistentRead=True).get("Item")
     if meta is None:
@@ -764,6 +834,23 @@ def _judge(body: str, run_id: str, item: dict, now: datetime, sqs) -> dict:
     if meta.get("status") == CANCELLED:
         print(f"eval_judge: run {run_id} was cancelled; its item is dropped")
         return {"status": "dropped", "reason": "cancelled"}
+    paired: dict = {}
+    try:
+        return _judged(table, body, run_id, item, now, sqs, paired)
+    except Exception as exc:  # noqa: BLE001 - the item is counted finished, so its run still closes
+        n = item["n"]
+        print(f"eval_judge: item {n} of run {run_id} failed: {exc!r}")
+        verdict = paired.get("verdict")
+        try:
+            _finish(table, run_id, n, now, judged=verdict is not None, bad=verdict == "bad")
+        except Exception as again:  # noqa: BLE001 - one line: the run stays open without this item
+            print(f"eval_judge: could not count item {n} of run {run_id} finished: {again!r}")
+        return {"status": "error", "reason": "unexpected"}
+
+
+def _judged(table, body: str, run_id: str, item: dict, now: datetime, sqs, paired: dict) -> dict:
+    """_judge's work once the run's header is read. `paired` gets the verdict once its pair row is
+    written, for _judge to count should anything after it fail."""
     kind, n = item["kind"], item["n"]
 
     def passed_over(reason: str, code: str | None = None) -> dict:
@@ -789,21 +876,27 @@ def _judge(body: str, run_id: str, item: dict, now: datetime, sqs) -> dict:
     model_id = pick_judge(options, judged_authors(record, scored))
     if model_id is None:
         return passed_over("author_only", "author_only" if options else "no_judge")
-    if item_estimate_aud(model_id) > remaining_aud(table, now, settings):
-        return _pause(table, run_id, n, body, sqs, now)
-    _set_status(table, run_id, RUNNING, (QUEUED, PAUSED))
     material = _material(kind, record)
     if material is None:
         return passed_over("no_source", "no_source")
     prompt = render(kind, dynamo.get_topic(item["topic_id"]) or {"topic_id": item["topic_id"]}, material)
+    # The call's estimate is held on the day's spend row before it is made (reserve), so two items
+    # judged at once can never both spend the last of the cap.
+    held = reserve(table, now, settings, item_estimate_aud(model_id))
+    if held is None:
+        return _pause(table, run_id, n, body, sqs, now)
     try:
-        result = invoke_model_tracked(prompt.text, model_id, max_tokens=JUDGE_MAX_TOKENS)
-    except Exception as exc:  # noqa: BLE001 - the item stays unjudged; a later run picks it again
-        print(f"eval_judge: the judge's call for item {n} of run {run_id} failed: {exc!r}")
-        _finish(table, run_id, n, now)
-        return {"status": "error", "reason": "model_call"}
-    judge_model = canonical_model_id(result.get("model_id") or model_id)
-    cost = _record_spend(table, run_id, now, settings, judge_model, result)
+        _set_status(table, run_id, RUNNING, (QUEUED, PAUSED))
+        try:
+            result = invoke_model_tracked(prompt.text, model_id, max_tokens=JUDGE_MAX_TOKENS)
+        except Exception as exc:  # noqa: BLE001 - the item stays unjudged; a later run picks it again
+            print(f"eval_judge: the judge's call for item {n} of run {run_id} failed: {exc!r}")
+            _finish(table, run_id, n, now)
+            return {"status": "error", "reason": "model_call"}
+        judge_model = canonical_model_id(result.get("model_id") or model_id)
+        cost = _record_spend(table, run_id, now, settings, judge_model, result)
+    finally:
+        release(table, now, settings, held)
     verdict, reason_code = parse_answer(result.get("text"))
     row = {
         **_run_key(run_id, f"item#{n}#{ROLE}"),
@@ -834,6 +927,10 @@ def _judge(body: str, run_id: str, item: dict, now: datetime, sqs) -> dict:
         "ts": _iso(now),
         "run_id": run_id,
     }
+    if kind == ARTICLE:
+        # The text it judged, which a person's verdict is paired with only when it is theirs too
+        # (evals_emission.rewrite_number; evals_rollup.judge_agreement).
+        pair[evals_emission.REWRITE_NUMBER] = evals_emission.rewrite_number(record)
     try:
         table.put_item(Item=pair, ConditionExpression="attribute_not_exists(entity)")
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -841,6 +938,7 @@ def _judge(body: str, run_id: str, item: dict, now: datetime, sqs) -> dict:
         table.put_item(Item={**row, "outcome": "already_judged"})
         _finish(table, run_id, n, now)
         return {"status": "dropped", "reason": "already_judged"}
+    paired["verdict"] = verdict
     _mark(kind, record, now)
     verdict_row = {**row, "outcome": "judged", "verdict": verdict, "reason_code": reason_code, "delta": delta}
     table.put_item(Item=verdict_row)

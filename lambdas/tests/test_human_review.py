@@ -12,10 +12,10 @@ event), the `pair#<subject>` row `human` and the person's marks, with the judge'
 condition; a retried POST writes no second event, pair row or review_count, and one whose event could
 not be written writes it later under the first POST's time; the other verdict on a reviewed Finding is
 refused; while evals are off the verdict and marks are kept and no event is written; a person's approve
-or reject keeps their verdict as the article's `pair#<article_id>` row `human`, a held article decided
-again keeps the latest, and a decision on text rewritten since the judge's mark keeps none and leaves
-the row already there; Professor Grizzlewick's decisions keep none; both routes are in both
-environments' Terraform.
+or reject keeps their verdict as the article's `pair#<article_id>` row `human` with the text it was
+given on (pairing with the judge's only on the same text), a held article decided again keeps the
+latest, and a decision on text rewritten since the judge's mark keeps none and leaves the row already
+there; Professor Grizzlewick's decisions keep none; both routes are in both environments' Terraform.
 """
 
 from __future__ import annotations
@@ -580,6 +580,41 @@ def test_a_decision_on_the_text_the_judge_judged_or_will_judge_is_kept_as_the_hu
     status, _ = _decide("approve")
 
     assert status == 200 and pair_rows(ARTICLE_ID)["human"]["verdict"] == "good"
+
+
+@pytest.mark.usefixtures("held")
+@pytest.mark.parametrize("saved,text", [(0, 0), (2, 2)], ids=["as_written", "rewritten_twice"])
+def test_a_persons_verdict_on_an_article_records_the_text_it_was_given_on(events, saved, text):
+    rewrites = [{"number": n + 1, "model_id": BETA, "finished_at": REWRITTEN_BEFORE} for n in range(saved)]
+    _put_written_article(**({"rewrites": rewrites} if rewrites else {}))
+
+    status, _ = _decide("approve")
+
+    assert status == 200 and pair_rows(ARTICLE_ID)["human"]["rewrite_number"] == text
+
+
+@pytest.mark.usefixtures("held")
+def test_a_verdict_before_a_rewrite_pairs_with_the_judges_only_once_the_rewrite_is_decided(events):
+    """A person rejects the article, it is sent back and rewritten, and the judge judges the rewrite
+    before anyone decides it: the two verdicts are on different texts, so they are no pair until the
+    person decides the rewrite too."""
+    _decide("reject")
+    assert pair_rows(ARTICLE_ID)["human"]["rewrite_number"] == 0
+    _rewritten(REWRITTEN_BEFORE, judged=None)
+    judged = evals_emission.pair_row(ARTICLE_ID, eval_judge.ROLE, "good", JUDGED_AT, rewrites=1)
+    evals_table_resource().put_item(Item=judged)
+    boto3.resource("dynamodb", region_name=REGION).Table("Articles").update_item(
+        Key={"article_id": ARTICLE_ID},
+        UpdateExpression="SET eval_judged_at = :at",
+        ExpressionAttributeValues={":at": JUDGED_AT},
+    )
+    assert evals_rollup.judge_agreement(evals_table_resource()) == (None, 0)
+    _put_moderation_item(queue_id="queue-2", article_id=ARTICLE_ID, reasons=["Fabricated claim: y"])
+
+    status, _ = _decide_on("queue-2", "approve")
+
+    assert status == 200 and pair_rows(ARTICLE_ID)["human"]["rewrite_number"] == 1
+    assert evals_rollup.judge_agreement(evals_table_resource()) == (1.0, 1)
 
 
 @pytest.mark.usefixtures("held")

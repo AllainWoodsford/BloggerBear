@@ -119,6 +119,26 @@ def test_topics_schedule_shows_the_shadow_record_of_a_topic_with_only_one_kind_o
     assert out.count("shadow:") == 1
 
 
+def test_topics_schedule_shows_the_clean_days_in_a_row_the_cutover_judges(capsys):
+    """After a mismatch the history still says so; the clean days counted since are what moving to
+    the queue asks for (one)."""
+    recorded = {
+        "shadow_last_daily_dispatch_at": "2026-10-14T23:10:30+00:00",
+        "shadow_mismatches": 1,
+        "shadow_unchecked": 0,
+        "shadow_checked_days": 4,
+        "shadow_clean_days": 2,
+    }
+    answer = {**LISTING, "topics": [{**LISTING["topics"][0], **recorded}, LISTING["topics"][1]]}
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, answer)):
+        _run(["topics", "schedule"])
+
+    assert (
+        "  shadow: 1 mismatch · 0 unchecked days · 4 checked days · 2 clean in a row · last daily turn "
+        "2026-10-14T23:10:30+00:00\n"
+    ) in capsys.readouterr().out
+
+
 def test_topics_schedule_can_print_the_raw_json(capsys):
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, LISTING)):
         _run(["topics", "schedule", "--json"])

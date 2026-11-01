@@ -55,6 +55,8 @@ def test_the_catalogue_names_what_the_cutover_writes_and_sends():
     having no schedules."""
     functions, queues = _of_kind("function"), _of_kind("queue")
     assert "shadow_checked_days" in dict(functions["dispatcher"].details)["Writes"]
+    assert "shadow_clean_days" in dict(functions["dispatcher"].details)["Writes"]
+    assert "shadow_research_matched_at" in dict(functions["dispatcher"].details)["Writes"]
     assert "<topic>-<date>-manual-<HHMMSS>" in dict(functions["admin-api"].details)["Sends"]
     assert "<topic_id>:research:manual:<hex>" in dict(queues["work"].details)["Deduplicated by"]
     assert f"/aws/lambda/{PREFIX}{ENV}-admin-api" in queues["work"].log_groups

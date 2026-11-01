@@ -165,6 +165,19 @@ def test_the_zone_lives_in_bootstrap_and_cannot_be_destroyed_by_accident():
     assert 'output "hosted_zone_id"' in outputs and 'output "hosted_zone_name_servers"' in outputs
 
 
+def test_the_bootstrap_domain_says_its_default_creates_a_zone_and_empty_creates_none():
+    """The default is a real domain, so an apply that does not pass domain_name creates a zone for
+    it. The description once said empty was the default and created nothing, which tells a fork
+    that leaving it out makes no zone."""
+    variable = _read("bootstrap", "variables.tf").split('variable "domain_name" {')[1].split("\n}\n")[0]
+    default = re.search(r'^  default\s*=\s*"([^"]*)"$', variable, re.M).group(1)
+    description = " ".join(variable.split("<<-EOT\n")[1].split("\n  EOT\n")[0].split())
+    assert default != ""
+    assert not re.search(r"empty \(the default\)|default is empty", description, re.I)
+    assert "The default is the original deployment's domain" in description
+    assert '`-var="domain_name="` (empty), which creates no zone' in description
+
+
 # --- production keeps its data ---------------------------------------------------------------------
 
 
@@ -1674,8 +1687,8 @@ def test_no_bootstrap_resource_puts_a_whole_data_source_into_a_string():
     """A resource whose for_each is a data source gets that data source's whole object as
     each.value, and only each.value.json, the policy, is a string. `"${each.value}"` in a name or a
     description passes `terraform validate`, which cannot know the value yet, and stops every plan
-    of the bootstrap. CI never plans the bootstrap (the owner applies it by hand), so nothing but
-    this test would see it before the owner's apply did."""
+    of the bootstrap. The owner applies the bootstrap by hand and CI never does; pr-checks plans it
+    with a mocked provider (infra/bootstrap/tests, the next test), and this names the line."""
     code = _uncommented(_read("bootstrap", "main.tf"))
     found = []
     for match in re.finditer(r'^resource "[^"]+" "([^"]+)" \{\n(.*?)^\}', code, re.S | re.M):
@@ -1683,6 +1696,40 @@ def test_no_bootstrap_resource_puts_a_whole_data_source_into_a_string():
             found.append(match.group(1))
             assert re.findall(r"each\.value[\w.]*", match.group(2)) == ["each.value.json"], match.group(1)
     assert sorted(found) == ["gha_deploy_other_environment", "gha_prompts"]
+
+
+@pytest.mark.parametrize(
+    ("workflow", "job", "next_job"),
+    [
+        ("pr-checks.yml", "validate", "secret-scan"),
+        ("on-demand-scan.yml", "terraform", "code-and-dependencies"),
+    ],
+)
+def test_pull_requests_and_the_on_demand_scan_plan_the_bootstrap_with_a_mocked_provider(
+    workflow, job, next_job
+):
+    """The bootstrap is applied once, by hand (project rule 6), so before this nothing planned it
+    ahead of the owner, and the for_each above passed validate and failed at plan. Its tests plan
+    it with a mocked AWS provider, and pr-checks runs them beside the modules' with no credentials,
+    as the on-demand scan, the thorough one, does too: the job signs in to nothing and reads no
+    secret, and nothing in it plans or applies a real configuration."""
+    tests = sorted((INFRA / "bootstrap" / "tests").glob("*.tftest.hcl"))
+    assert tests
+    for path in tests:
+        text = path.read_text(encoding="utf-8")
+        assert re.search(r'^mock_provider "aws" \{', text, re.M), path.name
+        commands = re.findall(r"^\s*command\s*=\s*(\w+)", text, re.M)
+        assert commands and set(commands) == {"plan"}, path.name
+
+    source = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    body = source.split(f"\n  {job}:\n")[1].split(f"\n  {next_job}:\n")[0]
+    step = body.split("- name: Terraform test (bootstrap and modules with tests)\n")[1]
+    assert "for dir in infra/bootstrap infra/modules/*; do" in step
+    assert 'terraform -chdir="$dir" init -backend=false -input=false' in step
+    assert 'terraform -chdir="$dir" test' in step
+    for text in ("configure-aws-credentials", "id-token", "secrets.", "AWS_"):
+        assert text not in body, text
+    assert not re.search(r"^\s*terraform [^\n]*\b(plan|apply)\b", body, re.M)
 
 
 def test_the_deploy_roles_may_create_the_evals_log_group_before_the_module_that_needs_it():

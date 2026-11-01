@@ -92,7 +92,10 @@ variable "domain_name" {
     HERE, not in an environment, on purpose: the zone's four name servers are what you type into your
     registrar, and they must not change when production is destroyed and rebuilt. A zone that
     lived in the production environment would be deleted with it and come back with different name
-    servers, which means changing the registrar again. Empty (the default) creates nothing.
+    servers, which means changing the registrar again.
+
+    The default is the original deployment's domain, so an apply that does not pass this creates
+    that zone. A fork passes its own domain, or `-var="domain_name="` (empty), which creates no zone.
 
     The zone has prevent_destroy, so removing it takes a deliberate edit, not a stray apply.
   EOT

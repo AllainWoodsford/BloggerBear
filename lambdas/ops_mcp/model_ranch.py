@@ -65,8 +65,10 @@ DAYS_DEFAULT = 30
 # The digest's limit too (evals_status.DIGEST_MAX_DAYS): the evals log keeps 120 days.
 DAYS_MAX = evals_status.DIGEST_MAX_DAYS
 WEEK_DAYS = 7
-# Recent enough for a prompt's fallbacks to be a finding: today and yesterday.
-FALLBACK_DAYS = 2
+# Recent enough for a prompt's fallbacks to be a finding: today and the two days before. The
+# reviewer bear runs every second day, so with today and yesterday alone his fallback read as fixed
+# on the day between his runs, before he had run again.
+FALLBACK_DAYS = 3
 # One call answers inside the agent's turn, which API Gateway ends at 29 seconds: at most this many
 # Queries of the evals table, each a few milliseconds.
 READS_MAX = 150
@@ -689,7 +691,7 @@ def _metrics_spoken(prompts: list[dict], days: int, settings: dict, asked: str |
         sentences.append(f"{len(split)} {are} split between versions: {_ids(split)}.")
     fell_back = [p["prompt_id"] for p in prompts if any(v["recent_fallbacks"] for v in p["versions"])]
     if fell_back:
-        sentences.append(f"{_ids(fell_back)} fell back to the copy in the code in the last two days.")
+        sentences.append(f"{_ids(fell_back)} fell back to the copy in the code in the last three days.")
     more = "" if complete else " Not every version was read: ask about one prompt for all of it."
     sentences.append(
         f"The table is on screen; ask about one prompt for each version against each model.{more}"
@@ -785,7 +787,7 @@ def prompt_metrics(prompt_id: str | None = None, days=DAYS_DEFAULT, *, now: date
             findings.append(
                 finding(
                     "prompt_fallback",
-                    f"Fell back to the copy in the code {recent} time(s) in the last two days",
+                    f"Fell back to the copy in the code {recent} time(s) in the last three days",
                     prompt["prompt_id"],
                     prompt=prompt["prompt_id"],
                     versions=", ".join(fell),
