@@ -1330,6 +1330,19 @@ _OPS_AGENT_SYSTEM = "\n".join(
         "Asked whether model prices are being updated, about new models being found, or about a "
         "reprice or pricing check: call model_catalog and say its `spoken`. Asked how to pause, "
         "rerun or change it: call cli_guides with `model-prices`.",
+        # The Model Ranch (ops_mcp/model_ranch.py, PR20). Scores are kept per model, per prompt version
+        # and per pairing of the two (a cell), and a bad pairing makes both look bad; blaming the model
+        # for one prompt's fault, or a version for one model's, would point the operator at the wrong
+        # fix. A version short of min_events has no verdict either way.
+        "Asked how the models or the prompts are doing, why a model is gated or not picked, or "
+        "whether a new prompt version is better: call model_ranch, or prompt_metrics for prompts "
+        "(`prompt_id` for one); when neither is among your tools, evals are off here, so say that. "
+        "Reason by cell, the pairing of a model and a prompt version, before "
+        "blaming either: a model that does badly with one version and well with the rest has a bad "
+        "pairing, not a bad model, and a version that does badly with only one model is that "
+        "pairing's trouble too; say which, from the model's weakest pairings or the version's "
+        "numbers per model. Never call a version with insufficient data better or worse than "
+        "another: say it needs more events.",
         # A table read aloud is noise; topics_overview puts it on the page.
         "When the operator asks to list topics or about a topic's settings, call "
         "topics_overview. The table is on screen: say how many there are and answer what was "
@@ -1455,7 +1468,7 @@ _OPS_AGENT_SYSTEM = "\n".join(
     )
 )
 
-# max_chars bounds the template; the spec is code-only, so only its vanilla (under 15,000 characters)
+# max_chars bounds the template; the spec is code-only, so only its vanilla (under 16,000 characters)
 # is ever held to it, and 32,000 leaves room for the rules still to come.
 _OPS_AGENT_MAX_CHARS = 32_000
 
@@ -1463,8 +1476,10 @@ OPS_AGENT_SPECS = (
     PromptSpec(
         prompt_id="ops_agent/system",
         vanilla=_OPS_AGENT_SYSTEM,
-        vanilla_version="v1",
-        vanilla_sha256="73768ea8bdd132c9fdb93f96deb9cb4ff3efa7dd0929979b7d9bbdfe376cafb9",
+        # v2 (PR20): the rule on reasoning by model and prompt cell. Code-only, so nothing publishes it;
+        # the version is what lineage records.
+        vanilla_version="v2",
+        vanilla_sha256="0e131e290cc4970462ecb1358c768c562ab7aece0f1c1c7d07ac239d192f4e59",
         required=frozenset(),
         optional=frozenset(),
         locked=(),

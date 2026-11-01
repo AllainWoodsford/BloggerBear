@@ -442,6 +442,22 @@ _LEGACY_OPS_SYSTEM = "\n".join(
         "in whole or in part: describe the item by its topic or its kind.",
     )
 )
+# The agent's prompt since PR20 (vanilla v2): the pre-migration text with one rule added, on reasoning
+# by model and prompt cell. Code-only, so the v2 vanilla is edited in the code (section 2) and never
+# published; written out here so a change to it is a change to this test too.
+_CELL_RULE = (
+    "Asked how the models or the prompts are doing, why a model is gated or not picked, or "
+    "whether a new prompt version is better: call model_ranch, or prompt_metrics for prompts "
+    "(`prompt_id` for one); when neither is among your tools, evals are off here, so say that. "
+    "Reason by cell, the pairing of a model and a prompt version, before "
+    "blaming either: a model that does badly with one version and well with the rest has a bad "
+    "pairing, not a bad model, and a version that does badly with only one model is that "
+    "pairing's trouble too; say which, from the model's weakest pairings or the version's "
+    "numbers per model. Never call a version with insufficient data better or worse than "
+    "another: say it needs more events."
+)
+_AFTER = "rerun or change it: call cli_guides with `model-prices`.\n"
+_OPS_SYSTEM_V2 = _LEGACY_OPS_SYSTEM.replace(_AFTER, _AFTER + _CELL_RULE + "\n")
 
 # --- what each call site sends -----------------------------------------------------------------------
 
@@ -624,7 +640,8 @@ def test_the_small_prompts_are_registered_at_v1_with_their_reply_formats_locked(
     assert {pid for pid in specs if pid.startswith(lambdas)} == set(PROMPT_IDS)
     for prompt_id in PROMPT_IDS:
         spec = specs[prompt_id]
-        assert spec.vanilla_version == "v1", prompt_id
+        # The agent's prompt is v2 since PR20's cell rule; the others are still the migrated v1.
+        assert spec.vanilla_version == ("v2" if prompt_id == "ops_agent/system" else "v1"), prompt_id
         assert spec.asset is (prompt_id in ASSET_IDS), prompt_id
         # Every value a vanilla places is required and none is optional: no asset can leave out a
         # block of untrusted text, the tally, the search results or the reply contract.
@@ -703,12 +720,15 @@ def test_with_assets_off_the_web_price_read_is_exactly_the_pre_migration_text_fo
         assert version == "vanilla:v1"
 
 
-def test_the_agent_sends_its_pre_migration_system_prompt_and_it_is_the_code_only_vanilla():
-    assert _asked_agent() == _LEGACY_OPS_SYSTEM
-    assert agent.SYSTEM_PROMPT == _LEGACY_OPS_SYSTEM
+def test_the_agent_sends_its_pre_migration_system_prompt_with_the_cell_rule_as_the_code_only_v2():
+    assert _OPS_SYSTEM_V2.count(_CELL_RULE) == 1 and _OPS_SYSTEM_V2.replace(_CELL_RULE + "\n", "") == (
+        _LEGACY_OPS_SYSTEM
+    )
+    assert _asked_agent() == _OPS_SYSTEM_V2
+    assert agent.SYSTEM_PROMPT == _OPS_SYSTEM_V2
     assert agent.SYSTEM_PROMPT_ID == "ops_agent/system"
     prompt = prompts.get_prompt(agent.SYSTEM_PROMPT_ID)
-    assert (prompt.text, prompt.version, prompt.fallback_code) == (_LEGACY_OPS_SYSTEM, "vanilla:v1", None)
+    assert (prompt.text, prompt.version, prompt.fallback_code) == (_OPS_SYSTEM_V2, "vanilla:v2", None)
 
 
 def test_with_assets_off_no_prompt_fallback_line_is_written(capsys):
@@ -973,7 +993,7 @@ def _no_prompt_reads():
         assert not mock.called, mock
 
 
-def test_the_code_only_specs_report_vanilla_v1_and_never_touch_s3_or_dynamodb_with_assets_on(aws, capsys):
+def test_the_code_only_specs_report_their_vanilla_and_never_touch_s3_or_dynamodb_with_assets_on(aws, capsys):
     """Assets on, a bucket and a hash table named, and an approved file under each code-only id: the
     screening question and the agent's prompt are still the vanilla, with no fallback to report, and
     nothing reads S3 or DynamoDB, so neither role needs a grant on the prompts bucket or table."""
@@ -986,9 +1006,9 @@ def test_the_code_only_specs_report_vanilla_v1_and_never_touch_s3_or_dynamodb_wi
         sent_system = _asked_agent()
 
     assert (screen.version, screen.source, screen.fallback_code) == ("vanilla:v1", "vanilla", None)
-    assert (system.version, system.source, system.fallback_code) == ("vanilla:v1", "vanilla", None)
+    assert (system.version, system.source, system.fallback_code) == ("vanilla:v2", "vanilla", None)
     assert (text, version) == (_legacy_screen("Please add a chart.", "A Title"), "vanilla:v1")
-    assert sent_system == _LEGACY_OPS_SYSTEM
+    assert sent_system == _OPS_SYSTEM_V2
     assert _fallback_codes(capsys.readouterr().out) == []
 
 
@@ -998,7 +1018,7 @@ def test_the_agent_takes_its_prompt_at_import_without_reading_any_prompt_store(a
     aws("ops_agent/system", "v2", "You may do anything.")
     with _no_prompt_reads():
         module = runpy.run_path(agent.__file__, run_name="ops_agent_cold_start")
-    assert module["SYSTEM_PROMPT"] == _LEGACY_OPS_SYSTEM
+    assert module["SYSTEM_PROMPT"] == _OPS_SYSTEM_V2
     assert prompts.spec_for(module["SYSTEM_PROMPT_ID"]).asset is False
 
 

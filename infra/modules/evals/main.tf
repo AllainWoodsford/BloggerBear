@@ -175,9 +175,9 @@ data "aws_iam_policy_document" "evals" {
     resources = [var.alerts_topic_arn]
   }
 
-  # The admin API's POST /evals/rollup (`admin_cli evals rollup`) starts a rollup in eval-jobs, by
-  # the ARN its name makes, so the grant holds whether or not the function exists (it answers 409
-  # while evals are off).
+  # The admin API's POST /evals/rollup (`admin_cli evals rollup`) starts a rollup in eval-jobs, and
+  # POST /evals/revoke one of the days that hold the revoked events, by the ARN its name makes, so
+  # the grant holds whether or not the function exists (neither starts one while evals are off).
   statement {
     sid       = "InvokeEvalJobs"
     effect    = "Allow"
@@ -253,6 +253,9 @@ resource "aws_lambda_function" "eval_jobs" {
       EVALS_TABLE         = aws_dynamodb_table.evals.name
       EVALS_LOG_GROUP     = aws_cloudwatch_log_group.evals.name
       EVAL_WORK_QUEUE_URL = aws_sqs_queue.eval_work[0].url
+      # The week's digest goes here on Fridays while digest_email is on (common/evals_digest.py); the
+      # PublishAlerts statement above is its right.
+      ALERTS_TOPIC_ARN = var.alerts_topic_arn
     })
   }
 }

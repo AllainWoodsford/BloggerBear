@@ -313,6 +313,11 @@ run "switched_on_it_makes_everything" {
   }
 
   assert {
+    condition     = aws_lambda_function.eval_jobs[0].environment[0].variables["ALERTS_TOPIC_ARN"] == var.alerts_topic_arn
+    error_message = "told the alerts topic, where the Friday digest goes (and the one topic its PublishAlerts right names)"
+  }
+
+  assert {
     condition = (
       aws_scheduler_schedule.rollup[0].name == "acme-dev-eval-rollup" &&
       aws_scheduler_schedule.rollup[0].schedule_expression == "cron(5 * * * ? *)" &&

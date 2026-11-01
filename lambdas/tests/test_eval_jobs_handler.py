@@ -21,22 +21,41 @@ SETTINGS = evals_settings.effective_settings(None)
 
 
 @pytest.fixture
-def ran():
+def digest():
+    not_due = {"status": "not_due"}
+    with patch.object(eval_jobs_handler.evals_digest, "maybe_send", return_value=not_due) as send:
+        yield send
+
+
+@pytest.fixture
+def ran(digest):
     with patch.object(eval_jobs_handler.evals_rollup, "run", return_value={"status": "done"}) as run:
         yield run
 
 
-def test_the_hourly_schedule_runs_the_rollup_from_its_watermark(ran):
+def test_the_hourly_schedule_runs_the_rollup_from_its_watermark_then_looks_at_the_digest(ran, digest):
     result = eval_jobs_handler.handler({"job": "rollup", "trigger": "schedule"}, CONTEXT)
 
-    assert result == {"status": "ran", "rollup": {"status": "done"}}
+    assert result == {"status": "ran", "rollup": {"status": "done"}, "digest": {"status": "not_due"}}
     ran.assert_called_once_with(trigger="schedule")
+    digest.assert_called_once_with()
 
 
-def test_an_admins_rollup_without_days_runs_from_the_watermark_as_the_schedule_does(ran):
-    eval_jobs_handler.handler({"job": "rollup", "trigger": "admin"}, CONTEXT)
+def test_an_admins_rollup_without_days_runs_from_the_watermark_as_the_schedule_does(ran, digest):
+    result = eval_jobs_handler.handler({"job": "rollup", "trigger": "admin"}, CONTEXT)
 
     ran.assert_called_once_with(trigger="admin")
+    # Only the hourly schedule sends the digest: an operator's rollup never emails anyone.
+    assert "digest" not in result and not digest.called
+
+
+def test_a_digest_that_fails_leaves_the_rollups_answer_and_says_why_with_its_repr(ran, digest, capsys):
+    digest.side_effect = RuntimeError("sns down")
+
+    result = eval_jobs_handler.handler({"job": "rollup", "trigger": "schedule"}, CONTEXT)
+
+    assert result == {"status": "ran", "rollup": {"status": "done"}, "digest": {"status": "error"}}
+    assert "RuntimeError('sns down')" in capsys.readouterr().out
 
 
 def test_an_admins_rollup_for_days_adds_those_days_up_again(ran):
@@ -121,7 +140,7 @@ def test_any_other_exception_is_printed_by_its_repr_and_returned_as_an_error(cap
     assert out == "eval_jobs_handler: unhandled exception: RuntimeError('rollup\\nbroke')\n"
 
 
-def test_the_rollups_evidence_line_carries_the_invocations_id(capsys):
+def test_the_rollups_evidence_line_carries_the_invocations_id(digest, capsys):
     def run(**kwargs):
         evals_rollup.evidence.emit("rollup_done", trigger=kwargs["trigger"], status="done")
         return {"status": "done"}

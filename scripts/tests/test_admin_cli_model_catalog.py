@@ -1,5 +1,6 @@
 """The Admin CLI's model catalog commands: `models list`, `models reprice`, `models discover`,
-`models classify` and `model-catalog get|set` (docs/enhancements/archive/model-catalog-refresh.md)."""
+`models classify` and `model-catalog get|set` (docs/enhancements/archive/model-catalog-refresh.md),
+and `models restore`, culling's way back (docs/enhancements/model-ranch-prompt-assets-evals.md)."""
 
 from __future__ import annotations
 
@@ -47,6 +48,14 @@ def test_the_cli_starts_the_jobs_and_reads_the_settings():
     assert cli("models", "discover") == [("POST", "/models/discover", None)]
     assert cli("models", "classify") == [("POST", "/models/classify", None)]
     assert cli("model-catalog", "get") == [("GET", "/model-catalog-config", None)]
+
+
+def test_models_restore_puts_a_model_back_by_its_id_sent_whole():
+    restored = [("POST", "/models/maker.poor-v1%3A0/restore", None)]
+    assert cli("models", "restore", "maker.poor-v1:0") == restored
+    arn = "arn:aws:bedrock:ap-southeast-2:123456789012:inference-profile/apac.maker.poor-v1:0"
+    [(_, path, _)] = cli("models", "restore", arn)
+    assert path.count("/") == 3 and path.endswith("/restore")
 
 
 def test_the_cli_refuses_a_set_with_nothing_in_it_or_a_bad_number():

@@ -235,10 +235,13 @@ def _warm(authorization: str, extra_headers: dict[str, str]) -> dict:
     return _response(200, {"warmed": True, "cooldown": False})
 
 
-# A finding's kind (a key of the server's catalogue) and id (ops_mcp/suggestions.ID_PATTERN), as
-# they must be shaped to be passed on. The server checks them against its own lists as well.
+# A finding's kind (a key of the server's catalogue) and id, as they must be shaped to be passed
+# on. An id may be any shape ops_mcp/suggestions.valid_id takes (a topic's or an article's id,
+# ID_PATTERN; a model's, MODEL_ID_PATTERN; a prompt's, PROMPT_ID_PATTERN), so this is the widest of
+# them, still with no quote, space, `;`, `$` or `#`. The server checks each kind's own shape, and
+# both against its own lists. Matched whole: a trailing newline is not part of either.
 _FINDING_KIND = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_FINDING_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+_FINDING_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$")
 
 
 def _dismissal(body: dict) -> tuple[str, str] | None:
@@ -250,9 +253,9 @@ def _dismissal(body: dict) -> tuple[str, str] | None:
     if set(body) != {"dismiss"} or not isinstance(wanted, dict) or set(wanted) != {"kind", "id"}:
         raise _Invalid("'dismiss' must hold exactly a finding's 'kind' and 'id', and nothing else")
     kind, finding_id = wanted["kind"], wanted["id"]
-    if not isinstance(kind, str) or not _FINDING_KIND.match(kind):
+    if not isinstance(kind, str) or not _FINDING_KIND.fullmatch(kind):
         raise _Invalid("'kind' must be a finding's kind")
-    if not isinstance(finding_id, str) or not _FINDING_ID.match(finding_id):
+    if not isinstance(finding_id, str) or not _FINDING_ID.fullmatch(finding_id):
         raise _Invalid("'id' must be a finding's id")
     return kind, finding_id
 

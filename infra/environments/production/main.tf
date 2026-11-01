@@ -1300,20 +1300,28 @@ module "admin_api" {
     "PUT /model-rotation",
     # The model catalog (docs/enhancements/archive/model-catalog-refresh.md): run the reprice, discover
     # or classify job now, and its settings and pause flags. See admin_api_handler.py's model catalog
-    # routes and `admin_cli models reprice|discover|classify`, `admin_cli model-catalog`.
+    # routes and `admin_cli models reprice|discover|classify`, `admin_cli model-catalog`. Restore
+    # puts a culled or pruned model back from the archive (`admin_cli models restore`).
     "POST /models/reprice",
     "POST /models/discover",
     "POST /models/classify",
+    "POST /models/{model_id}/restore",
     "GET /model-catalog-config",
     "PUT /model-catalog-config",
     # Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md): the evals settings row,
-    # starting a rollup now, what evals are doing, and a digest of the day totals. See
-    # admin_api_handler.py's evals routes and `admin_cli evals get|set|rollup|status|digest`.
+    # starting a rollup now, what evals are doing, a digest of the day totals, and an operator's
+    # forgive or punish, gate override and revoked source, and applying the weekly cull proposal. See
+    # admin_api_handler.py's evals routes and `admin_cli evals
+    # get|set|rollup|status|digest|forgive|punish|ungate|revoke|cull`.
     "GET /evals-config",
     "PUT /evals-config",
     "POST /evals/rollup",
     "GET /evals/status",
     "GET /evals/digest",
+    "POST /evals/adjust",
+    "POST /evals/ungate",
+    "POST /evals/revoke",
+    "POST /evals/cull/apply",
     # A person's review of research Findings: the ones waiting (the judge's first, never with its
     # verdict) and one verdict. See admin_api_handler.py's _list_findings_to_review_route and
     # _review_finding_route, and `admin_cli approve --source findings`.
@@ -3374,7 +3382,8 @@ module "ops_assistant" {
     Project   = local.default_tags.Project
   }
 
-  # The eleven app tables its tools read (read-only), as in dev. Findings is among them for
+  # The eleven app tables its tools read (read-only), as in dev, and the models and evals tables
+  # for the Model Ranch. Findings is among them for
   # topic_findings, which only ever Queries one topic's rows (a test holds it to Query); the one
   # map also grants Scan, accepted to keep the one-map design, since a Scan of Findings reaches
   # nothing a per-topic Query does not.
@@ -3390,6 +3399,11 @@ module "ops_assistant" {
     SIGN_INS_TABLE          = { name = module.app_data.sign_ins_table_name, arn = module.app_data.sign_ins_table_arn }
     STATS_CURRENT_TABLE     = { name = module.app_data.stats_current_table_name, arn = module.app_data.stats_current_table_arn }
     STATS_HISTORY_TABLE     = { name = module.app_data.stats_history_table_name, arn = module.app_data.stats_history_table_arn }
+    # The Model Ranch tools (lambdas/ops_mcp/model_ranch.py): the models' scores and the evals
+    # totals, read only, like every table here. The tools are registered only while evals are on
+    # (evals_enabled below), but the table is made either way, so its name and grant are always here.
+    MODELS_TABLE = { name = module.app_data.models_table_name, arn = module.app_data.models_table_arn }
+    EVALS_TABLE  = { name = module.evals.table_name, arn = module.evals.table_arn }
   }
 
   # The function the pool calls before and after every sign-in (aws_lambda_function.sign_in_events
@@ -3451,7 +3465,8 @@ module "ops_assistant" {
   vision_region  = var.vision_region
 
   # The evals switch, so the assistant counts eval-jobs and the rest of the evals module's
-  # switched parts as deployed only while they are (ops_mcp/architecture.py switch_env).
+  # switched parts as deployed only while they are (ops_mcp/architecture.py switch_env), and
+  # registers the Model Ranch tools only then (ops_mcp/model_ranch.available).
   evals_enabled = var.evals_enabled
 }
 

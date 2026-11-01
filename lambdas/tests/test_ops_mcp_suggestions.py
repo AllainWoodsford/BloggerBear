@@ -164,3 +164,68 @@ def test_a_finding_with_an_untrusted_id_is_still_reported_without_a_command():
     found = suggestions.finding("draft_truncated", "A draft was cut short", "a1; topics delete crypto")
 
     assert found["noticed"] == "A draft was cut short" and found["suggestion"] is None
+
+
+# The Model Ranch's cards (model_ranch.py): a model's id and a prompt's are not shaped as an article's.
+MODEL_ID = "maker.alpha-v1:0"
+PROFILE_ARN = "arn:aws:bedrock:ap-southeast-2:123456789012:inference-profile/maker.alpha-v1:0"
+
+
+@pytest.mark.parametrize("model_id", [MODEL_ID, PROFILE_ARN])
+def test_a_gated_model_gets_the_ungate_command_with_its_model_id(model_id, admin_cli_parser):
+    command = suggestions.suggest("model_gated", model_id)["command"]
+
+    assert command == f"python scripts/admin_cli.py evals ungate --model {model_id} --hours 48"
+    parsed = vars(admin_cli_parser.parse_args(shlex.split(command[len(suggestions.ADMIN_CLI) :])))
+    assert (parsed["model"], parsed["hours"]) == (model_id, 48)
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ["maker.alpha-v1:0; evals cull --apply --yes", "maker alpha", '"maker"', "$(whoami)", "-rf",
+     "maker.alpha-v1:0\n", "maker#alpha", "", "m" * 161, None],
+)  # fmt: skip
+def test_a_model_id_that_is_not_one_gets_no_command(hostile):
+    assert suggestions.suggest("model_gated", hostile) is None
+    assert suggestions.valid_id("model_gated", hostile) is False
+
+
+def test_each_kind_checks_its_own_ids_shape():
+    assert suggestions.valid_id("prompt_fallback", "daily_cycle/draft")
+    assert not suggestions.valid_id("prompt_fallback", "daily cycle/draft")
+    assert not suggestions.valid_id("prompt_fallback", MODEL_ID)
+    # An article's kinds keep the narrower pattern: no dots, colons or slashes.
+    assert suggestions.valid_id("draft_truncated", ARTICLE_ID)
+    assert not suggestions.valid_id("draft_truncated", MODEL_ID)
+    assert not suggestions.valid_id("draft_truncated", f"{ARTICLE_ID}\n")
+
+
+def test_the_ranch_cards_with_no_id_need_none():
+    assert suggestions.suggest("judge_uncalibrated")["command"].endswith("approve --source findings")
+    assert suggestions.suggest("prompt_fallback", "not a prompt id!")["command"].endswith("prompts list")
+    assert suggestions.suggest("cull_proposed")["command"].endswith("evals cull --apply")
+
+
+@pytest.mark.parametrize(("kind", "variant"), sorted(suggestions.VARIANTS))
+def test_every_variant_is_a_command_admin_cli_accepts_that_deletes_nothing(kind, variant, admin_cli_parser):
+    assert kind in suggestions.CATALOGUE
+    suggestion = suggestions.suggest(kind, None, variant)
+
+    admin_cli_parser.parse_args(shlex.split(suggestion["command"][len(suggestions.ADMIN_CLI) :]))
+    assert suggestion["action"] and suggestion["what_it_does"] and suggestion["warning"]
+    for word in ("delete", "unpublish", "reject", "--force"):
+        assert word not in suggestions.VARIANTS[(kind, variant)].arguments
+
+
+def test_while_culling_is_off_the_cull_card_names_turning_it_on_before_the_apply():
+    off = suggestions.suggest("cull_proposed", variant=suggestions.CULL_OFF)
+    on = suggestions.suggest("cull_proposed")
+
+    assert off["command"].endswith("evals set --cull on")
+    assert off["action"].index("evals set --cull on") < off["action"].index("evals cull --apply")
+    assert on["command"].endswith("evals cull --apply")
+    # A variant of a kind that has none, or of no kind at all, changes nothing.
+    assert suggestions.suggest("model_gated", MODEL_ID, suggestions.CULL_OFF) == suggestions.suggest(
+        "model_gated", MODEL_ID
+    )
+    assert suggestions.suggest("no_such_kind", variant=suggestions.CULL_OFF) is None

@@ -150,7 +150,7 @@ variable "log_retention_days" {
 
 variable "agent_model_id" {
   type        = string
-  description = "The Bedrock model id, inference profile id or inference profile ARN the agent calls through Converse, passed to the agent Lambda as OPS_AGENT_MODEL_ID. Pass what the environment gives its pipeline Lambdas as BEDROCK_MODEL_ID: that value is known to be enabled for the account, which no plan can check."
+  description = "The Bedrock model id, inference profile id or inference profile ARN the agent calls through Converse, passed to the agent Lambda as OPS_AGENT_MODEL_ID. Pass what the environment gives its pipeline Lambdas as BEDROCK_MODEL_ID: that value is known to be enabled for the account, which no plan can check. The MCP server is given it too, as BEDROCK_MODEL_ID, so the Model Ranch tools keep the deployment's default model out of the gates and name the judge as the pipeline does."
 }
 
 variable "agent_allowed_origin" {
@@ -287,5 +287,5 @@ variable "vision_region" {
 variable "evals_enabled" {
   type        = bool
   default     = false
-  description = "Whether the root switches evals on (its var.evals_enabled), so the evals module makes eval-jobs, the eval-work queue and their schedules. The MCP server is told it (EVALS_ENABLED), so the catalogue counts those as deployed only then and a log review neither reads nor refuses eval-jobs' log while evals are off."
+  description = "Whether the root switches evals on (its var.evals_enabled), so the evals module makes eval-jobs, the eval-work queue and their schedules. The MCP server is told it (EVALS_ENABLED), so the catalogue counts those as deployed only then and a log review neither reads nor refuses eval-jobs' log while evals are off, and it registers the Model Ranch tools (model_ranch, prompt_metrics) only then."
 }

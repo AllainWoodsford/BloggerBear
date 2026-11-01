@@ -353,6 +353,36 @@ EVENTS: dict[str, dict[str, str]] = {
     # was turned off (`judge_enabled` false, with `judge_paused_reason`, on the evals settings row).
     # `judged` and `bad` are the run's counts, `share` the bad share.
     "judge_tripwire": {"run_id": "id", "judged": "int", "bad": "int", "share": "num"},
+    # The rotation guard (common/model_ranch.py): a model the gates would hold back was served all
+    # the same, because the pipeline never goes without it or it is a topic's own model. `role` is
+    # what keeps it (default, fallback, judge, topic_model, topic_fallback); `slot` what it was
+    # served as (model or fallback); `windows` the windows that gate it (daily, weekly, total);
+    # `caller` the code that served it (routing, rewrite). The model's id, never its name.
+    "model_gated_protected": {
+        "model_id": "model",
+        "role": "code",
+        "slot": "code",
+        "windows": "codes",
+        "caller": "code",
+    },
+    # Culling in proposal mode (common/model_fleet.py, common/model_cull.py, PR16): one line when the
+    # weekly cycle proposes (`job` propose: `status` proposed, or off while evals are), when an
+    # operator applies a proposal (apply: the models proposed, culled, kept by the checks at apply
+    # time and left over the cap, and the cap) and when one restores a model (restore: `status`
+    # restored, or in_registry when it was back already; the model and the forgive's amount, whose
+    # Admin Forgive is its own event in the evals log). Counts only for the first two, never their ids.
+    "model_cull": {
+        "job": "code",
+        "status": "code",
+        "models": "int",
+        "proposed": "int",
+        "culled": "int",
+        "kept": "int",
+        "left": "int",
+        "cap": "int",
+        "model_id": "model",
+        "forgiven": "int",
+    },
 }
 
 # The invocation this process is in: {"fields": {...}, "counts": {event: n}}, or None outside one.

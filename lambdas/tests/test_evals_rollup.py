@@ -561,6 +561,55 @@ def test_the_windows_are_sums_of_the_day_rows_read_back():
     }  # fmt: skip
 
 
+def test_the_pickers_good_and_bad_counts_are_the_day_rows_summed_by_window():
+    rows = [
+        {"sk": "day#2026-12-25", "good": 4, "bad": 1},
+        {"sk": "day#2026-12-26", "good": Decimal("2"), "bad": Decimal("3")},
+        {"sk": "day#2027-01-01", "good": 1, "bad": 0},
+        {"sk": "day#not-a-date", "good": 99, "bad": 99},
+        {"sk": "day#2027-01-01-x"},
+    ]
+
+    found = evals_rollup.good_and_bad(rows, date(2027, 1, 1))
+
+    assert found == {
+        "perf_good": {"daily": 1, "weekly": 3, "monthly": 1, "total": 7},
+        "perf_bad": {"daily": 0, "weekly": 3, "monthly": 0, "total": 4},
+    }
+
+
+def test_the_pickers_counts_go_on_the_models_row_with_votes_and_the_judge_and_never_completions(aws):
+    logs = FakeLogs()
+    completion(logs, "a1", DRAFT, sydney("2026-10-20T09:00"))
+    vote(logs, "f1", "a1", 1, sydney("2026-10-20T10:00"))
+    rewrite(logs, "r1", "a1", sydney("2026-10-26T09:00"))
+    completion(logs, "a2", DRAFT, sydney("2026-10-27T08:00"))
+    vote(logs, "f2", "a2", 3, sydney("2026-10-27T09:00"))
+    vote(logs, "f3", "a2", -1, sydney("2026-10-27T09:30"))
+    judged(logs, "a2", "j1", 2, sydney("2026-10-27T10:00"))  # uncalibrated: counted here, not gated
+
+    rollup(logs)
+
+    alpha = plain(model_row(aws, ALPHA))
+    assert alpha["perf_good"] == {"daily": 2, "weekly": 2, "monthly": 3, "total": 3}
+    assert alpha["perf_bad"] == {"daily": 1, "weekly": 2, "monthly": 2, "total": 2}
+    # The gates' windows are what they were: completions and the rewrite, no votes, no judge.
+    assert (alpha["daily_perf"], alpha["perf_events"]["daily"]) == (2, 1)
+    assert plain(model_row(aws, BETA))["perf_good"] == dict.fromkeys(WINDOWS, 0)
+
+
+def test_the_index_row_says_whether_the_judge_was_calibrated_at_the_last_rollup():
+    settings = {"judge_min_pairs": 20, "judge_min_agreement": 0.7}
+
+    def calibrated(**index):
+        return evals_rollup.index_calibrated(index, settings)
+
+    assert calibrated(judge_agreement=Decimal("0.75"), judge_pairs=20)
+    assert not calibrated(judge_agreement=Decimal("0.75"), judge_pairs=19)
+    assert not calibrated(judge_agreement=Decimal("0.65"), judge_pairs=40)
+    assert not calibrated(judge_pairs=40)  # no pair holds both verdicts yet
+
+
 def test_days_are_sydney_days_across_daylight_saving(aws):
     logs = FakeLogs()
     # 23:30 on Saturday 3 October (UTC+10), and 00:30 on Monday 5 October (UTC+11): 24 hours apart,

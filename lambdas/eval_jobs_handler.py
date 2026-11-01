@@ -7,11 +7,14 @@ schedules and its queue's mapping only then):
 * by the module's two EventBridge Scheduler schedules, with `{"job": "rollup", "trigger":
   "schedule"}` hourly at five past and `{"job": "judge_select", "trigger": "schedule"}` hourly;
 * by the admin API's POST /evals/rollup (`admin_cli evals rollup`), with `{"job": "rollup",
-  "trigger": "admin"}`, and `"from"`/`"to"` (ISO dates) to add those days up again;
+  "trigger": "admin"}`, and `"from"`/`"to"` (ISO dates) to add those days up again; POST
+  /evals/revoke (`admin_cli evals revoke`) sends the same with the days that hold the revoked events;
 * by the event source mapping on the eval-work queue, with one judge or scoring job per batch
   (`{"Records": [...]}`).
 
-`rollup` runs common/evals_rollup.py. `judge_select` runs the judge's selector, and each queued record
+`rollup` runs common/evals_rollup.py; after a scheduled one, the week's digest is emailed to the alerts
+topic when it is due (common/evals_digest.py: Fridays, while `digest_email` is on, once a day by a
+stamp on the evals index row). `judge_select` runs the judge's selector, and each queued record
 goes to its consumer (common/eval_judge.py: `select` and `consume`). A record is answered by returning,
 whatever became of it, so the mapping deletes it: a judge item the day's spend cap holds back is sent
 to the queue again with a delay by the consumer itself, and one that failed stays unjudged for a later
@@ -28,16 +31,28 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from common import eval_judge, evals_rollup, evals_settings, evidence
+from common import eval_judge, evals_digest, evals_rollup, evals_settings, evidence
 
 ROLLUP_JOB = "rollup"
 JUDGE_SELECT_JOB = "judge_select"
 
 
+def _digest() -> dict:
+    """The weekly digest, if it is due. Its failure never touches the rollup, already written."""
+    try:
+        return evals_digest.maybe_send()
+    except Exception as exc:  # noqa: BLE001 - the next hourly run looks again
+        print(f"eval_jobs_handler: the digest check failed: {exc!r}")
+        return {"status": "error"}
+
+
 def _rollup(event: dict) -> dict:
     trigger = "schedule" if event.get("trigger") == "schedule" else "admin"
     if event.get("from") is None and event.get("to") is None:
-        return {"status": "ran", ROLLUP_JOB: evals_rollup.run(trigger=trigger)}
+        summary = evals_rollup.run(trigger=trigger)
+        if trigger != "schedule":
+            return {"status": "ran", ROLLUP_JOB: summary}
+        return {"status": "ran", ROLLUP_JOB: summary, "digest": _digest()}
     now = datetime.now(UTC)
     days = evals_rollup.manual_range(
         event.get("from"), event.get("to"), now, evals_settings.zone(evals_settings.get_settings())

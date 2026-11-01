@@ -1018,6 +1018,8 @@ RANCH = {
     "monthly_perf": 30,
     "total_perf": 120,
     "perf_events": {"daily": 2, "weekly": 6, "monthly": 15, "total": 60},
+    "perf_good": {"daily": 1, "weekly": 4, "monthly": 9, "total": 41},
+    "perf_bad": {"daily": 1, "weekly": 2, "monthly": 3, "total": 7},
     "perf_updated_at": "2026-10-20T17:00:00+00:00",
     "model_roles": ["rotation"],
     "ungated_until": "2026-10-21T17:00:00+00:00",

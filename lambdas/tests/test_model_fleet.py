@@ -761,3 +761,118 @@ def test_pruning_never_removes_the_evals_judge(aws, capsys):
     }.items()  # fmt: skip
     raw = json.loads(text)
     assert "dropped" not in raw and not {"judge-m", "dear", "cheap"} & set(map(str, raw.values()))
+
+
+# --- the rotation guard (common/model_ranch.py, PR15) ---------------------------------------------
+#
+# While evals are on, a model the Model Ranch has gated is no pick for a rotation and no roll forward
+# from the pool; the ordering of what is left, and pruning, are prune_mode's as before.
+
+# Below the daily gate (-50) with more than min_events (10) events behind it.
+GATED = {"daily_perf": Decimal("-80"), "perf_events": {"daily": 20, "weekly": 20, "monthly": 20, "total": 20}}
+
+
+@pytest.fixture
+def evals_on(monkeypatch):
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+
+
+def picked(models, mode="value_for_money", config=None):
+    return [m["model_id"] for m in model_fleet.rotation_picks(models, config, [], mode)]
+
+
+def test_a_gated_model_is_no_pick_for_a_rotation_and_the_rest_keep_their_order(aws, evals_on, monkeypatch):
+    put_model(aws, "cheap", 0.001, **GATED)
+    put_model(aws, "mid", 0.002)
+    put_model(aws, "dear", 0.01)
+    put_model(aws, "dearest", 0.02, **GATED)
+    models = dynamo.list_models()
+
+    assert picked(models) == ["mid", "dear"]
+    assert picked(models, "frontier") == ["dear", "mid"]
+    # The default is never gated, and an operator's ungated_until holds a gate open.
+    assert picked(models, config={"model_id": "cheap"}) == ["cheap", "mid", "dear"]
+    aws.Table("Models").update_item(
+        Key={"model_id": "dearest"},
+        UpdateExpression="SET ungated_until = :until",
+        ExpressionAttributeValues={":until": "2999-01-01T00:00:00Z"},
+    )
+    assert picked(dynamo.list_models(), "frontier") == ["dearest", "dear", "mid"]
+
+    monkeypatch.setenv("EVALS_ENABLED", "false")
+    assert picked(models) == ["cheap", "mid", "dear", "dearest"]
+
+
+def test_the_cycle_adds_the_best_pick_not_gated_and_keeps_a_gated_model_a_rotation_holds(aws, evals_on):
+    put_model(aws, "cheap", 0.001, **GATED)
+    put_model(aws, "mid", 0.002)
+    put_model(aws, "held", 0.003, **GATED)
+    put_topic(aws, "t", model_id_candidates=["held"])
+
+    result = model_fleet.cycle(SETTINGS, NOW)
+
+    # The gated model the rotation holds stays (routing passes it over until it recovers); the
+    # cheapest pick is gated, so the next one is added.
+    assert topic(aws, "t")["model_id_candidates"] == ["held", "mid"]
+    assert (result["added"], result["dropped_inactive"]) == (1, 0)
+
+
+def test_a_disabled_models_place_in_a_rotation_goes_to_a_pick_not_gated(aws, evals_on):
+    put_model(aws, "old", 0.001, enabled=False)
+    put_model(aws, "cheap", 0.001, **GATED)
+    put_model(aws, "next", 0.003)
+    put_topic(aws, "t", model_id_candidates=["old"])
+
+    model_fleet.deactivated("old", SETTINGS)
+
+    assert topic(aws, "t")["model_id_candidates"] == ["next"]
+
+
+def test_pruning_takes_models_in_the_same_order_whatever_the_gates_say(aws, evals_on, monkeypatch):
+    put_model(aws, "cheap", 0.001, **GATED)
+    put_model(aws, "mid", 0.002)
+    put_model(aws, "dear", 0.01, **GATED)
+    put_model(aws, "dearest", 0.02)
+    put_model(aws, "unpriced", **GATED)
+    gated_on = [m["model_id"] for m in model_fleet.prune_order(dynamo.list_models(), "value_for_money")]
+    monkeypatch.setenv("EVALS_ENABLED", "false")
+    gated_off = [m["model_id"] for m in model_fleet.prune_order(dynamo.list_models(), "value_for_money")]
+    monkeypatch.setenv("EVALS_ENABLED", "true")
+
+    result = model_fleet.prune({**SETTINGS, "max_models": 5, "discover_max_added": 2}, NOW)
+
+    assert gated_on == gated_off == ["unpriced", "dearest", "dear", "mid", "cheap"]
+    # Room for two: the unpriced one and the dearest, as ever; the gated "dear" is not singled out.
+    assert result["pruned_ids"] == ["unpriced", "dearest"]
+
+
+def test_the_pool_never_rolls_a_topic_to_a_gated_model_unless_it_is_protected(aws, evals_on, monkeypatch):
+    put_model(aws, "gated", 0.001, **GATED)
+    put_model(aws, "fine", 0.002)
+
+    assert model_fleet.rotation_pool(["gated", "fine", "unregistered"]) == ["fine", "unregistered"]
+    put_config(aws, model_id="gated")  # the default: never gated
+    assert model_fleet.rotation_pool(["gated", "fine"]) == ["gated", "fine"]
+
+    put_config(aws)
+    monkeypatch.setenv("EVALS_ENABLED", "false")
+    assert model_fleet.rotation_pool(["gated", "fine"]) == ["gated", "fine"]
+
+
+def test_with_no_pool_configured_the_pool_reads_nothing(evals_on, monkeypatch):
+    """Every publish asks for the pool, and most topics have none. An empty pool reads neither the
+    two settings rows the guard would (the evals row and the model-config default row, PR15) nor
+    the Models Scan the code before PR15 already ran on every such publish."""
+    calls = []
+
+    def recorded(name, answer):
+        return lambda *args, **kwargs: calls.append(name) or answer
+
+    # The modules model_ranch reads through too, so the guard's reads are covered.
+    monkeypatch.setattr(model_fleet.dynamo, "list_models", recorded("list_models", []))
+    monkeypatch.setattr(model_fleet.dynamo, "get_model_config", recorded("get_model_config", {}))
+    settings = evals_settings.effective_settings(None)
+    monkeypatch.setattr(model_fleet.evals_settings, "get_settings", recorded("get_settings", settings))
+
+    assert model_fleet.rotation_pool([]) == []
+    assert calls == []

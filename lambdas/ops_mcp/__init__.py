@@ -18,6 +18,8 @@ the pipeline, and nothing here runs a command: the operator does, after reading 
                   article will be written from (summaries on screen only, never spoken)
 - vision_evidence.py vision_evidence: what the vision pipeline measured and decided, and what a
                   person did about it, from the pipeline's evidence lines in the logs
+- model_ranch.py  model_ranch and prompt_metrics, where evals are on: each model's scores and gate,
+                  and how the versions of a prompt compare, from the models and evals tables
 - suggestions.py  the fixed catalogue of commands a finding can suggest
 - memory.py       what it has suggested and what it is watching: the one table it writes to
 - access.py       the assistant_access switch, checked on every request

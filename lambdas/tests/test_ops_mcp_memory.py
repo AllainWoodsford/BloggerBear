@@ -454,8 +454,9 @@ def test_every_kind_with_a_command_about_an_id_has_a_checker():
         kind
         for kind, entry in suggestions.CATALOGUE.items()
         if entry.arguments is not None
-        # About no id: never recorded.
-        and kind not in ("awaiting_review", "model_pricing_reverted")
+        # About no id: never recorded. The Model Ranch's judge and cull cards are about the whole
+        # ranch, and read fresh each time.
+        and kind not in ("awaiting_review", "model_pricing_reverted", "judge_uncalibrated", "cull_proposed")
         # Never recorded either: the sign_ins tool is not passed through memory (a lock lifts by
         # itself in minutes; test_ops_mcp_sign_ins.py holds that the server leaves it out).
         and kind not in ("sign_in_locked", "sign_in_failures")

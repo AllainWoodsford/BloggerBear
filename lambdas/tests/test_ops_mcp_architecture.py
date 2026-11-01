@@ -117,13 +117,17 @@ def test_every_table_in_terraform_is_in_the_catalogue_with_its_keys_indexes_and_
 
 
 def test_the_catalogue_says_which_tables_the_assistant_can_read_as_the_terraform_does():
-    call = _read("environments", "dev", "main.tf").split('module "ops_assistant" {', 1)[1]
-    tables = re.search(r"^  tables = \{\n(.*?)^  \}", call, re.S | re.M).group(1)
-    passed = set(re.findall(r"module\.app_data\.([a-z_]+)_table_name", tables))
     readable = {c.key.replace("-", "_") for c in _of_kind("table").values() if c.assistant_reads}
+    for environment in architecture.ENVIRONMENTS:
+        call = _read("environments", environment, "main.tf").split('module "ops_assistant" {', 1)[1]
+        tables = re.search(r"^  tables = \{\n(.*?)^  \}", call, re.S | re.M).group(1)
+        # Each key is the variable the code reads the table's name from, whichever module makes the
+        # table (app_data's, or the evals module's): TOPICS_TABLE is topics, EVALS_TABLE evals.
+        keys = re.findall(r"^\s*([A-Z_]+_TABLE)\s*=", tables, re.M)
+        passed = {key.removesuffix("_TABLE").lower() for key in keys}
 
-    # Plus its own table (memory.tf), which it reads and writes.
-    assert readable == passed | {"operator_suggestions"}
+        # Plus its own table (memory.tf), which it reads and writes.
+        assert readable == passed | {"operator_suggestions"}, environment
 
 
 def test_every_lambda_in_each_environment_is_in_the_catalogue():
