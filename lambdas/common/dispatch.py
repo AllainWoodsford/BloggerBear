@@ -1,5 +1,5 @@
 """The dispatcher's decisions: which topic is due for what this minute, how a job is claimed, and
-what is sent (docs/enhancements/model-ranch-prompt-assets-evals.md sections 4.5, 4.7 and 5.1).
+what is sent (docs/enhancements/archive/model-ranch-prompt-assets-evals.md sections 4.5, 4.7 and 5.1).
 
 One dispatcher run (a *tick*) every minute replaces the two EventBridge Scheduler schedules each
 topic owns today. For every topic it reads the same effective expressions the stagger writes

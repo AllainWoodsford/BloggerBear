@@ -1,7 +1,7 @@
 """Continuous evals' scored events: what each reason is worth (SCORING), the one JSON line an event
 is, writing it to the evals log group (`emit`), and reading it back (`parse`).
 
-docs/enhancements/model-ranch-prompt-assets-evals.md, sections 4.3 and 4.9. Every time something
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections 4.3 and 4.9. Every time something
 says a model or a prompt did well or badly (an article was completed, an operator rewrote one, a
 reader voted, a person or the judge reviewed one), the code that knows writes one event to the
 `<prefix>-<env>-evals` log group, and the hourly rollup (common/evals_rollup.py, PR13) adds the

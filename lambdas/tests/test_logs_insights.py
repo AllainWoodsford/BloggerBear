@@ -1,7 +1,7 @@
 """The shared Logs Insights runner (common/logs_insights.py), moved out of ops_mcp/logs.py.
 
 Its behaviour is held by test_ops_mcp_logs.py, which still calls it through ops_mcp.logs. What is
-held here is why it moved (docs/enhancements/model-ranch-prompt-assets-evals.md, E0): pipeline code
+held here is why it moved (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, E0): pipeline code
 (the evals rollup first) is to run its queries with it, so it must need nothing from the assistant,
 and a package that copies common/ without ops_mcp/logs.py (as a module's own package can: the ops
 agent's takes all of common/ and four other ops_mcp files) can still import it; and the assistant
@@ -64,7 +64,7 @@ def test_the_assistant_runs_its_queries_with_the_runner_in_common():
     assert "def run_queries(" not in source and "boto3.client(" not in source
 
 
-# --- the row limit (docs/enhancements/model-ranch-prompt-assets-evals.md, section 7.1, PR13) ------
+# --- the row limit (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, section 7.1, PR13) ------
 
 
 class RecordingLogs:

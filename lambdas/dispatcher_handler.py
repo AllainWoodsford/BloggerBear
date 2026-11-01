@@ -1,5 +1,5 @@
 """The dispatcher Lambda: one tick of the queue platform a minute
-(docs/enhancements/model-ranch-prompt-assets-evals.md section 5.1).
+(docs/enhancements/archive/model-ranch-prompt-assets-evals.md section 5.1).
 
 EventBridge Scheduler invokes it every minute (infra/modules/work-queue). It builds a Dispatcher
 (common/dispatch.py) with the queue and Step Functions clients, the work queue's URL and the

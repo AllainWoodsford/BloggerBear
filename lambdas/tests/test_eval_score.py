@@ -1,4 +1,4 @@
-"""Offline scoring runs (common/eval_score.py; docs/enhancements/model-ranch-prompt-assets-evals.md,
+"""Offline scoring runs (common/eval_score.py; docs/enhancements/archive/model-ranch-prompt-assets-evals.md,
 sections 2, 4.3 to 4.5, 4.7, 5.3, 5.4 and PR18b), against moto tables and buckets, a stand-in for the
 eval-work queue that keeps what is sent, and stand-in models: each draft says which model wrote it,
 and the judge picks the draft of the model each test names.

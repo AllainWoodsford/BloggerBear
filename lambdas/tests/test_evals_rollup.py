@@ -1,4 +1,4 @@
-"""The evals rollup (common/evals_rollup.py; docs/enhancements/model-ranch-prompt-assets-evals.md,
+"""The evals rollup (common/evals_rollup.py; docs/enhancements/archive/model-ranch-prompt-assets-evals.md,
 sections 4.4, 4.6, 4.9 and 5.3), against moto tables and a Logs Insights stand-in that answers from
 a list of log lines as Logs would (whole seconds, both ends included, at most `limit` rows).
 

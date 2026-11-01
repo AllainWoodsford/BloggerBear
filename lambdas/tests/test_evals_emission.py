@@ -1,4 +1,4 @@
-"""Continuous evals' emission points (common/evals_emission.py; docs/enhancements/
+"""Continuous evals' emission points (common/evals_emission.py; docs/enhancements/archive/
 model-ranch-prompt-assets-evals.md, sections 4.3 and 5.4, PR14), and the daily cycle's: an article
 stored earns an Article Completion per prompt of its lineage.
 

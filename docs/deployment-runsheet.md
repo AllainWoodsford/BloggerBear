@@ -34,6 +34,7 @@ another ([Deploying to another region](#deploying-to-another-region)).
   - [CloudWatch Logs tags (the assistant's log tools)](#cloudwatch-logs-tags-the-assistants-log-tools)
   - [The personal-data and secret checks](#the-personal-data-and-secret-checks)
   - [The reviewer bear (on by default)](#the-reviewer-bear-on-by-default)
+  - [The queue platform, prompts and evals (off until you switch them on)](#the-queue-platform-prompts-and-evals-off-until-you-switch-them-on)
   - [Vision (optional)](#vision-optional): now its own runsheet,
     [vision-runsheet.md](vision-runsheet.md)
 - [Deploying to another region](#deploying-to-another-region)
@@ -79,6 +80,9 @@ What it does, in order:
    - The alert emails, then the two account IDs.
    - The two deploy role ARNs. It shows the steps to create them and the ARN it expects, which you
      can accept by pressing Enter.
+   - The two prompts publisher role ARNs, `AWS_DEV_PROMPTS_ROLE_ARN` and
+     `AWS_PROD_PROMPTS_ROLE_ARN`, both at repository level. Optional: only the prompts workflow
+     uses them, once you turn prompts as assets on, so you may press Enter and set them then.
    - The state bucket names, then `PII_DENYLIST`.
 4. Tells you how to turn on the git hook that stops personal data being committed, and offers to
    run that one command (`git config core.hooksPath .githooks`) for this clone. If you say yes, it
@@ -151,7 +155,9 @@ a value), and it works without the AWS CLI. It also needs the `production` envir
 ## 1. Bootstrap, once, by hand
 
 `infra/bootstrap` creates the Terraform state bucket, the GitHub OIDC provider, the two deploy
-roles and (if you give it a domain) the Route 53 hosted zone. It has no backend of its own,
+roles, the two prompts publisher roles (`gha-<prefix>-dev-prompts` and `gha-<prefix>-prod-prompts`,
+which may write only their own environment's prompts bucket and table) and (if you give it a
+domain) the Route 53 hosted zone. It has no backend of its own,
 because it creates the bucket a backend would use. CI never applies it.
 
 ```bash
@@ -180,7 +186,13 @@ terraform apply \
 | `web_search_regions` | The Regions the deploy roles may create the AgentCore web search gateway in (a list). Must include each environment's `WEB_SEARCH_REGION` GitHub variable; leave it alone if you never set that variable ([The web search gateway's region](#the-web-search-gateways-region)). | `["ap-northeast-1"]` |
 
 Keep the outputs: `state_bucket_name`, `dev_deploy_role_arn`, `prod_deploy_role_arn`,
-`hosted_zone_id`, `hosted_zone_name_servers`.
+`dev_prompts_role_arn`, `prod_prompts_role_arn`, `hosted_zone_id`, `hosted_zone_name_servers`.
+
+**A bootstrap you applied before the prompts and evals work** has neither the publisher roles nor
+the deploy roles' right to the evals log group (`<prefix>-<env>-evals`). Every deploy now creates
+that log group, so apply the bootstrap again, with the same variables as last time, before the
+first deploy that carries the work, or that apply stops on `logs:CreateLogGroup`
+([the steps](production-runsheet.md#the-bootstrap-the-publisher-roles-and-the-evals-log-group)).
 
 **The prefix here and the `UNIQUE_NAME_PREFIX` GitHub variable (step 2) must be the same word.**
 Bootstrap allows the deploy roles only resources named `<prefix>-*`, and the deploys name
@@ -291,7 +303,10 @@ sketches it.
 2. In the `apply-dev` job's log, the init step should succeed (your state bucket's name shows as
    `***`, because it is a secret), and the plan should list resources named with your prefix. The
    first run creates everything: the tables, the buckets, the Lambda functions, both APIs, the web
-   ACLs, the dashboards and the static site.
+   ACLs, the dashboards and the static site. It also creates the queue platform's dispatcher and
+   work queue (in shadow mode), the prompts bucket and its hash table, and the evals table and log
+   group: each idle until you switch it on
+   ([below](#the-queue-platform-prompts-and-evals-off-until-you-switch-them-on)).
 3. To prove the account check works, set `AWS_DEV_ACCOUNT_ID` to a wrong 12-digit number and
    re-run. It must fail during the plan with "AWS account ID not allowed". Put the right value
    back. (The error names the account the role is really in.)
@@ -336,6 +351,11 @@ terraform -chdir=infra/environments/dev plan
   - `WAF_REGIONAL_ENABLED` or `WAF_REGIONAL_ENABLED_DEV`: `TF_VAR_waf_regional_enabled`
   - `WAF_ADMIN_ALLOWLIST` or `WAF_ADMIN_ALLOWLIST_DEV`: `TF_VAR_waf_admin_allowlist`
   - `WAF_LOG_ALL_REQUESTS` or `WAF_LOG_ALL_REQUESTS_DEV`: `TF_VAR_waf_log_all_requests`
+  - `EVALS_ENABLED`: `TF_VAR_evals_enabled`
+  - `PROMPT_AS_ASSET_ENABLED`: `TF_VAR_prompt_as_asset_enabled`
+  - `WORKER_CONCURRENCY`: `TF_VAR_worker_concurrency`
+  - `AWS_DEV_PROMPTS_ROLE_ARN`: `TF_VAR_prompts_publisher_role_arn` (without it the plan removes
+    the prompts bucket's policy)
 
 CI builds `frontend-dist/` (`frontend/` with its `.js` and `.css` minified) before every plan.
 Without it, a local plan shows every file of the site being removed.
@@ -376,7 +396,8 @@ Dev is up once the `terraform` workflow goes green. What is left is by hand.
    python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle
    python scripts/admin_cli.py inbox
    ```
-   Creating a topic creates its two schedules; after this it runs unattended. A new topic writes
+   Creating a topic creates its two schedules; after this it runs unattended. The dispatcher
+   watches it in shadow mode from its first turn, ready for when you move it to the queue. A new topic writes
    its daily article after 9 AM `Australia/Sydney`, at the minute its stagger slot gives it
    (`topics schedule` shows when); `--daily-cadence` and `--daily-timezone` change
    that. [scripts/README.md](../scripts/README.md) is the full CLI reference.
@@ -596,6 +617,32 @@ has already waited 10 days or more goes to the de-fanged publish (task 5) instea
 - **What he did:** his report on the Musings page; `moderation_decision` evidence lines with
   `by: reviewer`; the `reviewer-state` row in `<prefix>-<env>-model-config`.
 
+### The queue platform, prompts and evals (off until you switch them on)
+
+Three parts every deploy carries ([configuration.md](configuration.md#the-queue-platform-prompts-and-evals)
+has every setting). A new deployment needs nothing for them to start: each changes nothing until
+you turn it on, and the [production runsheet's enable order](production-runsheet.md#the-enable-order)
+is the order to do it in, dev first.
+
+- **The queue platform**: a dispatcher every minute, in place of each topic's two schedules, and a
+  FIFO work queue in front of the research tick. Until you move a topic to it
+  (`topics update <topic_id> --dispatch-mode queue`), the dispatcher only watches in shadow mode:
+  `topics schedule` shows each topic's record. Its one knob is the `WORKER_CONCURRENCY` variable, 2
+  unless you set it: how many research jobs run at once, each one of the account's concurrent Lambda
+  executions.
+- **Prompts as assets**: the Lambdas read their prompts from the prompts bucket instead of the
+  copies in their code, published from `prompts/` by the `prompts` workflow
+  ([prompts/README.md](../prompts/README.md)). It needs the two publisher role ARNs as repository
+  secrets, the `PROMPT_AS_ASSET_ENABLED` repository variable set to `true` and, before production's
+  first publish between releases, the `production-prompts` GitHub environment
+  ([how](production-runsheet.md#the-production-prompts-environment)). Set the variable to `false`
+  on the `production` environment too, unless production should follow at its next release.
+- **Continuous evals and the Model Ranch**: scored events, the hourly rollup, the gates that keep
+  poorly scoring models out of rotation, the weekly cull proposal, the judge and offline scoring
+  runs. The `EVALS_ENABLED` variable turns them on; the same advice about `production` applies. The
+  judge and the scoring runs spend at most `evals_daily_spend_cap_aud` a day between them (A$2 unless
+  you change it with `admin_cli.py evals set --daily-spend-cap`).
+
 ### Vision (optional)
 
 The vision worker, for the `satellite_vision` and `rail_access` topics (the Rail Access Monitor),
@@ -749,7 +796,10 @@ bucket is not part of dev, so a snapshot kept there survives
 4. **Restore:** point the CLI at the new Admin API URL and run
    `python scripts/admin_cli.py backup restore <key>`. Topics, gear, settings, costs,
    musings and articles come back; the topics' schedules are written and the published pages
-   rendered again.
+   rendered again. The evals table comes back too. The prompts bucket and its hash table do not
+   (they are not in a snapshot): with prompts as assets on, publish again
+   (`gh workflow run prompts.yml --ref dev -f environment=dev`), or every prompt falls back to the
+   code's copy and the `prompt-fallback` alarm fires.
 
 The same file restores into another region or account: copy it into that deployment's state
 bucket under `backup/`, then restore it there. Snapshots are also taken weekly on their own.

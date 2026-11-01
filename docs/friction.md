@@ -102,7 +102,10 @@ possibly transfer cost. (2026-10-03 session)
 tuple and a 17-element one are different types, so every plan failed with "Inconsistent conditional
 result types". `validate` checks types without real values, so it passed. The dev applies for #158
 and #159 both failed before anyone noticed. **Fix:** the `flatten([for ...])` idiom, plus a
-`terraform test` with a mocked provider that runs on every PR. (#160)
+`terraform test` with a mocked provider that runs on every PR. (#160) That dashboard has since
+gone: the Model Ranch work (its PR11b) put one `pipeline-health` dashboard per environment in
+place of it and of the two pipeline dashboards beside it, and kept its widgets as locals in
+`api_waf_dashboards.tf`.
 
 **2.2 A tfvars value silently beat the variable's default.** `bedrock_model_id = ""` was left in both
 environments' tfvars, so raising the default in `variables.tf` did nothing and every Lambda got an
@@ -154,7 +157,9 @@ so production was its first apply. **Fix:** `concat(...)` for one level, and a `
 assertion on the shape CloudWatch insists on. **Lesson:** a resource one environment skips is
 untested until the release; give it a test that doesn't need the environment. A `Release` tag on
 every resource was considered and dropped: dashboards can't carry tags, and it would have put a
-change on every resource in every plan. (#174)
+change on every resource in every plan. (#174) That dashboard is gone now, and so is the switch
+that kept it out of dev: every environment creates `pipeline-health`, and `ranch-and-prompts`
+wherever evals are on, and both have module tests that check their widgets without an apply.
 
 ## 3. Tests vs reality
 

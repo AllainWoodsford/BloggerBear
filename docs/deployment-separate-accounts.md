@@ -21,6 +21,7 @@ prefix. Use your own.
 - [In one account, each role is refused the other environment](#in-one-account-each-role-is-refused-the-other-environment)
 - [The firewall](#the-firewall)
 - [Logs, alarms and dashboards](#logs-alarms-and-dashboards)
+- [Prompts, evals and the queue platform](#prompts-evals-and-the-queue-platform)
 - [Vision (optional)](#vision-optional)
 - [Checklist before the first deploy](#checklist-before-the-first-deploy)
 - [Enhancement: a deployment account that assumes a role in each environment's account](#enhancement-a-deployment-account-that-assumes-a-role-in-each-environments-account)
@@ -60,7 +61,8 @@ What they cost you:
 | A budget alarm on the whole account | Set it up before anything is applied. Bootstrap's Bedrock budget is in addition to it, and is also per account. |
 | The bootstrap apply, and its local state file | Bootstrap creates account-level things. Keep both state files safe; neither is in git. |
 | The Terraform state bucket | Each bootstrap creates one, in its own account. **S3 bucket names are unique across all of AWS, so the two must have different names.** |
-| The GitHub OIDC provider and the deploy roles | GitHub signs in to each account directly ([What the OIDC side looks like](#what-the-oidc-side-looks-like)). |
+| The GitHub OIDC provider, the deploy roles and the prompts publisher roles | GitHub signs in to each account directly ([What the OIDC side looks like](#what-the-oidc-side-looks-like)). |
+| The deploy roles' right to the evals log group | Part of each account's bootstrap; every deploy creates the group, so a bootstrap applied before it is applied again in both ([Prompts, evals and the queue platform](#prompts-evals-and-the-queue-platform)). |
 | API Gateway's CloudWatch Logs role | One setting per account and region. Bootstrap sets it. |
 | The Lambda concurrency quota | A new account often allows only 10. Ask for more in both. |
 | DynamoDB's tag-based access control | An account setting, per region: [check it in both](deployment-runsheet.md#dynamodb-tag-based-access-control-abac). |
@@ -97,7 +99,7 @@ terraform apply \
   -var="unique_name_prefix=acme-blog" \
   -var="domain_name=" \
   -var="budget_alert_email=you@example.com"
-terraform output        # keep dev_deploy_role_arn and state_bucket_name
+terraform output        # keep dev_deploy_role_arn, dev_prompts_role_arn and state_bucket_name
 ```
 
 **Then the production account**, with its own bucket name and your domain:
@@ -113,7 +115,7 @@ terraform apply \
   -var="unique_name_prefix=acme-blog" \
   -var="domain_name=example.com" \
   -var="budget_alert_email=you@example.com"
-terraform output        # keep prod_deploy_role_arn, state_bucket_name, hosted_zone_id, hosted_zone_name_servers
+terraform output        # keep prod_deploy_role_arn, prod_prompts_role_arn, state_bucket_name, hosted_zone_id, hosted_zone_name_servers
 ```
 
 What must be the same in both: `github_repo`, `unique_name_prefix`, and `aws_region` if you set
@@ -122,11 +124,14 @@ it. What must differ: `aws_account_id` and `state_bucket_name`.
 If you give both applies the same bucket name, the second one fails at once with
 `BucketAlreadyExists`. Nothing is harmed; choose another name and apply again.
 
-**Each apply creates both deploy roles.** The dev account ends up with a
-`gha-acme-blog-prod-deploy` role and the production account with a `gha-acme-blog-dev-deploy`
-role. They are never used: GitHub is only ever given the dev role's ARN from the dev account and
-the production role's ARN from the production account. You may leave them. Each still trusts
-only your repository's `dev` branch or `production` environment.
+**Each apply creates both deploy roles, and both prompts publisher roles.** The dev account ends
+up with a `gha-acme-blog-prod-deploy` role and the production account with a
+`gha-acme-blog-dev-deploy` role, and the same for `gha-acme-blog-prod-prompts` and
+`gha-acme-blog-dev-prompts`. They are never used: GitHub is only ever given the dev roles' ARNs
+from the dev account and the production roles' ARNs from the production account. You may leave
+them. Each still trusts only your repository's `dev` branch, or its `production` environment (and,
+for the production publisher, `production-prompts`). Keep the publisher roles' outputs too:
+`dev_prompts_role_arn` from the dev account, `prod_prompts_role_arn` from the production account.
 
 To come back to one account's bootstrap later, select its workspace first
 (`terraform workspace select dev`) and sign in to that account.
@@ -141,8 +146,12 @@ full table is in [configuration.md](configuration.md#github-secrets-and-variable
 | Account ID | `AWS_DEV_ACCOUNT_ID` = `111111111111` | `AWS_PROD_ACCOUNT_ID` = `123456789012` |
 | Deploy role | `AWS_DEV_DEPLOY_ROLE_ARN` = `arn:aws:iam::111111111111:role/gha-acme-blog-dev-deploy` | `AWS_PROD_DEPLOY_ROLE_ARN` = `arn:aws:iam::123456789012:role/gha-acme-blog-prod-deploy` |
 | State bucket | `TF_STATE_BUCKET_DEV` = `acme-blog-terraform-state-dev` | `TF_STATE_BUCKET_PROD` = `acme-blog-terraform-state-prod` |
+| Prompts publisher role | `AWS_DEV_PROMPTS_ROLE_ARN` = `arn:aws:iam::111111111111:role/gha-acme-blog-dev-prompts` | `AWS_PROD_PROMPTS_ROLE_ARN` = `arn:aws:iam::123456789012:role/gha-acme-blog-prod-prompts`, **at repository level** |
 
-`UNIQUE_NAME_PREFIX` and `AWS_REGION` stay single values, shared by both.
+`UNIQUE_NAME_PREFIX` and `AWS_REGION` stay single values, shared by both. The production
+publisher's ARN is the one production setting in this table kept at repository level: production's prompts are
+also published under the `production-prompts` environment, and a `production` secret would not reach
+that job. Both publisher ARNs are needed only once prompts as assets are on.
 
 **The role decides the account.** Each workflow assumes one role, and whatever account that role
 lives in is the account Terraform changes. The account ID is then checked against it, and the
@@ -251,7 +260,10 @@ If that shows `"use_immutable_subject": true`, bootstrap's pattern matches as it
 not, the pattern has no `@` to match and every sign-in is refused: edit the two `sub` values in
 `infra/bootstrap/main.tf` (`gha_dev_trust` and `gha_prod_trust`) to the plain form,
 `repo:your-name/your-fork:ref:refs/heads/dev` and `repo:your-name/your-fork:environment:production`,
-and apply bootstrap again in both accounts.
+and apply bootstrap again in both accounts. The prompts publisher roles have trust documents of
+their own, written the same way: `gha_dev_prompts_trust` (`ref:refs/heads/dev`) and
+`gha_prod_prompts_trust` (`environment:production-prompts` and `environment:production`). Edit
+those three values too if you will publish prompts.
 
 **4. The workflow side**, already in `.github/workflows/`. The permission lets the job ask GitHub
 for a token, and the step exchanges it for the role's credentials:
@@ -321,6 +333,10 @@ never "refused".
 - Bootstrap's own resources: the state bucket (each role only its own key), the hosted zone and
   the OIDC provider.
 
+**The prompts publisher roles carry no such policy.** Each may reach only its own environment's
+prompts bucket and prompt-hashes table, named in its policy (`<prefix>-dev-prompts` or
+`<prefix>-production-prompts`), so it has nothing of the other environment's to be refused.
+
 **What it does not do.** The dev role can still write the policies of dev's own Lambda roles,
 and a role it writes could be given more than the dev role has. So this protects against a
 mistake (a wrong variable, the wrong directory, a careless destroy), not against someone who
@@ -359,13 +375,46 @@ attach it to distributions in the account that owns it.
 
 - Each environment's log groups, alarms, dashboards and alert topic are in its own account. To
   look at production you sign in to the production account.
-- Dev has no firewall dashboard: the edge dashboard, the only one with web ACL panels, is
-  production's alone (`edge_dashboard_enabled`). If you turn it on for dev, its panel for the
-  shared web ACL stays empty, because those metrics are in the production account.
+- Each environment has its pipeline-health dashboard (`<prefix>-<env>-pipeline-health`) and, while
+  evals are on, its Model Ranch and prompts dashboard (`<prefix>-<env>-ranch-and-prompts`), in its
+  own account: at most two an account, inside CloudWatch's three free ones. (They replaced the
+  pipeline, lambda-runs and edge dashboards, and the `edge_dashboard_enabled` switch, which are
+  gone.) Each environment's pipeline health has panels for its own web ACLs, and dev's also for the
+  shared CloudFront web ACL (`<prefix>-shared-acl`, production's). With two accounts those panels
+  stay empty in dev, because the shared ACL's metrics are in the production account.
 - The operator's assistant in each environment reads only its own account. Production's
   firewall review reads the shared ACL's logs, which are in its account already.
 - Alert emails are separate settings (`ALERT_EMAIL_DEV`, `ALERT_EMAIL_PROD`), and each needs its
   subscription confirmed.
+
+## Prompts, evals and the queue platform
+
+The queue platform, prompts as assets and continuous evals are deployed in each account with the
+code, and each is off (or, for the queue, in shadow mode) until you switch it on
+([the enable order](production-runsheet.md#the-enable-order)). With two accounts:
+
+- **The bootstrap, in each account.** Each account's bootstrap makes both prompts publisher roles
+  and lets its deploy roles create the evals log group, `<prefix>-<env>-evals`. Every deploy creates
+  that group, evals on or off, so a bootstrap applied before the evals work must be applied again in
+  each account before the first deploy into it that carries that work: the dev account's before the
+  work merges to `dev`, the production account's before the release that brings it. Select the
+  account's workspace first (`terraform workspace select dev`), and check the plan adds the two
+  publisher roles with their policies, changes the deploy roles' policy, and destroys nothing.
+- **The publisher secrets** name each environment's own account: `AWS_DEV_PROMPTS_ROLE_ARN` the dev
+  account's `gha-<prefix>-dev-prompts`, `AWS_PROD_PROMPTS_ROLE_ARN` the production account's
+  `gha-<prefix>-prod-prompts`, both at repository level ([the table above](#github-settings-that-differ)).
+  A publish to production signs in to the production account and nowhere else.
+- **The `production-prompts` environment** is GitHub's, so it is made once for the repository, not
+  per account ([how](production-runsheet.md#the-production-prompts-environment)).
+- **Everything else is per account already:** each environment's prompts bucket and prompt-hashes
+  table, evals table and log group, work queue and dispatcher are in its own account, and nothing of
+  one environment reads the other's.
+- **Lambda concurrency.** The work queue's workers (`WORKER_CONCURRENCY`, 2 unless you set it) and
+  eval-jobs' queue consumer (two at once) draw on their own account's quota, so dev's never take
+  production's.
+- **The judge's model** must be callable from each account. It is that environment's
+  `judge_model_id`, else its model-config fallback model, else its `BEDROCK_MODEL_ID`: run the
+  `converse` test with it in each account, as for the default model.
 
 ## Vision (optional)
 
@@ -406,7 +455,8 @@ production's never meet.
 - [ ] `terraform output` from each kept: the dev role ARN and bucket from the dev account; the
       production role ARN, bucket, hosted zone ID and name servers from the production account.
 - [ ] The six settings in [GitHub settings that differ](#github-settings-that-differ) set, each
-      role ARN under its own account's secret.
+      role ARN under its own account's secret, and the two prompts publisher ARNs at repository
+      level once you turn prompts as assets on.
 - [ ] `web_acl_arn` empty in dev's `terraform.tfvars`.
 - [ ] Lambda concurrency, DynamoDB tag-based access control and the Bedrock model checked in both.
 - [ ] `gh api repos/your-name/your-fork/actions/oidc/customization/sub` agrees with the `sub`

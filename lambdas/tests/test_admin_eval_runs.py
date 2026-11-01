@@ -1,5 +1,5 @@
 """The admin API's offline scoring run routes (admin_api_handler.py over common/eval_score.py;
-docs/enhancements/model-ranch-prompt-assets-evals.md, PR18b): POST /evals/runs, GET /evals/runs,
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR18b): POST /evals/runs, GET /evals/runs,
 GET and DELETE /evals/runs/{run_id}, POST /evals/runs/{run_id}/resume, and their place in both
 environments' Terraform.
 

@@ -1,5 +1,5 @@
 """Culling in proposal mode, an operator's half: applying the weekly proposal and restoring a model
-(docs/enhancements/model-ranch-prompt-assets-evals.md, sections 3, 4.5 and 4.6, PR16). The admin
+(docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections 3, 4.5 and 4.6, PR16). The admin
 API's POST /evals/cull/apply and POST /models/{model_id}/restore call these; `admin_cli evals cull
 --apply` and `models restore` send them.
 

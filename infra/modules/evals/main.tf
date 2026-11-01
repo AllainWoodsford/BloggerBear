@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------
-# Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md, section 5.3; PR12): where
+# Continuous evals (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, section 5.3; PR12): where
 # the pipeline's scored events go, the table they are added up in, and the jobs that do the adding.
 #
 #   pipeline Lambdas -- common/evals.py emit() --> the evals log group (one JSON line an event)

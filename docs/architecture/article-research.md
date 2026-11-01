@@ -19,6 +19,7 @@ flowchart LR
     subgraph setup["1-3. Topic, schedules, keys"]
         topics[("topics table")]
         sched["EventBridge Scheduler<br/>two schedules per topic"]
+        disp["Lambda dispatcher, SQS work.fifo<br/>a topic on the queue"]
         ssm["SSM Parameter Store<br/>API keys (SecureString)"]
     end
     subgraph research["4-5. Research tick (heartbeat)"]
@@ -46,6 +47,8 @@ flowchart LR
     admin --> topics
     admin --> sched
     sched --> tick
+    disp --> tick
+    disp --> sfn
     tick --> adapter --> src
     adapter -. "key at cold start" .-> ssm
     tick -- "diff vs last Finding's snapshot" --> snap
@@ -67,7 +70,7 @@ flowchart LR
 | # | Step | What happens | Where in the code / infra |
 |---|---|---|---|
 | 1 | **Topic and adapter** | A topic is a row of settings created with the admin CLI: which adapter reads its source and with which `adapter_config` ([the keys](../configuration.md#adapter-settings)), how often to research, its editorial goals, its model ([which model a call uses](../models.md#which-model-a-call-uses)) and review mode. The adapter is the only code that knows anything about the source. | `topics` table; `lambdas/common/adapters/` (`base.py` is the contract, `registry.py` maps names to classes) |
-| 2 | **Schedules** | Creating a topic creates two EventBridge Scheduler schedules: a research heartbeat (`research_cadence`, every hour by default), which invokes the research tick, and the daily cycle at its time and timezone, which starts the daily cycle's state machine. The heartbeat is not the research interval: each tick decides for itself whether the topic is due (step 4). Each topic has a slot in the stagger (`stagger_slot`), so the heartbeat runs at the slot's minute past the hour (slot 1 at :05, slot 2 at :10) and the daily cycle after every topic's heartbeat, one slot apart; the schedules as written are on the row, and `topics schedule` lists them. A paused topic's schedules are disabled. Topics are runtime data, not Terraform. | `lambdas/common/scheduler.py` and `common/stagger.py`, called by `admin_api_handler.py`; `<prefix>-<env>-<topic_id>-research-tick` / `-daily-cycle` |
+| 2 | **Schedules** | Creating a topic creates two EventBridge Scheduler schedules: a research heartbeat (`research_cadence`, every hour by default), which invokes the research tick, and the daily cycle at its time and timezone, which starts the daily cycle's state machine. The heartbeat is not the research interval: each tick decides for itself whether the topic is due (step 4). Each topic has a slot in the stagger (`stagger_slot`), so the heartbeat runs at the slot's minute past the hour (slot 1 at :05, slot 2 at :10) and the daily cycle after every topic's heartbeat, one slot apart; the schedules as written are on the row, and `topics schedule` lists them. A paused topic's schedules are disabled. Topics are runtime data, not Terraform. A topic moved to the queue (`dispatch_mode: queue`) has neither schedule: one dispatcher a minute reads the same expressions, sends its research jobs to a FIFO work queue and starts its daily runs itself ([the queue platform](queue-platform.md)). | `lambdas/common/scheduler.py` and `common/stagger.py`, called by `admin_api_handler.py`; `<prefix>-<env>-<topic_id>-research-tick` / `-daily-cycle`; for a topic on the queue, `lambdas/dispatcher_handler.py` and `common/dispatch.py` |
 | 3 | **Third-party sources and their keys** | API keys are SecureStrings in SSM Parameter Store. Terraform sets an environment variable that holds each parameter's *name*, and the Lambda reads the value at cold start. Keys are never in code, tables or logs. Both keys are optional. News search uses GDELT, which needs no key, and falls back to Bedrock AgentCore web search, which the Lambda's IAM role authorises. The vision topics' sources need no key either: Sentinel-2 scenes through the Earth Search STAC API and the public `sentinel-cogs` bucket (`satellite_vision`, `rail_access`), and OpenStreetMap's rail lines and stations through the Overpass API (`rail_access`); their measuring is done by the vision worker ([vision](blogger-vision.md)). | `COINGECKO_API_KEY_PARAMETER` (`crypto_feed.py`), `GITHUB_API_TOKEN_PARAMETER` (`github_trending.py`), `lambdas/common/web_search.py`, `lambdas/common/vision_sites.py`, `lambdas/common/osm.py`; [how to store a key](../deployment-runsheet.md#api-keys-for-the-data-sources) |
 | 4 | **Research tick: diff first** | If the topic is due and not paused, the adapter fetches its source and `material_diff` compares what came back with what the topic has already reported. If nothing is new, the tick returns `no_change` and no model is called ([in detail](#4-research-tick-diff-first)). | `lambdas/research_tick_handler.py` (`_not_due`, `_merge_seen`); `lambdas/common/research_schedule.py`; `Adapter.known_keys` in `common/adapters/base.py` |
 | 5 | **Findings** | Bedrock summarises only what is new. The tick then stores the raw snapshot and a Finding that holds the summary ([in detail](#5-findings)). | `lambdas/research_tick_handler.py` (`_build_prompt`); `common/editorial_resolver.py`, `common/relevance.py`; `<prefix>-<env>-content` bucket, `snapshots/<topic_id>/<captured_at>.json` (expires after 21 days); `<prefix>-<env>-findings` (expires after 14 days); `GET /topics/{topic_id}/findings` |
@@ -91,6 +94,12 @@ manual `topics trigger --pipeline research_tick` always skips that check.
 
 Otherwise the adapter fetches the source, and a fetch that answers stamps the topic's
 `last_research_at`; one that fails stamps nothing, so the next heartbeat tries again.
+
+For a topic on the queue, the tick is handed one job from the work queue. It runs at the minute the
+dispatcher found the topic due (`due_checked_at`), not the minute the job left the queue: that time
+decides the due check and is the `last_research_at` a fetch stamps, which never moves backwards. So a
+job that waited behind others does not push the topic's next heartbeat out
+([a research job](queue-platform.md#a-research-job-on-workfifo)).
 
 `material_diff` then compares what came back with the snapshot of the topic's last Finding, not
 with the last fetch. The vision adapters are the exception. They set `keeps_running_state`, so they
@@ -123,7 +132,8 @@ To look at a topic's Findings: ask the assistant ("what did research find for X?
 
 ### 6. Candidate ideas
 
-Once a day, the schedule starts the daily cycle's state machine, which runs the daily-cycle Lambda
+Once a day, the schedule (or, for a topic on the queue, the dispatcher, under the execution name
+`<slug>-<date>-<n>`) starts the daily cycle's state machine, which runs the daily-cycle Lambda
 (for retries, see [below](#runs-that-write-nothing-and-runs-that-fail)).
 
 The cycle reads the topic's Findings since its last article (`last_article_at`), within three
@@ -247,6 +257,17 @@ stamp) is set to the run's start, so the next window begins there, and the Stats
 figures are rebuilt. The same write records the run that wrote the article: `last_article_run`, the
 run's id and the article's id ([why](#runs-that-write-nothing-and-runs-that-fail)).
 
+**Prompts and scores.** Every one of these calls renders its prompt through `prompts.get_prompt`:
+the published asset of that prompt when the deployment serves assets and every check passes, the
+copy in the code otherwise. With an A/B split, one run draws one side of each prompt's split, by
+its run id. Each lineage call records the prompt's id and version (`prompt_id`, `prompt_version`;
+`vanilla:v1` for the code's copy), and so does the Finding's `research_call`, so an article says
+which version of each prompt wrote it. While continuous evals are on, storing the article writes
+one Article Completion event (+2) per prompt in its lineage, for the model that wrote it; a person's
+approve, reject or Re-Write, a reader's vote and the judge's verdict score it later. The scores keep
+a model whose work keeps scoring badly out of the topic's rotation draw
+([prompts and evals](prompts-and-evals.md)).
+
 ## Runs that write nothing, and runs that fail
 
 A research tick returns `paused`, `not_due`, `no_change` or `material_change`; only the last writes
@@ -259,8 +280,11 @@ Neither handler raises: each catches its own errors and returns `"status": "erro
 reason. What happens next depends on how the run started:
 
 - **A research tick.** Its schedule invokes it directly, so a failed tick is tried again at a later
-  heartbeat.
-- **A daily cycle from its schedule.** The state machine counts only a timeout (the Lambda has 300
+  heartbeat. For a topic on the queue, a job that fails cleanly is answered and deleted like any
+  other, and the topic's next turn sends a new one; only a timeout or a crash leaves the job to be
+  received again, and after three receives it goes to the work queue's dead-letter queue, whose
+  consumer writes a `research_job` row that `admin_cli failed-executions list` shows.
+- **A daily cycle from its schedule, or from the dispatcher.** The state machine counts only a timeout (the Lambda has 300
   seconds) or a crash as a failed invocation. It retries a failed invocation up to twice (after 30
   seconds, then 60), and if every attempt fails it sends the run to the pipeline dead-letter
   queue, which `admin_cli failed-executions list` shows. To Step Functions a caught error is a
@@ -269,7 +293,8 @@ reason. What happens next depends on how the run started:
   (`run failed for topic_id=...`).
 - **A daily cycle from `topics trigger --pipeline daily_cycle`.** This invokes the Lambda directly,
   without the state machine, so a failure there never reaches the queue and leaves no
-  FailedExecutions record.
+  FailedExecutions record. For a topic on the queue, the trigger starts the state machine instead
+  (`<slug>-<date>-manual-<HHMMSS>`), so it is retried as a scheduled run is.
 
 A daily cycle that fails after it has stored the article (its static page, its musing or its
 moderation item) has still stamped `last_article_at`, and its goal rotation's state: both are set
@@ -287,13 +312,15 @@ later day, and a Finding captured while the first attempt ran would be new to th
 write that sets `last_article_at` also records the run that wrote the article (`last_article_run`:
 the run's id and the article's id), and a run first checks whether it is that run:
 
-- **The run's id.** A scheduled run's id is its Step Functions execution's ARN. The state
+- **The run's id.** A run the state machine started (from a schedule, the dispatcher or a manual
+  run on the queue) has its Step Functions execution's ARN as its id. The state
   machine's first state, `NameTheRun`, adds it to the input as `execution.id`, so every retry of
   the Task carries the same one, and so does the dead-letter queue's message. A direct invoke
-  (`topics trigger`) has no execution, and its Lambda request id stands in: Lambda keeps it across
-  a duplicate delivery of the same invoke (one that starts after the first stored its article;
-  one that overlaps it is below). A manual trigger is not retried at all, since the function's
-  asynchronous retries are off (`aws_lambda_function_event_invoke_config.daily_cycle`).
+  (`topics trigger` on a topic still on its schedules) has no execution, and its Lambda request id
+  stands in: Lambda keeps it across a duplicate delivery of the same invoke (one that starts after
+  the first stored its article; one that overlaps it is below). Such a manual trigger is not retried
+  at all, since the function's asynchronous retries are off
+  (`aws_lambda_function_event_invoke_config.daily_cycle`).
 - **The check.** Right after the topic is read, before the paused check, any Findings read or any
   model call: if the topic's `last_article_run` names this run, the run returns
   `already_written` with the `article_id` and writes nothing. The daily-cycle log says

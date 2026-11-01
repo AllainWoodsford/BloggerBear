@@ -897,7 +897,7 @@ def test_a_prompts_publisher_role_can_be_left_unset_with_its_stub_on_offer(tmp_p
 
 def test_the_production_publisher_secret_is_at_repository_level():
     """Production's prompts are published under two GitHub environments
-    (docs/enhancements/model-ranch-prompt-assets-evals.md): `production-prompts`, where the prompts
+    (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): `production-prompts`, where the prompts
     workflow publishes them on their own, and `production`, where a release publishes them and the
     release deploy hands the ARN to Terraform. An environment's secret reaches only that
     environment's jobs, so the one secret both read is at repository level, and the bootstrap's

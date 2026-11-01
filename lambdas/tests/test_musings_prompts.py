@@ -1,5 +1,5 @@
 """The musings' prompts as registry specs (common/prompts_registry.py; section 4.10 and "PR6–PR10.
-Migrate prompts" in docs/enhancements/model-ranch-prompt-assets-evals.md): each musings/<kind> v1.txt
+Migrate prompts" in docs/enhancements/archive/model-ranch-prompt-assets-evals.md): each musings/<kind> v1.txt
 in prompts/ is the vanilla it was migrated from; with assets off, every musing the bears write
 (common/musings.py: BloggerBear's article, feedback, loot, rejection, pause and resume musings, an
 article musing written again, Professor Grizzlewick's report, rejection and hold, and their

@@ -41,8 +41,9 @@ each tool and setting is for, then points to the detailed runsheets when you nee
 ## 0. What you are building, in one paragraph
 
 You fork the repository and run **one** Terraform apply from your own machine (the *bootstrap*).
-It creates a bucket for Terraform's state, and two IAM roles that GitHub Actions may assume
-through **OIDC**, so no AWS access keys are stored in GitHub. You then put a few names and IDs into
+It creates a bucket for Terraform's state, and the IAM roles that GitHub Actions may assume
+through **OIDC**, so no AWS access keys are stored in GitHub: two that deploy, and two that only
+publish prompts. You then put a few names and IDs into
 your fork's GitHub settings. From then on, every merge to your `dev` branch that changes the
 code, the infrastructure or the site makes GitHub Actions run the security scans, lint and tests,
 then apply Terraform to your dev environment. Nobody runs `terraform apply` by hand again, apart
@@ -78,6 +79,8 @@ Two derived values you will see later:
 - Dev deploy role ARN: `arn:aws:iam::<your-dev-account-id>:role/gha-<your-prefix>-dev-deploy`
   (shape: `arn:aws:iam::111111111111:role/gha-acme-blog-dev-deploy`)
 - Production deploy role ARN: `arn:aws:iam::<your-prod-account-id>:role/gha-<your-prefix>-prod-deploy`
+- The prompts publisher roles' ARNs, the same with `-dev-prompts` and `-prod-prompts` in place of
+  `-dev-deploy` and `-prod-deploy`. You need them only once you turn prompts as assets on.
 
 ---
 
@@ -159,7 +162,8 @@ aws sts get-caller-identity          # "Account" must be <your-dev-account-id>
 
 A new account often allows only **10** concurrent Lambda executions for the whole account. Ask for
 more under Service Quotas → AWS Lambda → "Concurrent executions" (approval can take a day). It
-works without the increase, but slowly.
+works without the increase, but slowly. Later, the queue platform runs up to `WORKER_CONCURRENCY`
+research jobs at once (2 unless you set it) and evals' jobs two at a time, all from the same quota.
 
 ### 3d. Make sure your account can call the model
 
@@ -214,6 +218,10 @@ This creates, in the account your profile points at:
   (`bedrock-agentcore`) only to the web search Regions (`ap-northeast-1` unless you set
   `web_search_regions`). Each role is also refused the other environment's resources, matched by
   name or by their `Environment` tag;
+- two **prompts publisher roles**, `gha-<your-prefix>-dev-prompts` (runs on `dev`) and
+  `gha-<your-prefix>-prod-prompts` (runs in the `production-prompts` and `production`
+  environments), which may write only their own environment's prompts bucket and prompt-hashes
+  table. Nothing uses them until you turn prompts as assets on;
 - optionally a Route 53 hosted zone (production's domain) and a Bedrock budget alarm.
 
 ```bash
@@ -231,7 +239,7 @@ cd ../..
 ```
 
 Read the plan before typing `yes`. Every name in it should start with `<your-prefix>` or
-`gha-<your-prefix>` (the two deploy roles), or be `<your-state-bucket>`. **Each of `github_repo`,
+`gha-<your-prefix>` (the four roles), or be `<your-state-bucket>`. **Each of `github_repo`,
 `state_bucket_name`, `unique_name_prefix` and `domain_name` defaults to the original deployment's
 value, so pass all four.** `domain_name=` (empty)
 creates no hosted zone, which is what you want until you set up production.
@@ -245,6 +253,8 @@ Keep the outputs (`terraform -chdir=infra/bootstrap output` shows them again):
 | `dev_deploy_role_arn` | `arn:aws:iam::111111111111:role/gha-<your-prefix>-dev-deploy` | GitHub secret `AWS_DEV_DEPLOY_ROLE_ARN` |
 | `prod_deploy_role_arn` | `arn:aws:iam::111111111111:role/gha-<your-prefix>-prod-deploy` | GitHub secret `AWS_PROD_DEPLOY_ROLE_ARN` |
 | `state_bucket_name` | `<your-state-bucket>` | GitHub secrets `TF_STATE_BUCKET_DEV` / `_PROD` |
+| `dev_prompts_role_arn` | `arn:aws:iam::111111111111:role/gha-<your-prefix>-dev-prompts` | GitHub secret `AWS_DEV_PROMPTS_ROLE_ARN`, when you turn prompts as assets on |
+| `prod_prompts_role_arn` | `arn:aws:iam::111111111111:role/gha-<your-prefix>-prod-prompts` | GitHub secret `AWS_PROD_PROMPTS_ROLE_ARN` (repository level, like dev's), the same |
 
 The bootstrap keeps its own state in a **local** file, `infra/bootstrap/terraform.tfstate`. It is
 gitignored. Back it up somewhere private; you need it to change the bootstrap later.
@@ -263,6 +273,10 @@ has the details.
 Create it under Settings → Environments → New environment → `production`, add yourself as a
 **required reviewer**, and limit deployment tags to `v*`. Production then only deploys from a
 release that you approve. (Dev needs no environment: the dev role trusts the `dev` branch itself.)
+
+A second one, `production-prompts`, is only for prompts as assets, which are off until you turn
+them on: production's prompts are published in it between releases. Leave it until then
+([how](production-runsheet.md#the-production-prompts-environment)).
 
 ### 6b. Secrets and variables: the setup script
 
@@ -284,6 +298,7 @@ What it asks for, and what to answer:
 | `ALERT_EMAIL_DEV` / `_PROD` | secret | `<your-email>` |
 | `AWS_DEV_ACCOUNT_ID` / `AWS_PROD_ACCOUNT_ID` | secret | `<your-dev-account-id>` / `<your-prod-account-id>` |
 | `AWS_DEV_DEPLOY_ROLE_ARN` / `AWS_PROD_DEPLOY_ROLE_ARN` | secret | the bootstrap outputs |
+| `AWS_DEV_PROMPTS_ROLE_ARN` / `AWS_PROD_PROMPTS_ROLE_ARN` | secret | optional: the bootstrap outputs, both at repository level. Press Enter to leave them until you turn prompts as assets on |
 | `TF_STATE_BUCKET_DEV` / `TF_STATE_BUCKET_PROD` | secret | `<your-state-bucket>` (one per account if you have two) |
 | `PII_DENYLIST` | secret | optional: your own name, address and so on, one per line, so a pull request that adds one is refused |
 
@@ -331,6 +346,8 @@ would refuse its token, because the repository in the token would not match.
 2. Merge it. The `terraform` workflow runs the security scans, lint and tests again on what is
    about to be applied, assumes the dev role and applies `infra/environments/dev`. The first apply creates everything (tables, buckets, Lambdas, APIs,
    web ACLs, dashboards, the static site). It takes about 10 to 20 minutes, mostly CloudFront.
+   That includes the queue platform's dispatcher, the prompts bucket and the evals table, all idle
+   until you switch them on ([section 10](#10-where-next)).
 3. Confirm the alarm subscription email AWS sends to `<your-email>`.
 4. Read your addresses from the dev state:
    ```bash
@@ -393,9 +410,11 @@ GitHub token) are SSM SecureStrings named `/<your-prefix>/dev/coingecko-api-key`
 |---|---|---|
 | Bootstrap: `EntityAlreadyExists` for the OIDC provider | The account already has GitHub's OIDC provider (one is allowed per account) | Import it, then apply again: `terraform -chdir=infra/bootstrap import aws_iam_openid_connect_provider.github_actions arn:aws:iam::<your-dev-account-id>:oidc-provider/token.actions.githubusercontent.com` |
 | Bootstrap: `BucketAlreadyExists` | Someone, anywhere, already has that bucket name | Pick a more unique `<your-state-bucket>` |
-| Deploy: `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The token's subject does not match the role's trust policy: wrong `github_repo` in the bootstrap, a run not on `dev`, or a different subject format | Check `github_repo` was `<your-github-owner>/<your-fork>`. CloudTrail's failed `AssumeRoleWithWebIdentity` event shows the exact subject GitHub sent. The roles expect GitHub's immutable form, `repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/dev`. To see which form your tokens use, run `gh api repos/<your-github-owner>/<your-fork>/actions/oidc/customization/sub`. If its answer does not include `"use_immutable_subject": true`, your tokens use the plain form, `repo:<owner>/<repo>:ref:refs/heads/dev`, which the roles never match. In that case, edit the two `sub` values in `infra/bootstrap/main.tf` (`gha_dev_trust` and `gha_prod_trust`) to the plain form, `repo:<your-github-owner>/<your-fork>:ref:refs/heads/dev` and `repo:<your-github-owner>/<your-fork>:environment:production`. Then apply the bootstrap again with the same `-var` values as your last bootstrap apply (step 5's, unless you have applied it since, for example with your domain or `web_search_regions`). If you use two accounts, apply it in each one: sign in to that account, select its workspace (`terraform workspace select dev`, then `production`) and pass that account's own values ([Bootstrap, once per account](deployment-separate-accounts.md#bootstrap-once-per-account)) |
+| Deploy: `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The token's subject does not match the role's trust policy: wrong `github_repo` in the bootstrap, a run not on `dev`, or a different subject format | Check `github_repo` was `<your-github-owner>/<your-fork>`. CloudTrail's failed `AssumeRoleWithWebIdentity` event shows the exact subject GitHub sent. The roles expect GitHub's immutable form, `repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/dev`. To see which form your tokens use, run `gh api repos/<your-github-owner>/<your-fork>/actions/oidc/customization/sub`. If its answer does not include `"use_immutable_subject": true`, your tokens use the plain form, `repo:<owner>/<repo>:ref:refs/heads/dev`, which the roles never match. In that case, edit the two `sub` values in `infra/bootstrap/main.tf` (`gha_dev_trust` and `gha_prod_trust`) to the plain form, `repo:<your-github-owner>/<your-fork>:ref:refs/heads/dev` and `repo:<your-github-owner>/<your-fork>:environment:production`, and the prompts publishers' three the same way (`gha_dev_prompts_trust`'s `ref:refs/heads/dev`, `gha_prod_prompts_trust`'s `environment:production-prompts` and `environment:production`). Then apply the bootstrap again with the same `-var` values as your last bootstrap apply (step 5's, unless you have applied it since, for example with your domain or `web_search_regions`). If you use two accounts, apply it in each one: sign in to that account, select its workspace (`terraform workspace select dev`, then `production`) and pass that account's own values ([Bootstrap, once per account](deployment-separate-accounts.md#bootstrap-once-per-account)) |
 | Deploy: `AccessDenied` creating resources | `UNIQUE_NAME_PREFIX` differs from the bootstrap's `unique_name_prefix`, or `AWS_REGION` differs from its `aws_region` | Make them the same word / region |
 | Deploy: "AWS account ID not allowed" | The role is in a different account than `AWS_DEV_ACCOUNT_ID` | Fix whichever is wrong; the error names the real account |
+| Deploy: `AccessDenied` on `logs:CreateLogGroup` for `<your-prefix>-dev-evals` | The bootstrap was applied before the evals work, so the deploy role may not create the evals log group, which every deploy now makes | Apply the bootstrap again with the same `-var` values as last time, then re-run the deploy ([the steps](production-runsheet.md#the-bootstrap-the-publisher-roles-and-the-evals-log-group)) |
+| The `prompts` workflow's publish job is skipped | The `PROMPT_AS_ASSET_ENABLED` repository variable is not `true`; a value on the `production` environment is never read by the publish | Set it at repository level ([configuration.md](configuration.md#prompts-as-assets)) |
 | Admin CLI: 403 | Your IP changed, or the allowlist was never set | `python scripts/admin_allowlist.py --region <your-region> --prefix <your-prefix> set --env dev --my-ip` (`--region` and `--prefix` go before `set` or `show`; leave them out only if you use the defaults); `show --env dev` says what each place holds. No deploy needed |
 | Articles never appear; the daily cycle errors | The model cannot be called in your region | Re-run [step 3](#3d-make-sure-your-account-can-call-the-model) |
 | `gh` set secrets on the wrong repository | `gh` picked the upstream in a fork | Re-run the script with `--repo <your-github-owner>/<your-fork>` |
@@ -411,6 +430,10 @@ More, from building and running the original: [friction.md](friction.md).
   [models.md](models.md).
 - **Satellite vision and the Rail Access Monitor** (off by default):
   [vision-runsheet.md](vision-runsheet.md).
+- **The queue platform, prompts as assets and continuous evals** (deployed, and off or in shadow
+  until you switch them on): what each does in
+  [configuration.md](configuration.md#the-queue-platform-prompts-and-evals), and the order to turn
+  them on in [the production runsheet](production-runsheet.md#the-enable-order).
 - **Protect your branches** (pull requests only, no force-pushes): the archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md).
 - **The operator's assistant** (`<site>/ask.html`): create a user as in
   [After the first deploy](deployment-runsheet.md#5-after-the-first-deploy), step 5.

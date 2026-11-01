@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------
-# Model Ranch PR11b (docs/enhancements/model-ranch-prompt-assets-evals.md): one dashboard for the
+# Model Ranch PR11b (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): one dashboard for the
 # whole pipeline, <prefix>-<env>-pipeline-health, in place of the pipeline, lambda-runs and edge
 # dashboards. CloudWatch bills about US$3 a month for each dashboard past an account's first three
 # (of up to 50 metrics each). Each environment now has this one and, while evals are on, the evals

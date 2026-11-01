@@ -24,7 +24,7 @@ not attempt any automatic replay; per the DLQ alarm's own comment, a DLQ
 message means "needs a human to look at it".
 
 It also consumes the work queue's dead-letter queue (`work-dlq.fifo`, infra/modules/work-queue):
-a queue job (a body with `job`, docs/enhancements/model-ranch-prompt-assets-evals.md section 4.7)
+a queue job (a body with `job`, docs/enhancements/archive/model-ranch-prompt-assets-evals.md section 4.7)
 that was received three times without finishing. The research tick never raises, so such a job
 timed out or crashed the runtime; its body is the job itself, with no `error`. The log line names
 the job (`research job for topic_id=... failed`) rather than calling every failure a daily cycle,

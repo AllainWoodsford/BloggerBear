@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Publish the prompts tree to one deployment's prompts bucket: each run is one release.
 
-docs/enhancements/model-ranch-prompt-assets-evals.md, section 4.2. The repository's latest/ folders
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, section 4.2. The repository's latest/ folders
 (prompts/README.md) are the desired state, and a run makes the bucket `<prefix>-<env>-prompts` hold
 exactly them, recording the bytes it approves in the table `<prefix>-<env>-prompt-hashes`. Only the
 publisher's role may write either (infra/modules/prompts, infra/bootstrap); a Lambda serves a file

@@ -1,4 +1,4 @@
-"""The rotation guard (common/model_ranch.py; docs/enhancements/model-ranch-prompt-assets-evals.md,
+"""The rotation guard (common/model_ranch.py; docs/enhancements/archive/model-ranch-prompt-assets-evals.md,
 section 4.5 and PR15): which models rows are gated, which models never are, and that it reads
 nothing and gates nothing while evals are off or its settings cannot be read."""
 

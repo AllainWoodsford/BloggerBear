@@ -2,7 +2,7 @@
 
 Moved here from ops_mcp/logs.py unchanged, so that code in the pipeline's Lambda package can run
 Logs Insights queries without depending on the operator's assistant: the evals rollup
-(docs/enhancements/model-ranch-prompt-assets-evals.md) will read its events this way. ops_mcp/logs.py
+(docs/enhancements/archive/model-ranch-prompt-assets-evals.md) will read its events this way. ops_mcp/logs.py
 imports everything below and keeps answering to the same names, so the assistant's tools and the
 evidence export call it as before. The defaults (the wait, the shared client's timeouts, the label)
 are still the assistant's; another caller passes its own.

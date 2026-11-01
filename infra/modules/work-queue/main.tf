@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------
-# The queue platform (docs/enhancements/model-ranch-prompt-assets-evals.md, section 5.1; phase Q1):
+# The queue platform (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, section 5.1; phase Q1):
 # one dispatcher a minute in place of two EventBridge schedules per topic, a FIFO work queue in
 # front of the research tick, and one knob (var.worker_concurrency) that caps how many queue jobs
 # run at once however many topics there are.

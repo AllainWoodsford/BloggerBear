@@ -1,6 +1,6 @@
 """An operator's hands on continuous evals' scores: forgive or punish a model or a prompt version,
 hold a model's gates open for a while, and leave a source's events out of the rollup
-(docs/enhancements/model-ranch-prompt-assets-evals.md, sections 4.3 to 4.6, PR13b). The admin API's
+(docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections 4.3 to 4.6, PR13b). The admin API's
 POST /evals/adjust, POST /evals/ungate and POST /evals/revoke call these; `admin_cli evals forgive`,
 `punish`, `ungate` and `revoke` send them.
 

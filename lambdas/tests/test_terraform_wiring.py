@@ -1605,7 +1605,7 @@ def test_the_prompts_publisher_roles_trust_the_dev_branch_and_the_two_production
 def test_the_prompts_publisher_roles_reach_one_bucket_and_one_table_and_nothing_else():
     """Each publisher role's policy names its environment's prompts bucket and prompt-hashes table,
     by the names the prompts module will give them (<prefix>-<env>-prompts and
-    <prefix>-<env>-prompt-hashes, docs/enhancements/model-ranch-prompt-assets-evals.md 4.2), and
+    <prefix>-<env>-prompt-hashes, docs/enhancements/archive/model-ranch-prompt-assets-evals.md 4.2), and
     nothing else: no "*" resource, no wildcard action, nothing of IAM, Lambda or logs. One document
     for both, keyed by the role's environment like the deploy roles' separation policy."""
     import fnmatch
@@ -1686,10 +1686,11 @@ def test_no_bootstrap_resource_puts_a_whole_data_source_into_a_string():
 
 
 def test_the_deploy_roles_may_create_the_evals_log_group_before_the_module_that_needs_it():
-    """The evals log group (<prefix>-<env>-evals, docs/enhancements/model-ranch-prompt-assets-evals.md)
-    is the first of ours named outside /aws/lambda/, /aws/apigateway/ and aws-waf-logs-, so the
-    log-group statements the deploy roles had could not create it. The bootstrap is applied by
-    hand, so its statement lands ahead of the module, in the one policy both deploy roles carry."""
+    """The evals log group (<prefix>-<env>-evals,
+    docs/enhancements/archive/model-ranch-prompt-assets-evals.md) is the first of ours named outside
+    /aws/lambda/, /aws/apigateway/ and aws-waf-logs-, so the log-group statements the deploy roles had could
+    not create it. The bootstrap is applied by hand, so its statement lands ahead of the module, in the one
+    policy both deploy roles carry."""
     import fnmatch
 
     bootstrap = _uncommented(_read("bootstrap", "main.tf"))
@@ -1856,7 +1857,7 @@ def test_the_vision_worker_is_deployed_only_when_the_repository_variable_says_so
 
 # --- prompts as assets: the wiring that lands before the bucket does ----------------------------------
 #
-# docs/enhancements/model-ranch-prompt-assets-evals.md, P0. The Lambdas are told where the prompts
+# docs/enhancements/archive/model-ranch-prompt-assets-evals.md, P0. The Lambdas are told where the prompts
 # will live and whether to read them, CI passes the switch and the publisher role's ARN, and the
 # fallback a Lambda makes when an asset cannot be used has an alarm, all before any of it exists.
 
@@ -3004,7 +3005,7 @@ def test_the_lambda_role_may_list_the_content_bucket_so_a_missing_key_reads_as_n
 
 # --- continuous evals: the switch, the module, and lambda_exec's rights ----------------------------
 #
-# docs/enhancements/model-ranch-prompt-assets-evals.md, E0 and PR12. Both roots always call
+# docs/enhancements/archive/model-ranch-prompt-assets-evals.md, E0 and PR12. Both roots always call
 # infra/modules/evals, switched by evals_enabled: its table and log group exist either way, so every
 # Lambda is told real names; its queue, function, schedules and alarms only while it is on. Its
 # rights on lambda_exec, the alerts topic's among them (moved there from the roots), are one policy
@@ -3593,7 +3594,7 @@ def test_dev_reads_its_own_firewall_logs_only_when_switched_on_and_never_the_sha
 
 
 def test_worker_concurrency_is_a_number_from_the_github_variable_with_two_as_the_floor():
-    """The queue platform's one knob (docs/enhancements/model-ranch-prompt-assets-evals.md, Q0): a
+    """The queue platform's one knob (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, Q0): a
     number variable in both roots, 2 by default and never less (the smallest maximum_concurrency an
     SQS event source mapping accepts), fed by both deploy workflows from WORKER_CONCURRENCY with '2'
     as the fallback, and in the settings table. Read once, by the work-queue module (Q1)."""

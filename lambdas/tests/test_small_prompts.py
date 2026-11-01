@@ -1,6 +1,6 @@
 """The comment screening, gear, weekly reflection, model catalog and ops agent prompts as registry
 specs (common/prompts_registry.py; section 4.10 and "PR6–PR10. Migrate prompts" in
-docs/enhancements/model-ranch-prompt-assets-evals.md): each asset spec's v1.txt in prompts/ is the
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md): each asset spec's v1.txt in prompts/ is the
 vanilla it was migrated from, and the two code-only specs (comment screening, the ops agent) have
 none; with assets off, the screening question (`comment_screening.screen_comment`), the gear's two
 questions (`gear.generate_identity`), the week's reflection (`weekly_reflection_handler`), the web

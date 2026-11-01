@@ -1,4 +1,4 @@
-"""The public API's continuous-evals event (common/evals_emission.py; docs/enhancements/
+"""The public API's continuous-evals event (common/evals_emission.py; docs/enhancements/archive/
 model-ranch-prompt-assets-evals.md, section 4.3, PR14): a reader's vote is one User Feedback for
 the model that wrote the article, written only once the vote is stored and the response built.
 

@@ -1,5 +1,5 @@
 """What `admin_cli evals status` and `evals digest` show: the admin API's GET /evals/status and
-GET /evals/digest (docs/enhancements/model-ranch-prompt-assets-evals.md, PR13).
+GET /evals/digest (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR13).
 
 **status** answers "are evals working, and what are they holding back?" in parts, each read on its
 own: the switches, the prompt release in place and the prompt fallbacks of the last 24 hours, the

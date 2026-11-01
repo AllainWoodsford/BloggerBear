@@ -138,7 +138,7 @@ jobs:
     # on; unset or anything else is `false`, the variable's own default (docs/configuration.md).
     # Production's assistant always has the tool, so the release workflow does not read it.
     # TF_VAR_evals_enabled: whether continuous evals run (scored events, the hourly rollup, the
-    # judge; docs/enhancements/model-ranch-prompt-assets-evals.md). Read like VISION_ENABLED: only
+    # judge; docs/enhancements/archive/model-ranch-prompt-assets-evals.md). Read like VISION_ENABLED: only
     # `true`, in any letter case, turns it on; unset or anything else is `false`, the variable's own
     # default, so merging the evals work changes nothing until someone sets it. Off, the evals
     # module (infra/modules/evals) makes only the evals table, its log group and the Lambdas' rights
@@ -149,7 +149,7 @@ jobs:
     # a secret. The work-queue module (infra/modules/work-queue) makes it the maximum_concurrency of
     # the research tick's event source mapping (docs/configuration.md).
     # TF_VAR_prompt_as_asset_enabled: whether the Lambdas read their prompts from the prompts
-    # bucket (prompts as assets, docs/enhancements/model-ranch-prompt-assets-evals.md). Read like
+    # bucket (prompts as assets, docs/enhancements/archive/model-ranch-prompt-assets-evals.md). Read like
     # VISION_ENABLED: only `true`, in any letter case, turns it on; unset or anything else is
     # `false`, the variable's own default, so merging the prompts work changes no prompt until
     # someone sets it (docs/configuration.md).

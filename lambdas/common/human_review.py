@@ -1,5 +1,5 @@
-"""A person's review of research Findings (docs/enhancements/model-ranch-prompt-assets-evals.md, sections
-3's deviation 10, 4.3, 4.4 and 5.3, PR19): the admin API's GET /evals/findings, the Findings waiting
+"""A person's review of research Findings (docs/enhancements/archive/model-ranch-prompt-assets-evals.md,
+sections 3's deviation 10, 4.3, 4.4 and 5.3, PR19): the admin API's GET /evals/findings, the Findings waiting
 for a person, and POST /evals/findings/review, one person's verdict on one of them.
 `admin_cli approve --source findings` goes through both (scripts/review_inbox.py).
 

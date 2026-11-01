@@ -1,5 +1,5 @@
 """The Admin CLI's eval commands (scripts/admin_cli_evals.py): wired into admin_cli's parser by
-`register` (docs/enhancements/model-ranch-prompt-assets-evals.md, E0), `evals get|set|rollup|
+`register` (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, E0), `evals get|set|rollup|
 status|digest` (PR13), `evals forgive|punish|ungate|revoke` (PR13b) and `evals cull` (PR16), each
 sending what its Admin API route takes, and `evals score` and `evals runs list|get|cancel|resume`
 (PR18b): a run is priced and shown with its environment first, asked about before it starts (over

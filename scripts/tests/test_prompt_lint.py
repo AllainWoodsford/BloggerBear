@@ -1,5 +1,5 @@
 """scripts/prompt_lint.py on fixture trees: every rule of the prompts tree (prompts/README.md;
-docs/enhancements/model-ranch-prompt-assets-evals.md, sections 4.1 and 4.2), the version rules
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections 4.1 and 4.2), the version rules
 against an earlier commit, the second pass against a release's own registry (a real git repository
 with a tag, read in a worktree by a subprocess), the exit status, and that nothing printed holds a
 prompt's text. The registry is empty on this branch, so the trees here bring their own specs."""

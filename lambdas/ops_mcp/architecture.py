@@ -159,7 +159,7 @@ def _table(key: str, purpose: str, keys: tuple[str, ...], **more) -> Component:
 # pipeline_health.tf), and the ranch and prompts one while evals are on (infra/modules/evals).
 _PIPELINE_DASHBOARD = f"{PREFIX}{ENV}-pipeline-health"
 _RANCH_DASHBOARD = f"{PREFIX}{ENV}-ranch-and-prompts"
-# Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): a Lambda that cannot use a
+# Prompts as assets (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): a Lambda that cannot use a
 # prompt asset carries on with the copy in its code and logs a prompt_fallback line; the alarm (the
 # observability module's filter over every pipeline log group) reports the first in an hour. It is
 # listed on the functions whose prompts become assets, the ones that can fall back.
@@ -348,8 +348,11 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             (
                 "Written by",
-                "the Admin API (admin_cli models ...); model-catalog (discover adds rows, reprice "
-                "and its checks change prices)",
+                "the Admin API (admin_cli models ...; `evals ungate` holds a model's gates open, "
+                "`evals cull --apply` deletes the culled models' rows by the prune path and `models "
+                "restore` puts one back); model-catalog (discover adds rows, reprice and its checks "
+                "change prices, `models classify` records each model's purpose); eval-jobs' hourly "
+                "rollup (each model's scores and roles, and the purpose of a row that has none)",
             ),
             (
                 "Read by",
@@ -373,8 +376,11 @@ CATALOGUE: tuple[Component, ...] = (
             (
                 "Written by",
                 "the Admin API (model-config, pipeline-config, feedback-config, model-catalog set, and "
-                "prompts pause/resume/set, the \"prompts\" row of prompt asset switches); the public "
-                "API (rate-limit counters); model-catalog (its state and pricing runs)",
+                "prompts pause/resume/set, the \"prompts\" row of prompt asset switches; `evals set`, "
+                "the \"evals\" row; `evals cull --apply`, its last_cull_apply on model-catalog-state "
+                "and the culled models in the \"model-archive\" row; `models restore`, which takes a "
+                "model out of that archive); the public API (rate-limit counters); model-catalog (its "
+                "state, with the weekly cycle's cull_proposal, and its pricing runs)",
             ),
             ("Read by", "every pipeline function, the assistant (its access switch, model_catalog)"),
             ("Expires", "the rate-limit counters, and a pricing run 14 days after it closes, by TTL"),
@@ -406,7 +412,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), its "
                 "judge (runs, pairs, spend), its offline scoring jobs (run items, the live drafts they "
                 "compare with, spend) and its Friday digest (the index row's last_digest_on); the admin "
-                "API, its adjust# rows (`evals forgive` and `evals punish`), its offline runs (`evals "
+                "API, its adjust# rows (`evals forgive`, `evals punish`, and `models restore`'s forgive "
+                "of a culled model back to zero), its offline runs (`evals "
                 "score`, `evals runs cancel|resume`: run headers) and a person's verdicts as pairs (a "
                 "Finding reviewed with `approve --source findings`, an article approved or rejected)",
             ),
@@ -1015,8 +1022,11 @@ CATALOGUE: tuple[Component, ...] = (
             ("Kept for", "120 days"),
             (
                 "Written by",
-                "common/evals.py emit(), from any pipeline Lambda and the admin API (`evals forgive` "
-                "and `evals punish`), only while evals are on",
+                "common/evals.py emit(), only while evals are on: the daily cycle (an article's "
+                "completion) and any Lambda whose prompt falls back to the code's copy; the admin API "
+                "(a person's approve or reject, a Re-Write, a reviewed Finding, `evals forgive`, `evals "
+                "punish`, and `models restore`'s forgive); the public API (a reader's vote); eval-jobs "
+                "(the judge's verdicts, offline scoring runs)",
             ),
             ("Read by", "eval-jobs' hourly rollup (Logs Insights), and the ranch-and-prompts dashboard"),
         ),

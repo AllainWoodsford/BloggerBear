@@ -1,5 +1,5 @@
 """The rotation guard of the Model Ranch: which models the gates keep out of the candidates
-(docs/enhancements/model-ranch-prompt-assets-evals.md, section 4.5 and PR15).
+(docs/enhancements/archive/model-ranch-prompt-assets-evals.md, section 4.5 and PR15).
 
 A model is **gated** while one of its windows (`daily`, `weekly`, `total`) is below its gate with at
 least `min_events` events behind it (evals_settings.gated_windows, over the scores the rollup puts

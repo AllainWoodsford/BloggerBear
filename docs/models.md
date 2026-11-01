@@ -10,6 +10,13 @@ works across the layers is [architecture/model-catalog.md](architecture/model-ca
 design, with every field and edge case, is
 [enhancements/archive/model-catalog-refresh.md](enhancements/archive/model-catalog-refresh.md).
 
+Every model also has a purpose (text, image, embedding, ...), and only text models are used
+([What a model is for](#what-a-model-is-for-purpose-and-suitability)). With continuous evals on
+(`EVALS_ENABLED`), each model earns a score as it works, and the Model Ranch keeps a model whose
+scores fall below a gate out of the candidates, ranks the models a Re-Write may use, and proposes
+the worst for culling ([The Model Ranch](#the-model-ranch-scores-gates-and-culling)). With evals
+off, none of that happens and models are chosen as they always were.
+
 Most commands here are the admin CLI ([scripts/QUICKSTART.md](../scripts/QUICKSTART.md) sets it
 up). A change takes effect on the next run, with no deploy.
 
@@ -24,6 +31,7 @@ every call that always uses it, takes a Terraform change and a deploy
   - [The fallback](#the-fallback)
   - [What follows the routing, and what does not](#what-follows-the-routing-and-what-does-not)
 - [Seeding the registry](#seeding-the-registry)
+- [What a model is for: purpose and suitability](#what-a-model-is-for-purpose-and-suitability)
 - [Rotation: trying several models](#rotation-trying-several-models)
   - [A topic's own rotation list](#a-topics-own-rotation-list)
   - [The shared rotation pool](#the-shared-rotation-pool)
@@ -36,6 +44,17 @@ every call that always uses it, takes a Terraform change and a deploy
   - [Pruning, once the registry is full](#pruning-once-the-registry-is-full)
   - [Commands](#commands)
   - [Settings](#settings)
+- [The Model Ranch: scores, gates and culling](#the-model-ranch-scores-gates-and-culling)
+  - [Where a model's score comes from](#where-a-models-score-comes-from)
+  - [The windows](#the-windows)
+  - [Gates and `min_events`](#gates-and-min_events)
+  - [The rotation guard](#the-rotation-guard)
+  - [Never gated: the default, the fallback and the judge](#never-gated-the-default-the-fallback-and-the-judge)
+  - [Holding a gate open: `ungated_until`](#holding-a-gate-open-ungated_until)
+  - [The rewrite picker](#the-rewrite-picker)
+  - [Forgive and punish](#forgive-and-punish)
+  - [Culling: a proposal, then an apply](#culling-a-proposal-then-an-apply)
+  - [Putting a model back: `models restore`](#putting-a-model-back-models-restore)
 - [How a cost is worked out](#how-a-cost-is-worked-out)
 - [Where it all lives](#where-it-all-lives)
 - [When something looks wrong](#when-something-looks-wrong)
@@ -44,7 +63,9 @@ every call that always uses it, takes a Terraform change and a deploy
 
 First match wins (`resolve_model` in `lambdas/common/model_routing.py`):
 
-1. **The topic's rotation list** (`model_id_candidates`): one is picked at random.
+1. **The topic's rotation list** (`model_id_candidates`): one is picked at random. While evals are
+   on, the pick is among the list's models the Model Ranch has not gated; when every one is gated,
+   the topic's `model_id` is used, else the default ([the rotation guard](#the-rotation-guard)).
 2. **The topic's own `model_id`.** The [shared rotation pool](#the-shared-rotation-pool), when you
    set one up, rewrites this after each article the daily cycle publishes by itself, and after a
    run whose model proposed no usable angle. An article held for moderation does not move it, not
@@ -59,21 +80,27 @@ lineage records it. Each research tick resolves its own model, so the Findings a
 from may have been summarised by other models. Each Finding records its own.
 
 Only a topic's own model (its rotation pick, or its `model_id`) is checked against the registry.
-When the registry marks that model switched off (`enabled: false`), the call is routed around it,
-to the first of these that is usable:
+When the registry marks that model switched off (`enabled: false`), or says it cannot do the work
+(it is not a text model, or, for the vision triage, it takes no image:
+[purpose](#what-a-model-is-for-purpose-and-suitability)), the call is routed around it, to the
+first of these that is fit:
 
-1. the fallback, unless it is switched off too;
-2. the default, unless it is switched off too;
-3. a random active text model from the registry, leaving out any that a probe found the account
-   cannot call.
+1. the fallback, unless it is switched off or unfit too;
+2. the default, unless it is switched off or unfit too;
+3. a random active model from the registry that can do the work, leaving out any that a probe found
+   the account cannot call and, while evals are on, any the Model Ranch has gated.
 
-Only the third takes the switched-off model's place on the topic (in its rotation list, or as its
-`model_id`), so the next run starts there. A model with no registry row counts as active, and a
-registry that cannot be read routes as if it were empty.
+Only the third takes the model's place on the topic (in its rotation list, or as its `model_id`),
+so the next run starts there, and only when the model is switched off or not a text model at all.
+A text model that only lacks an image input stays on the topic, and only the triage's call goes
+elsewhere. A model with no registry row counts as active and fit, and a registry that cannot be
+read routes as if it were empty.
 
 Nothing else is checked. A call that starts from the global default or `BEDROCK_MODEL_ID` uses
 that model even when it is switched off. That happens when the topic has no model of its own, or
-the call has no topic. A switched-off fallback is also still tried when a call fails.
+the call has no topic. The one exception is the vision triage: a default that takes no image is
+passed over for that call (nothing is written). A switched-off fallback is also still tried when a
+call fails. A fallback that is not a text model is not: `BEDROCK_MODEL_ID` takes its place.
 
 `models disable` does not change the `default` row. So before you switch off the application's
 default or fallback, point the row at another model with `model-config set`. It rewrites the whole
@@ -148,10 +175,10 @@ python scripts/admin_cli.py models list
 
 Switching a model on probes it first (one Converse call of one output token). A model your account
 cannot call is still saved, switched on, with a warning. The weekly cycle (Fridays) never adds such
-a model to a rotation and drops it from rotation lists at its next run, but nothing else moves it:
-until then a rotation can still pick it, and a topic's `model_id`, the global default or the shared
-pool that names it keeps using it, each call failing over to the fallback where there is one.
-Change those yourself.
+a model to a rotation and drops it from rotation lists at its next run, and the shared pool moves
+no topic to it, but nothing else moves it: until then a rotation can still pick it, and a topic's
+`model_id` or the global default that names it keeps using it, each call failing over to the
+fallback where there is one. Change those yourself.
 
 **2. Set the global default and fallback.**
 
@@ -195,7 +222,54 @@ Before you add a model anywhere:
   [Before you start](deployment-runsheet.md#before-you-start). A wrong id saved on a topic or as the
   default shows up as a failed call and a fallback, not as an error when you save it.
 - Any provider's model works. Every call goes through Bedrock's Converse API.
+- It must be a text model. A topic's model, fallback and rotation list, the default and fallback
+  (`model-config set`), the shared pool, the judge (`evals set --judge-model-id`) and a Re-Write's
+  model are refused (400) when the registry says the model writes something else
+  ([purpose](#what-a-model-is-for-purpose-and-suitability)). A model with no registry row is not
+  checked.
 - The registry and the settings are per environment. Do it again for production.
+
+`models add` on a model already in the registry keeps what the catalog and the Model Ranch wrote on
+its row: where it was found, its access, its purpose and inputs, its scores and any
+`ungated_until`. If another writer changes the row while it is written (the hourly rollup, an
+`evals ungate`), it reads the row again and retries once; a second change answers 409, and nothing
+is written: send it again.
+
+## What a model is for: purpose and suitability
+
+Every registry row records what its model writes, `model_purpose`, and what it takes in,
+`model_inputs`, both from Bedrock's listing. The purpose is `text` when the model's outputs include
+text, else the first of `image`, `embedding`, `video` and `speech` it outputs, else `other`; and
+`unknown` once Bedrock no longer lists the model. Discover records both for every model it adds.
+While evals are on, the hourly rollup fills them in for any row that has none. `models classify`
+does it for every row now.
+
+What reads them (`suitable` in `lambdas/common/model_fleet.py`):
+
+- **Text work** (everything the pipeline writes) needs a text model. Routing passes over a model
+  that is not one, the weekly cycle drops it from rotation lists and never adds one, the shared pool
+  never moves a topic to one, the rewrite picker never offers one, the judge and offline scoring
+  runs never use one, and the admin API refuses one wherever a model is named
+  ([above](#seeding-the-registry)).
+- **The vision triage** needs a text model that also takes an image (`IMAGE` in `model_inputs`).
+- **A row from before purposes were recorded** (`models list` shows `unclassified`) is judged by
+  the old rule: a token-priced model is a text model, and its inputs are not held to the image rule.
+  So nothing the pipeline uses today stops until `models classify` says otherwise.
+
+```bash
+python scripts/admin_cli.py models classify   # record every model's purpose and inputs now (a minute or so)
+python scripts/admin_cli.py models list       # the PURPOSE column
+```
+
+Classify runs in the background in the model-catalog Lambda, and writes only the rows that change,
+so it can be run any number of times. It reads Bedrock's whole listing in the deployment's region:
+every foundation model, whatever its lifecycle (a `LEGACY` one keeps its purpose) and however it is
+called, the system inference profiles (`au.`, `apac.`, `global.`, ...), and the application
+inference profiles this account made, by their ARN, each judged by the model under it. A model in
+none of them is marked `unknown`. A custom, provisioned or imported model's ARN is left as it is and
+counted as unchanged: Bedrock lists those through calls the catalog does not make. `model-catalog
+get` shows the result (`last_classify_result`: how many classified, how many `unknown`, with their
+ids).
 
 ## Rotation: trying several models
 
@@ -224,9 +298,11 @@ python scripts/admin_cli.py topics update github-trending --model-candidates "" 
 Each article's lineage records which model wrote it (`articles get <article_id>`), and the Stats
 page breaks the cost down by model, so you can compare.
 Once a topic has a list, [the weekly cycle](#the-weekly-cycle) maintains it: it removes models
-that are switched off or that the account cannot call, and adds one new model a week until the list
-holds `rotation_max` (10). Pause the cycle (`model-catalog set --cycle off`) if you want the list
-left exactly as you wrote it.
+that are switched off, are not text models, or that the account cannot call, and adds one new model
+a week until the list holds `rotation_max` (10). A gated model stays in the list while it is gated:
+the draw passes it over until its scores recover ([the rotation guard](#the-rotation-guard)).
+Pause the cycle (`model-catalog set --cycle off`) if you want the list left exactly as you wrote
+it.
 
 ### The shared rotation pool
 
@@ -244,8 +320,11 @@ the models the weekly cycle and routing move a topic to. Anything else is refuse
 and the pool stays as it was. Like the registry, the pool is per environment: set it in each.
 
 The check runs only when you set the pool. If a later probe finds that the account cannot call a
-pooled model (`access: denied`), it stays in the pool, and topics can still be moved to it, until
-you set the pool again without it.
+pooled model (`access: denied`), or `models classify` finds it is not a text model, it stays in the
+pool until you set the pool again without it, but topics are not moved to it. While evals are on, a
+pooled model the Model Ranch has gated is passed over the same way, until its scores recover. A
+pooled model with no registry row is kept as a choice, and every pooled model is when the registry
+cannot be read.
 
 To stop it, clear the pool with `model-rotation set --candidates ""` (deleting the row in the
 DynamoDB console does the same). Topics keep whatever `model_id` the pool last gave them: clear it
@@ -302,7 +381,8 @@ provider agreement not accepted) is not added, and is not tried again for 30 day
 Probes left over from the run's budget (`access_checks_per_run`, 10) check registry text models not
 yet known to be callable: never-probed ones first, then ones a probe could not decide, then ones
 found denied, the longest ago first in each group. Image, video, speech and embedding models are
-listed as `pricing_unit: other` and never priced.
+listed as `pricing_unit: other` and never priced. Every model discover adds records its purpose and
+inputs ([What a model is for](#what-a-model-is-for-purpose-and-suitability)).
 
 A model the fleet pruned is never added back. Once the registry holds `max_models` (50), discover
 prunes instead of adding ([Pruning](#pruning-once-the-registry-is-full)). Finding nothing new is a
@@ -355,11 +435,18 @@ next job, so nothing can hold repricing up for good.
 
 ### The weekly cycle
 
-For every topic that has a rotation list: remove the models that are switched off or that a probe
-found the account cannot call. Then, if the list holds fewer than `rotation_max` (10), add one
-model it does not have, so the cycle grows a list by at most one model a week. The model added is an active, callable, priced text model that is nobody's
-fallback: the cheapest in `value_for_money` mode (the default), the most expensive in `frontier`
-mode (`prune_mode`). A topic with no list is left alone, and so is a model with no registry row.
+For every topic that has a rotation list: remove the models that are switched off, that are not
+text models, or that a probe found the account cannot call. Then, if the list holds fewer than
+`rotation_max` (10), add one model it does not have, so the cycle grows a list by at most one model
+a week. The model added is an active, callable, priced text model that is nobody's fallback and,
+while evals are on, that the Model Ranch has not gated: the cheapest in `value_for_money` mode (the
+default), the most expensive in `frontier` mode (`prune_mode`). A gated model is left out before
+that order is applied, and the order itself is unchanged. A topic with no list is left alone, and so
+is a model with no registry row.
+
+After the rotations, while evals are on, the same run writes the week's cull proposal
+([Culling](#culling-a-proposal-then-an-apply)). A cycle paused with `model-catalog set --cycle off`
+writes none.
 
 ### Pruning, once the registry is full
 
@@ -369,17 +456,19 @@ call, switched-off models, unpriced ones, then the ones `prune_mode` values leas
 (`value_for_money` removes the most expensive; `frontier` the cheapest).
 
 It never removes a model in use: the default and fallback (the `default` row and
-`BEDROCK_MODEL_ID`), any topic's model, fallback or rotation entry, anything in the shared pool, or
-a price-locked row. A pruned model's price is kept in the `model-archive` row, so old articles still
-cost correctly.
+`BEDROCK_MODEL_ID`), any topic's model, fallback or rotation entry, anything in the shared pool, the
+evals judge named by `judge_model_id`, or a price-locked row. A pruned model's price is kept in the
+`model-archive` row, so old articles still cost correctly. Pruning never looks at the Model Ranch's
+scores; culling is the part that does ([Culling](#culling-a-proposal-then-an-apply)).
 
 ### Commands
 
 ```bash
 python scripts/admin_cli.py models discover          # run discover now, even if paused (a minute or two)
 python scripts/admin_cli.py models reprice           # run reprice now, even if paused
+python scripts/admin_cli.py models classify          # record every model's purpose and inputs now
 python scripts/admin_cli.py model-catalog get        # settings, what each job last did, any run under review
-python scripts/admin_cli.py models list              # the registry: enabled, price, source, access
+python scripts/admin_cli.py models list              # the registry: purpose, enabled, access, prices (--json: every field)
 python scripts/admin_cli.py model-catalog set --reprice off    # pause a scheduled job ('' or on resumes it)
 python scripts/admin_cli.py model-catalog set --prune-mode frontier --rotation-max 5
 python scripts/admin_cli.py failed-executions list   # pricing failures, beside failed daily cycles
@@ -412,6 +501,225 @@ takes its default.
 `MODEL_CATALOG_FUNCTION_NAME` is not a setting: it only tells the admin API which Lambda to start,
 and Terraform sets it ([configuration.md](configuration.md#the-model-catalogs-environment-variables)).
 
+## The Model Ranch: scores, gates and culling
+
+With continuous evals on (`EVALS_ENABLED`), every model gets a running score from what happens to
+its work, and the score decides three things: whether the model may be drawn as a candidate (the
+gates), which model a Re-Write is offered first (the picker), and which models are proposed for
+deletion (culling). The scores are kept on each model's registry row. The settings are the `evals`
+row of the model-config table ([configuration.md](configuration.md#the-evals-settings)), and how
+the events are written, added up and checked, the judge included, is in
+[the evaluation runsheet](evaluation-runsheet.md#continuous-evals). With evals off, nothing here
+reads or filters anything, and the scores already kept stay as they are.
+
+```bash
+python scripts/admin_cli.py evals status          # gated models, the cull proposal, the judge, the rollup
+python scripts/admin_cli.py evals digest          # each model's day totals over the last 7 days
+python scripts/admin_cli.py models list --json    # each model's windows, as the rollup last wrote them
+```
+
+The operator's assistant answers "how are the models doing?" and "why is this model not picked?"
+with the same scores (`model_ranch`, [alexa/README.md](../alexa/README.md#5-write-the-manifest-deploy-and-test)).
+
+### Where a model's score comes from
+
+| What happened | Score | Counts towards the gates |
+|---|---|---|
+| The daily cycle stored an article, held or published | +2 | yes |
+| A person approved or rejected it in the inbox | +2 or −2 | yes |
+| A person sent it back to be rewritten (`articles rewrite`, `[w]` in `approve`) | −2 | yes |
+| A person marked a research Finding good or bad (`approve --source findings`) | +2 or −2 | yes |
+| The judge reviewed a Finding or an article | +2 or −2 | only while the judge is calibrated |
+| An offline scoring run made with `--record` | +2 or −2 | only while the judge is calibrated |
+| A reader voted | +1 or −1, +3 or −3 with a comment the screening kept | never |
+| An operator's `evals forgive` or `evals punish` | +N or −N (1 to 100; more with `--allow-cull`) | the total only |
+
+An article counts once for its model, however many prompts went into it. Its model is the one whose
+text the article is now: its latest finished Re-Write's, else its draft's. Professor Grizzlewick's
+approvals, rejections and rewrites are an AI reviewer's, not a person's, and score nothing. The
+judge is calibrated while it agrees with people often enough
+([calibrating the judge](evaluation-runsheet.md#4-the-judge-and-calibrating-it)); until then its
+verdicts are kept but do not gate.
+
+### The windows
+
+The hourly rollup writes these on each model's registry row. It writes only to a row that is there,
+so a culled or deleted model is never written back.
+
+| Field | What it adds up |
+|---|---|
+| `daily_perf` | today, in the evals `timezone` (Sydney by default) |
+| `weekly_perf` | the last 7 days, today included |
+| `monthly_perf` | the calendar month so far |
+| `total_perf` | every day the evals table holds, plus the model's forgives and punishes |
+| `perf_events` | the events behind each window (`daily`, `weekly`, `monthly`, `total`); a forgive or punish is not an event |
+| `perf_good`, `perf_bad` | per window, the events above and below zero, readers' votes and every judge's verdict included, stored articles not: what the rewrite picker ranks by |
+| `model_roles` | what the model is used for now (`default`, `fallback`, `topic_model`, `topic_fallback`, `rotation`, `pool`, `price_locked`, `judge`), for display only: culling works the roles out again |
+| `perf_updated_at` | when the rollup last wrote them |
+
+The four `*_perf` windows and `perf_events` hold only what may gate: the rows marked yes above, and
+the judge's and offline runs' verdicts only while the judge is calibrated. Every run adds whole days
+up again from their events, so a window never counts anything twice.
+
+### Gates and `min_events`
+
+A model is **gated** while one of three windows is below its gate with at least `min_events` (10)
+events behind that window:
+
+| Window | Its gate (default) |
+|---|---|
+| `daily_perf` | `daily_gate` (−50) |
+| `weekly_perf` | `weekly_gate` (−100) |
+| `total_perf` | `total_gate` (−1000) |
+
+`min_events` keeps a model with little history from being gated on a handful of events. The month
+has no gate. These four, and how well the judge must agree with people before its verdicts count
+(`judge_min_agreement`, 0.7, over at least `judge_min_pairs`, 20), are policy: no CLI flag sets
+them and the admin API refuses them. Change them by editing the `evals` row in the DynamoDB console.
+
+A gate lifts by itself when its window recovers: the next day for the daily gate, as the bad days
+leave the week for the weekly one. A model's row whose scores cannot be read is never gated, and
+nothing is gated while the `evals` row or the model-config default row cannot be read: a gate never
+holds a model back on a guess. `evals status` lists the gated models with the windows that gate
+each.
+
+### The rotation guard
+
+While evals are on, a gated model is left out of:
+
+- the rotation draw (step 1 of [the routing](#which-model-a-call-uses)). When every model in a
+  topic's list is gated, the topic's own `model_id` is used, else the default, never the whole list
+  again;
+- the registry pick that routing moves a topic to when its model is switched off or unfit, so no
+  gated model is ever written onto a topic;
+- the model [the weekly cycle](#the-weekly-cycle) adds to a rotation list;
+- the shared pool's pick after a publish;
+- the [rewrite picker](#the-rewrite-picker). A Re-Write asked for on a gated model is refused (400),
+  with the windows that gate it.
+
+Nothing is taken out of a rotation list or the pool: a model whose windows recover is a candidate
+again at the next draw. Each call that routes reads the `evals` row and lists the registry once,
+and only while evals are on.
+
+### Never gated: the default, the fallback and the judge
+
+These are served whatever their scores:
+
+- the default: the model-config `default` row's model, and `BEDROCK_MODEL_ID`;
+- the fallback: that row's `fallback_model_id`;
+- the judge in effect: `judge_model_id`, else that fallback, else `BEDROCK_MODEL_ID`.
+
+A topic's own single `model_id` and its `fallback_model_id` are not gated either: they are the
+operator's choice, and only lists are filtered. Each time one of these is served while the gates
+would have held it back, a `model_gated_protected` evidence line in the Lambda's log names the
+model, the role that keeps it and the windows. `evals status` lists those models under `protected`,
+apart from the gated ones.
+
+### Holding a gate open: `ungated_until`
+
+```bash
+python scripts/admin_cli.py evals ungate --model <model id> --hours 48   # 1 to 720 hours from now
+python scripts/admin_cli.py evals ungate --model <model id> --hours 0    # end the override now
+```
+
+This sets `ungated_until` on the model's registry row: until then no gate holds the model back,
+whatever its scores, and no cull proposes it. Its scores are not changed. A value there that is not
+a time is read as holding the gates open too. `evals status` lists the models an override holds open
+under `held_open`. `models restore` sets it for 7 days. It is the failure-day step for a model gated
+by mistake ([the production runsheet](production-runsheet.md#failure-day-recipes)).
+
+### The rewrite picker
+
+`approve`'s Re-Write (`w`) offers, and `articles rewrite` without `--model` takes the first of,
+these models:
+
+1. the enabled text models the account can call (not `access: denied`) that the Model Ranch has not
+   gated;
+2. while evals are on, those with at least `min_events` good and bad events in their whole record
+   (`perf_good` plus `perf_bad`, all time) first, ranked by the lower bound of the 95 % Wilson
+   interval of good / (good + bad), then by price (input plus output), then by id;
+3. then the rest, cheapest first.
+
+Each model in the picker shows its score, n and interval, or "too few to rank, by price", or "no
+scores yet". With evals off, nothing is held back and every model comes cheapest first. `articles
+rewrite` without `--model` uses the top model only while one is ranked; otherwise (evals off, no
+model with enough events yet, or the models could not be read) it says so and the topic's own model
+writes the Re-Write, as it always has.
+
+### Forgive and punish
+
+```bash
+python scripts/admin_cli.py evals forgive --model <model id> --amount 50
+python scripts/admin_cli.py evals punish --model <model id> --amount 50
+python scripts/admin_cli.py evals punish --model <model id> --amount 500 --allow-cull
+```
+
+Each moves the model's `total_perf` by N at the next hourly rollup, and no window: a forgive cannot
+hide a bad day or week from the daily and weekly gates, and a punish cannot put a model under them.
+So it reaches the total gate and culling only. N is 1 to 100; more needs `--allow-cull` (a punish
+that large can take a model below the total gate, where it is gated and may be culled). The answer
+shows the model's total before and after, as the next rollup would put it, beside `total_gate`. Each
+is an `adjust#model#<id>` row on the evals table and an Admin Forgive or Admin Punish event.
+
+`--prompt <prompt id> --version <version>` records one for a prompt version instead (`v2`, or
+`vanilla:v1` for the copy in the code). Nothing adds those up yet, so no total of a prompt version
+moves. The prompt must be one the code registers: a code-only prompt takes only a `vanilla:`
+version, and a `vanilla:` version cannot be later than the code's own. Forgive and punish are
+refused (409) while evals are off.
+
+### Culling: a proposal, then an apply
+
+Culling deletes models whose total has stayed bad. It takes two steps, and only the second deletes.
+
+**The proposal.** On Fridays at 04:00 Sydney time, after it refreshes the rotations, [the weekly
+cycle](#the-weekly-cycle) proposes every registry model that:
+
+- has a `total_perf` below `total_gate` (−1000), with at least `min_events` events behind it;
+- plays no role as things stand now: not the default, the fallback or the judge, no topic's model,
+  fallback or rotation entry, not in the shared pool (worked out again from the topics and the
+  settings, not read from the row's `model_roles`);
+- has no locked price;
+- has no `ungated_until` holding its gates open.
+
+It writes them, worst total first, each with its total, its events and why, as `cull_proposal` on
+the `model-catalog-state` row, expiring at the next cycle. An empty proposal is written too, so
+"nothing to cull" can be told from "never looked". Nothing is deleted. A proposal is made only while
+evals are on and the cycle runs (`model-catalog set --cycle on`), and whatever `cull_enabled` says,
+so you can read a few weeks of proposals before anything can be deleted.
+
+```bash
+python scripts/admin_cli.py evals cull                # the proposal in place and the last cull applied
+python scripts/admin_cli.py evals set --cull on       # let an apply delete (cull_enabled, off by default)
+python scripts/admin_cli.py evals cull --apply        # shows the proposal and asks first; --yes skips both
+python scripts/admin_cli.py evals set --cull off
+```
+
+**The apply.** `evals cull --apply` takes up to `cull_max_per_run` (3) of the proposal's models,
+worst total first. It is refused (409) while `cull_enabled` is off, while evals are off, when there
+is no proposal, and once the proposal has expired. Each model is checked again against the rules as
+they are now, so one that has since been given a role, had its price locked or its gates held open,
+recovered above the gate, or left the registry is kept, and the answer says why. A culled model
+goes the way a pruned one does: its price into the `model-archive` row (old articles still cost
+correctly), then its registry row deleted, so discover never adds it back. Its archive entry also
+keeps its row, less its scores, for `models restore`. The proposal stays as it was, so another apply
+takes the next ones, checked again. What was done (when, the ids culled, those kept and why, those
+left for another apply) is `last_cull_apply` on the state row, which `evals cull` and `evals status`
+show.
+
+### Putting a model back: `models restore`
+
+```bash
+python scripts/admin_cli.py models restore <model id>
+```
+
+This puts a model the archive holds back in the registry. A culled model comes back with the row
+the archive kept; a pruned one with its price and names only, switched off, for `models add` to
+switch on. Its `ungated_until` is set 7 days ahead, so no gate holds it back and no cull proposes it
+while its scores settle. When its total is below zero, an Admin Forgive brings it to zero; the
+total moves at the next hourly rollup. Last, the archive entry is deleted, so a restore that failed
+part-way can be sent again. It works whatever `cull_enabled` says, and is refused (409) while evals
+are off. It is the failure-day step for a model culled by mistake.
+
 ## How a cost is worked out
 
 Every model call records its model and tokens on the Finding or the article (its lineage). The
@@ -435,8 +743,13 @@ includes the research that fed it.
 | The registry: each model, its price, `enabled`, `price_locked`, `access`, where the price came from | `<prefix>-<env>-models` table |
 | The global default and fallback | `default` row of `<prefix>-<env>-model-config` |
 | The shared rotation pool | `model-rotation` row, same table |
+| A model's purpose and inputs | `model_purpose`, `model_inputs` on its registry row |
+| A model's scores and gate override | `daily_perf`, `weekly_perf`, `monthly_perf`, `total_perf`, `perf_events`, `perf_good`, `perf_bad`, `model_roles`, `perf_updated_at` and `ungated_until` on its registry row |
+| The day totals, forgives and punishes behind the scores | the `<prefix>-<env>-evals` table: `model#<id>` day rows, `adjust#model#<id>` rows |
+| The Model Ranch's settings: the gates, `min_events`, culling, the judge | `evals` row of `<prefix>-<env>-model-config` ([configuration.md](configuration.md#the-evals-settings)) |
 | The catalog's settings / what it last did / a pricing run | `model-catalog` / `model-catalog-state` / `pricing-run#<id>` rows (a run's row expires 14 days after it ends) |
-| Pruned models' prices | `model-archive` row |
+| The cull proposal / the last cull applied | `cull_proposal` / `last_cull_apply` on the `model-catalog-state` row |
+| Pruned and culled models' prices, and a culled model's row for `models restore` | `model-archive` row |
 | Models a probe found the account cannot call | `model-access-denied` row (each rechecked after 30 days) |
 | A topic's model, fallback and rotation list | `model_id`, `fallback_model_id`, `model_id_candidates` on its Topics row |
 | Old prices a pricing run replaced | `pricing/<date>-<run id>.json` in the content bucket (kept) |
@@ -448,7 +761,8 @@ includes the research that fed it.
 - **A topic is on a model you never set.** One of these put it there:
   - the shared pool, which rewrites `model_id` after an article the daily cycle published by
     itself, or after a run with no usable angle;
-  - routing, which moved the topic off a switched-off model and wrote the replacement onto it;
+  - routing, which moved the topic off a switched-off model, or one that is not a text model, and
+    wrote the replacement onto it;
   - [the weekly cycle](#the-weekly-cycle) (Fridays), which adds one model a week to a topic's
     rotation list until it holds `rotation_max` (10);
   - `models disable` (or `models add ... --disabled`), which put the cycle's next pick in the
@@ -479,3 +793,15 @@ includes the research that fed it.
   call (grant access in the Bedrock console, then wait out the 30 days or `models add` it).
 - **A model shows `access: denied`.** Grant it under Bedrock → Model access (some providers need an
   agreement or a use-case form), then `models add` it again: switching it on probes it afresh.
+- **A model is refused with "does not write text".** Its purpose says it is not a text model:
+  `models list` shows which. `unknown` means Bedrock no longer lists it. A row that shows
+  `unclassified` is judged as a text model until `models classify` records its purpose.
+- **A rotation never picks a model, or a Re-Write refuses it as gated.** The Model Ranch has gated
+  it: `evals status` lists it under `gated_models`, with the windows below their gate. The gate
+  lifts by itself when the windows recover. If its scores are wrong, or you need it now, `evals
+  ungate --model <model id> --hours 48`.
+- **A model has gone from `models list`.** Discover pruned it (the registry was full; `model-catalog
+  get` shows the last discover's `prune`, with `pruned_ids`) or an `evals cull --apply` culled it
+  (`evals cull` shows the last cull applied). `models restore <model id>` puts either back.
+- **The scores do not move.** Evals are off, or the rollup has stopped: `evals status` shows the
+  rollup's watermark and last run, and `evals rollup` runs it now.

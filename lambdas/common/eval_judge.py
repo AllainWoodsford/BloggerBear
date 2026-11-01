@@ -1,4 +1,4 @@
-"""The evals judge (docs/enhancements/model-ranch-prompt-assets-evals.md, sections 2, 4.3 to 4.5, 4.10
+"""The evals judge (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections 2, 4.3 to 4.5, 4.10
 and 5.3): a model that reads another model's work, a research Finding's summary or an article, and
 says whether it is good or bad, so every model's writing gets a verdict without waiting for a person.
 

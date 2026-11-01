@@ -1,6 +1,6 @@
 """Prompts as assets: a prompt's text read from S3 when it may be, the copy in the code when not.
 
-docs/enhancements/model-ranch-prompt-assets-evals.md (sections 4.1, 4.2 and 4.5). A prompt is
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md (sections 4.1, 4.2 and 4.5). A prompt is
 named `<lambda_id>/<prompt_name>` and has two homes: the registry (common/prompts_registry.py), a
 `PromptSpec` per prompt with the code's own template, the **vanilla**, and the S3 bucket, where the
 publisher workflow puts the asset files under `<prompt_id>/latest/` (one file: the prompt; two or

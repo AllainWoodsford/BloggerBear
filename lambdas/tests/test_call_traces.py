@@ -1,4 +1,4 @@
-"""Call traces (common/call_traces.py; docs/enhancements/model-ranch-prompt-assets-evals.md, PR18c):
+"""Call traces (common/call_traces.py; docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR18c):
 each model call that builds a lineage call, stored whole under traces/<subject>/<stage>.json in the
 content bucket while the evals setting trace_calls is on.
 

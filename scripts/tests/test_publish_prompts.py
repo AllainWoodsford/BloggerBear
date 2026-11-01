@@ -1,5 +1,5 @@
 """scripts/publish_prompts.py against moto's S3 and DynamoDB (the hash table as test_prompts.py
-makes it): the publish order of section 4.2 of docs/enhancements/model-ranch-prompt-assets-evals.md
+makes it): the publish order of section 4.2 of docs/enhancements/archive/model-ranch-prompt-assets-evals.md
 (and that a run stopped part-way leaves the previous release serving, read through
 common/prompts.py as a Lambda reads it), the write-once guard on versions/, the hash table as the
 record of every version, the retire grace, what the sync may delete, the skip rule (faked, and once

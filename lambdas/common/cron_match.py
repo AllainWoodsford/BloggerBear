@@ -1,5 +1,5 @@
 """Reading a topic's cadence the way EventBridge Scheduler does, so the dispatcher can decide the
-same minutes the per-topic schedules fire at (docs/enhancements/model-ranch-prompt-assets-evals.md
+same minutes the per-topic schedules fire at (docs/enhancements/archive/model-ranch-prompt-assets-evals.md
 section 4.8).
 
 The dispatcher runs every minute and asks, for each topic, whether this minute is one of its

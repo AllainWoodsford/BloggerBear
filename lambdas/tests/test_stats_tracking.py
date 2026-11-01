@@ -165,7 +165,7 @@ def test_each_category_gets_its_own_counters(table):
 
 
 def test_the_evals_jobs_have_a_category_of_their_own_before_their_first_call(table):
-    """Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md): the judge and the
+    """Continuous evals (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): the judge and the
     offline scoring runs tally under "evals". Nothing calls it yet; the category comes first, so the
     first such call is counted on its own counters, rolls into the all-time row like every counter,
     and the Stats page has the row, at a real zero, from the start."""

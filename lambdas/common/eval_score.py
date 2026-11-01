@@ -1,4 +1,4 @@
-"""Offline scoring runs (docs/enhancements/model-ranch-prompt-assets-evals.md, sections 2, 4.3 to 4.5,
+"""Offline scoring runs (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections 2, 4.3 to 4.5,
 4.7, 5.3 and 5.4's offline run): an operator asks how other models, or other versions of a prompt,
 would have written past articles, and the judge says, item by item, whether each would have been
 better or worse than what the live version writes. Nothing is served and no prompt asset is touched:

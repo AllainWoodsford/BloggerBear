@@ -1,8 +1,8 @@
-"""The admin API's evals routes (admin_api_handler.py; docs/enhancements/model-ranch-prompt-assets-evals.md,
-PR13 and PR13b): GET/PUT /evals-config, POST /evals/rollup, GET /evals/status, GET /evals/digest, the
-perf fields on GET /models, POST /evals/adjust, /evals/ungate and /evals/revoke
-(common/evals_adjust.py), and the routes' place in both environments' Terraform. Culling's routes
-and its part of the status (PR16) are test_model_cull.py's.
+"""The admin API's evals routes (admin_api_handler.py;
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR13 and PR13b): GET/PUT /evals-config, POST
+/evals/rollup, GET /evals/status, GET /evals/digest, the perf fields on GET /models, POST /evals/adjust,
+/evals/ungate and /evals/revoke (common/evals_adjust.py), and the routes' place in both environments'
+Terraform. Culling's routes and its part of the status (PR16) are test_model_cull.py's.
 
 What is held: the settings route sets and clears what the CLI may, `timezone` (a DynamoDB reserved
 word) included, and refuses the DynamoDB-only settings; setting the judge's switch clears why the

@@ -363,7 +363,7 @@ variable "evals_enabled" {
   type        = bool
   default     = false
   description = <<-EOT
-    Whether continuous evals run (docs/enhancements/model-ranch-prompt-assets-evals.md): the scored
+    Whether continuous evals run (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): the scored
     events the pipeline writes, the hourly rollup of them into the evals table, the judge and the
     offline scoring runs. Off by default. Handed to every Lambda as EVALS_ENABLED ("true" or
     "false"; common/evals.py writes no event while it is "false"), and to the evals module
@@ -379,7 +379,7 @@ variable "worker_concurrency" {
   description = <<-EOT
     How many queue jobs the pipeline's workers may run at once: the maximum_concurrency of the
     work queue's event source mapping (infra/modules/work-queue, phase Q1 of
-    docs/enhancements/model-ranch-prompt-assets-evals.md), which is the one knob that caps the
+    docs/enhancements/archive/model-ranch-prompt-assets-evals.md), which is the one knob that caps the
     model calls and source requests in flight however many topics there are. At least 2, the
     smallest value an SQS event source mapping accepts. Set from the WORKER_CONCURRENCY GitHub
     variable (docs/configuration.md).
@@ -396,7 +396,7 @@ variable "prompt_as_asset_enabled" {
   default     = false
   description = <<-EOT
     Whether the Lambdas read their prompts from the prompts bucket (prompts as assets,
-    docs/enhancements/model-ranch-prompt-assets-evals.md) rather than the copies in their code.
+    docs/enhancements/archive/model-ranch-prompt-assets-evals.md) rather than the copies in their code.
     Off by default: every prompt stays as it is in the code, and nothing of the prompts stack is
     read. Handed to every Lambda as PROMPT_AS_ASSET_ENABLED ("true" or "false"). Set from the
     PROMPT_AS_ASSET_ENABLED GitHub variable (docs/configuration.md).

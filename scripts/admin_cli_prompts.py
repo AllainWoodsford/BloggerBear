@@ -1,6 +1,6 @@
 """The Admin CLI's prompt commands: the `prompts` group of scripts/admin_cli.py, in its own module.
 
-Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): prompt templates the
+Prompts as assets (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): prompt templates the
 publisher puts in the prompts bucket, served by every Lambda in place of the copy in its code when
 the deployment's switch is on and every check passes. These commands read what is published and
 change what is served, through the Admin API's prompts routes:

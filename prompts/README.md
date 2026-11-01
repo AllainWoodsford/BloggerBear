@@ -1,7 +1,7 @@
 # Prompts
 
 This folder holds the prompts the Lambdas may read from S3 instead of the copies in their code
-(prompts as assets: [the design](../docs/enhancements/model-ranch-prompt-assets-evals.md), sections
+(prompts as assets: [the design](../docs/enhancements/archive/model-ranch-prompt-assets-evals.md), sections
 4.1 and 4.2). What is in each prompt's `latest/` folder here is what each deployment serves: every
 publish makes the bucket match it. A prompt with nothing here is served from the code, as it always
 was, and so is every prompt while a deployment's `PROMPT_AS_ASSET_ENABLED` switch is off.

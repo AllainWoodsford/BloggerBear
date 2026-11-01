@@ -1,6 +1,6 @@
 """The Admin CLI's model catalog commands: `models list`, `models reprice`, `models discover`,
 `models classify` and `model-catalog get|set` (docs/enhancements/archive/model-catalog-refresh.md),
-and `models restore`, culling's way back (docs/enhancements/model-ranch-prompt-assets-evals.md)."""
+and `models restore`, culling's way back (docs/enhancements/archive/model-ranch-prompt-assets-evals.md)."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 # Enhancement: the Model Ranch, prompts as assets, continuous evals, and the queue platform under them
 
-**Status:** approved for implementation · **Drafted:** 2026-10-25, through four review rounds (architecture, code, operator; skeptic + architecture twice) · **Executed by:** an agent session following "Working rules" below, PR by PR.
+**Status:** built, and archived by the docs sweep (PR22, 2026-11-01): the code is the reference now, and [the archive's index](README.md) says what shipped and what did not; approved for implementation 2026-10-25 · **Drafted:** 2026-10-25, through four review rounds (architecture, code, operator; skeptic + architecture twice) · **Executed by:** an agent session following "Working rules" below, PR by PR.
 
 **This document is the whole brief.** The agent executing it has no memory of the discussions that produced it. Everything it needs is here or in the files this document names. Where it says "decided", do not reopen the decision; where it says "guess", it is a mistake in this document: stop and ask the owner.
 

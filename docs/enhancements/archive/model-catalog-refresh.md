@@ -149,7 +149,7 @@ finish, so pausing never strands an applied-but-unchecked price.
 **SQS was considered and not used.** The ticks are a queue drained at a fixed pace by one-shot
 schedules, which this Lambda already creates for its reviews under an existing grant: no new
 queue, event source mapping, DLQ or IAM. If the dispatcher work queue
-([dispatcher-sqs-enhancement.md](../dispatcher-sqs-enhancement.md)) is built, the ticks can become
+([dispatcher-sqs-enhancement.md](dispatcher-sqs-enhancement.md)) is built, the ticks can become
 delayed messages on it.
 
 `admin_cli.py model-catalog get` shows the run under way: its queue left, its next tick, and when
