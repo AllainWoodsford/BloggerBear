@@ -5,7 +5,9 @@ on a schedule is Phase 3 and is intentionally not built here.
 
 Flow (see docs/project-plan.md §4 "Daily Authoring Cycle" and §5 data
 model):
-1. Load topic.
+1. Load topic. A retry of a run that already stored its article (the state machine's execution
+   id, or a direct invoke's request id, matches the topic's `last_article_run`) stops here with
+   `already_written`: see `_run_id` and `_record_article_written`.
 2. Load every finding since the topic's previous article, at most the topic's
    findings window back (FINDINGS_WINDOW_HOURS unless it sets its own
    `findings_window_hours`, see common/findings_window.py; the whole window the
@@ -200,20 +202,44 @@ _SOURCE_GUIDANCE_HEADER = "How articles on this topic are written (mandatory):"
 
 
 # Outcomes that wrote an article or rewrote one: the Stats page's Articles figures are rebuilt
-# after these and no others.
-_ARTICLE_WRITTEN_STATUSES = ("published", "pending_moderation", "rewritten")
+# after these and no others. already_written is a retry of a run that stored its article: the
+# attempt that stored it may have timed out before its own rebuild, so the retry does it.
+_ARTICLE_WRITTEN_STATUSES = ("published", "pending_moderation", "rewritten", "already_written")
 
 
 @track_lambda_duration("daily_cycle")
 def handler(event: dict, context) -> dict:
-    result = _handle(event)
+    result = _handle(event, context)
     # A run that stored its article and then failed (article_stored) wrote one too.
     if result.get("status") in _ARTICLE_WRITTEN_STATUSES or result.get("article_stored"):
         refresh_articles_snapshot()
     return result
 
 
-def _handle(event: dict) -> dict:
+def _run_id(event: dict, context) -> str | None:
+    """The id that names this run across its retries, or None when there is nothing to name it by.
+
+    A scheduled run comes through the state machine, whose NameTheRun state adds the execution's
+    id to the input (`execution.id`): every retry of its Task carries the same one, though each
+    retry is a new Lambda request. A direct invoke (a manual trigger) has no execution, so its
+    Lambda request id stands in: Lambda keeps that across a duplicate delivery of the same invoke.
+    With neither (a test, or a context without one) the run is not checked at all, as before.
+
+    The id stops only an attempt that reads the topic after an earlier attempt of the same run
+    stored its article (`_written_by_this_run`). Two attempts that overlap both pass the check and
+    can each store an article: a duplicate delivery that starts while the first still runs, or a
+    Task retry after the invoke itself failed while the function ran on. A timeout, the case this
+    is for, leaves no attempt running."""
+    execution = (event or {}).get("execution")
+    if isinstance(execution, dict):
+        execution_id = execution.get("id")
+        if isinstance(execution_id, str) and execution_id:
+            return execution_id
+    request_id = getattr(context, "aws_request_id", None)
+    return request_id if isinstance(request_id, str) and request_id else None
+
+
+def _handle(event: dict, context=None) -> dict:
     # A Re-Write of a held article (common/rewrite.py), invoked asynchronously by the Admin
     # API's POST /moderation-queue/{queue_id}/rewrite. It runs here rather than in a Lambda of
     # its own because it needs exactly this one's timeout, permissions and CoinGecko key.
@@ -233,7 +259,7 @@ def _handle(event: dict) -> dict:
 
     print(f"daily_cycle_handler: starting run for topic_id={topic_id} force={force}")
     try:
-        return _run_daily_cycle(topic_id, force=force)
+        return _run_daily_cycle(topic_id, force=force, run_id=_run_id(event, context))
     except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
         # Said in the log too: a caught error is a successful invocation to Step Functions, so
         # without this line it shows only in the execution's output.
@@ -270,29 +296,41 @@ def _record_article_written(
     run_started: datetime,
     subject_key: str | None = None,
     rotation: goal_rotation.Pick | None = None,
+    run_id: str | None = None,
+    article_id: str | None = None,
 ) -> None:
     """Remember when this run began, so the next window starts there.
 
     The run's *start* (not its end) is stored: a finding captured while the article
     was being written belongs to the next one. Called the moment the article's row is
     stored (`_publish_or_moderate`'s `on_stored`), before its page, musing or moderation
-    item: if one of those then fails, or the Lambda times out and Step Functions runs it
-    again, the next window still starts here, and the same Findings are not written up
-    twice. Never raises -- the article already exists by now, and an error here would
-    make Step Functions retry the whole run and write a duplicate. For a topic that
-    rotates, the day's subject's own stamp is set too (`last_article_by_subject`), so
-    that subject's next day reads from here and the other subjects' windows stay where
-    they were.
+    item: if one of those then fails, or the Lambda times out, the next window still
+    starts here, so no later run takes these Findings as new (a retry of this run is
+    stopped by `last_article_run` instead, below). Never raises -- the article already
+    exists by now, and an error here would make Step Functions retry the whole run and
+    write a duplicate. For a topic that rotates, the day's subject's own stamp is set
+    too (`last_article_by_subject`), so that subject's next day reads from here and the
+    other subjects' windows stay where they were.
+
+    With a `run_id` (`_run_id`), the run and the article it stored are kept in the same write as
+    the stamp (`last_article_run`). The stamp alone does not stop a retry: a topic with a goal
+    rotation would revisit the same Findings at once under its next goal, and a Finding captured
+    while this run wrote would be new to the retry. So a retry of this run that starts after this
+    write reads `last_article_run` and writes nothing (`_run_daily_cycle`'s already_written); one
+    that overlaps this attempt is not stopped (`_run_id`). Without one, the stamp is written
+    exactly as it always was.
 
     With a goal rotation (common/goal_rotation.py), its state for the subject (or the topic) is
     stored too, the same way: a failure is said in the log, and the next run then picks as if this
     article had not been written under its goal (at worst one goal comes round again).
     """
+    stamp_kwargs: dict = {}
+    if subject_key is not None:
+        stamp_kwargs["subject_key"] = subject_key
+    if run_id is not None:
+        stamp_kwargs["run"] = {"run_id": run_id, "article_id": article_id}
     try:
-        if subject_key is None:
-            set_topic_last_article_at(topic_id, run_started.isoformat())
-        else:
-            set_topic_last_article_at(topic_id, run_started.isoformat(), subject_key=subject_key)
+        set_topic_last_article_at(topic_id, run_started.isoformat(), **stamp_kwargs)
     except Exception as exc:  # noqa: BLE001
         print(f"daily_cycle_handler: could not record last_article_at for {topic_id}: {exc!r}")
     if rotation is None:
@@ -433,10 +471,35 @@ def _rotation_fields(rotation: goal_rotation.Pick | None) -> dict:
     return {"editorial_goal": rotation.goal.name, **({"revisit": True} if rotation.revisit else {})}
 
 
-def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
+def _written_by_this_run(topic: dict, run_id: str | None) -> dict | None:
+    """The topic's `last_article_run` when this same run wrote it (a retry after the article was
+    stored), else None. A run with no id is never matched, and a field that is missing or is not
+    a map (a hand edit: only `set_topic_last_article_at` writes it) matches nothing."""
+    if run_id is None:
+        return None
+    last_run = topic.get("last_article_run")
+    if isinstance(last_run, dict) and last_run.get("run_id") == run_id:
+        return last_run
+    return None
+
+
+def _run_daily_cycle(topic_id: str, force: bool = False, run_id: str | None = None) -> dict:
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "topic_id": topic_id, "error": "topic not found"}
+    written = _written_by_this_run(topic, run_id)
+    if written is not None:
+        # A retry of a run that stored its article and then timed out or crashed: the article is
+        # this run's, whatever the rest of the run did. Going on would write another (a goal
+        # rotation's next revisit, or a Finding captured meanwhile), so nothing more is read or
+        # written. Checked before `paused`: the retry still names its article, and the handler
+        # rebuilds the Stats figures the timed-out attempt may not have.
+        article_id = written.get("article_id")
+        print(
+            f"daily_cycle_handler: topic_id={topic_id} run={run_id} already stored "
+            f"article_id={article_id}; nothing written"
+        )
+        return {"status": "already_written", "topic_id": topic_id, "article_id": article_id}
     if topic.get("paused") is True:
         # Paused by the operator (`topics pause`): no candidate ideas, no draft, no article,
         # whatever started this run, until it is resumed. The Topics row decides.
@@ -635,7 +698,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
 
     def _stored(article_id: str) -> None:
         stored["article_id"] = article_id
-        _record_article_written(topic_id, run_started, subject_key, rotation)
+        _record_article_written(topic_id, run_started, subject_key, rotation, run_id, article_id)
 
     try:
         result = _publish_or_moderate(

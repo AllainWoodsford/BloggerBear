@@ -457,11 +457,232 @@ def test_the_vision_pipeline_walks_from_a_site_to_the_person_who_approves(dev, m
     assert "or satellite imagery (see the vision pipeline)" in research
 
 
+# The five features added with their pages under docs/architecture/: (first step, last step, a step
+# that comes before another, words the table holds, catalogue resources it names).
+NEW_FEATURES = {
+    "site-and-feedback": (
+        "The site",
+        "Musings",
+        ("The comment screen", "Counted and stored"),
+        (
+            "bloggerbear-dev-feedback (DynamoDB table)",
+            "bloggerbear-dev-public-api (WAF web ACL)",
+            "bloggerbear-dev-weekly-reflection (Lambda function)",
+            "must answer KEEP",
+            "no identifier of any kind",
+            "280 characters",
+        ),
+        {("table", "feedback"), ("table", "prompt-refinements"), ("table", "musings"), ("bucket", "site")},
+    ),
+    "stats-and-costs": (
+        "An article's own cost",
+        "The Stats page",
+        ("The weekly rollover", "The daily cost poll"),
+        (
+            "bloggerbear-dev-stats-current (DynamoDB table)",
+            "bloggerbear-dev-cost-explorer-poll (Lambda function)",
+            "AWS Cost Explorer (us-east-1)",
+            "unpriced, never as free",
+            "8 shard rows",
+        ),
+        {("table", "stats-current"), ("table", "stats-history"), ("function", "stats-rollover")},
+    ),
+    "security-incidents": (
+        "Blocked by a firewall",
+        "It expires",
+        ("Grouped into incidents", "High severity emails you"),
+        (
+            "bloggerbear-dev-security-events (DynamoDB table)",
+            "bloggerbear-dev-security-events (Lambda function)",
+            "aws-waf-logs-bloggerbear-dev-public-api (CloudWatch log group)",
+            "SECURITY_ALERT",
+            "keyed hash, never its address",
+            "120 days",
+        ),
+        {("table", "security-events"), ("function", "security-events"), ("topic", "alerts")},
+    ),
+    "reviewer-bear": (
+        "Woken",
+        "His report",
+        ("Held articles", "The de-fanged publish"),
+        (
+            "bloggerbear-dev-reviewer (Lambda function)",
+            "bloggerbear-dev-moderation-queue (DynamoDB table)",
+            "with no model call",
+            "two days or more",
+            "ten days or more",
+        ),
+        {("function", "reviewer"), ("table", "moderation-queue"), ("bucket", "content")},
+    ),
+    "model-catalog": (
+        "What invokes it",
+        "Where a price is used",
+        ("Discover", "The reprice queue"),
+        (
+            "bloggerbear-dev-model-catalog (Lambda function)",
+            "bloggerbear-dev-failed-executions (DynamoDB table)",
+            "AWS Price List API (us-east-1)",
+            "on probation",
+            "never one in use",
+        ),
+        {("function", "model-catalog"), ("table", "models"), ("table", "topics")},
+    ),
+}
+
+
+@pytest.mark.parametrize("key", list(NEW_FEATURES))
+def test_each_new_feature_walks_through_its_page_with_this_environments_names(dev, key):
+    first, last, (earlier, later), words, named = NEW_FEATURES[key]
+    feature = next(each for each in architecture.FEATURES if each.key == key)
+    answer = architecture.architecture(feature=key)
+
+    assert answer["feature"] == key
+    titles = [step["title"] for step in answer["steps"]]
+    assert titles[0] == first and titles[-1] == last
+    assert titles.index(earlier) < titles.index(later)
+    assert answer["spoken"].startswith(f"{feature.title.split(' (')[0]}. {feature.summary}")
+    assert f"It goes in {len(titles)} steps:" in answer["spoken"] and "They're on screen." in answer["spoken"]
+    assert answer["table"]["title"] == f"BloggerBear dev architecture: {feature.title}"
+    assert len(answer["table"]["rows"]) == len(titles)
+    text = " ".join(" ".join(row) for row in answer["table"]["rows"])
+    for each in words:
+        assert each in text, each
+    keys = {(c["kind"], c["key"]) for c in answer["components"]}
+    assert named <= keys and len(keys) == len(answer["components"])
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param(
+            key,
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="article research's steps are longer than the page and voice limits until "
+                "they are trimmed",
+            ),
+        )
+        if key == "article-research"
+        else key
+        for key in architecture.FEATURE_KEYS
+    ],
+)
+def test_each_feature_fits_the_page_and_can_be_listened_to(monkeypatch, key):
+    """Production's names are the longest. A cell past the page's limit is cut short, and a step's
+    `what` is read aloud where there is no page (Alexa+), so each is one or two sentences."""
+    from ops_agent import policy
+
+    monkeypatch.setenv("ENVIRONMENT_NAME", "production")
+    answer = architecture.architecture(feature=key)
+
+    assert len(answer["table"]["title"]) <= policy.TABLE_TITLE_MAX_CHARS
+    for row in answer["table"]["rows"]:
+        assert all(len(cell) <= policy.TABLE_CELL_MAX_CHARS for cell in row), row[0]
+    for step in answer["steps"]:
+        assert len(re.findall(r"[.!?](?:\s|$)", step["what"])) <= 2, step["title"]
+    assert len(answer["spoken"].split()) < 120
+
+
+def test_article_research_has_a_title_that_fits_and_a_spoken_answer_to_listen_to(monkeypatch):
+    """Its steps wait to be trimmed (above), but its title and what is said already fit."""
+    from ops_agent import policy
+
+    monkeypatch.setenv("ENVIRONMENT_NAME", "production")
+    answer = architecture.architecture(feature="article-research")
+
+    assert len(answer["table"]["title"]) <= policy.TABLE_TITLE_MAX_CHARS
+    assert len(answer["spoken"].split()) < 120
+
+
+@pytest.mark.parametrize(
+    ("words", "key"),
+    [
+        ("site-and-feedback", "site-and-feedback"),
+        ("the site and reader feedback", "site-and-feedback"),
+        ("how does reader feedback become gear", "site-and-feedback"),
+        ("how are votes counted", "site-and-feedback"),
+        ("the bear's mood", "site-and-feedback"),
+        ("the weekly reflection", "site-and-feedback"),
+        ("the site", "site-and-feedback"),
+        ("Stats and costs", "stats-and-costs"),
+        ("the Stats page", "stats-and-costs"),
+        ("how are costs tracked", "stats-and-costs"),
+        ("how much does an article cost", "stats-and-costs"),
+        ("the AWS bill", "stats-and-costs"),
+        ("the weekly rollover", "stats-and-costs"),
+        ("security incidents", "security-incidents"),
+        ("what does the firewall block", "security-incidents"),
+        ("the WAF", "security-incidents"),
+        ("how do incidents get made", "security-incidents"),
+        ("failed sign-ins", "security-incidents"),
+        ("the reviewer bear", "reviewer-bear"),
+        ("Professor Grizzlewick", "reviewer-bear"),
+        ("how does the professor decide held articles", "reviewer-bear"),
+        ("the de-fanged publish", "reviewer-bear"),
+        ("the model catalog", "model-catalog"),
+        ("how are model prices kept current", "model-catalog"),
+        ("model rotation", "model-catalog"),
+        ("how are new models discovered", "model-catalog"),
+        ("how does repricing work", "model-catalog"),
+    ],
+)
+def test_each_new_feature_is_found_from_the_operators_own_words(words, key):
+    assert architecture.resolve_feature(words) == key
+
+
+@pytest.mark.parametrize(
+    ("words", "key"),
+    [
+        # Musings: the feed is the site's; his own are the reviewer bear's.
+        ("musings", "site-and-feedback"),
+        ("the bear's musings", "site-and-feedback"),
+        ("Professor Grizzlewick's musings", "reviewer-bear"),
+        ("the reviewer musings", "reviewer-bear"),
+        # Reviews: article research's two reviews of a draft; the reviewer bear is a reviewer; a
+        # review with vision or rail in it is the vision pipeline's, and a price's is the catalog's.
+        ("the reviews", "article-research"),
+        ("how does the compliance review work", "article-research"),
+        ("how does the draft review work", "article-research"),
+        ("how are articles reviewed", "article-research"),
+        ("the reviewer", "reviewer-bear"),
+        ("how does the bear review held articles", "reviewer-bear"),
+        ("how does the vision review work", "vision-pipeline"),
+        ("how does manual review work in vision", "vision-pipeline"),
+        ("who reviews a vision finding", "vision-pipeline"),
+        ("the rail review", "vision-pipeline"),
+        ("how does the price review work", "model-catalog"),
+        ("how are reviews of a changed price done", "model-catalog"),
+        ("how does a review put a price back", "model-catalog"),
+        # Naming the reviewer bear beats the words he shares with other features.
+        ("what does the reviewer bear do with articles", "reviewer-bear"),
+        ("how does the reviewer bear decide held and published articles", "reviewer-bear"),
+        ("how does the reviewer bear approve articles", "reviewer-bear"),
+        ("how does the reviewer bear handle feedback", "reviewer-bear"),
+        ("how does the reviewer bear handle security", "reviewer-bear"),
+        ("what does the reviewer bear do with content findings", "reviewer-bear"),
+        # Costs are spend and the Stats page; prices, repricing and discovery are the catalog's.
+        ("the costs on the Stats page", "stats-and-costs"),
+        ("what did the AI spend cost", "stats-and-costs"),
+        ("how are prices checked", "model-catalog"),
+        ("the models", "model-catalog"),
+        ("what do models cost", "model-catalog"),
+        # A comment the screen drops is the site's; one that becomes an incident is security's.
+        ("the comment screen", "site-and-feedback"),
+        ("how do dropped comments become security incidents", "security-incidents"),
+        # The rail sites are the vision pipeline's, not the site's.
+        ("the rail sites", "vision-pipeline"),
+    ],
+)
+def test_words_two_features_share_go_to_the_one_they_mean(words, key):
+    assert architecture.resolve_feature(words) == key
+
+
 def test_a_feature_nobody_has_gets_the_list(dev):
     answer = architecture.architecture(feature="the coffee machine")
     assert answer["spoken"] == (
-        "I don't know that feature. The features I can walk through are article research and "
-        "the vision pipeline; or ask for a layer."
+        "I don't know that feature. The features I can walk through are article research, "
+        "the vision pipeline, the site and reader feedback, stats and costs, security incidents, "
+        "the reviewer bear and the model catalog; or ask for a layer."
     )
     assert "table" not in answer and answer["features"][0]["key"] == "article-research"
     assert architecture.resolve_feature(None) is None and architecture.resolve_feature(" ") is None
@@ -495,13 +716,26 @@ def test_with_nothing_it_names_the_layers_and_asks_which_one(dev):
         "BloggerBear is built in 9 layers: the edge, the presentation layer, the API gateways, "
         "identity and access, orchestration, compute, the AI layer, data and storage and "
         "observability. They're on screen with what each does. Which would you like to hear "
-        "about, or everything in detail? I can also walk through article research and the vision "
-        "pipeline, step by step across the layers."
+        "about, or everything in detail? I can also walk through article research, the vision "
+        "pipeline, the site and reader feedback, stats and costs, security incidents, the "
+        "reviewer bear and the model catalog."
     )
     assert len(answer["spoken"].split()) < 75  # short enough to listen to
     assert answer["features"] == [
-        {"key": "article-research", "title": architecture.FEATURES[0].title},
-        {"key": "vision-pipeline", "title": architecture.FEATURES[1].title},
+        {"key": key, "title": feature.title}
+        for key, feature in zip(
+            [
+                "article-research",
+                "vision-pipeline",
+                "site-and-feedback",
+                "stats-and-costs",
+                "security-incidents",
+                "reviewer-bear",
+                "model-catalog",
+            ],
+            architecture.FEATURES,
+            strict=True,
+        )
     ]
     table = answer["table"]
     assert table["title"] == "BloggerBear dev architecture: the layers"

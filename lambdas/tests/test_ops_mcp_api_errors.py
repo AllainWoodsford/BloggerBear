@@ -183,11 +183,22 @@ def test_a_5xx_the_lambda_answered_points_at_its_log():
     assert "I can read it next" in result["spoken"]
 
 
-def test_firewall_blocks_point_at_the_firewall_only_in_production(monkeypatch):
+def test_firewall_blocks_point_at_the_firewall_only_where_its_review_is_registered(monkeypatch):
+    # Dev by default: no firewall logs given, so no firewall_review to point at.
+    monkeypatch.delenv("OPS_WAF_LOG_GROUPS", raising=False)
     dev_result = call(_a_bad_morning(), api="public")
     blocked = next(f for f in dev_result["findings"] if f["kind"] == "api_firewall_blocked")
     assert blocked["root_cause"]["next"] is None
+    assert "look at the firewall" not in dev_result["spoken"]
+    # Dev with OPS_FIREWALL_REVIEW_DEV on: its own firewall logs, so it points there.
+    monkeypatch.setenv("OPS_WAF_LOG_GROUPS", "ap-southeast-2:aws-waf-logs-bloggerbear-dev-public-api")
+    dev_on = call(_a_bad_morning(), api="public")
+    blocked = next(f for f in dev_on["findings"] if f["kind"] == "api_firewall_blocked")
+    assert blocked["root_cause"]["next"] == {"tool": "firewall_review"}
+    # Production, which always has it.
     monkeypatch.setenv("ENVIRONMENT_NAME", "production")
+    monkeypatch.setenv("OPS_ACCOUNT_WIDE_DATA", "true")
+    monkeypatch.setenv("OPS_WAF_LOG_GROUPS", "us-east-1:aws-waf-logs-bloggerbear-shared")
     run = _a_bad_morning()
     run.answers = {("public", name): rows for (_, name), rows in run.answers.items()}
     prod = call(run, api="public")

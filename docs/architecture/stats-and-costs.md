@@ -30,7 +30,8 @@ in [Models: how a cost is worked out](../models.md#how-a-cost-is-worked-out). Th
 the bottom of the Stats page is explained in
 [The site, the bear and reader feedback](site-and-feedback.md). This page does not repeat them.
 
-**In the assistant.** This page has no `feature` entry yet.
+**In the assistant.** `architecture(feature="stats-and-costs")` walks through the steps below
+with this environment's resource names on screen, with the API and the page (8 and 9) as one step.
 - `spend` (`period` `"week"` or `"month"`) gives the AI spend against a typical week. Where the
   deployment sets `account_wide_data` (production does, dev does not), it gives the whole AWS bill
   too.

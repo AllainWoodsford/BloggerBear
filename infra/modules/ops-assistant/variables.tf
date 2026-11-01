@@ -20,7 +20,7 @@ variable "environment_name" {
 variable "account_wide_data" {
   type        = bool
   default     = false
-  description = "Whether this assistant may report things that belong to the whole AWS account and not to its environment, passed to the MCP function as OPS_ACCOUNT_WIDE_DATA. Dev and production share one account, so such a figure includes both. Today that is the AWS bill in the spend tool (Cost Explorer bills the account); the planned firewall_review deep dive, which reads a firewall both sites share, will be registered only when this is true. Off by default: production sets it true, dev leaves it off, and then spend reports only the AI spend this environment's pipeline tracked itself."
+  description = "Whether this assistant may report things that belong to the whole AWS account and not to its environment, passed to the MCP function as OPS_ACCOUNT_WIDE_DATA. Dev and production share one account, so such a figure includes both. Today that is the AWS bill in the spend tool (Cost Explorer bills the account), and the CloudFront firewall's shared log in firewall_review (waf_log_groups may name it only when this is true). Off by default: production sets it true, dev leaves it off, and then spend reports only the AI spend this environment's pipeline tracked itself."
 }
 
 variable "default_tags" {
@@ -233,7 +233,7 @@ variable "waf_log_groups" {
     name   = string
   }))
   default     = []
-  description = "The firewall's log groups firewall_review may query (firewall.tf), each with its region: this environment's own regional WAF logs (aws-waf-logs-<prefix>-<environment_name>-*) and the shared CloudFront one (aws-waf-logs-<prefix>-shared, in us-east-1). Used only where account_wide_data is on. Empty (the default, and always dev's): no tool, and no right to any WAF log group."
+  description = "The firewall's log groups firewall_review may query (firewall.tf), each with its region: this environment's own regional WAF logs (aws-waf-logs-<prefix>-<environment_name>-*) and, only where account_wide_data is on, the shared CloudFront one (aws-waf-logs-<prefix>-shared, in us-east-1), which carries both sites' visitors. Empty (the default, and dev's unless OPS_FIREWALL_REVIEW_DEV is on): no tool, and no right to any WAF log group."
 
   validation {
     condition = alltrue([
@@ -241,6 +241,11 @@ variable "waf_log_groups" {
       group.name == "aws-waf-logs-${var.unique_name_prefix}-shared" || startswith(group.name, "aws-waf-logs-${var.unique_name_prefix}-${var.environment_name}-")
     ])
     error_message = "waf_log_groups may name this environment's own WAF log groups and the shared one, nothing else."
+  }
+
+  validation {
+    condition     = var.account_wide_data || !contains([for group in var.waf_log_groups : group.name], "aws-waf-logs-${var.unique_name_prefix}-shared")
+    error_message = "The CloudFront firewall's shared log carries both sites' visitors: only an assistant with account_wide_data may read it."
   }
 
   validation {

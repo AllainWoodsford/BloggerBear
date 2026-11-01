@@ -903,6 +903,18 @@ resource "aws_lambda_function" "daily_cycle" {
   }
 }
 
+# Only the Admin API invokes this function asynchronously: a manual `topics trigger <id>
+# daily_cycle` and a Re-Write (`{"action": "rewrite"}`, common/rewrite.py). The scheduled runs go
+# through aws_sfn_state_machine.daily_cycle, whose own Retry this does not touch. Lambda retries a
+# failed async invoke twice by default, and the handler never raises, so only a timeout or a crash
+# was retried, as a whole second run: a `--force` run that timed out after storing its article
+# wrote the same window up again (force ignores last_article_at), and a rewrite called its model
+# again. A rewrite that times out is released by release_stale_rewrites after 15 minutes, as before.
+resource "aws_lambda_function_event_invoke_config" "daily_cycle" {
+  function_name          = aws_lambda_function.daily_cycle.function_name
+  maximum_retry_attempts = 0
+}
+
 # =========================================================================
 # Phase 2 -- Admin console API: a third Lambda (from the same shared
 # deployment package above) fronted by an IAM-authenticated API Gateway
@@ -1106,6 +1118,11 @@ module "admin_api" {
     "POST /models",
     "GET /model-config",
     "PUT /model-config",
+    # The shared rotation pool (the `model-rotation` row): the models the daily cycle moves a
+    # topic's model_id to. See admin_api_handler.py's _*_model_rotation_route and
+    # `admin_cli model-rotation`.
+    "GET /model-rotation",
+    "PUT /model-rotation",
     # The model catalog (docs/enhancements/archive/model-catalog-refresh.md): run the reprice or discover
     # job now, and its settings and pause flags. See admin_api_handler.py's model catalog routes and
     # `admin_cli models reprice|discover`, `admin_cli model-catalog`.
@@ -1349,14 +1366,27 @@ resource "aws_iam_role_policy" "states_exec" {
   policy = data.aws_iam_policy_document.states_exec.json
 }
 
+# NameTheRun adds the execution's id to the input (`execution.id`) and keeps the rest, so the
+# daily-cycle Lambda gets {"topic_id": ..., "execution": {"id": ...}}, and every retry of
+# RunDailyCycle carries the same id. The Lambda stores the id with the article it writes
+# (the topic's last_article_run), so a retry after that article was stored writes nothing and
+# returns already_written. The DLQ message carries `execution` too (lambdas/dlq_handler.py).
 resource "aws_sfn_state_machine" "daily_cycle" {
   # checkov:skip=CKV_AWS_285:a failed run goes to the pipeline DLQ and FailedExecutions, and Step Functions keeps execution history itself for 90 days; CloudWatch delivery would bill per event
   name     = "${var.unique_name_prefix}-dev-daily-cycle"
   role_arn = aws_iam_role.states_exec.arn
 
   definition = jsonencode({
-    StartAt = "RunDailyCycle"
+    StartAt = "NameTheRun"
     States = {
+      NameTheRun = {
+        Type = "Pass"
+        Parameters = {
+          "id.$" = "$$.Execution.Id"
+        }
+        ResultPath = "$.execution"
+        Next       = "RunDailyCycle"
+      }
       RunDailyCycle = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
@@ -3027,6 +3057,15 @@ module "ops_assistant" {
   logout_urls   = ["${local.site_url}/ask.html"]
 
   mfa_configuration = var.ops_assistant_mfa
+
+  # firewall_review over dev's own firewall logs, only when the operator turns it on
+  # (var.ops_firewall_review, the OPS_FIREWALL_REVIEW_DEV variable), and only the logs that exist.
+  # Never the CloudFront firewall's shared log: it carries production's visitors too, so only an
+  # assistant with account_wide_data may read it (the module refuses it here), and dev has neither.
+  waf_log_groups = var.ops_firewall_review ? concat(
+    [for _ in(local.waf_admin_enabled ? [1] : []) : { region = var.aws_region, name = aws_cloudwatch_log_group.waf_admin[0].name }],
+    [for _ in(local.waf_public_api_enabled ? [1] : []) : { region = var.aws_region, name = aws_cloudwatch_log_group.waf_public_api[0].name }],
+  ) : []
 
   # Alexa+ account linking (docs/enhancements/archive/alexa-plus.md, alexa/README.md): dev's own Alexa
   # add-on, signing in to dev's pool only. Empty until the one-time bootstrap prints them.

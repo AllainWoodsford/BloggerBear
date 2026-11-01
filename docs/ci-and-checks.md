@@ -1,9 +1,8 @@
 # CI and the checks: what runs, when, and how to run it yourself
 
-Nine GitHub Actions workflows live in `.github/workflows/`. Four check pull requests, three deploy
-or destroy, one runs every scan on demand, and one hands an issue to Claude. This page says what
-each one does, what stands between a merge and a deploy, and how to run the same checks on your
-own machine before you push.
+Eight GitHub Actions workflows live in `.github/workflows/`. Four check pull requests, three deploy
+or destroy, and one runs every scan on demand. This page says what each one does, what stands
+between a merge and a deploy, and how to run the same checks on your own machine before you push.
 
 Every setting a workflow reads (secrets, variables, switches) is in
 [configuration.md](configuration.md#github-secrets-and-variables).
@@ -15,7 +14,6 @@ Every setting a workflow reads (secrets, variables, switches) is in
 - [What is required to merge](#what-is-required-to-merge)
 - [ruff-autofix](#ruff-autofix)
 - [on-demand-scan](#on-demand-scan)
-- [claude-issue-worker](#claude-issue-worker)
 - [Run the same checks yourself](#run-the-same-checks-yourself)
 - [The pre-commit hook](#the-pre-commit-hook)
 - [Where the code is](#where-the-code-is)
@@ -32,7 +30,6 @@ Every setting a workflow reads (secrets, variables, switches) is in
 | `terraform-production-release.yml` | A GitHub Release is published. | `security` and `lint-test` on the release tag, then `apply`. | Applies `infra/environments/production`. Deploys the production admin API's stage once more. |
 | `destroy-dev.yml` | By hand only, with the input `confirm` set to `destroy`. | `destroy`. | Destroys `infra/environments/dev`. |
 | `on-demand-scan.yml` | A pull request labelled `security-scan`, or by hand (Actions tab, with an optional ref). | Every security, secret and personal-data check, more thoroughly than a pull request runs them. [More below](#on-demand-scan). | Nothing. A results table in the job summary. |
-| `claude-issue-worker.yml` | An issue opened or labelled by the repository owner, with the `claude` label or `@claude` in its body. | `run-claude`: `anthropics/claude-code-action`. [More below](#claude-issue-worker). | Runs with write access to the repository's contents, issues and pull requests. |
 
 Every action is pinned to a commit, and Terraform and every scanner to a version. The versions
 are in [the table below](#the-tool-versions).
@@ -162,24 +159,6 @@ credentials, no plan, no deploy.
 | `secrets-and-personal-data` | Gitleaks and Trufflehog over the **whole history**, every branch and tag (Trufflehog with unverified results too); the personal-data check over **every tracked file**, not just what a change adds. Accepted history findings are listed in `.gitleaksignore`. |
 
 A `summary` job writes one row per job to the run's summary. The run fails if any job failed.
-
-## claude-issue-worker
-
-`claude-issue-worker.yml` hands an issue to Claude Code (`anthropics/claude-code-action`).
-
-**Who can start it:** only the repository owner. It runs when an issue is opened or labelled,
-and only if the person who did that is the owner, and the issue has the `claude` label or
-`@claude` in its body. On a public repository anyone can open an issue; without that check, a
-stranger's issue would become the job's prompt. Adding any label to an issue that already
-qualifies starts it again.
-
-**What it can do:** the job has `contents: write`, `issues: write`, `pull-requests: write` and
-`id-token: write`, and signs in to Claude with the `CLAUDE_CODE_OAUTH_TOKEN` secret. The setup
-script does not set that secret.
-
-**What it runs:** the prompt `/run-task-from-issue "<issue number>"`. That command is **not defined
-in this repository**: `.claude/` holds only `settings.json` (a SessionStart hook),
-`hooks/session-start.sh` and `skills/topic-findings/`, with no `commands/` folder.
 
 ## Run the same checks yourself
 

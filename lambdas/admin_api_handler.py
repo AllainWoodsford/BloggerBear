@@ -69,6 +69,7 @@ from common.dynamo import (
     get_latest_finding,
     get_model,
     get_model_config,
+    get_model_rotation_candidates,
     get_moderation_item,
     get_moderation_item_by_article_id,
     get_musing,
@@ -93,6 +94,7 @@ from common.dynamo import (
     put_feedback_config,
     put_model,
     put_model_config,
+    put_model_rotation_candidates,
     put_moderation_item,
     put_pipeline_config,
     put_prompt_refinement,
@@ -1517,7 +1519,12 @@ def _rewrite_moderation_item(event: dict) -> dict:
 
 
 def _rewrite_model_error(model_id: str) -> str | None:
-    model = get_model(model_id)
+    return _registered_model_error(model_id, get_model(model_id))
+
+
+def _registered_model_error(model_id: str, model: dict | None) -> str | None:
+    """The error for `model_id` when its registry row (`model`, already read) is missing or
+    disabled; None when it is a registered, enabled model."""
     if model is None or model.get("enabled") is False:
         return f"model '{model_id}' is not a registered, enabled model (see GET /models)"
     return None
@@ -2829,6 +2836,63 @@ def _put_model_config_route(event: dict) -> dict:
     return _response(200, item)
 
 
+# --- The shared rotation pool (common/dynamo.py's `model-rotation` row) ------------------------
+#
+# After an article the daily cycle publishes by itself, and after a run whose model proposed no
+# usable angle, daily_cycle_handler._assign_rotated_model sets the topic's model_id to a random pick
+# from this list. Each entry ends up as some topic's model, so each must be a registered, enabled
+# model (refused in a Re-Write's words), and also one the weekly cycle and model_routing would route
+# to: a model the account can call (not `access: denied`) that writes text. The check runs only when
+# the pool is set, so a pooled model a later access probe finds denied stays until it is replaced.
+
+# Nothing bounds a topic's own list, so this bound is chosen: the registry's default size (the model
+# catalog's `max_models`, which pruning keeps it to) and the top of `rotation_max`'s range. It also
+# caps the registry reads one request makes, and is checked before any of them.
+MODEL_ROTATION_MAX = 50
+
+
+def _get_model_rotation_route(event: dict) -> dict:
+    return _response(200, {"config_id": "model-rotation", "candidates": get_model_rotation_candidates()})
+
+
+def _put_model_rotation_route(event: dict) -> dict:
+    """Replace the shared rotation pool with `candidates`. [] clears it: the empty list is stored,
+    and the daily cycle reads it as no pool. Other keys are ignored, as PUT /model-config ignores
+    them."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    candidates = body.get("candidates") if isinstance(body, dict) else None
+    if not isinstance(candidates, list) or not all(isinstance(c, str) and c for c in candidates):
+        return _error(
+            400, "'candidates' is required and must be a list of non-empty strings ([] clears the pool)"
+        )
+    if len(candidates) > MODEL_ROTATION_MAX:
+        return _error(
+            400, f"'candidates' holds {len(candidates)} models; the pool takes at most {MODEL_ROTATION_MAX}"
+        )
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            return _error(400, f"'candidates' names '{candidate}' more than once")
+        seen.add(candidate)
+    for candidate in candidates:
+        model = get_model(candidate)
+        model_error = _registered_model_error(candidate, model)
+        if model_error:
+            return _error(400, model_error)
+        if not model_fleet.is_usable(model):
+            return _error(400, f"model '{candidate}' cannot be called by this account (access: denied)")
+        if (model.get("pricing_unit") or "tokens") != "tokens":
+            return _error(
+                400, f"model '{candidate}' does not write text (pricing_unit: {model['pricing_unit']})"
+            )
+    # The row as written, not read back: that read is eventually consistent, and could still show
+    # the pool from before this write.
+    return _response(200, put_model_rotation_candidates(candidates))
+
+
 def _get_pipeline_config_route(event: dict) -> dict:
     config = get_pipeline_config() or {}
     return _response(
@@ -3196,6 +3260,8 @@ _ROUTES = {
     "POST /models": _put_model,
     "GET /model-config": _get_model_config,
     "PUT /model-config": _put_model_config_route,
+    "GET /model-rotation": _get_model_rotation_route,
+    "PUT /model-rotation": _put_model_rotation_route,
     "POST /models/reprice": _reprice_models_route,
     "POST /models/discover": _discover_models_route,
     "GET /model-catalog-config": _get_model_catalog_config_route,

@@ -174,6 +174,18 @@ SYSTEM_PROMPT = "\n".join(
         "feature such as gear is, which the guides answer): call architecture with `feature` "
         "\"article-research\", say its summary and name its steps, and say the steps are on "
         "screen.",
+        # The other walk-throughs (ops_mcp/architecture.py's FEATURES). Each shares its words with
+        # a tool or a guide: "how does feedback become gear?" reads like the gear guide, "how are
+        # costs tracked?" like spend, "how are incidents made?" like security_events. The reviewer
+        # bear has no guide at all, so "what does he do?" would get "there is no guide for that".
+        "The same goes for how one of these is built end to end: how a reader's vote becomes the "
+        "bear's gear and musings (`feature` \"site-and-feedback\"), how costs reach the Stats page "
+        "(\"stats-and-costs\"), how what the firewalls block becomes a security incident "
+        "(\"security-incidents\") and how the model catalog finds, prices and rotates models "
+        "(\"model-catalog\"). No guide describes the reviewer bear, Professor Grizzlewick, so asked "
+        "what he does or how he works, call architecture with `feature` \"reviewer-bear\" instead "
+        "of cli_guides. For what is happening now (an incident, the spend, a reprice), call the "
+        "tool for it, not a feature.",
         # Security is part of what needs attention, and has tools and commands of its own. Without
         # this the model answers "has anyone tried to sign in?" from security_events, which only
         # holds the lockouts, and "how do I close an incident?" with a search of command names.
@@ -253,8 +265,8 @@ SYSTEM_PROMPT = "\n".join(
         "When the operator asks how to check something themselves, call investigate with their "
         "words (and `status` if they named one) and say that a runsheet is on screen, naming "
         "the first place to look. Use investigate too for what no tool reads, such as metrics.",
-        # Security incidents: production's firewall_review and the access logs; addresses only as
-        # the tools masked them.
+        # Security incidents: firewall_review where it is registered (production's, and dev's when
+        # switched on) and the access logs; addresses only as the tools masked them.
         "For a security incident, look at security_events, api_errors and, where it exists, "
         "firewall_review. An address is only ever said as the tools gave it, by its last part "
         "(\"an address ending in .34\"), never whole.",

@@ -2,6 +2,7 @@ import json
 from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -479,13 +480,16 @@ def _run_a_full_cycle(
     topic=NON_FINANCIAL_TOPIC,
     fail_at=None,
     stored_at=None,
+    event=None,
+    context=None,
 ):
     """Run a whole cycle with everything external mocked. `lineage_calls`, if given,
     collects the (args, kwargs) build_lineage was called with. `findings=None` reads them
     from the Findings table instead (the `findings_table` fixture). `fail_at` names one of
     the steps that store or follow the article (put_article, put_moderation_item,
     render_and_publish_article_page, generate_and_store_article_musing), which then raises.
-    `stored_at`, if given, collects when put_article was called."""
+    `stored_at`, if given, collects when put_article was called. `event` is added to the
+    handler's event and `context` is its context (None, as for most tests: a run with no id)."""
 
     def _step(name):
         if fail_at == name:
@@ -530,7 +534,7 @@ def _run_a_full_cycle(
             "daily_cycle_handler.set_topic_last_article_at", side_effect=record_side_effect
         ) as mock_set,
     ):
-        result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+        result = daily_cycle_handler.handler({"topic_id": "github-trending", **(event or {})}, context)
     return result, mock_set
 
 
@@ -687,6 +691,121 @@ def test_no_article_means_nothing_is_recorded(s3_bucket):
         daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
 
     mock_set.assert_not_called()
+
+
+# --- a retry of a run that already stored its article writes nothing ------------------------------
+
+_EXECUTION = "arn:aws:states:ap-southeast-2:123456789012:execution:bloggerbear-dev-daily-cycle:run-1"
+_OTHER_EXECUTION = "arn:aws:states:ap-southeast-2:123456789012:execution:bloggerbear-dev-daily-cycle:run-2"
+
+
+@pytest.mark.parametrize(
+    "event, context, run_id",
+    [
+        # The execution wins: each retry of the state machine's Task is a new Lambda request.
+        ({"execution": {"id": _EXECUTION}}, SimpleNamespace(aws_request_id="req-1"), _EXECUTION),
+        ({}, SimpleNamespace(aws_request_id="req-1"), "req-1"),
+        ({"execution": {"id": ""}}, SimpleNamespace(aws_request_id="req-1"), "req-1"),
+        ({"execution": _EXECUTION}, SimpleNamespace(aws_request_id="req-1"), "req-1"),
+        ({"execution": {"id": 7}}, None, None),
+        ({}, None, None),
+        ({}, SimpleNamespace(), None),
+        ({}, SimpleNamespace(aws_request_id=""), None),
+    ],
+)
+def test_a_run_is_named_by_its_execution_else_its_request_id_else_not_at_all(event, context, run_id):
+    assert daily_cycle_handler._run_id({"topic_id": "t", **event}, context) == run_id
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_a_retry_of_the_same_execution_after_its_article_was_stored_writes_nothing(s3_bucket, capsys, paused):
+    # Attempt 1 stored its article, stamped the topic with its execution and then timed out; Step
+    # Functions runs the Task again with the same input. A topic paused in between still answers
+    # for the article its run wrote.
+    topic = {
+        **NON_FINANCIAL_TOPIC,
+        "last_article_run": {"run_id": _EXECUTION, "article_id": "a-1"},
+        **({"paused": True} if paused else {}),
+    }
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=topic),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS) as mock_window,
+        patch("daily_cycle_handler.list_findings") as mock_read,
+        patch("daily_cycle_handler.invoke_model_tracked") as mock_invoke,
+        patch("daily_cycle_handler.put_candidate_idea") as mock_idea,
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+        patch("daily_cycle_handler.set_topic_last_article_at") as mock_set,
+        patch("daily_cycle_handler.set_topic_goal_rotation_state") as mock_state,
+        patch("daily_cycle_handler.refresh_articles_snapshot") as mock_refresh,
+    ):
+        result = daily_cycle_handler.handler(
+            {"topic_id": "github-trending", "execution": {"id": _EXECUTION}}, None
+        )
+
+    assert result == {"status": "already_written", "topic_id": "github-trending", "article_id": "a-1"}
+    for never in (mock_window, mock_read, mock_invoke, mock_idea, mock_put_article, mock_set, mock_state):
+        never.assert_not_called()
+    # The attempt that stored the article may have timed out before the handler's own rebuild.
+    mock_refresh.assert_called_once()
+    said = capsys.readouterr().out
+    assert f"topic_id=github-trending run={_EXECUTION} already stored article_id=a-1; nothing written" in said
+
+
+def test_a_different_execution_writes_its_article_and_records_its_own_run(s3_bucket):
+    # Yesterday's run is on the topic; today's is another execution, so it is not a retry.
+    topic = {**NON_FINANCIAL_TOPIC, "last_article_run": {"run_id": _EXECUTION, "article_id": "a-1"}}
+
+    result, mock_set = _run_a_full_cycle(topic=topic, event={"execution": {"id": _OTHER_EXECUTION}})
+
+    assert result["status"] == "published"
+    run = {"run_id": _OTHER_EXECUTION, "article_id": result["article_id"]}
+    assert mock_set.call_args.kwargs == {"run": run}
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_a_direct_invoke_delivered_again_after_it_stored_writes_nothing_the_second_time(s3_bucket, force):
+    """A manual trigger has no execution. Lambda keeps an invoke's request id across a duplicate
+    delivery, so a second delivery that starts after the first stored its article finds its own
+    run on the topic and writes nothing (one that overlaps the first is not stopped: `_run_id`).
+    A forced run too: `force` ignores the topic's stamp, never its run."""
+    context, event = SimpleNamespace(aws_request_id="req-1"), ({"force": True} if force else {})
+
+    first, mock_set = _run_a_full_cycle(event=event, context=context)
+    assert first["status"] == "published"
+    run = mock_set.call_args.kwargs["run"]
+    assert run == {"run_id": "req-1", "article_id": first["article_id"]}
+
+    again, mock_set = _run_a_full_cycle(
+        topic={**NON_FINANCIAL_TOPIC, "last_article_run": run}, event=event, context=context
+    )
+    assert again == {
+        "status": "already_written",
+        "topic_id": "github-trending",
+        "article_id": first["article_id"],
+    }
+    mock_set.assert_not_called()
+
+
+def test_a_run_with_no_id_is_not_checked_and_stamps_exactly_as_before(s3_bucket):
+    # No execution in the event and no context: no run to name, so nothing on the topic can match
+    # it (not even a run id that is not there), and the stamp is written with no run.
+    topic = {**NON_FINANCIAL_TOPIC, "last_article_run": {"run_id": None, "article_id": "a-1"}}
+
+    result, mock_set = _run_a_full_cycle(topic=topic)
+
+    assert result["status"] == "published"
+    assert mock_set.call_args.kwargs == {}
+
+
+@pytest.mark.parametrize("stored", [None, _EXECUTION, [_EXECUTION], {"article_id": "a-1"}])
+def test_a_last_run_that_is_missing_or_not_a_map_matches_no_run_and_is_replaced(s3_bucket, stored):
+    # Only the daily cycle writes last_article_run; a hand edit must not stop the topic's articles.
+    topic = {**NON_FINANCIAL_TOPIC, **({} if stored is None else {"last_article_run": stored})}
+
+    result, mock_set = _run_a_full_cycle(topic=topic, event={"execution": {"id": _EXECUTION}})
+
+    assert result["status"] == "published"
+    assert mock_set.call_args.kwargs["run"] == {"run_id": _EXECUTION, "article_id": result["article_id"]}
 
 
 def test_format_findings_summaries_keeps_everything_when_it_fits():
@@ -3121,10 +3240,21 @@ def _put_subject_finding(rotating, captured: datetime, summary: str, subjects=No
     rotating["findings"].put_item(Item=item)
 
 
-def _run_at(rotating, at: datetime, **event):
+class _TimedOut(BaseException):
+    """Stands in for Lambda's timeout: the handler's guard catches Exception, not this, so the run
+    stops where it is, as a killed invocation does, and the state machine retries its Task."""
+
+
+def _run_at(rotating, at: datetime, stop_at=None, **event):
     """One daily run at `at`, everything but DynamoDB mocked. Returns the result, the findings the
-    article was drafted from (None if no draft), the prompts and put_article's kwargs."""
+    article was drafted from (None if no draft), the prompts and put_article's kwargs. `stop_at`
+    names a step that "times out" (put_article, render_and_publish_article_page,
+    generate_and_store_article_musing): the run stops there and its result is None."""
     rotating["clock"]["now"] = at
+
+    def _step(name):
+        return patch(f"daily_cycle_handler.{name}", side_effect=_TimedOut() if stop_at == name else None)
+
     responses = ["Angle one\nAngle two\nAngle three", "# Draft body", "A Title"]
     with (
         patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
@@ -3142,16 +3272,19 @@ def _run_at(rotating, at: datetime, **event):
             return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
         ),
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
-        patch("daily_cycle_handler.put_article") as mock_put_article,
+        _step("put_article") as mock_put_article,
         patch("daily_cycle_handler.put_moderation_item"),
-        patch("daily_cycle_handler.render_and_publish_article_page"),
-        patch("daily_cycle_handler.generate_and_store_article_musing"),
+        _step("render_and_publish_article_page"),
+        _step("generate_and_store_article_musing"),
         patch(
             "daily_cycle_handler._format_findings_summaries",
             wraps=daily_cycle_handler._format_findings_summaries,
         ) as drafted_from,
     ):
-        result = daily_cycle_handler.handler({"topic_id": "rota", **event}, None)
+        try:
+            result = daily_cycle_handler.handler({"topic_id": "rota", **event}, None)
+        except _TimedOut:
+            result = None
     drafted = [f["summary"] for f in drafted_from.call_args.args[0]] if drafted_from.called else None
     prompts = [call.args[0] for call in mock_invoke.call_args_list]
     article = mock_put_article.call_args.kwargs if mock_put_article.called else None
@@ -3724,3 +3857,57 @@ def test_a_topic_without_a_rotation_reads_no_rotation_state_and_stores_none(s3_b
         result, _ = _run_a_full_cycle()
     assert "editorial_goal" not in result
     mock_state.assert_not_called()
+
+
+# --- the state machine's retry after a timeout, with the real topic row ---------------------------
+
+
+def _last_run(rotating) -> dict | None:
+    return rotating["topics"].get_item(Key={"topic_id": "rota"})["Item"].get("last_article_run")
+
+
+def test_a_goal_rotations_retry_of_the_same_execution_does_not_revisit_at_once(rotating):
+    """Attempt 1 stores its article under the first goal and stamps the topic, then times out in its
+    musing. The retry 330 s later (the Lambda's 300 s, then the state machine's 30) has nothing new,
+    so without the run's id it would revisit the same Findings under the next goal at once: a
+    second article, and a revisit meant for a later day."""
+    monday = date(2026, 9, 28)
+    rotating["topics"].put_item(
+        Item=_rotating_topic(findings_window_hours=96, editorial_goal_rotation=_GOAL_ROTATION)
+    )
+    _put_subject_finding(rotating, _local(monday, 3), "north 1", ["north"])
+    run = {"execution": {"id": _EXECUTION}}
+    started = _local(monday, 9, 5)
+
+    result, drafted, _, article = _run_at(
+        rotating, started, stop_at="generate_and_store_article_musing", **run
+    )
+    assert result is None and drafted == ["north 1"] and article["editorial_goal"] == "access"
+    stamps, state = _stamps(rotating), _goal_state(rotating)
+    assert _last_run(rotating) == {"run_id": _EXECUTION, "article_id": article["article_id"]}
+
+    with patch("daily_cycle_handler.list_findings", wraps=daily_cycle_handler.list_findings) as reads:
+        retry, drafted, prompts, stored = _run_at(rotating, started + timedelta(seconds=330), **run)
+
+    assert retry == {"status": "already_written", "topic_id": "rota", "article_id": article["article_id"]}
+    assert (drafted, prompts, stored) == (None, [], None)
+    reads.assert_not_called()
+    assert (_stamps(rotating), _goal_state(rotating)) == (stamps, state)
+
+
+def test_a_run_cut_off_before_its_article_was_stored_records_no_run_so_its_retry_writes_it(rotating):
+    monday = date(2026, 9, 28)
+    rotating["topics"].put_item(Item=_rotating_topic(findings_window_hours=96))
+    _put_subject_finding(rotating, _local(monday, 3), "north 1", ["north"])
+    run = {"execution": {"id": _EXECUTION}}
+    started = _local(monday, 9, 5)
+
+    result, _, _, _ = _run_at(rotating, started, stop_at="put_article", **run)
+    assert result is None
+    assert _last_run(rotating) is None and _stamps(rotating) == {"topic": None, "by_subject": None}
+
+    retry, drafted, _, article = _run_at(rotating, started + timedelta(seconds=330), **run)
+
+    assert retry["status"] == "published" and drafted == ["north 1"]
+    assert _last_run(rotating) == {"run_id": _EXECUTION, "article_id": article["article_id"]}
+    assert _stamps(rotating)["by_subject"] == {"north": (started + timedelta(seconds=330)).isoformat()}

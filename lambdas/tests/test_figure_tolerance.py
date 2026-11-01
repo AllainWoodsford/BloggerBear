@@ -282,9 +282,9 @@ def test_the_rewrite_prompt_carries_the_adapters_figure_rule_and_keeps_a_closing
     assert "How articles on this topic are written" not in rewrite.build_rewrite_prompt(*args)
     guidance = f"{CryptoFeedAdapter.figure_guidance}\n{rewrite._CLOSING_SECTIONS_RULE}"
     prompt = rewrite.build_rewrite_prompt(*args, writing_guidance=guidance)
-    assert CryptoFeedAdapter.figure_guidance in prompt and "keep them and update them" in prompt
+    assert CryptoFeedAdapter.figure_guidance in prompt and "edit them too so they still match" in prompt
     # It comes after the rules and does not replace them.
-    rules = prompt.index("do not add any claim, number, name or link")
+    rules = prompt.index("Do not add any claim, number, name or link")
     assert rules < prompt.index("How articles on this topic")
 
 

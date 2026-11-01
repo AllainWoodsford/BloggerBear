@@ -222,7 +222,7 @@ in .34"):
 | "...to watch research tick" | `watch` (function), then `watch_list` in the next briefing |
 | "...to watch candidate ideas" | `watch` (table) |
 | "...what it is watching" | `watch_list`: still happening, or calmed down |
-| "...what's happening with the firewall" (production only) | `firewall_review` |
+| "...what's happening with the firewall" (production, or dev with `OPS_FIREWALL_REVIEW_DEV` on) | `firewall_review` |
 | "...how the vision pipeline is doing", "...whether the satellite worker is on" | `vision_status` |
 | "...why Sydney wasn't measured" | `vision_status` with `topic` (a topic or a site) |
 | "...about errors in the vision worker" | `log_review` (function), read in the vision Region where vision is on |

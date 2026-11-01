@@ -147,7 +147,8 @@ visitor).
 - The regional firewalls' logs, so no WAF-block incidents.
 - In production, the operator's assistant's `firewall_review` loses the regional logs but keeps
   the CloudFront ACL's log while `WAF_SITE_ENABLED` is on; the tool goes only if that switch is
-  off too. (Dev's assistant never has `firewall_review`.)
+  off too. Dev's assistant has `firewall_review` only when `OPS_FIREWALL_REVIEW_DEV` is on, and
+  then only over dev's regional logs, so with them off it has nothing to read and no tool.
 - In production, also the blocks the shared CloudFront ACL does not see, because it sits in front
   of the CDN and not in front of the execute-api address that RSS readers and scripts can still
   call directly.

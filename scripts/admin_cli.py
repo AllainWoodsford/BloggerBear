@@ -157,12 +157,16 @@ def _apply_model_flags(body: dict, args: argparse.Namespace) -> None:
     if args.fallback_model_id is not None:
         body["fallback_model_id"] = args.fallback_model_id or None
     if args.model_candidates is not None:
-        body["model_id_candidates"] = [
-            candidate.strip() for candidate in args.model_candidates.split(",") if candidate.strip()
-        ]
+        body["model_id_candidates"] = _model_ids(args.model_candidates)
     if getattr(args, "reviewer_may_approve", None) is not None:  # topics update only
         # '' clears it (sent as null): back to the reviewer's `may_approve` setting.
         body["reviewer_may_approve"] = {"on": True, "off": False}.get(args.reviewer_may_approve)
+
+
+def _model_ids(text: str) -> list[str]:
+    """A comma-separated list of model ids, each stripped and the empty ones dropped, so '' is []
+    (`--model-candidates`, `model-rotation set --candidates`)."""
+    return [candidate.strip() for candidate in text.split(",") if candidate.strip()]
 
 
 def _add_model_flags(parser: argparse.ArgumentParser) -> None:
@@ -1112,6 +1116,21 @@ def _cmd_model_config_set(args: argparse.Namespace) -> None:
     if not body:
         raise CliError("model-config set requires --model-id and/or --fallback-model-id")
     _do_request(args, "PUT", "/model-config", body=body)
+
+
+# --- model-rotation subcommands ----------------------------------------------
+
+
+def _cmd_model_rotation_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/model-rotation")
+
+
+def _cmd_model_rotation_set(args: argparse.Namespace) -> None:
+    # The whole pool is replaced, so there is nothing to leave alone: no --candidates is a mistake,
+    # and '' (sent as []) is how the pool is cleared.
+    if args.candidates is None:
+        raise CliError("model-rotation set requires --candidates ('' clears the pool)")
+    _do_request(args, "PUT", "/model-rotation", body={"candidates": _model_ids(args.candidates)})
 
 
 # --- refinements subcommands -----------------------------------------------
@@ -2532,6 +2551,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--fallback-model-id", dest="fallback_model_id", default=None
     )
     model_config_set_parser.set_defaults(func=_cmd_model_config_set)
+
+    model_rotation_parser = subparsers.add_parser(
+        "model-rotation",
+        help="The shared rotation pool: the models the daily cycle moves a topic's model_id to",
+    )
+    model_rotation_sub = model_rotation_parser.add_subparsers(dest="action", required=True)
+    model_rotation_sub.add_parser(
+        "get", help="Show the shared rotation pool ([] when none is set)"
+    ).set_defaults(func=_cmd_model_rotation_get)
+    model_rotation_set = model_rotation_sub.add_parser(
+        "set",
+        help="Replace the shared rotation pool (each a registered, enabled text model the account can call)",
+    )
+    model_rotation_set.add_argument(
+        "--candidates", default=None,
+        help=(
+            "Comma-separated model IDs. After an article the daily cycle publishes by itself, or a "
+            "run whose model proposed no usable angle, the topic's model_id becomes one at random; "
+            "'' clears the pool"
+        ),
+    )
+    model_rotation_set.set_defaults(func=_cmd_model_rotation_set)
 
     refinements_parser = subparsers.add_parser("refinements", help="Manage prompt refinements")
     refinements_sub = refinements_parser.add_subparsers(dest="action", required=True)

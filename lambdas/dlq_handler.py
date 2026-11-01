@@ -11,9 +11,13 @@ tells you *that* something failed but not *what* or *why* without manually
 reading the raw SQS message body in the console.
 
 The Catch state's `"MessageBody.$": "$"` sends the full state at failure
-time: the original Task input (`{"topic_id": "..."}`) merged with the
+time: the Task's input (`{"topic_id": "...", "execution": {"id": "..."}}`:
+the schedule's input, with the execution's ARN that the NameTheRun state
+adds so the Lambda can tell a retry of its own run) merged with the
 caught error under `$.error` (a Step Functions error object, normally
-shaped `{"Error": "...", "Cause": "..."}`). This handler parses that best-
+shaped `{"Error": "...", "Cause": "..."}`). The execution's ARN is kept in
+the record's raw message, which is how to find the execution in the Step
+Functions console. This handler parses that best-
 effort and writes one FailedExecutions record per message for admin
 visibility (see scripts/admin_cli.py's `failed-executions list`) -- it does
 not attempt any automatic replay; per the DLQ alarm's own comment, a DLQ

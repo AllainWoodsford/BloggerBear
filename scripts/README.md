@@ -289,6 +289,13 @@ python scripts/admin_cli.py model-catalog set --review-after-hours "1,2" --revie
     --max-change-factor 10 --max-web-lookups 10   # the defaults; '' clears one
 python scripts/admin_cli.py model-config get
 python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+# The shared rotation pool: after an article the daily cycle publishes by itself, or a run whose
+# model proposed no usable angle, the topic's model_id becomes one of these at random. Each must be
+# a registered, enabled, callable (not `access: denied`) text model. `set` replaces the whole pool;
+# '' clears it.
+python scripts/admin_cli.py model-rotation get
+python scripts/admin_cli.py model-rotation set --candidates "model-id-a,model-id-b"
+python scripts/admin_cli.py model-rotation set --candidates ""
 
 # Per-topic: pin one model, set a fallback, or rotate between several
 # (one picked at random per daily run). '' clears a value.
@@ -391,8 +398,10 @@ still published exactly as it was, and `inbox` and `moderation list` say so, wit
 stay up meanwhile. A **rejected** article is brought back to waiting for review; one already
 **waiting in the inbox** is rewritten in place. The rewrite runs in the background
 (`lambdas/common/rewrite.py`) with your note as the main thing to fix, alongside anything the
-reviews flagged. It gets the same guards as any rewrite (no figure or link that is in none of the
-sources), goes through the fresh-data and compliance reviews again, and comes back to the inbox
+reviews flagged. It corrects the article rather than writing a new one: the model sends back edits
+to the passages with a problem, and everything else is kept exactly as it was. It gets the same
+guards as any rewrite (no figure or link that is in none of the sources), goes through the
+fresh-data and compliance reviews again, and comes back to the inbox
 for you to approve, reject or rewrite again; approving it publishes it. `--model` picks a
 registered model (`models list`); by default it uses the model the topic writes with today. If the
 rewrite of an article that was not published (or was taken down with `--force`) fails, the article
@@ -506,10 +515,16 @@ you, a preview) and waits for one key, no Enter:
 | `q` | Quit. Nothing you already decided is lost |
 
 - **Re-Write** (`w`) sends the article, its hold reasons, its research and current data to the model
-  you pick (any enabled model from `admin_cli models`). The result is checked like the automatic
-  revision (no figure or link that is in none of the sources), reviewed again, and comes back to
-  this inbox as a new item showing `Re-Write #n by <model> (~$cost)` and the old title, to approve,
-  reject or rewrite again. The article is never published by a rewrite, and the text it replaced is
+  you pick (any enabled model from `admin_cli models`). It is a correction, not a new article: the
+  model sends back edits to the passages with a problem, and everything else is kept exactly as it
+  was. A rewrite whose edits cannot be placed in the article, that changes nothing, or that replaces
+  more than half of it fails. The result is checked like the automatic revision (no figure or link
+  that is in none of the sources), reviewed again, and comes back to this inbox as a new item showing
+  `Re-Write #n by <model> (~$cost); <n> passages edited, <k>% kept as it was` and the old title, to
+  approve, reject or rewrite again. Only problems in the text count as something to fix: the
+  fresh-data review's notes about the review itself (figures that moved inside the tolerance, a
+  review that could not run) do not, and alone they do not offer `w`. The article is never
+  published by a rewrite, and the text it replaced is
   kept in S3 (`articles/<id>.before-rewrite-<n>.md`). If it fails, the original comes back with the
   reason; one that never finishes is put back after 15 minutes. Its tokens and cost go into the
   article's lineage (stage `rewrite`) and the week's Stats.
@@ -1248,7 +1263,7 @@ message shaped like what the state machine's `Catch` state produces:
 QUEUE_URL=$(terraform -chdir=infra/environments/dev output -raw pipeline_dlq_url)
 aws sqs send-message \
   --queue-url "$QUEUE_URL" \
-  --message-body '{"topic_id": "test-topic", "error": {"Error": "States.TaskFailed", "Cause": "synthetic test message"}}'
+  --message-body '{"topic_id": "test-topic", "execution": {"id": "synthetic"}, "error": {"Error": "States.TaskFailed", "Cause": "synthetic test message"}}'
 ```
 
 Then confirm it landed:

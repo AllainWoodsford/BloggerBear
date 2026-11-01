@@ -41,9 +41,12 @@ def _sqs_event(*bodies: str) -> dict:
 
 
 def test_records_a_failed_execution(failed_executions_table):
+    # The state machine's NameTheRun state puts the execution's ARN in the state, so the Catch's
+    # message carries it, and the raw message keeps it.
     body = json.dumps(
         {
             "topic_id": "github-trending",
+            "execution": {"id": "arn:aws:states:ap-southeast-2:123456789012:execution:daily-cycle:run-1"},
             "error": {"Error": "States.TaskFailed", "Cause": "synthetic test message"},
         }
     )

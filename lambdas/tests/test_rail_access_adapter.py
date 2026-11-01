@@ -3531,18 +3531,24 @@ def test_an_inline_network_is_moved_to_its_object_once_and_never_fetched_again(a
 def test_an_inline_network_gives_way_only_to_a_newer_object_for_its_polygon(adapter):
     """A prefetch the tick had not yet adopted may already be in the object: the newer of the two
     for the site's polygon is kept; otherwise the inline one is written."""
-    old = legacy_state(adapter, fetched_at="2026-10-01T03:00:00+00:00")
-    newer = network(fetched_at="2026-10-10T03:00:00+00:00")
+    # Dated from today: a network older than the adapter's TTL (osm_ttl_days, 30) is refetched,
+    # which would stamp the current time over the dates this test compares.
+    def days_ago(days):
+        return (datetime.now(UTC) - timedelta(days=days)).isoformat()
+
+    inline = days_ago(5)
+    old = legacy_state(adapter, fetched_at=inline)
+    newer = network(fetched_at=days_ago(2))
     adapter.objects[("rail", "sydney")] = newer
     state = run(adapter, scene(1), FakeRailWorker({}), previous=old)
     assert stored_network(adapter) == newer
     assert state["sites"]["sydney"]["network_fetched_at"] == newer["fetched_at"]
 
-    for there in (network(fetched_at="2026-09-01T03:00:00+00:00"), network(polygon=MELBOURNE)):
+    for there in (network(fetched_at=days_ago(40)), network(polygon=MELBOURNE, fetched_at=days_ago(2))):
         adapter.objects[("rail", "sydney")] = there  # older, or another polygon's
         state = run(adapter, scene(1), FakeRailWorker({}), previous=old)
         assert stored_network(adapter) == old["sites"]["sydney"]["network"]
-        assert state["sites"]["sydney"]["network_fetched_at"] == "2026-10-01T03:00:00+00:00"
+        assert state["sites"]["sydney"]["network_fetched_at"] == inline
 
 
 def test_an_inline_network_that_cannot_be_moved_stays_and_still_serves(adapter):

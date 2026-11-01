@@ -23,7 +23,7 @@ AWS platform friction gets its own section.
 | Terraform and CI | 9 | `validate` passes, `plan` or `apply` fails; scans that cover less than they look |
 | Tests vs reality | 6 | the test environment isn't the deployed one |
 | Frontend | 4 | the hash router, and a performance fix that broke styling |
-| The model in the pipeline | 6 | model output trusted without checking it |
+| The model in the pipeline | 7 | model output trusted without checking it |
 | Agentic coding | 9 | confident output that wasn't checked against reality |
 | GitHub and the repo | 12 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
@@ -247,6 +247,22 @@ stays up until the rewrite has been written, guarded and reviewed, and only then
 three ways a still-published article could land in the inbox, where rejecting it would have left its
 page up; each got a fix and a test. **Lesson:** "take it down, then fix it" is only the safe order
 when being down is cheaper than being wrong. (2026-10-04)
+
+**5.7 A rewrite came back with new problems.** An article sent for a Re-Write tended to come back
+held again, for things that were not wrong before. Three causes. The model was asked for "the
+complete rewritten article", so it wrote one, rewording sentences nothing was wrong with, and the
+reviews then read that new text from scratch. The fresh-data review's notes about itself ("figures
+moved a little, within tolerance, and were not flagged", "review unavailable") were sent as issues to
+fix, so the model changed figures no one had flagged. And the rewrite was told to correct a stale
+figure from fresh data, while the compliance review checked figures against the findings alone, so
+the corrected figure was held as fabricated: the fix was the new problem. With Reviewer Bear sending
+held articles back up to three times, that was a loop ending in a rejection, not a refinement.
+**Fix:** the model replies with edits (a quoted passage and its replacement) and code applies them,
+so text no edit quotes comes through exactly as it was. A rewrite that cannot be placed, changes
+nothing or replaces more than half the article fails. Only the review's flagged claims are issues
+to fix, and the compliance review gets the fresh data as a source. **Lesson:** to fix one thing, ask
+for the change and apply it yourself; asked for the whole thing again, a model rewrites the whole
+thing. (2026-11-01)
 
 ## 6. Agentic coding
 
