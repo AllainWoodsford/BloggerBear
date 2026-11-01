@@ -1,6 +1,6 @@
 # Enhancement: one dispatcher and an SQS work queue instead of per-topic schedules
 
-**Status:** proposed, not started · **First draft:** 2026-10-03 · **Revised:** 2026-10-15, for
+**Status:** being built as phase Q of [the Model Ranch spec](model-ranch-prompt-assets-evals.md) (2026-10-25); its step 3, removing per-topic scheduling, is superseded: schedule mode stays as the permanent undo · **First draft:** 2026-10-03 · **Revised:** 2026-10-15, for
 the stagger, the pause and the vision stack · **Do it when:** about 15–20 topics (twelve
 five-minute slots fill an hour), or as soon as Bedrock (or GDELT/CoinGecko) starts throttling
 scheduled runs.
