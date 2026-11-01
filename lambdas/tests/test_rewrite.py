@@ -385,7 +385,7 @@ def test_an_article_on_a_subject_with_more_than_48_of_its_own_is_rewritten_from_
     those, not the 50 the window holds."""
     _put_subject_findings("south", 50)
 
-    findings = rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+    findings = rewrite.findings_for(_on("south"), _WIDE_TOPIC)
 
     assert [f["summary"] for f in findings] == [f"south {n:03d}" for n in range(49, 1, -1)]
     assert rewrite.MAX_FINDINGS == daily_cycle_handler.MAX_WINDOW_FINDINGS == 48
@@ -394,7 +394,7 @@ def test_an_article_on_a_subject_with_more_than_48_of_its_own_is_rewritten_from_
 def test_with_none_on_its_subject_it_falls_back_to_the_windows_newest_48_and_says_so(aws, capsys):
     _put_subject_findings("north", 50)
 
-    findings = rewrite._findings_for(_on("east"), _WIDE_TOPIC)
+    findings = rewrite.findings_for(_on("east"), _WIDE_TOPIC)
 
     assert [f["summary"] for f in findings] == [f"north {n:03d}" for n in range(49, 1, -1)]
     assert (
@@ -410,7 +410,7 @@ def test_a_read_that_stops_at_its_limit_or_the_page_cap_says_so(aws, capsys, mon
     _put_subject_findings("north", rewrite.SUBJECT_READ_LIMIT, hours_before=100)
     _put_subject_findings("south", 1, hours_before=1, prefix="south new")
 
-    findings = rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+    findings = rewrite.findings_for(_on("south"), _WIDE_TOPIC)
 
     assert [f["summary"] for f in findings] == ["south new 000"]
     assert (
@@ -424,7 +424,7 @@ def test_a_read_that_stops_at_its_limit_or_the_page_cap_says_so(aws, capsys, mon
         return page(topic_id, since=since, until=until, limit=min(limit, 10), start_key=start_key)
 
     monkeypatch.setattr(dynamo, "list_findings_page", ten_a_page)
-    rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+    rewrite.findings_for(_on("south"), _WIDE_TOPIC)
     assert (
         f"rewrite: subject 'south' topic_id=github-trending read {dynamo.FINDINGS_PAGES_MAX * 10} "
         "findings of its window and stopped at the page cap; any of its older ones were not read"
@@ -434,7 +434,7 @@ def test_a_read_that_stops_at_its_limit_or_the_page_cap_says_so(aws, capsys, mon
 def test_a_read_that_holds_the_whole_window_says_nothing_of_stopping(aws, capsys):
     _seed_on_subject("south")
 
-    rewrite._findings_for(_on("south"), {**TOPIC, "findings_window_hours": 96})
+    rewrite.findings_for(_on("south"), {**TOPIC, "findings_window_hours": 96})
 
     assert "stopped at" not in capsys.readouterr().out
 
@@ -464,10 +464,26 @@ def test_a_late_rewrite_reads_the_articles_window_not_the_findings_captured_sinc
             }
         )
 
-    findings = rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+    findings = rewrite.findings_for(_on("south"), _WIDE_TOPIC)
 
     assert [f["summary"] for f in findings] == ["south at creation", "south 002", "south 001", "south 000"]
     assert "stopped at" not in capsys.readouterr().out
+
+
+def test_a_late_rewrite_of_an_article_without_a_subject_reads_its_own_window(aws):
+    """An article with no subject is read from its window too, ending at its created_at: the Findings
+    captured since, more than the read's MAX_FINDINGS, take none of its places, so a late rewrite (or
+    an offline scoring run rebuilding the article, common/eval_score.py) reads what it was drafted
+    from rather than the window's oldest few."""
+    for n in range(10):
+        _put_finding((_CREATED - timedelta(hours=10 - n)).isoformat(), f"before {n}")
+    for n in range(rewrite.MAX_FINDINGS + 2):  # one an hour since
+        _put_finding((_CREATED + timedelta(hours=1 + n)).isoformat(), f"since {n}")
+    article = {"topic_id": TOPIC["topic_id"], "created_at": _CREATED.isoformat()}
+
+    findings = rewrite.findings_for(article, TOPIC)
+
+    assert [f["summary"] for f in findings] == [f"before {n}" for n in range(9, -1, -1)]
 
 
 def test_an_article_without_a_subject_keeps_every_finding_in_its_window(aws):

@@ -47,7 +47,7 @@ import random
 import re
 import uuid
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import boto3
 
@@ -61,8 +61,10 @@ from common.dynamo import (
     get_last_armor_versions,
     get_model_rotation_candidates,
     get_pipeline_config,
+    get_prompt_refinement,
     get_top_voted_articles,
     get_topic,
+    list_candidate_ideas,
     list_findings,
     list_prompt_refinements,
     list_recent_article_titles,
@@ -105,7 +107,7 @@ from common.relevance import (
     ideation_relevance_rule,
     topic_label,
 )
-from common.rewrite import run_rewrite
+from common.rewrite import findings_for, run_rewrite
 from common.source_refs import dedupe_source_refs
 from common.static_pages import render_and_publish_article_page
 from common.stats_tracking import record_article_lineage, refresh_articles_snapshot
@@ -943,7 +945,7 @@ def _select_subject_and_findings(
 
 
 def _select_goal_and_findings(
-    topic: dict, findings: list[dict]
+    topic: dict, findings: list[dict], today: date | None = None
 ) -> tuple[EditorialGoal | None, list[dict]]:
     """Resolve the topic's editorial goal and keep only the findings it applies to.
 
@@ -953,9 +955,10 @@ def _select_goal_and_findings(
     today (a failed tick, or a quiet source), the goal follows the newest
     finding's own day instead -- so an article is never written with, say, a
     news-digest mandate over altcoin price data. Topics without a goal are
-    returned unchanged.
+    returned unchanged. `today` is the run's UTC date unless given (an offline
+    scoring run asks for the day a past article was written: rebuild_draft_prompt).
     """
-    today = datetime.now(UTC).date()
+    today = today or datetime.now(UTC).date()
     goal = resolve_goal_for_topic(topic, today)
     if goal is None:
         return None, findings
@@ -1028,14 +1031,19 @@ def _get_approved_guidance(topic_id: str) -> tuple[str | None, list[dict]]:
     return guidance, equipment_used
 
 
-def _get_few_shot_excerpt(topic_id: str) -> str | None:
+def _get_few_shot_excerpt(topic_id: str, exclude_article_id: str | None = None) -> str | None:
     """Return a short excerpt of the topic's top-voted past article, or None.
 
     None means there's no positively-received article yet for this topic
     (e.g. a brand new topic) -- callers must leave their prompts completely
-    unchanged in that case.
+    unchanged in that case. `exclude_article_id` is passed over (an offline
+    scoring run never shows a draft the article it is drafting again).
     """
-    top_articles = get_top_voted_articles(topic_id, limit=1)
+    if exclude_article_id is None:
+        top_articles = get_top_voted_articles(topic_id, limit=1)
+    else:
+        top_articles = get_top_voted_articles(topic_id, limit=2)
+        top_articles = [a for a in top_articles if a.get("article_id") != exclude_article_id][:1]
     if not top_articles:
         return None
 
@@ -1210,6 +1218,51 @@ def _draft_article(
     goal: EditorialGoal | DaySubject | None = None,
     rotation: goal_rotation.Pick | None = None,
 ) -> tuple[str, dict]:
+    values, locked = draft_prompt_parts(
+        topic,
+        angle,
+        summaries_block,
+        guidance=guidance,
+        few_shot_excerpt=few_shot_excerpt,
+        goal=goal,
+        rotation=rotation,
+    )
+    prompt = prompts.get_prompt("daily_cycle/draft", values, locked)
+    result = invoke_model_tracked(
+        prompt.text,
+        model_id,
+        fallback_model_id=fallback_model_id,
+        max_tokens=DRAFT_MAX_TOKENS,
+        retry_max_tokens=DRAFT_RETRY_MAX_TOKENS,
+    )
+    lineage_call = {
+        "stage": "draft",
+        "model_id": result["model_id"],
+        "input_tokens": result["input_tokens"],
+        "output_tokens": result["output_tokens"],
+        "used_fallback": result["used_fallback"],
+        # "max_tokens" here means the draft is cut off even after the retry.
+        "stop_reason": result.get("stop_reason"),
+        **prompts.lineage_fields(prompt),
+    }
+    if result.get("attempts", 1) > 1:
+        lineage_call["attempts"] = result["attempts"]
+    return result["text"], lineage_call
+
+
+def draft_prompt_parts(
+    topic: dict,
+    angle: str,
+    summaries_block: str,
+    *,
+    guidance: str | None = None,
+    few_shot_excerpt: str | None = None,
+    goal: EditorialGoal | DaySubject | None = None,
+    rotation: goal_rotation.Pick | None = None,
+) -> tuple[dict, dict]:
+    """The daily_cycle/draft prompt's values and locked blocks. `_draft_article` sends them, and an
+    offline scoring run asks for a past article's draft again with them (rebuild_draft_prompt), so a
+    scored draft is asked for exactly as the daily cycle asks for one."""
     topic_name = topic_label(topic)
     # What the topic's adapter says its articles must always do (how to write figures that move,
     # how the article ends). Declared on the adapter, so nothing here knows the domain.
@@ -1241,27 +1294,112 @@ def _draft_article(
         "source_guidance": f"\n\n{_SOURCE_GUIDANCE_HEADER}\n{source_guidance}" if source_guidance else "",
         "few_shot": few_shot,
     }
-    prompt = prompts.get_prompt("daily_cycle/draft", values, locked)
-    result = invoke_model_tracked(
-        prompt.text,
-        model_id,
-        fallback_model_id=fallback_model_id,
-        max_tokens=DRAFT_MAX_TOKENS,
-        retry_max_tokens=DRAFT_RETRY_MAX_TOKENS,
+    return values, locked
+
+
+# --- a past article's draft, asked for again (offline scoring runs) ---------------------------------
+
+# A run stores its selected candidate idea after ideation and its article after the draft, the title
+# and the reviews, well inside the function's timeout: the selected idea of the hour before an article
+# was created is that article's own.
+ANGLE_LOOKBACK = timedelta(hours=1)
+
+
+def rebuild_draft_prompt(topic: dict, article: dict) -> tuple[dict, dict] | None:
+    """The daily_cycle/draft values and locked blocks for an article this cycle wrote, built again as
+    the run that wrote it built them, so an offline scoring run (common/eval_score.py) can ask another
+    model or prompt version for the same draft. None when none of its Findings are left (they live
+    14 days). It only reads: no candidate idea, armor draw or stamp is written.
+
+    - The Findings: the window before the article was created (rewrite.findings_for: its day
+      subject's only, capped as the cycle caps them), then, on a topic with a daily editorial goal,
+      that day's goal and its Findings, as `_select_goal_and_findings` chose them that day.
+    - The goal: the day subject stored on it, as its adapter names that day's subject (none when the
+      rota has changed since); or the goal of its topic's goal rotation (`editorial_goal`, `revisit`).
+    - The angle: the candidate idea its run selected, else (once candidate ideas have expired, after
+      a week) its title, which was written from that angle.
+    - The gear: the pieces it records it was written with (`equipment_used`), joined as the cycle
+      joins them; never a new draw, which would record itself as the next run's armor.
+    - The few-shot excerpt: the topic's best-received published article other than this one, as a
+      run would show it now."""
+    created = _created_at(article)
+    findings = findings_for(article, topic)
+    if not findings:
+        return None
+    goal: EditorialGoal | DaySubject | None = None
+    subject = article.get(ARTICLE_SUBJECT_FIELD)
+    if isinstance(subject, str) and subject:
+        goal = _subject_on(topic, subject, created)
+    else:
+        goal, findings = _select_goal_and_findings(topic, findings, today=created.astimezone(UTC).date())
+    return draft_prompt_parts(
+        topic,
+        _selected_angle(article, created),
+        _format_findings_summaries(findings),
+        guidance=_worn_guidance(article),
+        few_shot_excerpt=_get_few_shot_excerpt(
+            topic["topic_id"], exclude_article_id=article.get("article_id")
+        ),
+        goal=goal,
+        rotation=_rotation_of(topic, article, findings),
     )
-    lineage_call = {
-        "stage": "draft",
-        "model_id": result["model_id"],
-        "input_tokens": result["input_tokens"],
-        "output_tokens": result["output_tokens"],
-        "used_fallback": result["used_fallback"],
-        # "max_tokens" here means the draft is cut off even after the retry.
-        "stop_reason": result.get("stop_reason"),
-        **prompts.lineage_fields(prompt),
-    }
-    if result.get("attempts", 1) > 1:
-        lineage_call["attempts"] = result["attempts"]
-    return result["text"], lineage_call
+
+
+def _created_at(article: dict) -> datetime:
+    created = datetime.fromisoformat(str(article.get("created_at")))
+    return created if created.tzinfo else created.replace(tzinfo=UTC)
+
+
+def _subject_on(topic: dict, subject: str, created: datetime) -> DaySubject | None:
+    """The day subject the article's run wrote about, as its topic's adapter names it for that day;
+    None when the adapter names another subject for the day now (its rota changed) or none."""
+    try:
+        day_subject = _day_subject(topic, created)
+    except Exception as exc:  # noqa: BLE001 - a broken rota leaves the article without its mandate
+        topic_id = topic.get("topic_id")
+        print(f"daily_cycle_handler: could not name the day subject of topic_id={topic_id}: {exc!r}")
+        return None
+    return day_subject if day_subject is not None and day_subject.key == subject else None
+
+
+def _rotation_of(topic: dict, article: dict, findings: list[dict]) -> goal_rotation.Pick | None:
+    """The goal-rotation pick the article was written under (its `editorial_goal` and `revisit`), or
+    None when it records none or its topic no longer rotates through that goal."""
+    name = article.get("editorial_goal")
+    if not isinstance(name, str) or not name:
+        return None
+    goal = next((g for g in goal_rotation.rotation_goals(topic) if g.name == name), None)
+    if goal is None:
+        return None
+    return goal_rotation.Pick(goal=goal, findings=findings, state={}, revisit=article.get("revisit") is True)
+
+
+def _selected_angle(article: dict, created: datetime) -> str:
+    """The angle the article was drafted from: its run's selected candidate idea, else its title."""
+    since = (created - ANGLE_LOOKBACK).isoformat()
+    until = created.isoformat()
+    selected = [
+        idea
+        for idea in list_candidate_ideas(article["topic_id"])
+        if idea.get("status") == "selected" and since <= str(idea.get("created_at", "")) <= until
+    ]
+    if selected:
+        return str(max(selected, key=lambda idea: str(idea["created_at"]))["angle"])
+    return str(article.get("title") or "")
+
+
+def _worn_guidance(article: dict) -> str | None:
+    """The gear's guidance the article records it was written with, in its order; a piece deleted
+    since is left out."""
+    texts = []
+    for piece in article.get("equipment_used") or []:
+        if not isinstance(piece, dict) or not piece.get("topic_id") or not piece.get("version"):
+            continue
+        refinement = get_prompt_refinement(str(piece["topic_id"]), str(piece["version"])) or {}
+        text = (refinement.get("prompt_changes") or "").strip()
+        if text:
+            texts.append(text)
+    return equipment.joined_guidance(texts)
 
 
 def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tuple[str, dict, bool]:

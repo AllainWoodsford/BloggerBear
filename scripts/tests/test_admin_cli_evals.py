@@ -1,7 +1,9 @@
 """The Admin CLI's eval commands (scripts/admin_cli_evals.py): wired into admin_cli's parser by
 `register` (docs/enhancements/model-ranch-prompt-assets-evals.md, E0), `evals get|set|rollup|
 status|digest` (PR13), `evals forgive|punish|ungate|revoke` (PR13b) and `evals cull` (PR16), each
-sending what its Admin API route takes."""
+sending what its Admin API route takes, and `evals score` and `evals runs list|get|cancel|resume`
+(PR18b): a run is priced and shown with its environment first, asked about before it starts (over
+score_max_cost_aud, or with --record, only --yes starts it), and followed until it settles."""
 
 from __future__ import annotations
 
@@ -50,22 +52,31 @@ def test_build_parser_hands_the_eval_module_its_subparsers_and_helpers():
     register.assert_called_once()
     subparsers, helpers = register.call_args.args
     assert subparsers is _subparsers(parser)
-    assert helpers == {
-        "do_request": admin_cli._do_request,
-        "fetch_json": admin_cli._fetch_json,
-        "CliError": admin_cli.CliError,
-    }
+    assert set(helpers) == {"do_request", "fetch_json", "get_json_or_none", "CliError"}
+    assert helpers["CliError"] is admin_cli.CliError
+    # Each request helper is admin_cli's own, looked up when it is called (so a patch reaches it).
+    for name, target in [
+        ("do_request", "_do_request"),
+        ("fetch_json", "_fetch_json"),
+        ("get_json_or_none", "_get_json_or_none"),
+    ]:
+        with patch.object(admin_cli, target, return_value="answer") as helper:
+            assert helpers[name]("args", "GET", "/x") == "answer"
+        helper.assert_called_once_with("args", "GET", "/x")
 
 
 def test_register_adds_the_evals_group_and_its_commands():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="resource")
-    admin_cli_evals.register(subparsers, {"do_request": None, "fetch_json": None, "CliError": Exception})
+    helpers = {"do_request": None, "fetch_json": None, "get_json_or_none": None, "CliError": Exception}
+    admin_cli_evals.register(subparsers, helpers)
     assert set(subparsers.choices) == {"evals"}
     commands = _subparsers(subparsers.choices["evals"]).choices
     assert set(commands) == {
         "get", "set", "rollup", "status", "digest", "forgive", "punish", "ungate", "revoke", "cull",
+        "score", "runs",
     }  # fmt: skip
+    assert set(_subparsers(commands["runs"]).choices) == {"list", "get", "cancel", "resume"}
 
 
 def test_admin_cli_imports_the_eval_module_only_inside_build_parser():
@@ -302,3 +313,150 @@ def test_cull_apply_asks_nothing_and_sends_nothing_when_there_is_nothing_to_appl
 def test_cull_yes_goes_with_apply():
     with pytest.raises(admin_cli.CliError, match="--yes goes with --apply"):
         cull("--yes")
+
+
+# --- offline scoring runs (`evals score`, `evals runs ...`) --------------------------------------------
+
+PLAN = {
+    "dry_run": True,
+    "environment": "production",
+    "prompt_id": "daily_cycle/draft",
+    "judge_model_id": "maker.judge-v1:0",
+    "combinations": ["maker.a-v1:0@daily_cycle/draft=v2", "maker.a-v1:0@daily_cycle/draft=vanilla:v1"],
+    "sample": 2,
+    "items": 2,
+    "messages": 4,
+    "estimate_aud": 0.51,
+    "remaining_aud": 2.0,
+    "score_max_cost_aud": 5,
+    "record": False,
+}
+SCORE = ["score", "--judge", "maker.judge-v1:0", "--models", "maker.a-v1:0", "--prompt",
+         "daily_cycle/draft=v2,vanilla", "--sample", "2"]  # fmt: skip
+ASKED = {
+    "judge_model_id": "maker.judge-v1:0",
+    "model_ids": ["maker.a-v1:0"],
+    "prompt_id": "daily_cycle/draft",
+    "versions": ["v2", "vanilla"],
+    "sample": 2,
+    "record": False,
+}
+
+
+def run_cli(*argv, plan=None, answer="y", reads=()):
+    """`admin_cli.py evals ...` against stand-ins for the signed calls (each recorded as it is sent),
+    the y/N question and the clock. The calls, and the question's stand-in."""
+    sent = []
+    reads = list(reads)
+
+    def fetch(_args, method, path, body=None):
+        sent.append((method, path, body))
+        if method == "GET":
+            return reads.pop(0) if reads else {"run_id": "score-1", "status": "running", "progress": {}}
+        return {**PLAN, **(plan or {})} if body and body.get("dry_run") else {"run_id": "score-1", "sent": 4}
+
+    def poll(_args, path):
+        sent.append(("GET", path, None))
+        return reads.pop(0) if reads else {"run_id": "score-1", "status": "done", "progress": {}}
+
+    def request(_args, method, path, body=None):
+        sent.append((method, path, body))
+
+    with (
+        patch.object(admin_cli, "_fetch_json", fetch),
+        patch.object(admin_cli, "_get_json_or_none", poll),
+        patch.object(admin_cli, "_do_request", request),
+        patch("builtins.input", return_value=answer) as asked,
+        patch.object(admin_cli_evals.time, "sleep"),
+    ):
+        args = admin_cli.build_parser().parse_args(["evals", *argv])
+        args.func(args)
+    return sent, asked
+
+
+def test_score_prices_the_run_shows_it_with_its_environment_and_asks_before_it_starts(capsys):
+    sent, asked = run_cli(*SCORE, "--no-wait")
+
+    assert sent == [
+        ("POST", "/evals/runs", {**ASKED, "dry_run": True}),
+        ("POST", "/evals/runs", {**ASKED, "yes": False}),
+    ]
+    asked.assert_called_once_with("Start this run on production? [y/N] ")
+    out = capsys.readouterr().out
+    assert "Environment:   production" in out and "Estimate:      about A$0.5100" in out
+    assert "maker.a-v1:0@daily_cycle/draft=vanilla:v1" in out and '"run_id": "score-1"' in out
+
+
+def test_score_starts_nothing_when_the_answer_is_not_yes(capsys):
+    with pytest.raises(SystemExit) as stopped:
+        run_cli(*SCORE, answer="n")
+    assert stopped.value.code == 1
+    assert "Not started." in capsys.readouterr().err
+
+
+def test_record_needs_yes_before_anything_is_sent():
+    with pytest.raises(admin_cli.CliError) as refused:
+        run_cli(*SCORE, "--record")
+    assert "--record" in str(refused.value) and "--yes" in str(refused.value)
+
+
+def test_over_score_max_cost_only_yes_starts_the_run():
+    with pytest.raises(admin_cli.CliError) as refused:
+        run_cli(*SCORE, plan={"estimate_aud": 6.0, "remaining_aud": 10.0})
+    assert "score_max_cost_aud" in str(refused.value)
+
+    over = {"estimate_aud": 6.0, "remaining_aud": 10.0}
+    sent, asked = run_cli(*SCORE, "--yes", "--record", "--no-wait", plan=over)
+    assert [body.get("yes") for _, _, body in sent] == [None, True]
+    assert sent[1][2]["record"] is True
+    asked.assert_not_called()
+
+
+def test_over_what_today_leaves_the_run_is_refused_after_its_plan_is_shown(capsys):
+    with pytest.raises(admin_cli.CliError) as refused:
+        run_cli(*SCORE, "--yes", plan={"estimate_aud": 1.5, "remaining_aud": 0.2})
+    assert "daily-spend-cap" in str(refused.value)
+    assert "Environment:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("prompt", ["daily_cycle/draft", "=v2", "daily_cycle/draft=", "daily_cycle/draft=,"])
+def test_a_prompt_flag_without_its_versions_is_refused(prompt):
+    argv = [*SCORE[:5], "--prompt", prompt]
+    with pytest.raises(admin_cli.CliError):
+        run_cli(*argv)
+
+
+def test_score_follows_the_run_until_it_settles(capsys):
+    running = {"run_id": "score-1", "status": "running", "spent_aud": 0.01,
+               "progress": {"messages": 4, "results": 1, "scoring": 1}}  # fmt: skip
+    done = {**running, "status": "done", "progress": {"messages": 4, "results": 4, "scoring": 0}}
+    sent, _ = run_cli(*SCORE, reads=[None, running, running, done])
+
+    assert sent[2:] == [("GET", "/evals/runs/score-1", None)] * 4
+    err = capsys.readouterr().err
+    assert err.count("run score-1: running, 1 of 4 with a result (1 being scored)") == 1
+    assert "run score-1: done, 4 of 4 with a result" in err
+
+
+def test_a_run_paused_by_the_spend_cap_stops_the_following_and_says_how_it_goes_on(capsys):
+    running = {"run_id": "score-1", "status": "running", "progress": {}}
+    paused = {"run_id": "score-1", "status": "paused: spend cap", "progress": {}}
+    sent, _ = run_cli("runs", "get", "score-1", "--wait", reads=[running, paused])
+    assert sent == [("GET", "/evals/runs/score-1", None)] * 2
+    captured = capsys.readouterr()
+    assert "evals runs resume score-1" in captured.err
+    assert '"status": "paused: spend cap"' in captured.out
+
+
+def test_runs_get_wait_on_a_settled_run_prints_it_without_following():
+    done = {"run_id": "score-1", "status": "done", "progress": {}}
+    sent, _ = run_cli("runs", "get", "score-1", "--wait", reads=[done])
+    assert sent == [("GET", "/evals/runs/score-1", None)]
+
+
+def test_the_runs_commands_send_what_their_routes_take():
+    assert run_cli("runs", "list")[0] == [("GET", "/evals/runs?limit=20", None)]
+    assert run_cli("runs", "list", "--limit", "5")[0] == [("GET", "/evals/runs?limit=5", None)]
+    assert run_cli("runs", "get", "score-1")[0] == [("GET", "/evals/runs/score-1", None)]
+    assert run_cli("runs", "cancel", "score-1")[0] == [("DELETE", "/evals/runs/score-1", None)]
+    assert run_cli("runs", "resume", "score-1")[0] == [("POST", "/evals/runs/score-1/resume", {})]

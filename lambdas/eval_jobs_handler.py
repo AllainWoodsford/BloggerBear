@@ -15,10 +15,11 @@ schedules and its queue's mapping only then):
 `rollup` runs common/evals_rollup.py; after a scheduled one, the week's digest is emailed to the alerts
 topic when it is due (common/evals_digest.py: Fridays, while `digest_email` is on, once a day by a
 stamp on the evals index row). `judge_select` runs the judge's selector, and each queued record
-goes to its consumer (common/eval_judge.py: `select` and `consume`). A record is answered by returning,
-whatever became of it, so the mapping deletes it: a judge item the day's spend cap holds back is sent
-to the queue again with a delay by the consumer itself, and one that failed stays unjudged for a later
-run to pick.
+goes to its consumer (common/eval_judge.py: `select` and `consume`, which hands a scoring job to
+common/eval_score.py). A record is answered by returning, whatever became of it, so the mapping deletes
+it: an item the day's spend cap holds back is sent to the queue again with a delay by the consumer
+itself, a judge item that failed stays unjudged for a later run to pick, and a scoring item that failed
+keeps its result row for `evals runs resume` to send again.
 
 Never raises unhandled, like every other scheduled handler here, with one exception that section 6
 of the spec allows: a rollup that cannot read the evals log or read and write its tables

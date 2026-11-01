@@ -509,7 +509,7 @@ def test_the_destructive_commands_are_the_ones_the_reference_marks():
     assert DESTRUCTIVE == [
         "topics delete", "topics pause", "articles unpublish", "moderation reject", "backup restore",
         "models restore", "refinements reject", "equipment delete", "prompts pause", "evals punish",
-        "evals cull",
+        "evals cull", "evals runs cancel",
     ]  # fmt: skip
 
 
@@ -524,6 +524,7 @@ def test_a_destructive_command_is_a_template_whatever_values_are_given(path, par
         "prompt_id": "daily_cycle/draft",
         "amount": "37",
         "model_id": "maker.poor-v1:0",
+        "run_id": "score-20261031T010203-a1b2c3",
     }
     # Its positionals, and any option it cannot run without (evals punish's --amount). `evals cull`
     # has neither: its card is the bare command, marked and warned about all the same.

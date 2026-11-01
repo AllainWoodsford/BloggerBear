@@ -45,6 +45,8 @@ GUARDED = sorted(
         "common/model_cull.py",
         # The admin API's review of Findings by a person, which prints a claim it could not let go.
         "common/human_review.py",
+        # Offline scoring runs (eval-jobs and the admin API), which print what they could not read or send.
+        "common/eval_score.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
     ]
 )

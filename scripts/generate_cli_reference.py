@@ -52,16 +52,16 @@ HELP_COLUMNS = 100
 # A command whose last word is one of these deletes something or takes it down. Wider than the
 # commands that exist today (delete, unpublish, reject, restore, which writes over what is there,
 # pause, which stops something being served or run, punish, which can take a model's total below
-# the gate culling reads, and cull, whose --apply deletes models from the registry), so one added
-# later under another of these names is covered without anyone remembering this list. `pause`
-# makes `topics pause` a template as well as `prompts pause`: both stop something the operator then
-# has to resume. `evals cull` without --apply only shows the proposal, and `models restore` puts a
-# model back rather than writing over one; both are marked all the same, as the rule reads the last
-# word only.
+# the gate culling reads, cull, whose --apply deletes models from the registry, and cancel, which
+# stops a run whose items still on the queue are then dropped), so one added later under another
+# of these names is covered without anyone remembering this list. `pause` makes `topics pause` a
+# template as well as `prompts pause`: both stop something the operator then has to resume.
+# `evals cull` without --apply only shows the proposal, and `models restore` puts a model back
+# rather than writing over one; both are marked all the same, as the rule reads the last word only.
 DESTRUCTIVE_VERBS = frozenset(
     {
         "delete", "unpublish", "reject", "remove", "purge", "destroy", "drop", "wipe", "clear",
-        "restore", "pause", "punish", "cull",
+        "restore", "pause", "punish", "cull", "cancel",
     }
 )  # fmt: skip
 # A flag that makes any command skip a safeguard.

@@ -49,6 +49,9 @@ ROUTES = {
     "POST /evals/adjust", "POST /evals/ungate", "POST /evals/revoke", "POST /evals/cull/apply",
     # A person's review of research Findings (PR19; its own tests are test_human_review.py's).
     "GET /evals/findings", "POST /evals/findings/review",
+    # Offline scoring runs (PR18b; test_admin_eval_runs.py).
+    "POST /evals/runs", "GET /evals/runs", "GET /evals/runs/{run_id}", "DELETE /evals/runs/{run_id}",
+    "POST /evals/runs/{run_id}/resume",
 }  # fmt: skip
 
 

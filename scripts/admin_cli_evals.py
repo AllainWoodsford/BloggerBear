@@ -28,8 +28,15 @@ which admin_cli.build_parser calls. Today's commands:
   proposal's models, each checked again first (POST /evals/cull/apply), only while culling is on.
   It shows the proposal and asks first, as the other commands that delete do, unless --yes.
   `models restore` (scripts/admin_cli.py) puts a culled model back.
+- `evals score --judge ID --models A,B --prompt PROMPT_ID=V2,V3 [--sample N] [--record] [--yes]`: an
+  offline scoring run (POST /evals/runs). It prices the run first and shows the estimate and the
+  environment, then asks before it starts; over `score_max_cost_aud`, or with --record, it needs --yes.
+  It then follows the run's progress, as `topics trigger` follows its pipeline (--no-wait returns).
+- `evals runs list|get|cancel|resume`: the judge's and the scoring runs, one run's progress and
+  results (`get --wait` follows it), cancelling one, and sending a scoring run's unscored items again
+  (GET /evals/runs, GET|DELETE /evals/runs/{run_id}, POST /evals/runs/{run_id}/resume).
 
-score and runs follow with their routes. After any change to these commands run
+After any change to these commands run
 `python scripts/generate_cli_reference.py`, so the assistant's CLI reference
 (lambdas/ops_mcp/cli_reference.json) matches.
 """
@@ -39,6 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from urllib.parse import quote
 
 # `evals set`'s flags: (flag, the setting it sets, what it takes, its help). "switch" takes on, off
@@ -103,9 +111,11 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
     """Add the `evals` commands to admin_cli's top-level subparsers.
 
     `helpers` is what admin_cli lends this module, by name: "do_request" (its signed call to the
-    Admin API, which prints the answer), "fetch_json" (the same call, whose answer the command reads
-    itself) and "CliError" (what a command raises to stop with a message). They are passed in
-    rather than imported because admin_cli imports this module, and an import back would be a cycle.
+    Admin API, which prints the answer), "fetch_json" (the same call, handing the answer back; a
+    non-2xx answer is printed and exits), "get_json_or_none" (a GET whose answer is None when it is
+    not a 2xx, for polling) and "CliError" (what a command raises to stop with a message). They are
+    passed in rather than imported because admin_cli imports this module, and an import back would
+    be a cycle.
     """
     do_request = helpers["do_request"]
     fetch_json = helpers["fetch_json"]
@@ -203,7 +213,9 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
         help="Continuous evals and the Model Ranch: settings, the rollup, status, a digest, an "
         "operator's forgive, punish, gate override and revoked source, and culling",
     )
-    evals_sub = evals_parser.add_subparsers(dest="action", required=True)
+    # metavar, as topics and articles do: the twelve commands' choice list is wider than the help's
+    # 100 columns, which argparse cannot wrap.
+    evals_sub = evals_parser.add_subparsers(dest="action", required=True, metavar="<action>")
 
     evals_sub.add_parser(
         "get", help="Show the evals settings, the values in effect and the judge's model"
@@ -347,3 +359,228 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
         help="With --apply: do not show the proposal or ask first",
     )
     cull_parser.set_defaults(func=cmd_cull)
+
+    _register_runs(evals_sub, helpers)
+
+
+# --- offline scoring runs (`evals score`, `evals runs ...`) --------------------------------------------
+
+# How often a followed run is read, and for how long: a sample of a few items finishes in minutes, a
+# large one can take an hour at eval-jobs' two at a time.
+RUN_POLL_SECONDS = 10
+RUN_WAIT_SECONDS = 1800
+# A run in one of these is not going to move while it is followed: finished, cancelled, or waiting for
+# the next day's spend.
+SETTLED = ("done", "cancelled", "paused: spend cap")
+
+
+def _prompt_versions(text: str, cli_error) -> tuple[str, list[str]]:
+    """`--prompt`'s value: `<prompt_id>=<version>[,<version>...]`."""
+    prompt_id, separator, versions = text.partition("=")
+    parts = [part.strip() for part in versions.split(",") if part.strip()]
+    if not separator or not prompt_id.strip() or not parts:
+        raise cli_error("--prompt is <prompt_id>=<version>[,<version>...], e.g. daily_cycle/draft=v2,vanilla")
+    return prompt_id.strip(), parts
+
+
+def _print_plan(plan: dict) -> None:
+    """What a run would do and cost, before it is asked for."""
+    combos = plan.get("combinations") or []
+    print(f"Environment:   {plan.get('environment') or 'unknown'}")
+    print(f"Prompt:        {plan.get('prompt_id')}")
+    print(f"Judge:         {plan.get('judge_model_id')}")
+    print(f"Combinations:  {len(combos)} (models x versions)")
+    for code in combos:
+        print(f"               {code}")
+    print(f"Items:         {plan.get('items')} past article(s) of the {plan.get('sample')} asked for")
+    print(f"Messages:      {plan.get('messages')}")
+    print(
+        f"Estimate:      about A${plan.get('estimate_aud', 0):.4f} (today's evals cap leaves "
+        f"A${plan.get('remaining_aud', 0):.4f}; over A${plan.get('score_max_cost_aud', 0)} needs --yes)"
+    )
+    records = "yes, as Offline Review events" if plan.get("record") else "no (item rows only)"
+    print(f"Records:       {records}")
+
+
+def _progress_line(run: dict) -> str:
+    progress = run.get("progress") or {}
+    return (
+        f"run {run.get('run_id')}: {run.get('status')}, {progress.get('results', 0)} of "
+        f"{progress.get('messages', 0)} with a result ({progress.get('scoring', 0)} being scored), "
+        f"A${run.get('spent_aud', 0):.4f} spent"
+    )
+
+
+def _follow(args: argparse.Namespace, run_id: str, get_json_or_none) -> dict | None:
+    """Read the run every RUN_POLL_SECONDS until it settles or RUN_WAIT_SECONDS pass, printing a line
+    whenever its progress changes. The run as last read (None if it never could be)."""
+    path = f"/evals/runs/{quote(run_id, safe='')}"
+    deadline = time.monotonic() + RUN_WAIT_SECONDS
+    last_line, run = None, None
+    while True:
+        read = get_json_or_none(args, path)
+        if read is not None:
+            run = read
+            line = _progress_line(run)
+            if line != last_line:
+                print(line, file=sys.stderr)
+                last_line = line
+            if run.get("status") in SETTLED:
+                break
+        if time.monotonic() >= deadline:
+            print(
+                f"Still going after {RUN_WAIT_SECONDS}s: `evals runs get {run_id} --wait` follows it again.",
+                file=sys.stderr,
+            )
+            break
+        time.sleep(RUN_POLL_SECONDS)
+    if run is not None and run.get("status") == "paused: spend cap":
+        print(
+            "Paused by the day's evals spend cap: its items wait on the queue and go on when the cap "
+            f"allows (`evals set --daily-spend-cap`, or `evals runs resume {run_id}` tomorrow).",
+            file=sys.stderr,
+        )
+    return run
+
+
+def _register_runs(evals_sub, helpers: dict) -> None:
+    """`evals score` and `evals runs list|get|cancel|resume` (offline scoring runs)."""
+    do_request = helpers["do_request"]
+    fetch_json = helpers["fetch_json"]
+    get_json_or_none = helpers["get_json_or_none"]
+    cli_error = helpers["CliError"]
+
+    def cmd_score(args: argparse.Namespace) -> None:
+        if args.record and not args.yes:
+            raise cli_error("--record writes Offline Review events, which can gate models: it needs --yes")
+        prompt_id, versions = _prompt_versions(args.prompt, cli_error)
+        models = [model.strip() for model in args.models.split(",") if model.strip()]
+        if not models:
+            raise cli_error("--models needs at least one model id")
+        body = {
+            "judge_model_id": args.judge,
+            "model_ids": models,
+            "prompt_id": prompt_id,
+            "versions": versions,
+            "sample": args.sample,
+            "record": args.record,
+        }
+        plan = fetch_json(args, "POST", "/evals/runs", body={**body, "dry_run": True})
+        _print_plan(plan)
+        if plan["estimate_aud"] > plan["remaining_aud"]:
+            raise cli_error(
+                "the estimate is more than today's evals spend cap leaves: try tomorrow, or raise it "
+                "with `evals set --daily-spend-cap`"
+            )
+        if plan["estimate_aud"] > plan["score_max_cost_aud"] and not args.yes:
+            raise cli_error("the estimate is more than score_max_cost_aud: run it again with --yes")
+        if not args.yes:
+            question = f"Start this run on {plan.get('environment') or 'this environment'}? [y/N] "
+            try:
+                sure = input(question).strip().lower() in ("y", "yes")
+            except EOFError:
+                sure = False
+            if not sure:
+                print("Not started.", file=sys.stderr)
+                raise SystemExit(1)
+        started = fetch_json(args, "POST", "/evals/runs", body={**body, "yes": args.yes})
+        print(json.dumps(started, indent=2))
+        if args.wait:
+            _follow(args, started["run_id"], get_json_or_none)
+
+    def cmd_runs_get(args: argparse.Namespace) -> None:
+        path = f"/evals/runs/{quote(args.run_id, safe='')}"
+        if not args.wait:
+            do_request(args, "GET", path)
+            return
+        # Read once first, so a run that is not there stops here rather than being waited for.
+        run = fetch_json(args, "GET", path)
+        if run.get("status") not in SETTLED:
+            run = _follow(args, args.run_id, get_json_or_none) or run
+        print(json.dumps(run, indent=2))
+
+    score_parser = evals_sub.add_parser(
+        "score",
+        help="Score models and prompt versions on past articles against the live version, judged by a "
+        "model that is none of them; shows the estimate and asks first",
+    )
+    score_parser.add_argument(
+        "--judge",
+        required=True,
+        metavar="MODEL_ID",
+        help="The model that compares the drafts: none of --models",
+    )
+    score_parser.add_argument(
+        "--models", required=True, metavar="MODEL_IDS", help="Comma-separated models to score, 1 to 5"
+    )
+    score_parser.add_argument(
+        "--prompt",
+        required=True,
+        metavar="PROMPT_ID=VERSIONS",
+        help="The prompt and its versions to score, e.g. daily_cycle/draft=v2,v3: each one this "
+        "deployment published (live, or retired since), or vanilla (the copy in the code)",
+    )
+    score_parser.add_argument(
+        "--sample", type=int, default=10, metavar="N", help="Past articles to score, 1 to 50 (default 10)"
+    )
+    score_parser.add_argument(
+        "--record",
+        action="store_true",
+        default=False,
+        help="Write each verdict as an Offline Review event, which counts towards the gates while the "
+        "judge is calibrated (needs --yes)",
+    )
+    score_parser.add_argument(
+        "--yes",
+        action="store_true",
+        default=False,
+        help="Do not ask; needed over score_max_cost_aud and with --record",
+    )
+    score_parser.add_argument(
+        "--no-wait",
+        dest="wait",
+        action="store_false",
+        default=True,
+        help="Return once the run is started instead of following its progress",
+    )
+    score_parser.set_defaults(func=cmd_score)
+
+    runs_parser = evals_sub.add_parser(
+        "runs", help="The judge's and the offline scoring runs: list, progress and results, cancel, resume"
+    )
+    runs_sub = runs_parser.add_subparsers(dest="runs_action", required=True)
+
+    list_parser = runs_sub.add_parser("list", help="The newest runs, judge and scoring, with their status")
+    list_parser.add_argument(
+        "--limit", type=int, default=20, metavar="N", help="How many, 1 to 100 (default 20)"
+    )
+    list_parser.set_defaults(func=lambda args: do_request(args, "GET", f"/evals/runs?limit={args.limit}"))
+
+    get_parser = runs_sub.add_parser(
+        "get", help="One run's progress, read from its item rows, and each combination's results"
+    )
+    get_parser.add_argument("run_id")
+    get_parser.add_argument(
+        "--wait", action="store_true", default=False, help="Follow its progress until it finishes or pauses"
+    )
+    get_parser.set_defaults(func=cmd_runs_get)
+
+    cancel_parser = runs_sub.add_parser(
+        "cancel", help="Cancel a queued, running or paused run: its items still on the queue are dropped"
+    )
+    cancel_parser.add_argument("run_id")
+    cancel_parser.set_defaults(
+        func=lambda args: do_request(args, "DELETE", f"/evals/runs/{quote(args.run_id, safe='')}")
+    )
+
+    resume_parser = runs_sub.add_parser(
+        "resume",
+        help="Send a scoring run's items that have no result again (a paused or cancelled run's, or "
+        "ones that failed), under today's spend cap",
+    )
+    resume_parser.add_argument("run_id")
+    resume_parser.set_defaults(
+        func=lambda args: do_request(
+            args, "POST", f"/evals/runs/{quote(args.run_id, safe='')}/resume", body={}
+        )
+    )
