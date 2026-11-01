@@ -26,11 +26,16 @@ options are in [scripts/README.md](../../scripts/README.md). The design, and the
 are in [model-ranch-prompt-assets-evals.md](../enhancements/archive/model-ranch-prompt-assets-evals.md).
 This page does not repeat them.
 
-**In the assistant.** This page has no `feature` entry yet. Ask about its parts by name instead:
-`architecture(name="prompts")` (the bucket), `"prompt-hashes"`, `"evals"` (the table, or with
-`kind="log_group"` the log group), `"eval-jobs"`, `"eval-work"`, `"eval-rollup"`, `"eval-judge"`
-or `"ranch-and-prompts"` (the dashboard). Where evals are on, `model_ranch` and `prompt_metrics`
-answer how the models and the prompt versions are doing ([below](#the-assistant-model_ranch-and-prompt_metrics)).
+**In the assistant.** `architecture(feature="prompts-and-evals")` walks through both halves' steps
+with this environment's resource names on screen. It tells them in eleven: the prompts half's nine
+in three (the template and its files, the gates and the publish with what it writes, and the checks,
+the draw, lineage and a fallback as serving a prompt), and the evals half's eleven in eight (events
+and where they come from, the rollup and the models row, and the gates and the rewrite picker are
+one step each). Ask about a part by name for more: `architecture(name="prompts")` (the bucket),
+`"prompt-hashes"`, `"evals"` (the table, or with `kind="log_group"` the log group), `"eval-jobs"`,
+`"eval-work"`, `"eval-rollup"`, `"eval-judge"` or `"ranch-and-prompts"` (the dashboard). Where
+evals are on, `model_ranch` and `prompt_metrics` answer how the models and the prompt versions are
+doing ([below](#the-assistant-model_ranch-and-prompt_metrics)).
 
 Resource names below use `<prefix>` (your `unique_name_prefix`) and `<env>` (`dev` or
 `production`). The two halves are built from [`infra/modules/prompts/`](../../infra/modules/prompts/)
@@ -300,8 +305,8 @@ evals rubrics (the judge's two and the offline runs' comparison). Each is regist
 is known: lineage records it as `vanilla:vN` like any other, and a change to one is a code PR that
 bumps its version and pin. The lint refuses files for them. The operator's assistant takes its
 system prompt with `prompts.vanilla_prompt("ops_agent/system")`, which reads nothing: its rules
-live in `ops_agent/system` in `common/prompts_registry.py`, version 2 since it gained its rule on
-reasoning by model and prompt cell.
+live in `ops_agent/system` in `common/prompts_registry.py`: version 2 gained its rule on reasoning
+by model and prompt cell, and version 3 named the queue platform's and this page's walk-throughs.
 
 ### The reviewer bear's blocks
 
@@ -383,7 +388,7 @@ flowchart LR
 | 4 | **The models row** | For every model, the windows are summed from its day rows and written to its models row, with its roles; a model with no purpose yet is classified. | `update_models`, `windows`, `classify_unclassified` in `evals_rollup.py` |
 | 5 | **The gates** | A model whose daily, weekly or total score is below its gate, with enough events behind it, is left out of every candidate list until it recovers ([in detail](#gates-and-the-rotation-guard)). | `Guard`, `filter_healthy` in [`common/model_ranch.py`](../../lambdas/common/model_ranch.py) |
 | 6 | **The rewrite picker** | A Re-Write offers the usable models the gates have not held back, best first by how their work has been judged ([in detail](#the-rewrite-picker)). | `rank_rewrite_models` in [`scripts/review_inbox.py`](../../scripts/review_inbox.py) |
-| 7 | **Culling** | The weekly cycle proposes the models far below the total gate that play no role; an operator's `evals cull --apply` archives and deletes some of them ([in detail](#culling-a-proposal-then-an-apply)). | `cull_proposal` in [`common/model_fleet.py`](../../lambdas/common/model_fleet.py); [`common/model_cull.py`](../../lambdas/common/model_cull.py) |
+| 7 | **Culling** | The weekly cycle proposes the models whose total is below the total gate, with enough events behind it, that play no role; an operator's `evals cull --apply` archives and deletes some of them ([in detail](#culling-a-proposal-then-an-apply)). | `cull_proposal` in [`common/model_fleet.py`](../../lambdas/common/model_fleet.py); [`common/model_cull.py`](../../lambdas/common/model_cull.py) |
 | 8 | **The judge** | Hourly, once its interval is up, a selector picks unjudged Findings and articles and queues them; the consumer asks a model that wrote none of the item whether it is good ([in detail](#the-judge)). | `select`, `consume` in `eval_judge.py`; `aws_scheduler_schedule.judge`; `aws_sqs_queue.eval_work` |
 | 9 | **Calibration** | The judge's verdicts count towards the gates only while it agrees with people often enough, over enough pairs ([in detail](#calibration)). | `judge_agreement`, `calibrated` in `evals_rollup.py`; `human_review.py` |
 | 10 | **Offline runs** | `evals score` redrafts past articles with other models or prompt versions, and the judge compares each with the live version's draft, under a daily spend cap ([in detail](#offline-scoring-runs-and-the-spend-cap)). | `start`, `consume` in `eval_score.py` |
@@ -745,8 +750,8 @@ tools.
   `cull_proposed` (`evals cull --apply`, or `evals set --cull on` first while culling is off). The
   assistant may watch a `model` or a `prompt`, and follows up its two cards about an id with the same
   checks.
-- **The agent's rule.** `ops_agent/system` (version 2) tells the agent to reason by cell, the pairing
-  of a model and a prompt version, before blaming either, and never to call a version marked
+- **The agent's rule.** `ops_agent/system` (since version 2) tells the agent to reason by cell, the
+  pairing of a model and a prompt version, before blaming either, and never to call a version marked
   insufficient data better or worse. The server's instructions carry the same rule for Alexa+.
 
 Everything they return is an id, a code or a number, so a voice caller is given the same result as

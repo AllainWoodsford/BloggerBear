@@ -890,10 +890,11 @@ python scripts/admin_cli.py prompts set --assets ""               # cleared: bac
   version, the release that published it, the start of its sha256, its hash row's status (`live`, or
   `retired` and when) and whether it is paused. A prompt with no file there (a code-only prompt, or
   one nothing has published) is one row naming the code's version it serves, and why.
-- **`prompts pause <prompt_id> <version>`** takes one version out of service: the prompt's other
-  files under `latest/` are served instead (an A/B split goes on with its other arms), or the copy
-  in the code when it was the only one. It is the failure-day step for a bad prompt; `prompts set
-  --assets off` takes every asset out at once.
+- **`prompts pause <prompt_id> <version>`** takes one version out of service: a run that draws
+  that version gets the copy in the code instead (fallback code `paused`, with a `prompt_fallback`
+  line), and runs that draw the prompt's other files under `latest/` keep them. The split is not
+  redrawn, so an A/B split's other arms keep only their own share. It is the failure-day step for a
+  bad prompt; `prompts set --assets off` takes every asset out at once.
 - **`prompts releases`** lists the publishes, newest first, marking the one in place (`current`)
   and the one a rollback holds to (`pinned`). A rollback is a dispatch of the `prompts` workflow
   with `release_id`, not a CLI command

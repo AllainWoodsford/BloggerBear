@@ -377,11 +377,14 @@ attach it to distributions in the account that owns it.
   look at production you sign in to the production account.
 - Each environment has its pipeline-health dashboard (`<prefix>-<env>-pipeline-health`) and, while
   evals are on, its Model Ranch and prompts dashboard (`<prefix>-<env>-ranch-and-prompts`), in its
-  own account: at most two an account, inside CloudWatch's three free ones. (They replaced the
-  pipeline, lambda-runs and edge dashboards, and the `edge_dashboard_enabled` switch, which are
-  gone.) Each environment's pipeline health has panels for its own web ACLs, and dev's also for the
-  shared CloudFront web ACL (`<prefix>-shared-acl`, production's). With two accounts those panels
-  stay empty in dev, because the shared ACL's metrics are in the production account.
+  own account: at most two an account. Both are inside CloudWatch's three free dashboards only if
+  pipeline health counts as 50 metrics or fewer, which has not been checked against a bill yet; if
+  it does not, each account pays about US$3 a month for its pipeline health
+  ([what dashboards cost](observability.md#dashboards)). (They replaced the pipeline, lambda-runs
+  and edge dashboards, and the `edge_dashboard_enabled` switch, which are gone.) Each environment's
+  pipeline health has panels for its own web ACLs, and dev's also for the shared CloudFront web ACL
+  (`<prefix>-shared-acl`, production's). With two accounts those panels stay empty in dev, because
+  the shared ACL's metrics are in the production account.
 - The operator's assistant in each environment reads only its own account. Production's
   firewall review reads the shared ACL's logs, which are in its account already.
 - Alert emails are separate settings (`ALERT_EMAIL_DEV`, `ALERT_EMAIL_PROD`), and each needs its

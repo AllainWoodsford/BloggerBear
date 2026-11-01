@@ -1006,7 +1006,7 @@ agreed override of "check off in the same PR" for this feature).
 - [x] **PR19** — human review of Findings in `approve --source findings`
 - [x] **PR20** — the assistant's `model_ranch` and `prompt_metrics` tools; the agent prompt; the Friday digest
 - [x] **PR21** — bug sweep
-- [x] **PR22** — documentation sweep: configuration, models, observability, runsheets, two architecture pages, README, this checklist ticked; the spec archived
+- [x] **PR22** — documentation sweep: configuration, models, observability, runsheets, two architecture pages and the assistant's walk-throughs of them, README, this checklist ticked; the spec archived
 
 #### What shipped
 
@@ -1038,8 +1038,8 @@ three parts, and each changes nothing until it is switched on
   pipeline-health and ranch-and-prompts, in place of the pipeline, lambda-runs and edge dashboards.
   `admin_cli evals` drives it.
 
-**Done once, by the owner.** Each is in the production runsheet's
-[enable order](production-runsheet.md#the-enable-order), with its commands:
+**Done once, by the owner.** The first three are in the production runsheet's
+[enable order](production-runsheet.md#the-enable-order), with their commands; the last is optional:
 
 - Apply `infra/bootstrap` by hand in each account whose bootstrap predates this work, before the
   first deploy that carries it: it makes the two prompts publisher roles, and every deploy now
@@ -1047,11 +1047,14 @@ three parts, and each changes nothing until it is switched on
 - Create the `production-prompts` GitHub environment (required reviewer: you; deployment branch
   `dev`), and set `AWS_DEV_PROMPTS_ROLE_ARN` and `AWS_PROD_PROMPTS_ROLE_ARN` at repository level from
   the bootstrap's outputs.
-- Run `admin_cli models classify` once in each environment after its first deploy with this work,
-  so every model's purpose is recorded ([models.md](models.md#what-a-model-is-for-purpose-and-suitability)).
 - Turn the parts on, dev before production: topics to the queue one at a time once shadow mode has
   watched them, then `PROMPT_AS_ASSET_ENABLED`, then `EVALS_ENABLED`. Culling stays proposal-only
   until `evals set --cull on` and `evals cull --apply`.
+- Run `python scripts/admin_cli.py models classify` (then `models list` for the PURPOSE column) in
+  each environment after its first deploy with this work, so rows from before purposes were
+  recorded are judged by purpose now. Until a row is classified it is judged by the old
+  token-priced rule, and once evals are on the hourly rollup classifies any row that has no purpose
+  ([models.md](models.md#what-a-model-is-for-purpose-and-suitability)).
 
 ## Backlog / not yet scheduled
 

@@ -242,6 +242,7 @@ briefing takes the agent ten to twenty-five seconds, far longer than Alexa+ will
 - [model-ranch-prompt-assets-evals.md](../enhancements/archive/model-ranch-prompt-assets-evals.md):
   `model_ranch` and `prompt_metrics`, their four cards, the `model` and `prompt` watch kinds, and the
   prompt's move into the registry as `ops_agent/system`, whose version 2 added the rule on reasoning
-  by model and prompt cell ([prompts and evals](prompts-and-evals.md)).
+  by model and prompt cell ([prompts and evals](prompts-and-evals.md)), and whose version 3 named the
+  queue platform's and prompts and evals' walk-throughs (`architecture` with `feature`).
 - [alexa-plus-mcp-enhancement.md](../enhancements/alexa-plus-mcp-enhancement.md): parked. A
   reader-facing assistant, not built.

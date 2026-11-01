@@ -525,14 +525,18 @@ python scripts/admin_cli.py topics reschedule --dispatch-mode schedule     # eve
   cadence) a research turn, and for a cadence, slug or topic id the dispatcher cannot use
   ([what each means](configuration.md#the-queue-platform)). The shadow counts are never reset: a
   topic with an old mismatch whose cause you have fixed needs `shadow_mismatches` removed from its
-  item in the console, once it has had a clean day since.
+  item in the console, once it has had a clean day since. A 500 from the move can come after the
+  row says queue: check `topics schedule` before retrying it or moving the topic back
+  ([what it means](architecture/queue-platform.md#the-cutover-and-its-pre-flight)).
 - **On the day of the move**, if today's daily turn has passed the move records today's daily run
   as done, so the topic writes again tomorrow, not twice today.
 - **After it:** a daily cadence with several hours runs once a day; `topics trigger` queues a
   research job or starts a manual daily run (`<slug>-<date>-manual-<HHMMSS>`); pausing works as
-  before, but a topic resumed after today's daily turn starts today's run; and a backup restored
-  over a queue topic keeps the snapshot's `last_daily_dispatched_on`, which can start a second daily
-  run that day. Watch the `work-queue-age` and `dispatcher-heartbeat` alarms.
+  before, but a topic resumed after today's daily turn starts today's run at the next tick if today
+  is not already claimed (a run the dispatcher started before the pause, or the move that recorded
+  today as done, leaves nothing to start); and a backup restored over a queue topic keeps the
+  snapshot's `last_daily_dispatched_on`, which can start a second daily run that day. Watch the
+  `work-queue-age` and `dispatcher-heartbeat` alarms.
 - **The way back** writes the topic's two schedules again from its row, in its stagger slot. Nothing
   else changes, and it can move to the queue again later (the pre-flight runs again).
 
@@ -554,9 +558,10 @@ each environment's releases, newest first, and the one in place.
 
 **Rolling a prompt back**, fastest first:
 
-1. **Stop serving it**, with no publish: `prompts pause <prompt_id> <version>` (the prompt's other
-   files, or the code's copy, are served instead) or `prompts set --assets off` (every prompt's code
-   copy). In force within ten minutes; `prompts resume` and `prompts set --assets on` undo them.
+1. **Stop serving it**, with no publish: `prompts pause <prompt_id> <version>` (a run that draws
+   that version gets the code's copy; runs that draw the prompt's other files keep them) or `prompts
+   set --assets off` (every prompt's code copy). In force within ten minutes; `prompts resume` and
+   `prompts set --assets on` undo them.
 2. **Pin an earlier release:** take its id from `prompts releases`, then
    ```bash
    gh workflow run prompts.yml --ref dev -f environment=production -f release_id=<release id>
@@ -613,11 +618,14 @@ One step each, as the CLI spells it (`python scripts/admin_cli.py ...`).
 - CloudWatch dashboards: the first three in an account are free, then about US$3 a month each.
   Each environment has two: pipeline health (`<prefix>-<env>-pipeline-health`) always, and
   `<prefix>-<env>-ranch-and-prompts` while evals are on. With evals on in both environments of one
-  account that is four, so one is paid; two accounts pay for none. Whether CloudWatch counts each of
-  pipeline health's per-Lambda searches as one metric, or as one per line it draws, has not been
-  checked against a bill yet: if the second, pipeline health is over the free tier's 50 metrics, and
-  one account with both environments pays for a second dashboard. Cost Explorer's CloudWatch usage
-  says which: `DashboardsUsageHour-Basic` is the free kind, `DashboardsUsageHour` the paid.
+  account that is four, so one is paid; two accounts have at most two each, inside the free three.
+  Whether CloudWatch counts each of pipeline health's per-Lambda searches as one metric, or as one
+  per line it draws, has not been checked against a bill yet. If it counts per line, pipeline
+  health is over the free tier's 50 metrics and is paid wherever it is: one account with both
+  environments pays for a second dashboard, and two accounts pay for one each (about US$6 a month
+  either way). Until it is checked, plan on that figure ([dashboards](observability.md#dashboards)).
+  Cost Explorer's CloudWatch usage says which: `DashboardsUsageHour-Basic` is the free kind,
+  `DashboardsUsageHour` the paid.
 - The queue platform, prompts and evals: the dispatcher's 43,000 or so runs a month are inside
   Lambda's free tier; the work queue's messages, the prompts bucket and table, the evals table and
   the hourly rollup's Logs Insights queries cost cents. The judge and offline scoring runs are

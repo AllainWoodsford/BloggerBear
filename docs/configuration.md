@@ -58,7 +58,7 @@ be on the `production` environment or on the repository.
 | `RUFF_AUTOFIX_TOKEN` | secret | repo | A fine-grained token with contents:write on this repository only, so the `ruff-autofix` workflow can push safe lint fixes to a pull request's branch. Optional: without it the workflow only reports the fixes. Not set by the setup script. | not shown |
 | `EVALS_ENABLED` | variable | repo or `production` | Set to `true` to run continuous evals ([the switch](#continuous-evals-and-the-model-ranch)): the scored events the pipeline writes, the hourly rollup into the evals table, the gates the rotation guard reads, the judge, the weekly cull proposal and offline scoring runs. Read as a switch, like `VISION_ENABLED`: only `true`, in any letter case, turns it on; unset or anything else is off, which is the default. Off, no event is written, and the evals module makes only the evals table, its log group and the Lambdas' rights to them; on, it adds the eval-work queue, the eval-jobs Lambda with its two schedules and its alarms, and the ranch-and-prompts dashboard. Set on the repository, it also turns evals on in production at the next release, because the release job's `vars.EVALS_ENABLED` falls back to the repository's value: set it to `false` on the `production` environment to keep production off until dev has run with it. Set on the `production` environment alone to differ there. | `true` |
 | `WORKER_CONCURRENCY` | variable | repo or `production` | How many research jobs from the work queue may run at once: the `maximum_concurrency` of the research tick's event source mapping on `<prefix>-<env>-work.fifo` ([the queue platform](#the-queue-platform)), the one knob that caps the model calls and source requests in flight for the topics on the queue, however many there are. Topics still on their schedules are not counted against it. Each running job takes one of the account's concurrent Lambda executions. Optional: unset, it is `2`, the smallest value an SQS event source mapping accepts; less fails the plan. Read as `WORKER_CONCURRENCY` on the `production` environment, else the repository's, so each environment can have its own. A change takes effect at the next deploy. | `3` |
-| `PROMPT_AS_ASSET_ENABLED` | variable | repo or `production` | Set to `true` to have the Lambdas read their prompts from the prompts bucket ([prompts as assets](#prompts-as-assets)) instead of the copies in their code, and to let the prompts workflow publish. Read as a switch, like `VISION_ENABLED`: only `true`, in any letter case, turns it on; unset or anything else is off, which is the default and changes no prompt. Each deploy hands its Lambdas the value it sees: dev's the repository's, a release the `production` environment's, else the repository's. Prompts are published only while the repository's value is `true`: a publish job decides whether to run before it enters an environment, so it never sees `production`'s own value. So while dev tries assets, set it to `false` on the `production` environment: production's Lambdas stay on their code copies, though each release still publishes production's prompts to its bucket. On the `production` environment, set it only to `false`; `true` there alone would turn production's Lambdas on with nothing published to their bucket, and every prompt they read from it would fall back to the code's copy and raise the `prompt_fallback` alarm. | `true` |
+| `PROMPT_AS_ASSET_ENABLED` | variable | repo or `production` | Set to `true` to have the Lambdas read their prompts from the prompts bucket ([prompts as assets](#prompts-as-assets)) instead of the copies in their code, and to let the prompts workflow publish. Read as a switch, like `VISION_ENABLED`: only `true`, in any letter case, turns it on; unset or anything else is off, which is the default and changes no prompt. Each deploy hands its Lambdas the value it sees: dev's the repository's, a release the `production` environment's, else the repository's. Prompts are published only while the repository's value is `true`: a publish job decides whether to run before it enters an environment, so it never sees `production`'s own value. So while dev tries assets, set it to `false` on the `production` environment: production's Lambdas stay on their code copies, though each release still publishes production's prompts to its bucket. On the `production` environment, set it only to `false`; `true` there alone would turn production's Lambdas on with nothing published to their bucket, and every prompt they read from it would fall back to the code's copy and raise the `<prefix>-<env>-prompt-fallback` alarm. | `true` |
 | `AWS_DEV_PROMPTS_ROLE_ARN` | secret | repo | Bootstrap's `dev_prompts_role_arn` output: the role the prompts workflow's dev publish signs in as, `gha-<prefix>-dev-prompts`, which may write dev's prompts bucket and prompt-hashes table and nothing else. The dev deploy also hands it to Terraform, whose bucket policy then refuses every write to the bucket by anyone else. A bootstrap applied before the role existed needs applying again, with the same arguments, to make it. Optional until prompts as assets are on: unset, Terraform is handed an empty string and gives the bucket no such policy, and the dev publish cannot sign in. A secret, like the deploy role's ARN: it carries the account ID. | `arn:aws:iam::111111111111:role/gha-<prefix>-dev-prompts` |
 | `AWS_PROD_PROMPTS_ROLE_ARN` | secret | repo | Bootstrap's `prod_prompts_role_arn` output: the same, for production, `gha-<prefix>-prod-prompts`, read by the production publish and by the release deploy. At repository level, not on `production`: production's prompts are published under both `production-prompts` and `production`, and an environment's secret reaches only its own jobs. The role itself trusts runs in those two environments and no others. | `arn:aws:iam::123456789012:role/gha-<prefix>-prod-prompts` |
 
@@ -116,12 +116,13 @@ Its outputs feed the other tables: `dev_deploy_role_arn`, `prod_deploy_role_arn`
 `hosted_zone_name_servers`.
 
 None of these variables is about the queue platform, prompts or evals, but two things the bootstrap
-makes are. The two prompts publisher roles, `gha-<prefix>-dev-prompts` and `gha-<prefix>-prod-prompts`
-(the `AWS_*_PROMPTS_ROLE_ARN` secrets above), and the deploy roles' right to the evals log group,
-`<prefix>-<env>-evals`, whose name is outside the `/aws/lambda/`, `/aws/apigateway/` and
-`aws-waf-logs-` names they could already create. Every deploy creates that log group, evals on or off, so **a bootstrap applied
-before the evals work must be applied again, with the same variables, before the first deploy that
-carries it**, or that apply stops on `logs:CreateLogGroup`.
+does are. It makes the two prompts publisher roles, `gha-<prefix>-dev-prompts` and
+`gha-<prefix>-prod-prompts` (the `AWS_*_PROMPTS_ROLE_ARN` secrets above). And it lets the deploy
+roles create the evals log group, `<prefix>-<env>-evals`, whose name is outside the `/aws/lambda/`,
+`/aws/apigateway/` and `aws-waf-logs-` names they could already create. Every deploy creates that
+log group, evals on or off, so **a bootstrap applied before the evals work must be applied again,
+with the same variables, before the first deploy that carries it**, or that apply stops on
+`logs:CreateLogGroup`.
 
 ## Environment Terraform variables
 
@@ -785,9 +786,10 @@ today. Its next run is tomorrow's.
   and `--pipeline daily_cycle` starts an execution named `<slug>-<local date>-manual-<HHMMSS>`.
 - `topics reschedule` writes it no schedules; with `--dispatch-mode schedule` it first moves every
   queue topic back.
-- A queue topic resumed after today's daily turn starts today's run, where the Scheduler would not,
-  and a backup restore keeps a queue topic's `last_daily_dispatched_on` from the snapshot, which can
-  start a second daily run that day.
+- A queue topic resumed after today's daily turn starts today's run at the next tick if today is
+  not already claimed (the dispatcher had not started it before the pause, and the move did not
+  record today as done), where the Scheduler would not, and a backup restore keeps a queue topic's
+  `last_daily_dispatched_on` from the snapshot, which can start a second daily run that day.
 
 Its alarms ([observability.md](observability.md)): `<prefix>-<env>-work-queue-age` (a job has waited
 more than 15 minutes), `-work-dlq-messages` and `-work-dlq-received` (a job failed three times;
@@ -812,7 +814,7 @@ prompts are code-only and never read from S3: `ops_agent/system`, `reviews/compl
 | `PROMPT_AS_ASSET_ENABLED` | [GitHub variable](#github-secrets-and-variables) | off | Every Lambda reads assets. Needs a deploy. Off, nothing of the bucket is read for serving and no fallback is reported. Also the gate of both publish jobs, read at repository level only |
 | `AWS_DEV_PROMPTS_ROLE_ARN`, `AWS_PROD_PROMPTS_ROLE_ARN` | GitHub secrets, repository level | unset | The publisher roles. Each is also the one principal its bucket lets write |
 | `prompt_assets` | `prompts` row | `on` | The kill switch, with no deploy: `off` serves every prompt's vanilla (`prompts set --assets off`) |
-| `paused_versions` | `prompts` row | none | Versions taken out of service, `<prompt_id>@<version>` (`prompts pause <prompt_id> <version>`): the prompt's other files, or its vanilla, are served instead |
+| `paused_versions` | `prompts` row | none | Versions taken out of service, `<prompt_id>@<version>` (`prompts pause <prompt_id> <version>`): a run that draws a paused version gets the vanilla (`paused`); runs that draw the prompt's other files keep them |
 | `production-prompts` | GitHub environment | none | Where production's prompts are published between releases, after your approval. Required reviewer: you; deployment branch: `dev`. It needs no secret or variable of its own: everything the publish reads is at repository level |
 
 - **How fast a change lands.** Each Lambda container keeps what it read (the listing, the files,

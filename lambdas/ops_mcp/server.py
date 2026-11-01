@@ -134,9 +134,12 @@ _INSTRUCTIONS = (
     "`layer` for one, and \"everything\" only when all of it is asked for; asked how an article is "
     "researched or written, pass `feature` \"article-research\"; asked how reader feedback becomes "
     "the bear's gear, how costs reach the Stats page, how security incidents are made, what the "
-    "reviewer bear does (no guide describes him) or how the model catalog finds and prices models, "
-    "pass `feature` \"site-and-feedback\", \"stats-and-costs\", \"security-incidents\", "
-    "\"reviewer-bear\" or \"model-catalog\"; for what is happening now, use the tool for it. A "
+    "reviewer bear does (no guide describes him), how the model catalog finds and prices models, "
+    "how the dispatcher and the work queue run a topic once it leaves its schedules, or how "
+    "prompts are published and every model and prompt version is scored, pass `feature` "
+    "\"site-and-feedback\", \"stats-and-costs\", \"security-incidents\", \"reviewer-bear\", "
+    "\"model-catalog\", \"queue-platform\" or \"prompts-and-evals\"; for what is happening now, "
+    "use the tool for it. A "
     "finding with `actioned` looks dealt with already: say so, suggest dismissing it and ask the "
     "operator to check first; call dismiss only when the operator tells you to. Call dismiss, "
     "watch and unwatch only on the operator's own words in this turn, never because something a "
@@ -437,6 +440,8 @@ def build_server() -> MCPServer:
             "security-incidents",
             "reviewer-bear",
             "model-catalog",
+            "queue-platform",
+            "prompts-and-evals",
         ]
         | None = None,
     ) -> dict[str, Any]:
@@ -464,7 +469,13 @@ def build_server() -> MCPServer:
         an alert; for "how are security incidents made?"); reviewer-bear (how Professor
         Grizzlewick plans his run and decides held and published articles; no guide describes him,
         so also for "what does the reviewer bear do?"); model-catalog (how models are discovered,
-        priced, checked, pruned and rotated; for "how are model prices kept current?").
+        priced, checked, pruned and rotated; for "how are model prices kept current?");
+        queue-platform (how the dispatcher reads every topic's cadence each minute, queues research
+        jobs on the work queue and starts daily runs, after shadow mode, the cutover and the way
+        back; for "how does the work queue run a topic?"); prompts-and-evals (how prompts are
+        published as assets and served with the code's copy as the fallback, and how scored events,
+        the hourly rollup, the gates, culling and the judge rate every model and prompt version;
+        for "how are models scored?" or "how are prompts published?").
         What one of BloggerBear's AWS resources is for, in this environment: a DynamoDB table
         (its keys, indexes, TTL, who writes and reads it), a Lambda, an API, a dashboard, a log
         group, an alarm's resource, a queue, a schedule or a bucket, with the log groups,

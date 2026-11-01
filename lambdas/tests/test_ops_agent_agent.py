@@ -879,6 +879,10 @@ def test_the_model_is_told_which_feature_walks_through_each_flow():
         'how costs reach the Stats page ("stats-and-costs")',
         'how what the firewalls block becomes a security incident ("security-incidents")',
         'how the model catalog finds, prices and rotates models ("model-catalog")',
+        'how the dispatcher and the work queue run a topic once it leaves its schedules '
+        '("queue-platform")',
+        "how prompts are published and served and every model and prompt version is scored "
+        '("prompts-and-evals")',
         "No guide describes the reviewer bear, Professor Grizzlewick, so asked what he does or how "
         'he works, call architecture with `feature` "reviewer-bear" instead of cli_guides',
         "For what is happening now (an incident, the spend, a reprice), call the tool for it",

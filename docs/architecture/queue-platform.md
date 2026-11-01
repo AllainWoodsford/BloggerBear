@@ -24,12 +24,14 @@ and the reasons behind it, are in
 [dispatcher-sqs-enhancement.md](../enhancements/archive/dispatcher-sqs-enhancement.md). This page does not
 repeat them.
 
-**In the assistant.** This page has no `feature` entry yet. Ask about its parts by name instead:
-`architecture(name="dispatcher")` (the function, or with `kind="schedule"` its schedule), `"work"`
-and `"work-dlq"` (the queues), `"daily-cycle"` (the state machine) or `"topic-schedules"` (the two
-schedules a topic on them keeps), or about the layer that holds it (`orchestration`). Where evals
-are on, `evals status` shows the work queue's depth and the age of its oldest job, and how many
-topics are in each dispatch mode.
+**In the assistant.** `architecture(feature="queue-platform")` walks through the steps below with
+this environment's resource names on screen. It tells them in ten: the tick and its record (1 and
+12) are one step, and the daily run (7) is told with the step that starts it (4). Ask about a part
+by name for more: `architecture(name="dispatcher")` (the function, or with `kind="schedule"` its
+schedule), `"work"` and `"work-dlq"` (the queues), `"daily-cycle"` (the state machine) or
+`"topic-schedules"` (the two schedules a topic on them keeps), or about the layer that holds it
+(`orchestration`). Where evals are on, `evals status` shows the work queue's depth and the age of
+its oldest job, and how many topics are in each dispatch mode.
 
 Resource names below use `<prefix>` (your `unique_name_prefix`) and `<env>` (`dev` or
 `production`). Both environments build it from one module,
@@ -303,8 +305,9 @@ bulk: each topic has its own pre-flight and its own confirmation.
 2. **The confirmation.** Without `confirm: true` the API answers 409 `confirm_required`, naming the
    two schedules it will delete. The CLI asks first, unless `--yes`.
 3. **The schedules are deleted,** before the row says queue, so a failure in between leaves the
-   topic running nowhere, and says so, but never on both paths at once (two articles in a day). A
-   delete that fails answers 502 and the topic stays on its schedules.
+   topic running nowhere, but never on both paths at once (two articles in a day). A delete that
+   fails answers 502 and the row still says schedule; one of the two may be gone already, and the
+   same update run again (or `topics reschedule`, which writes both back) puts that right.
 4. **The row** is written with `dispatch_mode: queue` and, when today's turn has passed, today's
    daily claim ([cutover day](#cutover-day)). The schedules are then deleted once more as the row
    is applied, and none are found.
@@ -313,6 +316,15 @@ From the next minute the dispatcher runs the topic. A topic on the queue keeps i
 its slot, and its row keeps recording the expressions the dispatcher reads (`research_schedule`,
 `daily_schedule`). An update to a topic on the queue is checked against the matcher, with the
 same 400 as the pre-flight's cadence reason.
+
+**A 500 from the move.** If anything fails after the row is written (that second delete, or
+recording `research_schedule` and `daily_schedule`), the API answers a bare 500 `internal server
+error`, but the move has already happened: the row says queue, the schedules are gone, and the
+dispatcher runs the topic from the next minute. Run `topics schedule` before anything else. If it
+shows the topic on the queue, nothing more is needed; running the same update again is harmless,
+since it is no longer a move, so it is neither checked nor confirmed, and it answers 200. A failure
+on the row write itself is the same bare 500 with the row still on schedule and its schedules gone:
+`topics update <id> --dispatch-mode schedule` writes them back.
 
 The API also takes `dispatch_mode: queue` when a topic is created (the CLI has no flag for it).
 The same checks apply, bar the shadow record, which a new topic cannot have, and the topic is
