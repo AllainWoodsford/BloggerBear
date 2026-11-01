@@ -538,7 +538,7 @@ def test_list_findings_pages_until_it_has_kept_enough_and_says_whether_more_rema
 
 
 def test_list_findings_bounds_the_window_at_its_end_too_when_asked(findings_table):
-    """Re-Write's read of an article's window (common/rewrite._findings_for): captured at or after
+    """Re-Write's read of an article's window (common/rewrite.findings_for): captured at or after
     `since` and at or before `until`, both ends kept, so nothing captured after the window's end
     takes a place in the read. `until` alone reads up to it; without it, the read is as it was."""
 

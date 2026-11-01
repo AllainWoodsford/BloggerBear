@@ -774,8 +774,10 @@ locals {
     # prompt templates are published to and the table of their approved hashes (module.prompts
     # above), and whether the code reads them at all ("false" keeps every prompt as the copy in the
     # code). The switch is var.prompt_as_asset_enabled, from the PROMPT_AS_ASSET_ENABLED GitHub
-    # variable, off by default: the bucket and the table exist, empty, and nothing reads them until
-    # someone sets it.
+    # variable, off by default: the bucket and the table exist, empty, and no prompt is served from
+    # them until someone sets it. The admin API's prompts listings and the offline scoring runs
+    # (common/eval_score.py) read them whatever it says, so a version can be scored before assets are
+    # served.
     PROMPTS_BUCKET          = module.prompts.bucket_name
     PROMPT_HASHES_TABLE     = module.prompts.hash_table_name
     PROMPT_AS_ASSET_ENABLED = var.prompt_as_asset_enabled ? "true" : "false"
@@ -1214,6 +1216,14 @@ module "admin_api" {
     "POST /evals/rollup",
     "GET /evals/status",
     "GET /evals/digest",
+    # Offline scoring runs: start one (or only price it), list them, one run's progress and results,
+    # cancel one, and send a scoring run's unscored items again. See admin_api_handler.py's evals runs
+    # routes and `admin_cli evals score|runs`.
+    "POST /evals/runs",
+    "GET /evals/runs",
+    "GET /evals/runs/{run_id}",
+    "DELETE /evals/runs/{run_id}",
+    "POST /evals/runs/{run_id}/resume",
     "GET /reviewer-config",
     "PUT /reviewer-config",
     # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): each registered

@@ -394,8 +394,10 @@ CATALOGUE: tuple[Component, ...] = (
             ),
             (
                 "Written by",
-                "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), and "
-                "its judge (runs, pairs, spend)",
+                "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), its "
+                "judge (runs, pairs, spend) and its offline scoring jobs (run items, the live drafts they "
+                "compare with, spend); the admin API's offline runs (`evals score`, `evals runs cancel|"
+                "resume`: run headers)",
             ),
             ("Expires", "never: no TTL"),
         ),
@@ -514,7 +516,8 @@ CATALOGUE: tuple[Component, ...] = (
             ("Written by", "the prompts publisher alone (its own role); every Lambda may only read a row"),
             (
                 "Read by",
-                "every Lambda that renders a prompt (common/prompts.py), the Admin API's prompts list",
+                "every Lambda that renders a prompt (common/prompts.py), the Admin API's prompts list; "
+                "the Admin API's `evals score` (whether a version was published, live or retired)",
             ),
             ("No TTL", "a retired row is the record of what was once approved"),
             ("Backups", "not in the snapshots: publishing writes it again from the repository's prompts/"),
@@ -597,7 +600,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "Sends",
                 f"for a topic on the queue, topics trigger sends a research job to {PREFIX}{ENV}-work.fifo "
                 f"or starts {PREFIX}{ENV}-daily-cycle with an execution named "
-                "<topic>-<date>-manual-<HHMMSS>",
+                "<topic>-<date>-manual-<HHMMSS>; `evals score` and `evals runs resume` send score jobs, "
+                f"one per item and combination, to {PREFIX}{ENV}-eval-work (only while evals are on)",
             ),
         ),
         dashboards=(_EDGE_DASHBOARD,),
@@ -663,8 +667,8 @@ CATALOGUE: tuple[Component, ...] = (
         "eval-jobs",
         "Continuous evals' jobs: the hourly rollup of the evals log group into the evals table, the "
         "judge's selector, and the judge and offline scoring jobs from the eval-work queue. The judge "
-        "reviews recent Findings and articles with a model that wrote none of them; offline scoring "
-        "jobs are dropped until offline runs land.",
+        "reviews recent Findings and articles with a model that wrote none of them; an offline scoring "
+        "job redrafts a past article with a candidate model and prompt, judged against the live draft.",
         "hourly at five past (the rollup) and hourly (the judge's selector), EventBridge Scheduler; "
         f"on each job on {PREFIX}{ENV}-eval-work, two at most at once",
         details=(("Exists", "only while evals are switched on (evals_enabled)"),),
@@ -1096,8 +1100,10 @@ CATALOGUE: tuple[Component, ...] = (
             ("Written by", "the prompts publisher alone: the bucket policy refuses every other writer"),
             (
                 "Read by",
-                "the Lambdas, only while PROMPT_AS_ASSET_ENABLED is on (common/prompts.py); the "
-                "Admin API's prompts list and prompts releases",
+                "the Lambdas, to serve prompts, only while PROMPT_AS_ASSET_ENABLED is on "
+                "(common/prompts.py); the Admin API's prompts list and prompts releases; offline scoring "
+                "whether or not it is on: the Admin API's `evals score` (a prompt's versions/ listing) and "
+                "eval-jobs' scoring jobs (the run's versions/<sha256>.txt)",
             ),
             ("Old versions", "kept 90 days after a file is replaced"),
         ),

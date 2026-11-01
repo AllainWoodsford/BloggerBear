@@ -44,6 +44,7 @@ from common import (
     backup,
     dispatch,
     equipment,
+    eval_score,
     evals_rollup,
     evals_settings,
     evals_status,
@@ -3201,6 +3202,64 @@ def _evals_digest_route(event: dict) -> dict:
     return _response(200, result)
 
 
+# --- Offline scoring runs (common/eval_score.py, docs/enhancements/model-ranch-prompt-assets-evals.md,
+# PR18b) ----------------------------------------------------------------------------------------------
+#
+# Starting one (with `dry_run`, only its plan: what `admin_cli evals score` shows before it asks), the
+# runs and one run's progress and results, cancelling a run and sending a scoring run's unscored
+# messages again. Each answer is eval_score's; a refusal comes back with its status and figures.
+
+_RUNS_LIMIT_DEFAULT, _RUNS_LIMIT_MAX = 20, 100
+
+
+def _evals_run_answer(action) -> dict:
+    """The route's answer: `action()`'s (status, payload), or the refusal's status, message and figures."""
+    try:
+        status, payload = action()
+    except eval_score.Refused as refused:
+        return _response(refused.status, {"error": refused.message, **refused.extra})
+    return _response(status, payload)
+
+
+def _start_evals_run_route(event: dict) -> dict:
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    return _evals_run_answer(lambda: eval_score.start(body))
+
+
+def _list_evals_runs_route(event: dict) -> dict:
+    raw = _query_param(event, "limit")
+    try:
+        limit = _RUNS_LIMIT_DEFAULT if raw is None else int(raw)
+    except ValueError:
+        limit = 0
+    if not 1 <= limit <= _RUNS_LIMIT_MAX:
+        return _error(400, f"'limit' must be a whole number from 1 to {_RUNS_LIMIT_MAX}")
+    return _response(200, eval_score.list_runs(limit))
+
+
+def _get_evals_run_route(event: dict) -> dict:
+    run_id = _path_param(event, "run_id")
+
+    def view():
+        found = eval_score.run_view(run_id)
+        if found is None:
+            raise eval_score.Refused(404, f"no run {run_id}")
+        return 200, found
+
+    return _evals_run_answer(view)
+
+
+def _cancel_evals_run_route(event: dict) -> dict:
+    return _evals_run_answer(lambda: (200, eval_score.cancel(_path_param(event, "run_id"))))
+
+
+def _resume_evals_run_route(event: dict) -> dict:
+    return _evals_run_answer(lambda: (202, eval_score.resume(_path_param(event, "run_id"))))
+
+
 # --- Professor Grizzlewick's settings (common/reviewer.py, docs/enhancements/archive/reviewer-bear.md) -----
 #
 # The `reviewer` row of the ModelConfig table, read at the start of each of his runs: his tasks'
@@ -3968,6 +4027,11 @@ _ROUTES = {
     "POST /evals/rollup": _start_evals_rollup_route,
     "GET /evals/status": _evals_status_route,
     "GET /evals/digest": _evals_digest_route,
+    "POST /evals/runs": _start_evals_run_route,
+    "GET /evals/runs": _list_evals_runs_route,
+    "GET /evals/runs/{run_id}": _get_evals_run_route,
+    "DELETE /evals/runs/{run_id}": _cancel_evals_run_route,
+    "POST /evals/runs/{run_id}/resume": _resume_evals_run_route,
     "GET /reviewer-config": _get_reviewer_config_route,
     "PUT /reviewer-config": _put_reviewer_config_route,
     "GET /prompts": _list_prompts_route,

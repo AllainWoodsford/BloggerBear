@@ -538,6 +538,85 @@ def get_prompt(prompt_id: str, values: dict | None = None, locked: dict | None =
     return _fallback(spec, values, locked, code, version)
 
 
+# --- offline scoring (common/eval_score.py) ---------------------------------------------------------
+#
+# An offline scoring run drafts with a version a person names, live or not served here at all, so it
+# never draws an arm and never writes a prompt_fallback line: the version is checked once, when the run
+# is asked for (published_version), and read by its sha256 from versions/, where the publisher writes
+# each file once and never deletes it (version_prompt). Both only read, and neither asks whether assets
+# are served (PROMPT_AS_ASSET_ENABLED): a version can be scored before they are.
+
+# A file under versions/ is named by the sha256 of its bytes.
+_VERSIONS_FILE = re.compile(r"([0-9a-f]{64})\.txt")
+
+
+def store_named() -> bool:
+    """Whether this deployment names a prompts bucket and a hash table (both roots set them whether or
+    not assets are served, so a version can be scored before the switch is turned on)."""
+    return bool(os.environ.get("PROMPTS_BUCKET")) and bool(os.environ.get("PROMPT_HASHES_TABLE"))
+
+
+def version_key(prompt_id: str, sha256: str) -> str:
+    """Where the publisher keeps a file of `prompt_id` for good: `<prompt_id>/versions/<sha256>.txt`."""
+    return f"{prompt_id}/versions/{sha256}.txt"
+
+
+def published_version(prompt_id: str, version: str) -> str | None:
+    """The sha256 of `version` (`v2`) of `prompt_id` when this deployment published it: a file under
+    versions/ whose hash row names this prompt and this version, `live` or `retired`. The hash table is
+    the record of every version published, and a version names one text for ever
+    (scripts/publish_prompts.py), so a version a later one replaced is found as well as the live one.
+    None for a version no such row names: never published here, or `pending`, which was never approved.
+    Each file's key names its sha256, so this lists the prompt's versions/ and reads their rows, as
+    many as it has versions. Read now, never from the cache; raises when the bucket or the hash table
+    cannot be read (store_named must hold)."""
+    if not _VERSION.fullmatch(version or ""):
+        return None
+    bucket, prefix = os.environ["PROMPTS_BUCKET"], f"{prompt_id}/versions/"
+    for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for item in page.get("Contents", []):
+            named = _VERSIONS_FILE.fullmatch(item["Key"][len(prefix) :])
+            if named is None:
+                continue
+            row = _hash_row(named.group(1)) or {}
+            if (row.get("prompt_id"), row.get("version")) != (prompt_id, version):
+                continue
+            if row.get("status") in ("live", "retired"):
+                return named.group(1)
+    return None
+
+
+def version_prompt(prompt_id: str, version: str, sha256: str, values: dict, locked: dict) -> Prompt | None:
+    """`version` of `prompt_id` rendered from its file under versions/ (`sha256`, recorded when the run
+    was asked for), checked again here: its bytes must hash to `sha256` and pass the spec's template
+    rules. None when it cannot be read or does not pass. A body is kept by its sha256 for the TTL, as
+    get_prompt keeps one: a versions/ file never changes."""
+    spec = spec_for(prompt_id)
+    template = _cache_get(("body", sha256))
+    if template is None:
+        try:
+            raw = _s3().get_object(Bucket=os.environ["PROMPTS_BUCKET"], Key=version_key(prompt_id, sha256))
+            template = raw["Body"].read().decode("utf-8").replace("\r\n", "\n")
+        except Exception as exc:  # noqa: BLE001 - a version that cannot be read is not scored
+            print(f"prompts: {prompt_id}: could not read {version} from versions/: {exc!r}")
+            return None
+        if sha256_text(template) != sha256:
+            print(f"prompts: {prompt_id}: the versions/ file of {version} does not hash to its name")
+            return None
+        _cache_put(("body", sha256), template)
+    code = validate(spec, template)
+    if code is not None:
+        print(f"prompts: {prompt_id}: {version} fails its template rules: {code}")
+        return None
+    return Prompt(render(spec, template, values, locked), prompt_id, version, SOURCE_ASSET, None)
+
+
+def vanilla_render(prompt_id: str, values: dict, locked: dict) -> Prompt:
+    """The code's own template for `prompt_id`, rendered, as `vanilla:<version>` with no fallback code:
+    the vanilla asked for by name, not served in an asset's place."""
+    return _vanilla(spec_for(prompt_id), values, locked, None)
+
+
 # --- what is published (the admin API's listings) -----------------------------------------------------
 
 RELEASES_PREFIX = "releases/"

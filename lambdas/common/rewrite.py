@@ -63,7 +63,6 @@ from common.dynamo import (
     get_topic,
     list_findings,
     list_moderation_by_status,
-    list_recent_findings,
     put_moderation_item,
     update_article_after_rewrite,
     update_article_status,
@@ -282,7 +281,7 @@ def _strip_disclaimer(body: str) -> tuple[str, bool]:
     return compliance.strip_financial_disclaimer(body)
 
 
-def _findings_for(article: dict, topic: dict) -> list[dict]:
+def findings_for(article: dict, topic: dict) -> list[dict]:
     """The findings the article was most likely written from: those captured in the topic's
     findings window before it was created (newest first). That is the reach the daily cycle read
     it from (common/findings_window.py): a day, or more for a topic that writes on some days only,
@@ -293,20 +292,25 @@ def _findings_for(article: dict, topic: dict) -> list[dict]:
     An article written on a rotating topic's day subject (its `subject`, common/day_subject.py)
     was drafted from that subject's Findings only, so only those are kept, at most MAX_FINDINGS of
     them, as the daily cycle caps them: the window is read further first (SUBJECT_READ_LIMIT, as
-    the daily cycle reads it), so other subjects' newer Findings never push the subject's out. The
-    read is bounded at both ends, the window's start and the article's `created_at`, so a rewrite
-    run long after the article spends none of it on Findings captured since; when the window holds
-    more than that read reaches, the log says where it stopped, as the daily cycle's does. The
-    fresh-data review and the compliance review then see its own subject's research, not its
-    neighbours'. If none of the window's Findings report it (the subject has since left the topic's
-    rota, say), the newest MAX_FINDINGS of the whole window are used and the log says so: never an
-    empty prompt."""
+    the daily cycle reads it), so other subjects' newer Findings never push the subject's out. When
+    the window holds more than that read reaches, the log says where it stopped, as the daily
+    cycle's does. The fresh-data review and the compliance review then see its own subject's
+    research, not its neighbours'. If none of the window's Findings report it (the subject has since
+    left the topic's rota, say), the newest MAX_FINDINGS of the whole window are used and the log
+    says so: never an empty prompt.
+
+    Either way the read is bounded at both ends, the window's start and the article's `created_at`,
+    so a read long after the article (a late rewrite, or an offline scoring run rebuilding it,
+    common/eval_score.py) spends none of it on Findings captured since: on a topic that researches
+    hourly, the newest MAX_FINDINGS from the window's start to now would soon be all of them."""
     created_at = article.get("created_at") or datetime.now(UTC).isoformat()
     since = (datetime.fromisoformat(created_at) - timedelta(hours=findings_window_hours(topic))).isoformat()
     subject = article.get(ARTICLE_SUBJECT_FIELD)
     if not isinstance(subject, str) or not subject:
-        findings = list_recent_findings(article["topic_id"], limit=MAX_FINDINGS, since=since)
-        return [f for f in findings if (f.get("captured_at") or "") <= created_at]
+        findings, _, _ = list_findings(
+            article["topic_id"], since=since, until=created_at, limit=MAX_FINDINGS, unexpired_at=None
+        )
+        return findings
     findings, _, more = list_findings(
         article["topic_id"], since=since, until=created_at, limit=SUBJECT_READ_LIMIT, unexpired_at=None
     )
@@ -421,7 +425,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
         stored_body = read_article_body(article["body_s3_key"])
         body, had_disclaimer = _strip_disclaimer(stored_body)
 
-        findings = _findings_for(article, topic)
+        findings = findings_for(article, topic)
         findings_text = "\n".join(f"- {f.get('summary', '')}" for f in findings)
         snapshot = _load_snapshot(findings)
         evidence = _evidence(topic, snapshot)

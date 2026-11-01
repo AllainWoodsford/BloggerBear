@@ -284,9 +284,18 @@ def guidance_for(
     if not pieces:
         return None, []
     used = [{**ref(item), "slot": item.get("slot")} for item, _ in pieces]
-    if len(pieces) == 1:
-        return pieces[0][1], used
-    return "\n".join(f"- {text}" for _, text in pieces), used
+    return joined_guidance([text for _, text in pieces]), used
+
+
+def joined_guidance(texts: list[str]) -> str | None:
+    """Pieces of guidance as the prompts take them: one verbatim, several as a bullet list, None for
+    none. `guidance_for` joins what it draws with this, and an offline scoring run joins the pieces an
+    article records it was written with (daily_cycle_handler.rebuild_draft_prompt), the same way."""
+    if not texts:
+        return None
+    if len(texts) == 1:
+        return texts[0]
+    return "\n".join(f"- {text}" for text in texts)
 
 
 def describe(items: list[dict], decorate=None) -> dict:

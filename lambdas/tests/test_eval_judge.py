@@ -1138,8 +1138,12 @@ def test_a_failed_model_call_leaves_the_item_unjudged_for_a_later_run(aws, capsy
     assert meta(aws)["status"] == "done"
 
 
-def test_a_score_job_is_passed_over_until_offline_runs_exist(aws, model):
-    assert consume(message({}, job="score")) == {"status": "skipped", "job": "score"}
+def test_a_score_job_goes_to_the_offline_scoring_consumer_with_its_body(aws, model):
+    record = message({"n": 0}, job="score")
+    with patch("common.eval_score.consume", return_value={"status": "scored"}) as scored:
+        assert consume(record) == {"status": "scored"}
+    raw = record["body"]
+    scored.assert_called_once_with(raw, json.loads(raw), now=NOW, sqs=scored.call_args.kwargs["sqs"])
     assert model.calls == []
 
 
