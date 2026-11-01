@@ -730,6 +730,18 @@ def test_a_failing_settings_read_in_a_cold_container_fails_closed_to_the_vanilla
     assert [line["code"] for line in parsed if line and line["event"] == "prompt_fallback"] == ["assets_off"]
 
 
+def test_a_cold_container_serves_the_asset_as_soon_as_its_failing_first_read_recovers(aws, monkeypatch):
+    """The cold container's fail-closed answer is not cached: the next call reads the row again, so
+    one failed first read does not keep the assets off for the TTL, nor become the last row read."""
+    publish(aws, ASSET, "v2")
+    real = dynamo.get_config_row
+    monkeypatch.setattr(dynamo, "get_config_row", _throttled)
+    assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "assets_off"
+    monkeypatch.setattr(dynamo, "get_config_row", real)
+    got = prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED)
+    assert (got.source, got.version, got.fallback_code) == ("asset", "v2", None)
+
+
 def test_an_undecodable_file_falls_back_with_decode_error(aws, capsys):
     publish(aws, ASSET, "v2", raw=b"\xff\xfe not utf-8 {{topic}}")
     assert prompts.get_prompt("daily_cycle/draft", VALUES, LOCKED).fallback_code == "decode_error"

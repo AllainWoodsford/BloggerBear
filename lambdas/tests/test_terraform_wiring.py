@@ -8,6 +8,7 @@ they are checked here.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shutil
@@ -1959,8 +1960,10 @@ def _log_group_name(module_dir: str, resource: str, env: str) -> str:
     main = _read("modules", module_dir, "main.tf")
     block = _resource_block(main, "aws_cloudwatch_log_group", resource)
     text = re.search(r'^\s*name\s*=\s*"([^"]+)"', block, re.M).group(1)
+    # From the locals blocks only: work-queue's local is `name`, and so is many a resource's argument.
+    locals_text = "".join(re.findall(r"^locals \{\n(.*?)^\}", main, re.S | re.M))
     for local in re.findall(r"\$\{local\.(\w+)\}", text):
-        value = re.search(rf'^\s*{local}\s*=\s*"([^"]+)"', main, re.M).group(1)
+        value = re.search(rf'^\s*{local}\s*=\s*"([^"]+)"', locals_text, re.M).group(1)
         text = text.replace(f"${{local.{local}}}", value)
     return text.replace("${var.environment_name}", env)
 
@@ -2011,11 +2014,76 @@ def test_the_prompt_fallback_alarm_reads_eval_jobs_whose_scoring_renders_an_asse
     assert f"/aws/lambda/{DEFAULT_PREFIX}-{env}-daily-cycle" in names
 
 
-def test_the_catalogue_names_the_prompt_fallback_alarm_on_eval_jobs_whose_log_feeds_it():
-    from ops_mcp.architecture import CATALOGUE, ENV, PREFIX
+def _lambdas_import_closure(module: str) -> set[str]:
+    """Every lambdas/ module `module` imports, however deep, counting an import inside a function:
+    a lazy import renders a prompt at run time as surely as a top-level one. Read from the source,
+    not by importing, because this process has imported common.prompts for other tests already."""
+    seen: set[str] = set()
+    todo = [module]
+    while todo:
+        name = todo.pop()
+        base = (ROOT / "lambdas").joinpath(*name.split("."))
+        path = next((p for p in (base.with_suffix(".py"), base / "__init__.py") if p.is_file()), None)
+        if name in seen or path is None:
+            continue  # read already, or not a lambdas/ module (the standard library, boto3, a class)
+        seen.add(name)
+        package = name.split(".") if path.name == "__init__.py" else name.split(".")[:-1]
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                todo += [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                # `from .dynamo import x` in common/backup.py is common.dynamo.
+                parts = package[: len(package) - node.level + 1] if node.level else []
+                stem = ".".join([*parts, *([node.module] if node.module else [])])
+                todo += [stem, *(f"{stem}.{alias.name}" for alias in node.names)]
+    return seen
 
-    [eval_jobs] = [component for component in CATALOGUE if component.name == f"{PREFIX}{ENV}-eval-jobs"]
-    assert f"{PREFIX}{ENV}-prompt-fallback" in eval_jobs.alarms
+
+# The modules a root hands the shared Lambda environment whose Lambdas render no prompt, so their
+# log groups need no PromptFallback filter. The test below checks each reason still holds.
+_RENDERS_NO_PROMPT = {
+    "work_queue": "the dispatcher starts runs and sends jobs; dispatcher_handler reaches no common.prompts",
+}
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_module_lambda_given_the_prompt_assets_is_read_by_the_prompt_fallback_alarm_or_renders_none(
+    env,
+):
+    """local.lambda_env_variables carries PROMPT_AS_ASSET_ENABLED, PROMPTS_BUCKET and
+    PROMPT_HASHES_TABLE. A root Lambda's log group is filtered with the rest of
+    aws_cloudwatch_log_group.lambda, but a module Lambda's is its module's own, which is how
+    eval-jobs' fallbacks went uncounted. So each module the root hands that environment either has
+    every function log group among the PromptFallback filters, which it must when its handler
+    reaches common.prompts, or is named in _RENDERS_NO_PROMPT, which it may only while it does not."""
+    root = _uncommented(_read("environments", env, "main.tf"))
+    filtered = _prompt_fallback_log_group_names(env)
+    given = set()
+    for label, call in re.findall(r'^module "(\w+)" \{\n(.*?)^\}', root, re.S | re.M):
+        if "local.lambda_env_variables" not in call:  # under any argument name, merged or not
+            continue
+        given.add(label)
+        module_dir = re.search(r'source\s*=\s*"\.\./\.\./modules/([^"]+)"', call).group(1)
+        main = _read("modules", module_dir, "main.tf")
+        functions = re.findall(r'^resource "aws_lambda_function" "\w+" \{\n(.*?)^\}', main, re.S | re.M)
+        assert functions, f"{env}: module {label} is given the Lambda environment but makes no function"
+        for function in functions:
+            handler = re.search(r'^\s*handler\s*=\s*"(\w+)\.\w+"', function, re.M).group(1)
+            # A module Lambda owns its log group (spec section 6), the one it waits for in depends_on.
+            depends = re.search(r"^\s*depends_on\s*=\s*\[aws_cloudwatch_log_group\.(\w+)", function, re.M)
+            assert depends, f"{env}: {handler} in module {label} does not depend on its own log group"
+            group = _log_group_name(module_dir, depends.group(1), env)
+            if "common.prompts" in _lambdas_import_closure(handler):
+                assert group in filtered, f"{env}: {group} ({handler}) has no prompt_fallback metric filter"
+                assert label not in _RENDERS_NO_PROMPT, f"{env}: {handler} reaches common.prompts now"
+            else:
+                assert label in _RENDERS_NO_PROMPT or group in filtered, (
+                    f"{env}: module {label} is given the prompt assets: filter {group} or say in "
+                    "_RENDERS_NO_PROMPT why its Lambdas render no prompt"
+                )
+    # Both are found, so a pattern that matches nothing cannot pass, and no exemption outlives its module.
+    assert {"work_queue", "evals"} <= given, given
+    assert set(_RENDERS_NO_PROMPT) <= given
 
 
 # --- prompts as assets: the bucket and the hash table (PR4) -------------------------------------------
