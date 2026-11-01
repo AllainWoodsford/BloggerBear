@@ -3846,7 +3846,8 @@ def test_a_held_article_is_sent_for_the_mode_its_route_names(aws_resources, rout
     assert _queue_row()["rewrite_mode"] == route
 
 
-def test_reviewer_bear_sends_an_article_back_for_a_fix_never_a_new_one(aws_resources):
+@pytest.mark.parametrize("mode", [None, "fix", "rewrite"])
+def test_reviewer_bear_sends_an_article_back_for_a_fix_unless_he_asks_for_a_new_one(aws_resources, mode):
     _put_article(status="pending_moderation")
     _put_moderation_item(reasons=["Fabricated claim: x"])
 
@@ -3854,10 +3855,11 @@ def test_reviewer_bear_sends_an_article_back_for_a_fix_never_a_new_one(aws_resou
         patch("admin_api_handler._get_lambda_client", return_value=MagicMock()),
         patch("admin_api_handler.resolve_model", return_value=(REWRITE_MODEL, None)),
     ):
-        status, body = admin_api_handler.reviewer_rewrite("article-1", "Fix the draft: x")
+        args = ("article-1", "Fix the draft: x") + ((mode,) if mode else ())
+        status, body = admin_api_handler.reviewer_rewrite(*args)
 
-    assert status == 202 and body["mode"] == "fix"
-    assert _queue_row()["rewrite_mode"] == "fix"
+    assert status == 202 and body["mode"] == (mode or "fix")
+    assert _queue_row()["rewrite_mode"] == (mode or "fix")
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])

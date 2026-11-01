@@ -1921,11 +1921,13 @@ def reviewer_reject(queue_id: str) -> tuple[int, dict]:
     return _call(_reject_moderation_item, {"queue_id": queue_id})
 
 
-def reviewer_rewrite(article_id: str, instructions: str) -> tuple[int, dict]:
-    """A fix steered by his notes (common/rewrite.py's Fix: he sends an article back to have its
-    mistakes corrected, never for a new one), with the topic's own model (resolve_model): a
-    published article stays up until the fix is ready, a held one is fixed where it waits."""
-    return _call(_fix_article, {"article_id": article_id}, {"instructions": instructions})
+def reviewer_rewrite(article_id: str, instructions: str, mode: str = FIX_MODE) -> tuple[int, dict]:
+    """A Fix (by default) or Re-Write (`mode`, common/rewrite.py) steered by his notes, with the
+    topic's own model (resolve_model): a published article stays up until the new text is ready, a
+    held one is sent back where it waits. Which one is his call (common/reviewer.py's
+    send_back_mode): he favours a Fix."""
+    route = _rewrite_article if mode == REWRITE_MODE else _fix_article
+    return _call(route, {"article_id": article_id}, {"instructions": instructions})
 
 
 def reviewer_regenerate_musings(article_id: str) -> tuple[int, dict]:

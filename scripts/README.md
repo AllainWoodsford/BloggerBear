@@ -496,8 +496,9 @@ Two things need a person, and both are covered:
    - `reviewer set --may-approve off` (or, for one topic,
      `topics update <topic_id> --reviewer-may-approve off`) stops only his approvals. A topic set
      to `--reviewer-may-approve on` still lets him approve. He still sends a held article with a
-     real problem, or a fault in the draft, for a rewrite, and rejects it once it has had three
-     rewrites (`max_rewrites`). To make every decision yourself, also run
+     real problem, or a fault in the draft, back, and rejects it once it has had three rewrites
+     (`max_rewrites`). He favours a Fix: each send-back is one, except that his last before the
+     limit is a Re-Write when the attempt before it was a Fix that did not settle the article. To make every decision yourself, also run
      `reviewer set --review-held off`. That switch covers the whole project; there is none per
      topic.
    - Topics with `force_manual_review` (every vision topic) always wait for you.

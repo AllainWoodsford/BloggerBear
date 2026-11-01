@@ -2469,7 +2469,11 @@ def build_parser() -> argparse.ArgumentParser:
         ("stale-after-hours", "Hours a held article waits before he reviews it, 1-720 (default 48)"),
         ("published-per-run", "Published articles he reviews a run, 1-25 (default 5)"),
         ("published-lookback", "How many newest published he looks through, 1-200 (default 25)"),
-        ("max-rewrites", "Rewrites before he rejects a held article, 1-10 (default 3)"),
+        (
+            "max-rewrites",
+            "Send-backs before he rejects a held article, 1-10 (default 3): fixes, the last a "
+            "Re-Write when a fix came before it",
+        ),
         ("content-days", "Days of content findings he fixes, 1-30 (default 7)"),
         ("tasks-per-tick", "Tasks he does a tick, 1-5 (default 2)"),
         ("tick-minutes", "Minutes between his ticks, 1-60 (default 5)"),
