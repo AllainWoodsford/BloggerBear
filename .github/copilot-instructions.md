@@ -33,7 +33,7 @@ Read `/docs/project-plan.md` before making non-trivial changes. Check
 - Terraform: `terraform fmt -check`, `terraform validate`, `terraform plan`
 - Python: `ruff check --fix lambdas/ scripts/` with the ruff version pinned in
   `lambdas/requirements-dev.txt` (never `--unsafe-fixes`; don't run `ruff format` repo-wide), then
-  `pytest`
+  `pytest lambdas/ scripts/ -n auto --dist loadfile` (the whole suite in parallel, as CI runs it)
 - Security: `trivy config infra/`, `checkov --config-file .checkov.yaml`, `trivy fs --scanners vuln,secret .`,
   `bandit -r lambdas/ scripts/ --severity-level high --confidence-level high`
 

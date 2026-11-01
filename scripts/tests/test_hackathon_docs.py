@@ -663,7 +663,7 @@ def test_tier_1a_parsing_reads_cis_three_installs_and_its_two_checks():
         ["pip", "install", "-r", "scripts/requirements.txt"],
     ]
     assert ci["ruff"] == [["ruff", "check", "lambdas/", "scripts/"]]
-    assert ci["pytest"] == [["pytest", "lambdas/", "scripts/"]]
+    assert ci["pytest"] == [["pytest", "lambdas/", "scripts/", "-n", "auto", "--dist", "loadfile"]]
 
 
 # --- the package's review fixes ------------------------------------------------------------------

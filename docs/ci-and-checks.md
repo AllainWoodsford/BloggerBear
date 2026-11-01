@@ -27,7 +27,7 @@ Every setting a workflow reads (secrets, variables, switches) is in
 |---|---|---|---|
 | `pr-checks.yml` | Every pull request. | `validate`: `terraform init` (no backend), `fmt -check` and `validate` in each `infra/environments/*`, then `terraform test` in `infra/bootstrap` and in each module that has tests. `secret-scan`: Trufflehog over the pull request's commits. `gitleaks`: Gitleaks over the pull request's commits, with `.gitleaks.toml`. `pii-denylist`: `scripts/pii_denylist_check.py` over what the pull request adds. | Nothing. No AWS credentials. |
 | `security.yml` | Every pull request. Also called by `terraform.yml` and `terraform-production-release.yml` before they apply. | `security`: Trivy over `infra/` (fails on HIGH and CRITICAL), Trivy over the whole repository for vulnerable dependencies and secrets (reports MEDIUM and up, fails on HIGH and CRITICAL), Bandit over `lambdas/` and `scripts/`. `checkov`: Checkov over the Terraform, as `.checkov.yaml` says. | Nothing. |
-| `python-ci.yml` | Pull requests that touch `lambdas/**`, `scripts/**`, `pyproject.toml`, `.claude/skills/**`, `docs/hackathon/**` or the workflow itself. Pushes to `prod` that touch `lambdas/**`, `scripts/**`, `pyproject.toml`, `.claude/skills/**` or the workflow. Also called by `terraform.yml` and `terraform-production-release.yml`. | `lint-test`: installs the requirements on Python 3.11, prints `pip freeze --all`, runs `ruff check lambdas/ scripts/`, then `pytest lambdas/ scripts/`. | Nothing. A Ruff failure puts the diff `ruff check --fix` would make in the job summary. |
+| `python-ci.yml` | Pull requests that touch `lambdas/**`, `scripts/**`, `pyproject.toml`, `.claude/skills/**`, `docs/hackathon/**` or the workflow itself. Pushes to `prod` that touch `lambdas/**`, `scripts/**`, `pyproject.toml`, `.claude/skills/**` or the workflow. Also called by `terraform.yml` and `terraform-production-release.yml`. | `lint-test`: installs the requirements on Python 3.11, prints `pip freeze --all`, runs `ruff check lambdas/ scripts/`, then `pytest lambdas/ scripts/ -n auto --dist loadfile` (every test, spread across the runner's CPUs). | Nothing. A Ruff failure puts the diff `ruff check --fix` would make in the job summary. |
 | `ruff-autofix.yml` | Pull requests opened, pushed to or reopened that touch `lambdas/**`, `scripts/**` or `pyproject.toml`. | `autofix`: Ruff's safe fixes, then `ruff check` again. [More below](#ruff-autofix). | With the `RUFF_AUTOFIX_TOKEN` secret: pushes a commit to the pull request's branch. Without it: nothing (the diff goes in the job summary). |
 | `terraform.yml` | Pushes to `dev` that touch `infra/**`, `lambdas/**`, `frontend/**`, `scripts/minify_frontend.py`, `scripts/requirements.txt`, or `terraform.yml`, `security.yml` or `python-ci.yml`. Also by hand (Actions tab, the `dev` branch), with an optional `debug_permissions` switch. | `security` (calls `security.yml`), `lint-test` (calls `python-ci.yml`), then `apply-dev`. | Applies `infra/environments/dev`. Deploys the dev admin API's stage once more. With `debug_permissions`, writes the AWS calls the deploy role made to the job summary. |
 | `terraform-production-release.yml` | A GitHub Release is published. | `security` and `lint-test` on the release tag, then `apply`. | Applies `infra/environments/production`. Deploys the production admin API's stage once more. |
@@ -290,8 +290,19 @@ pip install -r lambdas/requirements-dev.txt
 pip install -r scripts/requirements.txt
 
 ruff check --fix lambdas/ scripts/   # CI runs `ruff check lambdas/ scripts/`; --fix applies the safe fixes
-pytest lambdas/ scripts/
+pytest lambdas/ scripts/ -n auto --dist loadfile   # CI's command: every test, one worker per CPU
 ```
+
+- **The whole suite runs in parallel** (`pytest-xdist`, pinned in `lambdas/requirements-dev.txt`):
+  `-n auto` starts one worker per CPU, and `--dist loadfile` keeps each test file on one worker, so
+  module-level state and fixtures behave as in a serial run. On CI's 4-CPU runner that takes about
+  a third of the serial time. Plain `pytest lambdas/ scripts/` still works and runs serially.
+- **While you work, run the tests for what you touched**, e.g.
+  `pytest lambdas/tests/test_rewrite.py lambdas/tests/test_compliance.py`; one file runs in a single
+  process, no `-n` needed. Run the whole suite once, in parallel, before you push. It is not
+  narrowed to "the tests your change touches" on purpose: most code shares `lambdas/common/`, so
+  that would still be about half the suite for a typical change, and a third of the test files
+  read docs, Terraform or other source by path, which no import graph can see.
 
 - Never pass `--unsafe-fixes`. Fix what is left after `--fix` by hand.
 - Do not run `ruff format` across the repository: the tree has never been formatted, and it would
