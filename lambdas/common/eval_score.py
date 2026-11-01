@@ -39,10 +39,11 @@ combination goes to eval-work (section 4.7), combination by combination, so two 
 seldom run at once.
 
 **The consumer** (`consume`, one message): reads the run's header first (a cancelled run's message is
-dropped; one that is not the run's own combination or item is refused), holds the day's cap, checked
-against the most the message can cost, a retried draft included (at the cap the run is paused and the
-message sent back to wait 900 s: eval_judge._pause; two messages scored at once, as eval-work's mapping
-runs two, can pass the check together, so a day can end one message over its cap), claims the item's row
+dropped; one that is not the run's own combination or item is refused), holds the most the message can
+cost, a retried draft included, on the day's spend row (eval_judge.reserve: one conditional write, so
+two messages scored at once, as eval-work's mapping runs two, can never both take the last of the cap;
+the hold is given back once the calls' costs are counted, eval_judge.release; when it does not fit, the
+run is paused and the message sent back to wait 900 s: eval_judge._pause), claims the item's row
 (a copy of the message that comes while it is claimed is dropped, and one that comes after it has its
 result counts it once), rebuilds the item's draft prompt, drafts the live version once per item
 (`live#<n>`, kept on the run, so every combination of the item is compared with the same draft), renders
@@ -1000,23 +1001,29 @@ def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, 
     )
     if table.get_item(Key=eval_judge._run_key(run_id, f"{LIVE}{n}"), ConsistentRead=True).get("Item") is None:
         estimate += eval_judge.call_cost_aud(live_model, draft_in, draft_out)
-    if estimate > eval_judge.remaining_aud(table, now, settings):
+    # Held on the day's spend row before the claim (eval_judge.reserve), so two messages scored at once
+    # can never both take the last of the cap; given back once the calls' costs are counted.
+    held = eval_judge.reserve(table, now, settings, estimate)
+    if held is None:
         return eval_judge._pause(table, run_id, m, raw, sqs, now)
-    row = {**key, "n": n, "combo": combo["code"], **_spent_before(existing)}
-    if not _claim(table, row, now):
-        return {"status": "dropped", "reason": "being_scored"}
-    eval_judge._set_status(table, run_id, eval_judge.RUNNING, (eval_judge.QUEUED, eval_judge.PAUSED))
-    scored_row = {**row, "prompt_id": prompt_id, "prompt_version": label}
-    scoring = _Scoring(table, run_id, m, scored_row, settings, now)
     try:
-        return _scored(scoring, meta, item, combo, live_model)
-    except Exception as exc:  # noqa: BLE001 - recorded as the message's outcome, so the run still closes
-        print(f"eval_score: item {n} of run {run_id} failed: {exc!r}")
+        row = {**key, "n": n, "combo": combo["code"], **_spent_before(existing)}
+        if not _claim(table, row, now):
+            return {"status": "dropped", "reason": "being_scored"}
+        eval_judge._set_status(table, run_id, eval_judge.RUNNING, (eval_judge.QUEUED, eval_judge.PAUSED))
+        scored_row = {**row, "prompt_id": prompt_id, "prompt_version": label}
+        scoring = _Scoring(table, run_id, m, scored_row, settings, now)
         try:
-            return scoring.failed()
-        except Exception as again:  # noqa: BLE001 - an unwritten outcome leaves a claim that goes stale
-            print(f"eval_score: could not record that item {n} of run {run_id} failed: {again!r}")
-            return {"status": ERROR}
+            return _scored(scoring, meta, item, combo, live_model)
+        except Exception as exc:  # noqa: BLE001 - recorded as the message's outcome, so the run closes
+            print(f"eval_score: item {n} of run {run_id} failed: {exc!r}")
+            try:
+                return scoring.failed()
+            except Exception as again:  # noqa: BLE001 - an unwritten outcome leaves a claim that goes stale
+                print(f"eval_score: could not record that item {n} of run {run_id} failed: {again!r}")
+                return {"status": ERROR}
+    finally:
+        eval_judge.release(table, now, settings, held)
 
 
 class _Scoring:

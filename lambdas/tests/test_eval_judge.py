@@ -15,13 +15,18 @@ unjudged, unexpired Findings of two days and articles of a week in turn (a rejec
 as an approved one, so a person's verdict never decides whether the judge can reach it), starts each
 run's turn of
 topics after the last run's, and sends no more than the day's cap pays for; at the cap the consumer
-pauses the run and sends its item back with a delay, or counts it finished when it cannot; a
-cancelled run's item is dropped; a retried message counts once; a run that marks more than 80% of at
-least 10 judged items bad turns the judge off, once; the two rubrics are code-only specs pinned at v1.
+pauses the run and sends its item back with a delay, or counts it finished when it cannot, and two
+items judged at once never both take the last of the cap (a hold on the day's row, given back once
+the call's cost is counted); an article's pair row records the text it judged; a failure after the
+run's header is read still counts the item finished, judged when its pair row was written; the
+judge's call is never traced; a cancelled run's item is dropped; a retried message counts once; a
+run that marks more than 80% of at least 10 judged items bad turns the judge off, once; the two
+rubrics are code-only specs pinned at v1.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -35,6 +40,7 @@ from moto import mock_aws
 from table_schemas import KEYS, create_table
 
 from common import (
+    call_traces,
     dynamo,
     eval_judge,
     evals,
@@ -808,6 +814,38 @@ def test_the_pair_row_is_the_shape_the_rollups_agreement_reads(aws, model):
     assert evals_rollup.judge_agreement() == (1.0, 1)
 
 
+def test_an_articles_judge_pair_records_which_text_it_judged_and_a_findings_records_none(aws, model):
+    set_evals(aws, judge_model_id=JUDGE)
+    put_article(aws, article_id="a1b2")
+    put_article(aws, article_id="c3d4", rewriter=FALLBACK)
+    put_finding(aws)
+    start_run(aws, items=3)
+
+    consume(article_item(0, "a1b2"))
+    consume(article_item(1, "c3d4"))
+    consume(finding_item(2))
+
+    # The text as the daily cycle wrote it, and the text after its one saved rewrite.
+    assert evals_item(aws, "pair#a1b2", "judge")["rewrite_number"] == 0
+    assert evals_item(aws, "pair#c3d4", "judge")["rewrite_number"] == 1
+    assert "rewrite_number" not in evals_item(aws, f"pair#{SUBJECT}", "judge")
+
+
+def test_a_persons_verdict_on_the_text_before_a_rewrite_is_no_pair_with_the_judges_on_the_rewrite(aws, model):
+    """A person decides the article, a rewrite is saved, and the judge judges the new text before
+    anyone decides it: the two verdicts are on different texts, so they are not a pair."""
+    set_evals(aws, judge_model_id=JUDGE)
+    decided = evals_emission.pair_row("a1b2", "human", "good", "2026-10-26T22:00:00+00:00", rewrites=0)
+    aws.Table("Evals").put_item(Item=decided)
+    put_article(aws, rewriter=FALLBACK)
+    start_run(aws)
+
+    consume(article_item())
+
+    assert evals_item(aws, "pair#a1b2", "judge")["rewrite_number"] == 1
+    assert evals_rollup.judge_agreement() == (None, 0)
+
+
 # --- the spend cap --------------------------------------------------------------------------------------
 
 
@@ -839,6 +877,66 @@ def test_the_consumer_pauses_when_the_call_would_pass_the_cap_not_only_once_it_h
 
     assert consume(finding_item())["status"] == "paused"
     assert model.calls == []
+
+
+def test_two_items_judged_at_once_for_the_last_of_the_cap_only_one_calls_and_the_other_waits(aws):
+    """eval-work's mapping runs two consumers at once. The second item comes while the first one's
+    call is being made, before its cost is counted: the first one's hold already counts, so the
+    second waits for tomorrow rather than taking the day past its cap."""
+    later = "2026-10-27T01:30:00+00:00"
+    put_finding(aws)
+    put_finding(aws, captured_at=later)
+    start_run(aws, items=2)
+    spend(aws, 2 - 1.5 * ESTIMATE_AUD)  # room for one call's estimate, not two
+    queue, fake, second = FakeQueue(), FakeModel(), []
+
+    def first_call_in_flight(prompt, model_id, *, max_tokens):
+        if not second:
+            second.append("started")
+            second.append(consume(finding_item(1, later), queue=queue))
+        return fake(prompt, model_id, max_tokens=max_tokens)
+
+    with patch.object(eval_judge, "invoke_model_tracked", side_effect=first_call_in_flight):
+        first = consume(finding_item())
+
+    assert first == {"status": "judged", "verdict": "good"}
+    assert second[1] == {"status": "paused", "run_id": RUN_ID, "resent": True}
+    assert len(fake.calls) == 1 and len(queue.sent) == 1 and queue.sent[0]["DelaySeconds"] == 900
+    # The first one's hold is given back once its cost is counted: the day holds its cost alone.
+    cost = (1.2 * 0.001 + 0.02 * 0.005) * 1.5
+    day = evals_item(aws, "spend", "day#2026-10-27")
+    assert day["spent_aud"] == pytest.approx(2 - 1.5 * ESTIMATE_AUD + cost) and day["held_aud"] == 0
+    assert evals_item(aws, f"pair#{TOPIC}#{later}", "judge") is None
+
+
+def test_of_two_holds_for_the_last_of_the_cap_only_the_first_is_taken(aws):
+    table, settings = evals_rollup.evals_table(), evals_settings.get_settings()
+    spend(aws, 1.5)
+
+    first = eval_judge.reserve(table, NOW, settings, 0.3)
+    second = eval_judge.reserve(table, NOW, settings, 0.3)
+
+    assert first == Decimal("0.3") and second is None
+    day = evals_item(aws, "spend", "day#2026-10-27")
+    assert (day["spent_aud"], day["held_aud"]) == (pytest.approx(1.8), pytest.approx(0.3))
+    eval_judge.release(table, NOW, settings, first)
+    day = evals_item(aws, "spend", "day#2026-10-27")
+    assert (day["spent_aud"], day["held_aud"]) == (pytest.approx(1.5), 0)
+    # A hold that fills the cap exactly is taken; one that would pass it, even on a fresh day, is not.
+    assert eval_judge.reserve(table, NOW, settings, 0.5) == Decimal("0.5")
+    tomorrow = NOW + timedelta(days=1)
+    assert eval_judge.reserve(table, tomorrow, settings, 2.01) is None
+    assert evals_item(aws, "spend", "day#2026-10-28") is None
+
+
+def test_the_hold_is_given_back_when_the_judges_call_fails(aws):
+    put_finding(aws)
+    start_run(aws)
+    with patch.object(eval_judge, "invoke_model_tracked", side_effect=RuntimeError("throttled")):
+        assert consume(finding_item())["reason"] == "model_call"
+
+    day = evals_item(aws, "spend", "day#2026-10-27")
+    assert (day["spent_aud"], day["held_aud"]) == (0, 0)
 
 
 def test_the_selector_sends_no_more_items_than_the_days_remaining_cap_pays_for(aws, model):
@@ -1202,6 +1300,57 @@ def test_a_failed_model_call_leaves_the_item_unjudged_for_a_later_run(aws, capsy
     assert meta(aws)["status"] == "done"
 
 
+def test_an_unexpected_failure_counting_the_calls_spend_still_finishes_the_item_and_closes_the_run(
+    aws, model, capsys
+):
+    put_finding(aws)
+    start_run(aws)
+
+    with patch.object(eval_judge, "_record_spend", side_effect=RuntimeError("throttled\nagain")):
+        assert consume(finding_item()) == {"status": "error", "reason": "unexpected"}
+
+    assert (meta(aws)["status"], meta(aws)["finished_items"]) == ("done", {0})
+    assert meta(aws)["judged"] == 0
+    assert "item 0 of run judge-20261027T030000 failed: RuntimeError('throttled\\nagain')" in (
+        capsys.readouterr().out
+    )
+    # Its hold is given back all the same.
+    assert evals_item(aws, "spend", "day#2026-10-27")["held_aud"] == 0
+
+
+class FailingItemRow:
+    """The evals table, but writing the item row of a verdict fails, after its pair row is written."""
+
+    def __init__(self, table):
+        self.table = table
+
+    def __getattr__(self, name):
+        return getattr(self.table, name)
+
+    def put_item(self, **kwargs):
+        if kwargs["Item"].get("outcome") == "judged":
+            raise RuntimeError("ProvisionedThroughputExceededException")
+        return self.table.put_item(**kwargs)
+
+
+def test_a_verdict_whose_item_row_fails_still_counts_judged_so_its_run_closes_and_trips_the_wire(
+    aws, model, capsys
+):
+    judge_run(aws, model, ["bad"] * 10, last=False)
+    failing = FailingItemRow(aws.Table("Evals"))
+    captured_at = "2026-10-27T01:09:00+00:00"
+    put_finding(aws, captured_at=captured_at)
+
+    with patch.object(evals_rollup, "evals_table", return_value=failing):
+        assert consume(finding_item(9, captured_at)) == {"status": "error", "reason": "unexpected"}
+
+    # The pair row was written, so its verdict stands and counts: ten of ten bad trips the wire.
+    assert evals_item(aws, f"pair#{TOPIC}#{captured_at}", "judge")["verdict"] == "bad"
+    assert (meta(aws)["status"], meta(aws)["judged"], meta(aws)["bad"]) == ("done", 10, 10)
+    assert aws.Table("ModelConfig").get_item(Key={"config_id": "evals"})["Item"]["judge_enabled"] is False
+    assert len(evidence_lines(capsys.readouterr().out, "judge_tripwire")) == 1
+
+
 def test_a_score_job_goes_to_the_offline_scoring_consumer_with_its_body(aws, model):
     record = message({"n": 0}, job="score")
     with patch("common.eval_score.consume", return_value={"status": "scored"}) as scored:
@@ -1232,11 +1381,12 @@ def test_a_record_that_is_not_a_judge_job_of_ids_is_refused_without_printing_it(
 # --- the tripwire ---------------------------------------------------------------------------------------
 
 
-def judge_run(aws, model, verdicts: list[str]) -> None:
-    """A run of one Finding per verdict, each judged in turn."""
+def judge_run(aws, model, verdicts: list[str], *, last: bool = True) -> None:
+    """A run of one Finding per verdict, each judged in turn; without `last`, all but the last, which
+    the test judges itself."""
     start_run(aws, items=len(verdicts))
     model.replies = [GOOD if verdict == "good" else BAD for verdict in verdicts]
-    for n, _ in enumerate(verdicts):
+    for n, _ in enumerate(verdicts if last else verdicts[:-1]):
         captured_at = f"2026-10-27T01:{n:02d}:00+00:00"
         put_finding(aws, captured_at=captured_at)
         assert consume(finding_item(n, captured_at))["status"] == "judged"
@@ -1392,6 +1542,34 @@ JUDGE_SHA256 = {
     "eval_judge/research_review": "cdfea51b3ef8cec375a2a22c3ecad848ec0f28e64abc5206667b96ef5b6f6e9a",
     "eval_judge/article_review": "de779248ce751542cf570ef4eda4384d63e784bb42bef211883a89cb01706a88",
 }
+
+
+def test_the_judges_call_is_never_traced_so_no_operator_note_is_stored_even_with_traces_on(
+    aws, model, monkeypatch
+):
+    """The judge builds no lineage call, so it is not one of PR18c's traced calls: were it traced, the
+    topic's operator note in its rubric would have to be stored as its sha256 (PR17 marks it
+    untrusted). Even run inside a traced subject with trace_calls on, it stores nothing."""
+    monkeypatch.setattr(call_traces, "_client", None)
+    set_evals(aws, trace_calls=True)
+    aws.Table("Topics").put_item(
+        Item={"topic_id": TOPIC, "name": "Sydney Trains", "topic_review_steering": "Look hard at figures"}
+    )
+    put_article(aws)
+    start_run(aws)
+
+    with call_traces.bind("a1b2"):
+        assert consume(article_item())["status"] == "judged"
+
+    assert "Look hard at figures" in model.calls[0][0]
+    listed = boto3.client("s3", region_name=REGION).list_objects_v2(Bucket=BUCKET, Prefix="traces/")
+    assert listed.get("KeyCount") == 0
+    # Nor does offline scoring, whose calls build none either: neither module names call_traces.
+    for name in ("eval_judge.py", "eval_score.py"):
+        tree = ast.parse((ROOT / "lambdas" / "common" / name).read_text(encoding="utf-8"))
+        named = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        named |= {node.name for node in ast.walk(tree) if isinstance(node, ast.alias)}
+        assert "call_traces" not in named, name
 
 
 def test_the_two_rubrics_are_code_only_specs_pinned_at_v1_with_their_reply_contract_locked():

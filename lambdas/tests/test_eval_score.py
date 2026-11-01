@@ -11,11 +11,13 @@ leaves, over score_max_cost_aud without yes, and with record without yes; a run 
 item and combination; the consumer drafts the live version once per item, renders the candidate from
 its versions/ file or the vanilla, scores the candidate's draft against it in either place, writes the
 item row and, only with record, one Offline Review event; at the cap it pauses the run and sends the
-message back to wait 900 s; a cancelled run's messages are dropped; a copy of a message is scored once;
-resume sends only what has no result (an error has none) and is not being scored; a verdict once written
-is never lost to a failure after it; a scoring run never trips the judge's wire; the results add up
-from the rows; a past article's draft prompt is rebuilt byte for byte as the daily cycle sent it,
-without a write; and no offline or judge code writes to S3 or the prompt-hash table.
+message back to wait 900 s, and two messages scored at once never both take the last of the cap (a
+hold on the day's row, given back once their calls' costs are counted); a cancelled run's messages
+are dropped; a copy of a message is scored once; resume sends only what has no result (an error has
+none) and is not being scored; a verdict once written is never lost to a failure after it; a scoring
+run never trips the judge's wire; the results add up from the rows; a past article's draft prompt is
+rebuilt byte for byte as the daily cycle sent it, without a write; and no offline or judge code writes
+to S3 or the prompt-hash table.
 """
 
 from __future__ import annotations
@@ -825,6 +827,41 @@ def test_the_cap_check_counts_a_retried_draft_so_no_one_message_takes_the_day_pa
     assert result["status"] == "paused" and models.calls == []
 
 
+def test_two_messages_scored_at_once_for_the_last_of_the_cap_only_one_is_scored_and_the_other_waits(aws):
+    """eval-work's mapping runs two consumers at once. The second message comes while the first one's
+    calls are being made, before their costs are counted: the first one's hold already counts, so the
+    second waits for tomorrow rather than taking the day past its cap."""
+    put_article(aws)
+    run_id, queue = started(aws, model_ids=[CANDIDATE, OTHER])
+    # Room for the most one message can cost (two drafts with their retries and a verdict), not two.
+    draft_in, draft_out = eval_score._draft_ceiling_tokens()
+    most = sum(eval_judge.call_cost_aud(model_id, draft_in, draft_out) for model_id in (CANDIDATE, AUTHOR))
+    compare_in, compare_out = eval_score.COMPARE_ESTIMATE_INPUT_TOKENS, eval_score.COMPARE_MAX_TOKENS
+    most += eval_judge.call_cost_aud(JUDGE, compare_in, compare_out)
+    before = round(2 - 1.5 * most, 6)
+    spend_today(aws, str(before))
+    first_record, second_record = queue.records()
+    back, fake, second = FakeQueue(), FakeModels(), []
+
+    def first_calls_in_flight(prompt, model_id, **kwargs):
+        if not second:
+            second.append("started")
+            second.append(eval_judge.consume(second_record, now=NOW, sqs=back))
+        return fake(prompt, model_id, **kwargs)
+
+    with patch.object(eval_score, "invoke_model_tracked", side_effect=first_calls_in_flight):
+        first = eval_judge.consume(first_record, now=NOW, sqs=back)
+
+    assert first == {"status": "scored", "verdict": "good"}
+    assert second[1] == {"status": "paused", "run_id": run_id, "resent": True}
+    assert len(fake.calls) == 3 and back.bodies() == [json.loads(second_record["body"])]
+    # The first one's hold is given back once its calls' costs are counted: the day holds them alone
+    # (the live draft on AUTHOR is priced as the candidate's).
+    calls = 2 * CANDIDATE_CALL_AUD + JUDGE_CALL_AUD
+    day = evals_item(aws, "spend", "day#2026-10-27")
+    assert day["spent_aud"] == pytest.approx(before + calls) and day["held_aud"] == 0
+
+
 def test_a_run_paused_by_the_cap_is_cancelled_and_its_waiting_message_is_dropped(aws, models):
     put_article(aws)
     run_id, queue = started(aws)
@@ -913,17 +950,20 @@ def test_a_message_claimed_between_the_read_and_the_claim_is_dropped(aws, models
     if before is not None:
         aws.Table("Evals").put_item(Item={**key, **before, "n": 0})
     other = {**key, **meanwhile, "n": 0}
-    real = eval_judge.remaining_aud
+    real = eval_judge.reserve
 
-    def claimed_meanwhile(*args, **kwargs):  # the cap check runs between the read and the claim
+    def claimed_meanwhile(*args, **kwargs):  # the cap's hold is taken between the read and the claim
         aws.Table("Evals").put_item(Item=other)
         return real(*args, **kwargs)
 
-    with patch.object(eval_judge, "remaining_aud", side_effect=claimed_meanwhile):
+    with patch.object(eval_judge, "reserve", side_effect=claimed_meanwhile):
         assert consume_all(queue.records()) == [{"status": "dropped", "reason": "being_scored"}]
 
     assert models.calls == [] and rows(aws, run_id) == [other]
     assert not meta(aws, run_id).get("finished_items")
+    # The hold it took for the message is given back.
+    day = evals_item(aws, "spend", "day#2026-10-27")
+    assert (day["spent_aud"], day["held_aud"]) == (0, 0)
 
 
 @pytest.mark.parametrize(
@@ -988,6 +1028,8 @@ def test_an_unexpected_failure_after_the_claim_is_the_messages_result(aws, model
     assert (row["outcome"], row["stage"]) == ("error", "unexpected")
     assert meta(aws, run_id)["status"] == "done"
     assert "failed: RuntimeError('bad\\ntable')" in capsys.readouterr().out
+    day = evals_item(aws, "spend", "day#2026-10-27")
+    assert (day["spent_aud"], day["held_aud"]) == (0, 0)  # its hold is given back
 
 
 def test_a_verdict_is_kept_with_its_event_when_counting_its_message_finished_fails_once(aws, models, written):
