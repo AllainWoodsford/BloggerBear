@@ -69,9 +69,10 @@ and the retry keeps what the failed attempt spent on the row. A result already w
 rewritten by a failure after it (counting the message finished, say): that is tried again instead. A
 consumer that dies leaves its claim, which goes stale after CLAIM_STALE. A failure before the row is
 claimed, and a message that can cost more than the whole cap (lowered since the run was started), count
-the message finished with no row, so the run closes and `resume` sends it again; a failure reading the
+the message finished with no row, so the run closes and `resume` sends it again. A failure reading the
 run's header, before the message can be placed in its run, has eval-work deliver it again
-(eval_judge.RETRY).
+(eval_judge.RETRY), and so does a failure before the claim whose count fails too: nothing was claimed,
+so the copy finishes it.
 """
 
 from __future__ import annotations
@@ -1021,7 +1022,8 @@ def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, 
     the run's messages it is, so it cannot be counted: eval-work is asked to deliver it again
     (eval_judge.RETRY; after three receives its DLQ has it). After that, a failure is counted finished
     with no row, as an unsent message is (_count_unsent), so the run still closes and `evals runs
-    resume` sends it again."""
+    resume` sends it again; when that count fails too, nothing was claimed and the hold is given back,
+    so eval-work is asked to deliver it again as well."""
     table = evals_rollup.evals_table()
     try:
         meta = _meta(table, run_id)
@@ -1053,8 +1055,9 @@ def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, 
         print(f"eval_score: message {m} of run {run_id} failed before its row was claimed: {exc!r}")
         try:
             eval_judge._finish(table, run_id, m, now)
-        except Exception as again:  # noqa: BLE001 - one line: the run stays open without this message
+        except Exception as again:  # noqa: BLE001 - nothing claimed, its hold given back: delivered again
             print(f"eval_score: could not count message {m} of run {run_id} finished: {again!r}")
+            return {"status": eval_judge.RETRY}
         return {"status": ERROR, "reason": "unexpected"}
 
 

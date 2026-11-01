@@ -895,6 +895,22 @@ def test_a_run_one_of_whose_messages_can_cost_more_than_the_whole_days_cap_is_re
     assert start(sample=1, dry_run=True)[1]["message_ceiling_aud"] == round(MESSAGE_MOST_AUD, 4)
 
 
+def test_a_run_is_refused_when_any_one_of_its_messages_can_cost_more_than_the_whole_days_cap(aws, models):
+    """One dear candidate after a cheap one: its message alone fits no day, though the run's estimate
+    does, so the run is measured by its dearest message, not its first or its cheapest."""
+    put_model(aws, CANDIDATE, **BIG_PRICES)
+    put_article(aws)
+
+    caught = refused(model_ids=[OTHER, CANDIDATE], sample=1, dry_run=True)
+    assert caught.status == 409 and caught.extra["message_ceiling_aud"] == 2.0806
+
+    queue = FakeQueue()
+    caught = refused(queue=queue, model_ids=[OTHER, CANDIDATE], sample=1)
+    assert caught.status == 409 and "more than the whole daily evals spend cap" in caught.message
+    assert caught.extra["message_ceiling_aud"] == 2.0806 and caught.extra["estimate_aud"] < 2
+    assert queue.sent == [] and eval_score.list_runs()["count"] == 0
+
+
 def test_a_message_whose_most_is_more_than_the_whole_cap_is_finished_not_sent_back_every_day(aws, models):
     """The run fitted when it started; the cap was lowered under one message's most before the message
     was delivered. No day can pay for it, so waiting 900 s at a time would never end: the message is
@@ -950,6 +966,23 @@ def test_resume_prices_a_message_without_the_live_draft_its_item_has_kept(aws, m
     answer = eval_score.resume(run_id, now=tomorrow, sqs=(again := FakeQueue()))
 
     assert answer["resent"] == 1
+    assert consume_all(again.records(), now=tomorrow) == [{"status": "scored", "verdict": "good"}]
+
+
+def test_resume_prices_only_the_messages_it_sends_not_one_already_scored(aws, models):
+    """A dear message already scored is not sent again, so a cap lowered under its most since does not
+    refuse sending the cheap one that is left: resume measures only the messages it sends."""
+    put_model(aws, CANDIDATE, **BIG_PRICES)
+    set_evals(aws, evals_daily_spend_cap_aud=Decimal("3"))
+    put_article(aws)
+    run_id, queue = started(aws, model_ids=[CANDIDATE, OTHER], sample=1)
+    first, _ = queue.records()
+    assert consume_all([first]) == [{"status": "scored", "verdict": "good"}]
+    eval_score.cancel(run_id, now=NOW)
+    set_evals(aws, evals_daily_spend_cap_aud=Decimal("1"))  # under the scored message's most, over OTHER's
+    tomorrow = NOW + timedelta(days=1)
+
+    assert eval_score.resume(run_id, now=tomorrow, sqs=(again := FakeQueue()))["resent"] == 1
     assert consume_all(again.records(), now=tomorrow) == [{"status": "scored", "verdict": "good"}]
 
 
@@ -1350,6 +1383,57 @@ def test_a_transient_failure_before_the_claim_never_loses_the_message(aws, model
         KeyConditionExpression="entity = :e", ExpressionAttributeValues={":e": "spend"}
     )["Items"]
     assert days and all(day["held_aud"] == 0 for day in days)  # no hold is left behind
+
+
+def throttled_first(real, times: int, operation: str):
+    """`real`, whose first `times` calls are throttled."""
+    calls = []
+
+    def call(*args, **kwargs):
+        calls.append(1)
+        if len(calls) <= times:
+            raise _throttled(operation)
+        return real(*args, **kwargs)
+
+    return call
+
+
+@pytest.mark.parametrize("over_cap", [False, True], ids=["the cap's hold", "a message over the whole cap"])
+def test_a_message_that_fails_before_the_claim_and_cannot_be_counted_finished_is_delivered_again(
+    aws, models, over_cap
+):
+    """Counting the message finished is a write to the same evals table a moment after the failure, so it
+    tends to fail too. With no row and no count, a deleted message would leave its run open for good:
+    eval-work delivers it again instead (nothing was claimed, and its hold is already given back), and
+    the copy finishes it. A message over the whole cap fails to be counted twice: once as itself, once
+    as the failure's fallback."""
+    put_article(aws)
+    run_id, queue = started(aws)
+    if over_cap:
+        set_evals(aws, evals_daily_spend_cap_aud=Decimal("0.2"))
+    reserve = throttled_first(eval_judge.reserve, 0 if over_cap else 1, "UpdateItem")
+    finish = throttled_first(eval_judge._finish, 2 if over_cap else 1, "UpdateItem")
+
+    with (
+        patch.object(eval_judge, "reserve", side_effect=reserve),
+        patch.object(eval_judge, "_finish", side_effect=finish),
+    ):
+        answers = deliver(queue.records())
+
+    assert answers[0]["batchItemFailures"] == [{"itemIdentifier": "message-0"}]
+    results = [answer["results"][0] for answer in answers]
+    if over_cap:
+        assert results == [{"status": "retry"}, {"status": "dropped", "reason": "over_cap"}]
+        assert rows(aws, run_id) == [] and models.calls == []
+    else:
+        assert [result["status"] for result in results] == ["retry", "scored"]
+        assert [row["outcome"] for row in rows(aws, run_id)] == ["scored"]
+    header = meta(aws, run_id)
+    assert header["status"] == "done" and header["finished_items"] == {0}
+    days = aws.Table("Evals").query(
+        KeyConditionExpression="entity = :e", ExpressionAttributeValues={":e": "spend"}
+    )["Items"]
+    assert all(day["held_aud"] == 0 for day in days)  # no hold is left behind
 
 
 def test_a_failure_marking_the_run_running_after_the_claim_is_the_messages_result(aws, models, capsys):

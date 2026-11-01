@@ -109,8 +109,9 @@ from common.relevance import topic_label
 JUDGE_JOB = "judge"
 # Offline scoring runs' job (section 5.3), whose consumer is common/eval_score.py.
 SCORE_JOB = "score"
-# What a consumer answers for a record it could not even place in its run (eval_score._score): eval-jobs
-# names that record among its batch item failures, so eval-work delivers it again rather than delete it.
+# What a consumer answers for a record it could not even place in its run, or could not count finished
+# after a failure before its claim (eval_score._score): eval-jobs names that record among its batch item
+# failures, so eval-work delivers it again rather than delete it.
 RETRY = "retry"
 # The events' `source`, and the role code the judge writes as `by` and into a Finding's reviewed_by.
 SOURCE = "eval_jobs"
