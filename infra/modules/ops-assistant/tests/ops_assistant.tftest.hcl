@@ -453,3 +453,15 @@ run "evals_switched_on_are_told_as_the_exact_word_true" {
     error_message = "the agent is not told it: it reads no catalogue of its own"
   }
 }
+
+# The Model Ranch tools decide a model's gate and name the judge as the pipeline does
+# (common/model_ranch.never_gated), so the server is told the pipeline's default model under the
+# pipeline's own name: agent_model_id, which is by contract that value.
+run "the_server_is_told_the_pipelines_default_model" {
+  command = plan
+
+  assert {
+    condition     = aws_lambda_function.ops_mcp.environment[0].variables.BEDROCK_MODEL_ID == "au.example.test-model-v1:0"
+    error_message = "the server is told agent_model_id as BEDROCK_MODEL_ID"
+  }
+}

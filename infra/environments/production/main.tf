@@ -3465,7 +3465,8 @@ module "ops_assistant" {
   vision_region  = var.vision_region
 
   # The evals switch, so the assistant counts eval-jobs and the rest of the evals module's
-  # switched parts as deployed only while they are (ops_mcp/architecture.py switch_env).
+  # switched parts as deployed only while they are (ops_mcp/architecture.py switch_env), and
+  # registers the Model Ranch tools only then (ops_mcp/model_ranch.available).
   evals_enabled = var.evals_enabled
 }
 

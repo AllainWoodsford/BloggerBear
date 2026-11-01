@@ -16,7 +16,7 @@ from moto import mock_aws
 from starlette.testclient import TestClient
 from table_schemas import create_table
 
-from ops_mcp import architecture, server
+from ops_mcp import architecture, memory, server
 
 HOST = "ops.example.test"
 MODERN = "2026-07-28"
@@ -906,9 +906,12 @@ def test_the_model_ranch_tools_are_read_only_briefing_tools_under_the_specs_name
     assert "get_prompt_ab_metrics" in tools["prompt_metrics"]["description"]
     assert set(tools["prompt_metrics"]["inputSchema"]["properties"]) == {"prompt_id", "days"}
     assert "ctx" not in tools["model_ranch"]["inputSchema"].get("properties", {})
-    # A model and a prompt can be watched, and unwatched, like the rest.
+    # The hand-written WatchKind Literal is memory.WATCH_KINDS: a kind added to one and not the
+    # other would be refused by the memory, or never offered to the agent. A model and a prompt are
+    # among them, watched and unwatched like the rest.
     for name in ("watch", "unwatch"):
-        assert {"model", "prompt"} <= set(tools[name]["inputSchema"]["properties"]["kind"]["enum"])
+        assert set(tools[name]["inputSchema"]["properties"]["kind"]["enum"]) == set(memory.WATCH_KINDS)
+    assert {"model", "prompt"} <= set(memory.WATCH_KINDS)
 
 
 def test_the_model_ranch_tools_pass_their_arguments_on_and_are_remembered(ranch_client):

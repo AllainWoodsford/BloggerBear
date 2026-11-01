@@ -3509,6 +3509,22 @@ def test_the_assistant_is_told_the_evals_switch_its_catalogue_reads():
     assert '{"EVALS_ENABLED": ("evals", "evals_enabled")}' in architecture
 
 
+def test_the_assistant_is_told_the_pipelines_default_model_that_its_gates_and_judge_read():
+    """The Model Ranch tools decide a model's gate and name the judge by the rotation guard's rule
+    (common/model_ranch.never_gated), which keeps BEDROCK_MODEL_ID out of the gates. Without it the
+    deployment's default model would show as gated while the model-config default row names none."""
+    function = _uncommented(_resource_block(_ops_module(), "aws_lambda_function", "ops_mcp"))
+    assert re.search(r"^\s*BEDROCK_MODEL_ID\s*=\s*var\.agent_model_id$", function, re.M)
+    for environment in ("dev", "production"):
+        main = _read("environments", environment, "main.tf")
+        call = _uncommented(_module_blocks(main, "modules/ops-assistant")[0])
+        # The same value the pipeline's functions are given under that name.
+        assert re.search(r"^\s*agent_model_id\s*=\s*local\.bedrock_model_id$", call, re.M), environment
+        assert re.search(r"BEDROCK_MODEL_ID\s*=\s*local\.bedrock_model_id", main), environment
+    rules = (ROOT / "lambdas" / "common" / "model_ranch.py").read_text(encoding="utf-8")
+    assert 'protect(os.environ.get("BEDROCK_MODEL_ID"), "default")' in rules
+
+
 # One environment each (infra/modules/ops-assistant/isolation.tf; the design's section 6). Dev and
 # production are one AWS account, so "the dev assistant reads only dev's things" is held by the
 # roles' named resources, by a Deny on anything tagged for another environment, and, where IAM

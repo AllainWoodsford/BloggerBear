@@ -342,6 +342,9 @@ def test_a_finding_has_a_dismiss_button_and_says_when_it_looks_already_actioned(
         {"kind": "how_to", "id": "help-topics", "noticed": "help", "suggestion": {"command": "x"}},
         {"kind": "title_markup", "id": "a1; topics delete crypto", "noticed": "an id that is not one"},
         {**_REWRITE_FINDING, "actioned": {"noticed": 5}},  # not words: no note
+        # Cards about a model (dots and a colon) and about a prompt (a slash).
+        {"kind": "model_gated", "id": "maker.alpha-v1:0", "noticed": "Held back"},
+        {"kind": "prompt_fallback", "id": "daily_cycle/draft", "noticed": "Fell back"},
     ]
     done = subprocess.run(
         [NODE, "-e", _DISMISS_RUNNER, str(FRONTEND / "ask.js")],
@@ -350,7 +353,7 @@ def test_a_finding_has_a_dismiss_button_and_says_when_it_looks_already_actioned(
         text=True,
         check=True,
     )
-    plain, noted, alarm, no_id, how_to, hostile, not_words = json.loads(done.stdout)
+    plain, noted, alarm, no_id, how_to, hostile, not_words, model, prompt = json.loads(done.stdout)
 
     label = "Dismiss this finding: do not raise it again"
     assert plain["buttons"] == [["Dismiss", "button", label]] and plain["note"] is None
@@ -364,6 +367,21 @@ def test_a_finding_has_a_dismiss_button_and_says_when_it_looks_already_actioned(
         assert card["buttons"] == [] and card["dismissable"] is False and card["pressed"] == []
     assert not_words["note"] is None and not_words["buttons"]
     assert all(card["withoutHandler"] == 0 for card in (plain, noted, alarm))
+    assert model["dismissable"] is True and model["buttons"] == [["Dismiss", "button", label]]
+    assert model["pressed"] == [["model_gated", "maker.alpha-v1:0", "Dismiss", "status", True]]
+    assert prompt["dismissable"] is True and prompt["buttons"] == [["Dismiss", "button", label]]
+    assert prompt["pressed"] == [["prompt_fallback", "daily_cycle/draft", "Dismiss", "status", True]]
+
+
+def test_the_page_offers_dismiss_for_every_id_shape_the_api_passes_on():
+    """The page, the agent's handler and the server's memory agree on what an id may be: the
+    widest shape the memory takes (suggestions.MODEL_ID_PATTERN), so no card the server would set
+    aside is drawn without its button or refused on the way."""
+    from ops_mcp import suggestions
+
+    page = re.search(r"var FINDING_ID = /(.+)/;", _code(_read("ask.js"))).group(1)
+    assert page.replace("\\/", "/") == suggestions.MODEL_ID_PATTERN.pattern
+    assert ops_agent_handler._FINDING_ID.pattern == suggestions.MODEL_ID_PATTERN.pattern
 
 
 def test_dismissing_sends_only_the_findings_kind_and_id_and_asks_no_model():

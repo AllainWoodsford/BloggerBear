@@ -395,13 +395,15 @@ CATALOGUE: tuple[Component, ...] = (
                 "ts#<time>; run#<run_id> (a judge or offline run and its items); pair#<subject> (a "
                 "judge's and a person's verdicts on one subject); spend by day#<date> (what the judge "
                 "and offline runs spent that day, held to the daily cap); the index row (the rollup's "
-                "watermark, late events, the judge's agreement, the judge's last run and the topic "
-                "its next run's turn starts after) and its day#<date> rows (the entities each day has)",
+                "watermark, late events, the judge's agreement, the judge's last run, the topic its "
+                "next run's turn starts after and the last digest's day) and its day#<date> rows (the "
+                "entities each day has)",
             ),
             (
                 "Written by",
-                "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), and "
-                "its judge (runs, pairs, spend); the admin API, its adjust# rows (`evals forgive` and "
+                "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), its "
+                "judge (runs, pairs, spend) and its Friday digest (the index row's last_digest_on); the "
+                "admin API, its adjust# rows (`evals forgive` and "
                 "`evals punish`) and a person's verdicts as pairs (a Finding reviewed with `approve "
                 "--source findings`, an article approved or rejected)",
             ),
@@ -677,9 +679,10 @@ CATALOGUE: tuple[Component, ...] = (
     _lambda(
         "eval-jobs",
         "Continuous evals' jobs: the hourly rollup of the evals log group into the evals table, the "
-        "judge's selector, and the judge and offline scoring jobs from the eval-work queue. The judge "
-        "reviews recent Findings and articles with a model that wrote none of them; offline scoring "
-        "jobs are dropped until offline runs land.",
+        "judge's selector, and the judge and offline scoring jobs from the eval-work queue; on "
+        "Fridays, while digest_email is on, the week's digest to the alerts topic. The judge reviews "
+        "recent Findings and articles with a model that wrote none of them; offline scoring jobs are "
+        "dropped until offline runs land.",
         "hourly at five past (the rollup) and hourly (the judge's selector), EventBridge Scheduler; "
         f"on each job on {PREFIX}{ENV}-eval-work, two at most at once",
         details=(("Exists", "only while evals are switched on (evals_enabled)"),),
@@ -901,8 +904,9 @@ CATALOGUE: tuple[Component, ...] = (
         kind="topic",
         key="alerts",
         name=f"{PREFIX}{ENV}-alerts",
-        purpose="Every alarm in this environment notifies this topic; it emails the operator "
-        "when an alert address is set.",
+        purpose="Every alarm in this environment notifies this topic, and eval-jobs sends it the "
+        "week's evals digest on Fridays while digest_email is on; it emails the operator when an "
+        "alert address is set.",
         aliases=("sns", "alarms-topic"),
     ),
     # --- Dashboards ----------------------------------------------------------------------------

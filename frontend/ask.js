@@ -332,10 +332,12 @@
   }
 
   // Whether a finding can be dismissed from its card: something a tool found (not help the
-  // operator asked for), with a kind and an id shaped as the API takes them. One with no id (the
-  // count of articles waiting) has nothing to set aside.
+  // operator asked for), with a kind and an id shaped as the API takes them. An id may be a
+  // topic's or an article's, a model's (dots and a colon) or a prompt's (a slash), so FINDING_ID is
+  // the widest of those shapes; the server checks each kind's own. One with no id (the count of
+  // articles waiting) has nothing to set aside.
   var FINDING_KIND = /^[a-z][a-z0-9_]{0,63}$/;
-  var FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+  var FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,159}$/;
   function isDismissable(finding) {
     return (
       !!finding &&

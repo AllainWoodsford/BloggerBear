@@ -24,7 +24,12 @@ into the window's n, mean or good share.
 but not calibrated (`judge_uncalibrated`), a cull proposal waiting (`cull_proposed`; while culling is
 off its card names `evals set --cull on` first, suggestions.VARIANTS) and a prompt that fell back to
 the copy in the code in the last FALLBACK_DAYS days (`prompt_fallback`, about its prompt id: the
-`Prompt Fallback` events its day rows count).
+`Prompt Fallback` events its day rows count). Nothing emits those events yet: section 4.3 defines
+them (`fallback:<request_id>:<prompt_id>`), but common/prompts.py's fallback writes only its
+`prompt_fallback` evidence line to the calling function's log. So this card, and the memory's
+follow-up of it (fallback_check), stay quiet until an emitter lands beside that line. The evidence
+lines themselves could be read through ops_mcp/logs.py under the role's existing logs grant; these
+tools read the two tables only.
 
 **What is said.** Everything here is an id, a code or a number: model ids, prompt ids and versions as
 the rollup keyed them (each matched to its shape again before it is used), purposes and roles as
@@ -35,8 +40,8 @@ SPOKEN_MAX_WORDS words, naming at most a few ids.
 **Reads.** The models table (one Scan) and the evals table, which the assistant's role reads and never
 writes (both roots' `tables` map). The evals table is read by its index's day rows, which list the
 entities each day has, and then one Query per entity, at most READS_MAX in one call: what is left out
-past that is counted (`complete` false), never guessed. Registered only where evals are on and the
-function is told the table (available).
+past that is counted (`complete` false) and said, never guessed. Registered only where evals are on and
+the function is told the table (available).
 """
 
 from __future__ import annotations
@@ -82,6 +87,17 @@ CHECK_OPEN, CHECK_FIXED, CHECK_GONE = "open", "fixed", "gone"
 EVALS_OFF = "Evals are off here, so there are no model or prompt scores to look at."
 NOT_A_PROMPT = "That isn't a prompt id: a prompt id looks like daily_cycle/draft."
 INSUFFICIENT = "insufficient data"
+# What is said when a call ran out of reads (READS_MAX): early, straight after the gate counts or the
+# versions, so that _clip never drops it. The gates, the judge and the cull proposal come from the
+# models table's Scan and the index, so only the week on week and the pairings can be missing from
+# model_ranch.
+RANCH_INCOMPLETE = (
+    "Not every model's week on week or pairings could be read in one call, so the weakest pairing "
+    "may be another."
+)
+PROMPT_INCOMPLETE = (
+    "Not everything was read in one call, so a version or some numbers per model may be missing."
+)
 
 
 def available() -> bool:
@@ -217,7 +233,9 @@ def _ids(ids: list[str]) -> str:
 
 def _guard(settings: dict, now: datetime) -> ranch_rules.Guard:
     """The rotation guard as it stands, built as `evals status` builds it (evals_status._gated_models):
-    from these settings and one read of the model-config default row."""
+    from these settings, one read of the model-config default row and BEDROCK_MODEL_ID, which the
+    ops-assistant module gives this function as the pipeline's functions are given it. Without it the
+    deployment's default model would be gated, and the judge unnamed, while that row names neither."""
     config = dynamo.get_model_config() or {}
     return ranch_rules.Guard(
         settings=settings, protected=ranch_rules.never_gated(settings, config), config=config, now=now
@@ -361,7 +379,7 @@ def _judge_words(judge: dict) -> str:
     return f"The judge isn't calibrated yet, {agrees}, so its verdicts don't count towards the gates."
 
 
-def _ranch_spoken(models: list[dict], judge: dict, cull: dict | None, weakest) -> str:
+def _ranch_spoken(models: list[dict], judge: dict, cull: dict | None, weakest, complete: bool) -> str:
     if not models:
         sentences = ["No model has scored events yet, so nothing is gated."]
     else:
@@ -375,6 +393,8 @@ def _ranch_spoken(models: list[dict], judge: dict, cull: dict | None, weakest) -
             sentences.append(f"{len(gated)} {verb} gated: {_ids(gated)}.")
         else:
             sentences.append("None is gated.")
+        if not complete:
+            sentences.append(RANCH_INCOMPLETE)
         if by_state[PROTECTED]:
             count = len(by_state[PROTECTED])
             sentences.append(
@@ -391,9 +411,10 @@ def _ranch_spoken(models: list[dict], judge: dict, cull: dict | None, weakest) -
         sentences.append(f"A cull proposal of {count} model{'s' if count != 1 else ''} is waiting{off}.")
     if weakest is not None:
         model_id, cell = weakest
+        among = "" if complete else " among those read"
         sentences.append(
-            f"The weakest pairing with enough data is {model_id} with {cell['prompt_id']} {cell['version']}, "
-            f"good {_pct(cell['good_share'])} of {cell['n']}."
+            f"The weakest pairing with enough data{among} is {model_id} with {cell['prompt_id']} "
+            f"{cell['version']}, good {_pct(cell['good_share'])} of {cell['n']}."
         )
     if models:
         sentences.append("The table is on screen.")
@@ -537,8 +558,9 @@ def model_ranch(*, now: datetime | None = None) -> dict:
                 expires_at=cull["expires_at"],
             )
         )
+    complete = reads.skipped == 0
     return {
-        "spoken": _ranch_spoken(entries, judge, cull, weakest),
+        "spoken": _ranch_spoken(entries, judge, cull, weakest, complete),
         "findings": findings,
         "models": entries,
         "unscored": unscored,
@@ -548,7 +570,7 @@ def model_ranch(*, now: datetime | None = None) -> dict:
         "pairings_days": DAYS_DEFAULT,
         "timezone": settings["timezone"],
         "last_rolled_day": index.get("last_rolled_day"),
-        "complete": reads.skipped == 0,
+        "complete": complete,
         "table": _ranch_table(entries),
         "as_of": now.isoformat(),
     }
@@ -621,12 +643,18 @@ def _comparison(versions: list[dict]) -> str | None:
 def _metrics_spoken(prompts: list[dict], days: int, settings: dict, asked: str | None, complete: bool) -> str:
     min_events = settings["min_events"]
     if not prompts:
+        if not complete:
+            # Nothing came back because the reads ran out, not because nothing was scored.
+            what = asked or "the prompts"
+            return f"The scores of {what} could not all be read in one call, so I can't say how they did."
         what = asked or "No prompt version"
         return f"{what} has no scored events in the last {days} days."
     if asked is not None:
         versions = prompts[0]["versions"]
         lines = [_version_words(entry, min_events) for entry in versions[:SPOKEN_VERSIONS]]
         sentences = [f"{asked} over the last {days} days: {'; '.join(lines)}."]
+        if not complete:
+            sentences.append(PROMPT_INCOMPLETE)
         comparison = _comparison(versions)
         if comparison:
             sentences.append(comparison)

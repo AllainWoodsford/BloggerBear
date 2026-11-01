@@ -426,8 +426,16 @@ resource "aws_lambda_function" "ops_mcp" {
         # functions are told it (the exact word "true" for on). The evals module makes eval-jobs,
         # the eval-work queue and their schedules only then, and the catalogue's switch_env counts
         # them as deployed only then: with evals off a log review neither reads nor refuses
-        # eval-jobs' log group, which does not exist.
+        # eval-jobs' log group, which does not exist. The server also registers the Model Ranch
+        # tools (model_ranch, prompt_metrics) only then (ops_mcp/model_ranch.available).
         EVALS_ENABLED = var.evals_enabled ? "true" : "false"
+
+        # The deployment's default model, as the pipeline's functions are told it: the Model Ranch
+        # tools decide a model's gate and name the judge from it, as the rotation guard and
+        # `evals status` do (common/model_ranch.never_gated, evals_settings.judge_model). Without
+        # it, while the model-config default row names no model, the default would show as gated
+        # and the judge as unset. agent_model_id is by contract that same value.
+        BEDROCK_MODEL_ID = var.agent_model_id
 
         # The page's app client: only its callers see operator and third-party text, in a table's
         # "(unverified)" columns (memory.screen_caller). Alexa+, and any other client, is a voice

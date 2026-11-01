@@ -212,6 +212,19 @@ def test_a_dismissal_calls_the_servers_own_tool_and_no_model(answer, capsys):
     assert out.strip() == "ops_agent: dismiss kind=title_markup done=True" and FINDING["id"] not in out
 
 
+@pytest.mark.parametrize(
+    ("kind", "finding_id"), [("model_gated", "maker.alpha-v1:0"), ("prompt_fallback", "daily_cycle/draft")]
+)
+def test_a_dismissal_of_a_card_about_a_model_or_a_prompt_reaches_the_servers_tool(answer, kind, finding_id):
+    """A model's id has dots and a colon, and a prompt's a slash: shapes the server's memory takes
+    (suggestions.valid_id), so the page's request is passed on as it is."""
+    with patch.object(agent, "dismiss", return_value=dict(DISMISSED)) as dismiss:
+        response = press_dismiss({"kind": kind, "id": finding_id})
+
+    assert response["statusCode"] == 200
+    assert dismiss.call_args.args[:3] == (kind, finding_id, f"Bearer {TOKEN}")
+
+
 def test_a_dismissal_the_server_would_not_take_says_so(answer):
     refused = {"spoken": "That isn't a suggestion I can set aside.", "findings": [], "dismissed": False}
     with patch.object(agent, "dismiss", return_value=refused):
@@ -225,6 +238,10 @@ def test_a_dismissal_the_server_would_not_take_says_so(answer):
     [
         {"kind": "title_markup"},
         {"kind": "title_markup", "id": "a1; topics delete crypto"},
+        {"kind": "model_gated", "id": "maker.alpha-v1:0\n"},
+        {"kind": "prompt_fallback", "id": "daily_cycle/draft; topics delete crypto"},
+        {"kind": "prompt_fallback", "id": "daily_cycle/a draft"},
+        {"kind": "title_markup\n", "id": "a1"},
         {"kind": "Title Markup", "id": "a1"},
         {"kind": "title_markup", "id": "a1", "extra": 1},
         {"kind": 5, "id": "a1"},
