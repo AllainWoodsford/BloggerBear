@@ -123,7 +123,7 @@ def test_the_real_fenced_article_is_found_title_and_body_together(tables):
     assert kinds(result) == [("title_markup_and_body_code_fence", REAL_ID)]
     (found,) = result["findings"]
     assert found["suggestion"]["command"] == (
-        f"python scripts/admin_cli.py articles rewrite {REAL_ID} "
+        f"python scripts/admin_cli.py articles fix {REAL_ID} "
         '-i "the title has markdown around it and the whole body is inside a code fence; remove both"'
     )
     assert found["noticed"] == (
@@ -161,7 +161,7 @@ def test_a_title_with_markup_is_found(tables, title):
 
     assert kinds(result) == [("title_markup", "a1")]
     assert result["findings"][0]["suggestion"]["command"].endswith(
-        'articles rewrite a1 -i "the title has markdown around it"'
+        'articles fix a1 -i "the title has markdown around it"'
     )
 
 
@@ -191,7 +191,7 @@ def test_a_body_that_is_one_code_fence_is_found(tables, body):
 
     assert kinds(result) == [("body_code_fence", "a1")]
     assert result["findings"][0]["suggestion"]["command"].endswith(
-        'articles rewrite a1 -i "the whole body is inside a code fence"'
+        'articles fix a1 -i "the whole body is inside a code fence"'
     )
     assert "has its whole body inside a code fence" in result["spoken"]
 

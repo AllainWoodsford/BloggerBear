@@ -1398,22 +1398,25 @@ GUIDES: dict[str, dict] = {
             "reject",
             "unpublish",
             "rewrite",
+            "fix",
             "held",
         ),
         "explanation": [
             # scripts/review_inbox.py through admin_cli's `inbox` and `approve`.
             "inbox shows what is waiting for you at a glance. approve goes through it one "
-            "keystroke each (y approve, r reject, z skip, v read it all, q quit); its --mock "
-            "flag practises on made-up items.",
+            "keystroke each (y approve, r reject, f fix, w re-write, z skip, v read it all, q quit); "
+            "its --mock flag practises on made-up items.",
             # admin_cli's moderation and articles subcommands, in their own help.
             "For one item, moderation list shows the queue and moderation approve publishes one. "
-            "articles rewrite sends an article back with what to fix; articles publish forces "
-            "one out whatever its status. Rejecting and unpublishing take things down, so the "
+            "articles fix sends an article back to have the mistakes you name corrected and the "
+            "rest kept; articles rewrite has it written again as a new article; articles publish "
+            "forces one out whatever its status. Rejecting and unpublishing take things down, so the "
             "assistant only ever shows those as a template.",
         ],
         "commands": [
             "approve",
             "inbox",
+            "articles fix",
             "articles rewrite",
             "moderation list",
             "moderation approve",
@@ -1430,7 +1433,13 @@ GUIDES: dict[str, dict] = {
                 "ask": [],
             },
             {
-                "say": "Send one back to be rewritten",
+                "say": "Send one back to have its mistakes fixed",
+                "command": "articles fix",
+                "options": {},
+                "ask": ["article_id", "instructions"],
+            },
+            {
+                "say": "Send one back to be written again as a new article",
                 "command": "articles rewrite",
                 "options": {},
                 "ask": ["article_id", "instructions"],

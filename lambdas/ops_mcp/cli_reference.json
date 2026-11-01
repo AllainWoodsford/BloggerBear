@@ -1065,11 +1065,12 @@
         "checked",
         "publish",
         "unpublish",
+        "fix",
         "rewrite",
         "feedback-lock",
         "feedback-unlock"
       ],
-      "help_text": "usage: admin_cli.py articles [-h] <action> ...\n\npositional arguments:\n  <action>\n    get              Show one article in any status: its title, topic, status, who published it,\n                     what it cost, its sources and its full text. Nothing changes\n    checked          Mark a financial article the reviewer bear approved as checked by you: clears\n                     his flag, so he stops watching it for downvotes and the assistant stops\n                     reporting it\n    publish          Force-publish an article regardless of its current status\n    unpublish        Take a published article down: delete its page, mark it rejected, remove its\n                     musings and clear the CDN cache\n    rewrite          Rewrite an article to fix what you say is wrong with it. A published article\n                     stays up until its rewrite is ready, then comes down; the rewrite goes\n                     through the reviews again and waits in the inbox\n    feedback-lock    Stop taking feedback on one article (its feedback_locked flag, set to true)\n    feedback-unlock  Take feedback on one article again (feedback_locked false). An article locked\n                     because it reached its limit also needs --reset-count, or it stays at the\n                     limit\n\noptions:\n  -h, --help         show this help message and exit\n"
+      "help_text": "usage: admin_cli.py articles [-h] <action> ...\n\npositional arguments:\n  <action>\n    get              Show one article in any status: its title, topic, status, who published it,\n                     what it cost, its sources and its full text. Nothing changes\n    checked          Mark a financial article the reviewer bear approved as checked by you: clears\n                     his flag, so he stops watching it for downvotes and the assistant stops\n                     reporting it\n    publish          Force-publish an article regardless of its current status\n    unpublish        Take a published article down: delete its page, mark it rejected, remove its\n                     musings and clear the CDN cache\n    fix              Fix the mistakes you say an article has, keeping the rest of it as it is (the\n                     model edits the passages with a problem). A published article stays up until\n                     the fix is ready, then comes down; the fix goes through the reviews again and\n                     waits in the inbox\n    rewrite          Write an article again as a completely new one, from its research and fresh\n                     data, without what you say is wrong with it (to correct a few mistakes, use\n                     `articles fix`). A published article stays up until the new one is ready,\n                     then comes down; it goes through the reviews again and waits in the inbox\n    feedback-lock    Stop taking feedback on one article (its feedback_locked flag, set to true)\n    feedback-unlock  Take feedback on one article again (feedback_locked false). An article locked\n                     because it reached its limit also needs --reset-count, or it stays at the\n                     limit\n\noptions:\n  -h, --help         show this help message and exit\n"
     },
     "articles get": {
       "help": "Show one article in any status: its title, topic, status, who published it, what it cost, its sources and its full text. Nothing changes",
@@ -1159,8 +1160,8 @@
       "destructive": true,
       "help_text": "usage: admin_cli.py articles unpublish [-h] article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
-    "articles rewrite": {
-      "help": "Rewrite an article to fix what you say is wrong with it. A published article stays up until its rewrite is ready, then comes down; the rewrite goes through the reviews again and waits in the inbox",
+    "articles fix": {
+      "help": "Fix the mistakes you say an article has, keeping the rest of it as it is (the model edits the passages with a problem). A published article stays up until the fix is ready, then comes down; the fix goes through the reviews again and waits in the inbox",
       "group": false,
       "arguments": [
         {
@@ -1201,7 +1202,7 @@
           "flags": [
             "--model"
           ],
-          "help": "A registered model to rewrite with (admin_cli models list). Default: the topic's model",
+          "help": "A registered model to fix it with (admin_cli models list). Default: the topic's model",
           "type": "str",
           "choices": null,
           "default": null,
@@ -1217,7 +1218,7 @@
           "flags": [
             "--force"
           ],
-          "help": "Published articles only: take it down now, before rewriting, instead of leaving it up until the rewrite is ready. If the rewrite then fails, it waits in the inbox, down",
+          "help": "Published articles only: take it down now, before the fix, instead of leaving it up until the fix is ready. If the fix then fails, it waits in the inbox, down",
           "type": "str",
           "choices": null,
           "default": false,
@@ -1229,7 +1230,79 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py articles rewrite [-h] --instructions INSTRUCTIONS [--model MODEL_ID] [--force]\n                                     article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help            show this help message and exit\n  --instructions, -i INSTRUCTIONS\n                        What is wrong with the article, e.g. \"the second section confuses staking\n                        with lending\"\n  --model MODEL_ID      A registered model to rewrite with (admin_cli models list). Default: the\n                        topic's model\n  --force               Published articles only: take it down now, before rewriting, instead of\n                        leaving it up until the rewrite is ready. If the rewrite then fails, it\n                        waits in the inbox, down\n"
+      "help_text": "usage: admin_cli.py articles fix [-h] --instructions INSTRUCTIONS [--model MODEL_ID] [--force]\n                                 article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help            show this help message and exit\n  --instructions, -i INSTRUCTIONS\n                        What is wrong with the article, e.g. \"the second section confuses staking\n                        with lending\"\n  --model MODEL_ID      A registered model to fix it with (admin_cli models list). Default: the\n                        topic's model\n  --force               Published articles only: take it down now, before the fix, instead of\n                        leaving it up until the fix is ready. If the fix then fails, it waits in\n                        the inbox, down\n"
+    },
+    "articles rewrite": {
+      "help": "Write an article again as a completely new one, from its research and fresh data, without what you say is wrong with it (to correct a few mistakes, use `articles fix`). A published article stays up until the new one is ready, then comes down; it goes through the reviews again and waits in the inbox",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--instructions",
+          "dest": "instructions",
+          "kind": "option",
+          "flags": [
+            "--instructions",
+            "-i"
+          ],
+          "help": "What is wrong with the article, e.g. \"the second section confuses staking with lending\"",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--model",
+          "dest": "model_id",
+          "kind": "option",
+          "flags": [
+            "--model"
+          ],
+          "help": "A registered model to rewrite it with (admin_cli models list). Default: the topic's model",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--force",
+          "dest": "force",
+          "kind": "flag",
+          "flags": [
+            "--force"
+          ],
+          "help": "Published articles only: take it down now, before the rewrite, instead of leaving it up until the rewrite is ready. If the rewrite then fails, it waits in the inbox, down",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": true,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py articles rewrite [-h] --instructions INSTRUCTIONS [--model MODEL_ID] [--force]\n                                     article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help            show this help message and exit\n  --instructions, -i INSTRUCTIONS\n                        What is wrong with the article, e.g. \"the second section confuses staking\n                        with lending\"\n  --model MODEL_ID      A registered model to rewrite it with (admin_cli models list). Default:\n                        the topic's model\n  --force               Published articles only: take it down now, before the rewrite, instead of\n                        leaving it up until the rewrite is ready. If the rewrite then fails, it\n                        waits in the inbox, down\n"
     },
     "articles feedback-lock": {
       "help": "Stop taking feedback on one article (its feedback_locked flag, set to true)",

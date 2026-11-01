@@ -1264,7 +1264,7 @@ def test_no_loot_drop_line_when_none_was_posted():
     assert "loot drop" not in out.lower()
 
 
-# --- Re-Write ([w]) ---------------------------------------------------------------------------
+# --- Fix ([f]) and Re-Write ([w]) ------------------------------------------------------------
 
 MODELS = {
     "models": [
@@ -1284,9 +1284,10 @@ def _rewrite_api(rows, rewrite_result=None):
     api = _moderation(rows)
     api.routes["GET /models"] = MODELS
     for row in rows:
-        api.routes[f"POST /moderation-queue/{row['queue_id']}/rewrite"] = (
-            rewrite_result if rewrite_result is not None else {"rewriting": row["queue_id"]}
-        )
+        for mode in ("fix", "rewrite"):
+            api.routes[f"POST /moderation-queue/{row['queue_id']}/{mode}"] = (
+                rewrite_result if rewrite_result is not None else {"rewriting": row["queue_id"], "mode": mode}
+            )
     return api
 
 
@@ -1304,9 +1305,22 @@ def test_w_asks_for_a_model_starts_the_rewrite_and_moves_on(store):
     summary, out = _run([ri.ModerationSource(api)], store, "w", "2", "z")
 
     assert api.bodies[0] == ("/moderation-queue/q1/rewrite", {"model_id": "sonnet"})
-    assert summary.rewritten == 1 and summary.skipped == 1
+    assert summary.rewritten == 1 and summary.fixed == 0 and summary.skipped == 1
     assert "[w] Re-Write" in out and "[1] Claude Haiku" in out and "Retired" not in out
+    assert "Re-Write with which model?" in out and "as a new article" in out
     assert "back in your inbox" in out and "1 sent for a Re-Write" in out
+
+
+def test_f_asks_for_a_model_starts_a_fix_of_its_mistakes_and_moves_on(store):
+    api = _rewrite_api([_held("q1"), _held("q2")])
+
+    summary, out = _run([ri.ModerationSource(api)], store, "f", "1", "z")
+
+    assert api.bodies[0] == ("/moderation-queue/q1/fix", {"model_id": "haiku"})
+    assert summary.fixed == 1 and summary.rewritten == 0 and summary.skipped == 1
+    assert "[f] Fix" in out and "Fix with which model?" in out and "fixing its mistakes" in out
+    assert "1 sent for a Fix" in out and "sent for a Re-Write" not in out
+    assert summary.reviewed == 2
 
 
 def test_cancelling_the_model_choice_stays_on_the_item(store):
@@ -1323,7 +1337,7 @@ def test_w_does_nothing_on_a_routine_article(store):
 
     summary, out = _run([ri.ModerationSource(api)], store, "w", "z")
 
-    assert summary.rewritten == 0 and "[w] Re-Write" not in out
+    assert summary.rewritten == 0 and "[w] Re-Write" not in out and "[f] Fix" not in out
     assert ("GET", "/models") not in api.calls
 
 
@@ -1348,7 +1362,16 @@ def test_a_dry_run_rewrite_sends_nothing(store):
 
     summary, out = _run([ri.ModerationSource(api)], store, "w", "1", dry_run=True)
 
-    assert summary.rewritten == 1 and "(dry run) would rewrite with haiku" in out
+    assert summary.rewritten == 1 and "(dry run) would rewrite it with haiku" in out
+    assert not api.bodies
+
+
+def test_a_dry_run_fix_sends_nothing(store):
+    api = _rewrite_api([_held("q1")])
+
+    summary, out = _run([ri.ModerationSource(api)], store, "f", "1", dry_run=True)
+
+    assert summary.fixed == 1 and "(dry run) would fix it with haiku" in out
     assert not api.bodies
 
 
@@ -1368,11 +1391,19 @@ def test_a_rewritten_article_says_which_rewrite_by_what_and_for_how_much():
     assert 'Re-Write #2 by Claude Haiku (~$0.004 AUD); was titled "Buy Now"' in item.facts
 
 
-def test_a_rewritten_article_says_how_much_of_it_was_left_as_it_was():
-    rewrite = {"number": 1, "model_label": "Claude Haiku", "cost_aud": 0.0042, "edits": 2, "kept_percent": 91}
+def test_a_fixed_article_says_how_much_of_it_was_left_as_it_was():
+    fix = {"number": 1, "model_label": "Claude Haiku", "cost_aud": 0.0042, "edits": 2, "kept_percent": 91}
+    for record in (fix, {**fix, "mode": "fix"}):  # the first from before a record said its mode
+        (item,) = ri.ModerationSource(_moderation([_held("q1", rewrite=record)])).fetch(5, set())
+
+        assert "Fix #1 by Claude Haiku (~$0.004 AUD); 2 passages edited, 91% kept as it was" in item.facts
+
+
+def test_a_rewritten_article_says_it_was_written_again():
+    rewrite = {"number": 3, "model_label": "Claude Haiku", "cost_aud": 0.0042, "mode": "rewrite"}
     (item,) = ri.ModerationSource(_moderation([_held("q1", rewrite=rewrite)])).fetch(5, set())
 
-    assert "Re-Write #1 by Claude Haiku (~$0.004 AUD); 2 passages edited, 91% kept as it was" in item.facts
+    assert "Re-Write #3 by Claude Haiku (~$0.004 AUD)" in item.facts
 
 
 def test_notes_about_the_review_alone_do_not_offer_a_rewrite():
@@ -1393,11 +1424,14 @@ def test_notes_about_the_review_alone_do_not_offer_a_rewrite():
     assert flagged.can_rewrite is True
 
 
-def test_a_failed_rewrite_is_shown_on_the_original():
+@pytest.mark.parametrize(("mode", "label"), [(None, "Fix"), ("fix", "Fix"), ("rewrite", "Re-Write")])
+def test_a_failed_fix_or_rewrite_is_shown_on_the_original(mode, label):
     row = _held("q1", last_rewrite_error="the rewrite could not be trusted: introduces figure(s)")
+    if mode:
+        row["rewrite_mode"] = mode
     (item,) = ri.ModerationSource(_moderation([row])).fetch(5, set())
 
-    assert any("The last Re-Write did not work" in note for note in item.notes)
+    assert any(f"The last {label} did not work" in note for note in item.notes)
 
 
 def test_the_practice_inbox_can_rewrite_too(store):
@@ -1406,6 +1440,14 @@ def test_the_practice_inbox_can_rewrite_too(store):
     summary, _ = _run([source], store, "z", "z", "w", "1")
 
     assert summary.rewritten == 1 and source.log == [("rewrite", "mock-3:practice-small")]
+
+
+def test_the_practice_inbox_can_fix_too(store):
+    source = ri.MockSource(count=3)
+
+    summary, _ = _run([source], store, "z", "z", "f", "2")
+
+    assert summary.fixed == 1 and source.log == [("fix", "mock-3:practice-large")]
 
 
 def test_the_inbox_mentions_rewrites_in_progress():

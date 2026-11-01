@@ -151,7 +151,10 @@ from common.reviewer import FLAGGED_AT_FIELD as REVIEWER_FLAGGED_AT_FIELD
 from common.reviewer import HELD_FIELD as REVIEWER_HELD_FIELD
 from common.reviewer import REVIEWER_MAY_APPROVE_FIELD
 from common.rewrite import (
+    FIX_MODE,
     MAX_INSTRUCTIONS_CHARS,
+    MODE_LABELS,
+    REWRITE_MODE,
     SENT_BACK_REASON,
     release_stale_rewrites,
     rewrite_issues,
@@ -1480,13 +1483,26 @@ def _list_moderation_queue(event: dict) -> dict:
     )
 
 
+def _fix_moderation_item(event: dict) -> dict:
+    """POST /moderation-queue/{queue_id}/fix: correct what a held article was held for, keeping
+    the rest of it as it is (common/rewrite.py's Fix)."""
+    return _send_back_moderation_item(event, FIX_MODE)
+
+
 def _rewrite_moderation_item(event: dict) -> dict:
-    """Start a Re-Write of a held article with the model the operator chose (common/rewrite.py).
+    """POST /moderation-queue/{queue_id}/rewrite: write a held article again as a completely new
+    article, without what it was held for (common/rewrite.py's Re-Write)."""
+    return _send_back_moderation_item(event, REWRITE_MODE)
+
+
+def _send_back_moderation_item(event: dict, mode: str) -> dict:
+    """Start a fix or Re-Write (`mode`) of a held article with the model the operator chose
+    (common/rewrite.py).
 
     Claims the item (pending -> rewriting, so it leaves the inbox and a second trigger gets a
-    409) and hands the work to the daily-cycle Lambda asynchronously: a rewrite takes minutes,
-    far longer than API Gateway waits. The rewritten article comes back to the inbox as a new
-    pending item; a failure puts this one back, with the reason.
+    409) and hands the work to the daily-cycle Lambda asynchronously: either takes minutes, far
+    longer than API Gateway waits. The new text comes back to the inbox as a new pending item; a
+    failure puts this one back, with the reason.
     """
     queue_id = _path_param(event, "queue_id")
     try:
@@ -1512,10 +1528,10 @@ def _rewrite_moderation_item(event: dict) -> dict:
         return _error(
             400,
             "nothing to fix: the reviews flagged nothing on this article, so approve or reject "
-            "it, or say what is wrong with 'instructions' (admin_cli articles rewrite)",
+            f"it, or say what is wrong with 'instructions' (admin_cli articles {mode})",
         )
 
-    return _start_rewrite(item, model_id, instructions, from_status="pending_moderation")
+    return _start_rewrite(item, model_id, instructions, from_status="pending_moderation", mode=mode)
 
 
 def _rewrite_model_error(model_id: str) -> str | None:
@@ -1547,12 +1563,19 @@ def _rewrite_instructions(body: dict, *, required: bool) -> tuple[str, str | Non
 
 
 def _start_rewrite(
-    item: dict, model_id: str, instructions: str, extra: dict | None = None, *, from_status: str | None = None
+    item: dict,
+    model_id: str,
+    instructions: str,
+    extra: dict | None = None,
+    *,
+    from_status: str | None = None,
+    mode: str = FIX_MODE,
 ) -> dict:
-    """Claim a pending queue item for a Re-Write and start it in the background (the daily-cycle
-    Lambda, asynchronously). 202, or 409 if someone else claimed it first, or 502 (and the item
-    back to pending) if the Lambda could not be invoked. `from_status` is the article's status
-    before (a pending item's article is `pending_moderation`), for the evidence line."""
+    """Claim a pending queue item for a fix or Re-Write (`mode`) and start it in the background
+    (the daily-cycle Lambda, asynchronously). 202, or 409 if someone else claimed it first, or 502
+    (and the item back to pending) if the Lambda could not be invoked. `from_status` is the
+    article's status before (a pending item's article is `pending_moderation`), for the evidence
+    line."""
     queue_id = item["queue_id"]
     rewrite_id = str(uuid.uuid4())
     requested_at = datetime.now(UTC).isoformat()
@@ -1562,9 +1585,10 @@ def _start_rewrite(
         model_id=model_id,
         requested_at=requested_at,
         instructions=instructions or None,
+        mode=mode,
     ):
         return _error(409, f"moderation queue item '{queue_id}' is not pending")
-    return _invoke_rewrite(item, rewrite_id, model_id, extra, from_status=from_status)
+    return _invoke_rewrite(item, rewrite_id, model_id, extra, from_status=from_status, mode=mode)
 
 
 def _invoke_rewrite(
@@ -1575,8 +1599,9 @@ def _invoke_rewrite(
     *,
     still_published: bool = False,
     from_status: str | None = None,
+    mode: str = FIX_MODE,
 ) -> dict:
-    """Start the Re-Write that owns `item` (already `rewriting` under `rewrite_id`). 202, or 502
+    """Start the fix or Re-Write that owns `item` (already `rewriting` under `rewrite_id`). 202, or 502
     with the item released if the Lambda could not be invoked: back to the inbox, or, when the
     article is `still_published` (it stays up while it is rewritten), closed as `rewrite_failed`.
     `from_status` is the article's status before, for the evidence line (`published` when it is
@@ -1609,14 +1634,33 @@ def _invoke_rewrite(
     )  # fmt: skip
     return _response(
         202,
-        {"rewriting": queue_id, "article_id": item["article_id"], "model_id": model_id, **(extra or {})},
+        {
+            "rewriting": queue_id,
+            "mode": mode,
+            "article_id": item["article_id"],
+            "model_id": model_id,
+            **(extra or {}),
+        },
     )
 
 
+def _fix_article(event: dict) -> dict:
+    """POST /articles/{article_id}/fix (`admin_cli articles fix <id> --instructions "..."`):
+    correct the mistakes a person says the article has, keeping the rest of it as it is."""
+    return _send_back_article(event, FIX_MODE)
+
+
 def _rewrite_article(event: dict) -> dict:
-    """Rewrite any article, steered by what a person says is wrong with it (`admin_cli articles
-    rewrite <id> --instructions "..."`). The rewrite goes through the reviews again and waits in
-    the inbox for approval, like any other draft (common/rewrite.py).
+    """POST /articles/{article_id}/rewrite (`admin_cli articles rewrite <id> --instructions
+    "..."`): write the article again as a completely new one, without what a person says is wrong
+    with it."""
+    return _send_back_article(event, REWRITE_MODE)
+
+
+def _send_back_article(event: dict, mode: str) -> dict:
+    """Fix or re-write (`mode`, common/rewrite.py) any article, steered by what a person says is
+    wrong with it. The new text goes through the reviews again and waits in the inbox for
+    approval, like any other draft.
 
     - published: stays up, untouched, while it is rewritten. It is taken down (page deleted,
       musings removed, CDN cache cleared, set back to `pending_moderation`) only once the rewrite
@@ -1646,7 +1690,9 @@ def _rewrite_article(event: dict) -> dict:
         return _error(404, f"article '{article_id}' not found")
     status = article.get("status")
     if status not in ("published", "pending_moderation", "rejected"):
-        return _error(409, f"article '{article_id}' is '{status}' and cannot be rewritten")
+        return _error(
+            409, f"article '{article_id}' is '{status}' and cannot be sent for a {MODE_LABELS[mode]}"
+        )
 
     model_id = body.get("model_id")
     if model_id is not None:
@@ -1676,6 +1722,7 @@ def _rewrite_article(event: dict) -> dict:
             "rewrite_model_id": model_id,
             "rewrite_requested_at": datetime.now(UTC).isoformat(),
             "rewrite_instructions": instructions,
+            "rewrite_mode": mode,
             "article_still_published": True,
         }
         item = put_moderation_item(
@@ -1689,7 +1736,7 @@ def _rewrite_article(event: dict) -> dict:
         )
         extra = {"unpublished": False, "stays_published_until_rewritten": True}
         return _invoke_rewrite(
-            item, rewrite_id, model_id, extra, still_published=True, from_status="published"
+            item, rewrite_id, model_id, extra, still_published=True, from_status="published", mode=mode
         )
     if status == "published":
         # Forced. Off the site first (page, then status), so a failure part-way leaves it down,
@@ -1708,7 +1755,7 @@ def _rewrite_article(event: dict) -> dict:
             reasons=[SENT_BACK_REASON],
             created_at=datetime.now(UTC).isoformat(),
         )
-    return _start_rewrite(item, model_id, instructions, extra, from_status=status)
+    return _start_rewrite(item, model_id, instructions, extra, from_status=status, mode=mode)
 
 
 _STATS_RECENT_LIMIT = 20
@@ -1875,9 +1922,10 @@ def reviewer_reject(queue_id: str) -> tuple[int, dict]:
 
 
 def reviewer_rewrite(article_id: str, instructions: str) -> tuple[int, dict]:
-    """A rewrite steered by his notes, with the topic's own model (resolve_model): a published
-    article stays up until the rewrite is ready, a held one is rewritten where it waits."""
-    return _call(_rewrite_article, {"article_id": article_id}, {"instructions": instructions})
+    """A fix steered by his notes (common/rewrite.py's Fix: he sends an article back to have its
+    mistakes corrected, never for a new one), with the topic's own model (resolve_model): a
+    published article stays up until the fix is ready, a held one is fixed where it waits."""
+    return _call(_fix_article, {"article_id": article_id}, {"instructions": instructions})
 
 
 def reviewer_regenerate_musings(article_id: str) -> tuple[int, dict]:
@@ -3225,6 +3273,7 @@ _ROUTES = {
     "POST /articles/{article_id}/publish": _publish_article,
     "POST /articles/{article_id}/unpublish": _unpublish_article,
     "POST /articles/{article_id}/checked": _mark_article_checked,
+    "POST /articles/{article_id}/fix": _fix_article,
     "POST /articles/{article_id}/rewrite": _rewrite_article,
     "GET /review/report": _review_report,
     "GET /lineage/audit": _lineage_audit,
@@ -3234,6 +3283,7 @@ _ROUTES = {
     "GET /moderation-queue/stats": _moderation_queue_stats,
     "POST /moderation-queue/{queue_id}/approve": _approve_moderation_item,
     "POST /moderation-queue/{queue_id}/reject": _reject_moderation_item,
+    "POST /moderation-queue/{queue_id}/fix": _fix_moderation_item,
     "POST /moderation-queue/{queue_id}/rewrite": _rewrite_moderation_item,
     "GET /prompt-refinements": _list_prompt_refinements,
     "POST /prompt-refinements/{topic_id}/{version}/approve": _approve_prompt_refinement,

@@ -23,7 +23,7 @@ AWS platform friction gets its own section.
 | Terraform and CI | 9 | `validate` passes, `plan` or `apply` fails; scans that cover less than they look |
 | Tests vs reality | 6 | the test environment isn't the deployed one |
 | Frontend | 4 | the hash router, and a performance fix that broke styling |
-| The model in the pipeline | 7 | model output trusted without checking it |
+| The model in the pipeline | 8 | model output trusted without checking it |
 | Agentic coding | 9 | confident output that wasn't checked against reality |
 | GitHub and the repo | 12 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
@@ -263,6 +263,17 @@ nothing or replaces more than half the article fails. Only the review's flagged 
 to fix, and the compliance review gets the fresh data as a source. **Lesson:** to fix one thing, ask
 for the change and apply it yourself; asked for the whole thing again, a model rewrites the whole
 thing. (2026-11-01)
+
+**5.8 The guard against a new article failed real fixes.** Right after 5.7, Re-Writes of articles
+whose problems ran through most of the text started failing: their edits replaced more than half of
+the article, and `REWRITE_MIN_KEPT` refused them as "a new article, not a correction". They were
+corrections. The edits still changed only the passages they quoted; there were just a lot of those.
+The share replaced measured how wrong the article was, not whether the model had stopped correcting
+it. **Fix:** two modes instead of one guard. A **Fix** (`articles fix`, `f` in the inbox, and what
+Reviewer Bear uses) corrects with edits and has no cap on how much they replace. A **Re-Write**
+(`articles rewrite`, `w`) asks for a completely new article on purpose, for one not worth correcting.
+**Lesson:** a guard on how much changed cannot tell a big correction from a rewrite; let the person
+say which they asked for. (2026-11-01)
 
 ## 6. Agentic coding
 

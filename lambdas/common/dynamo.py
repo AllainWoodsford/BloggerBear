@@ -850,18 +850,21 @@ def claim_moderation_for_rewrite(
     model_id: str,
     requested_at: str,
     instructions: str | None = None,
+    mode: str = "fix",
 ) -> bool:
     """Move a pending item to `rewriting`, recording which rewrite owns it. False if it was not
     pending (already rewritten, approved, rejected, or claimed by a second trigger at the same
     moment) -- a conditional write, so two triggers can never start two rewrites.
 
-    `instructions` is what a person said is wrong with the article (`articles rewrite
-    --instructions`), kept as `rewrite_instructions`. Without it, any left by an earlier attempt
-    is removed: a note is only ever used by the rewrite it was given for."""
+    `mode` is `fix` (correct the mistakes) or `rewrite` (a completely new article), kept as
+    `rewrite_mode` (common/rewrite.py). `instructions` is what a person said is wrong with the
+    article (`articles fix` or `articles rewrite --instructions`), kept as `rewrite_instructions`.
+    Without it, any left by an earlier attempt is removed: a note is only ever used by the rewrite
+    it was given for."""
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
     expression = (
         "SET #status = :rewriting, rewrite_id = :rewrite_id, "
-        "rewrite_model_id = :model_id, rewrite_requested_at = :requested_at"
+        "rewrite_model_id = :model_id, rewrite_requested_at = :requested_at, rewrite_mode = :mode"
     )
     values = {
         ":rewriting": "rewriting",
@@ -869,6 +872,7 @@ def claim_moderation_for_rewrite(
         ":rewrite_id": rewrite_id,
         ":model_id": model_id,
         ":requested_at": requested_at,
+        ":mode": mode,
     }
     if instructions:
         expression += ", rewrite_instructions = :instructions"

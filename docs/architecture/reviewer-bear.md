@@ -326,7 +326,8 @@ his next run clears the flag.
 - **An article he took down is never his again** (`reviewer_held_at`), and a rewrite that never
   landed, whether a person's or his own, is left for a person.
 - **He never adds or rewords text himself.** His cut only deletes sentences. His rewrites go through
-  the same Re-Write as yours, with its reviews, and come back to the inbox.
+  the same Fix as yours (`articles fix`: the mistakes he names are corrected and the rest is kept,
+  never a new article), with its reviews, and come back to the inbox.
 - **He never reads a reader's comment**, only whether a downvote carried one.
 - **He never touches the assistant's table** (`<prefix>-<env>-operator-suggestions`). It is the
   assistant's alone. Every flag lives on the article, and the assistant reads it from there.
@@ -341,7 +342,7 @@ change exactly as they would for you.
 |---|---|---|
 | Approve | `reviewer_approve` | `moderation approve` (and `approve`): `_resolve_moderation_item`, with `published_by` `reviewer`. It renders the page and posts BloggerBear's article musing, in the thoughtful mood of any approval. |
 | Reject | `reviewer_reject` | `moderation reject`: `_reject_moderation_item`, which posts BloggerBear's shocked rejection musing |
-| Rewrite | `reviewer_rewrite` | `articles rewrite`: `_rewrite_article`, with the topic's model. The rewrite runs in the daily-cycle Lambda and comes back to the inbox. |
+| Rewrite | `reviewer_rewrite` | `articles fix`: `_fix_article`, with the topic's model. The fix runs in the daily-cycle Lambda and comes back to the inbox. |
 | Write blank musings again | `reviewer_regenerate_musings` | `musings regenerate --article`: `_regenerate_article_musings` |
 | Take down and hold | `reviewer_hold` | `articles unpublish`'s clean-up, but the article goes back to `pending_moderation`, not `rejected` |
 | Put in a cut body | `reviewer_replace_body` | No command: his alone, for task 5. It keeps the original beside it. |

@@ -1186,18 +1186,21 @@ def test_articles_feedback_lock_and_unlock():
     assert m.call_args.kwargs["body"] == {"locked": False, "reset_count": True}
 
 
-def test_articles_rewrite_posts_the_instructions_and_the_model_when_given():
+@pytest.mark.parametrize("verb", ["fix", "rewrite"])
+def test_articles_fix_and_rewrite_post_the_instructions_and_the_model_when_given(verb):
     with patch("admin_cli.signed_request", return_value=FakeResponse(202, {})) as m:
-        _run(["articles", "rewrite", "article-1", "-i", "The intro is wrong."])
-        _run(["articles", "rewrite", "article-1", "--instructions", "x", "--model", "haiku"])
-    assert m.call_args_list[0].args[2] == "/articles/article-1/rewrite"
+        _run(["articles", verb, "article-1", "-i", "The intro is wrong."])
+        _run(["articles", verb, "article-1", "--instructions", "x", "--model", "haiku", "--force"])
+    # Each to its own route: a fix corrects the mistakes, a rewrite writes a new article.
+    assert m.call_args_list[0].args[2] == f"/articles/article-1/{verb}"
     assert m.call_args_list[0].kwargs["body"] == {"instructions": "The intro is wrong."}
-    assert m.call_args_list[1].kwargs["body"] == {"instructions": "x", "model_id": "haiku"}
+    assert m.call_args_list[1].kwargs["body"] == {"instructions": "x", "model_id": "haiku", "force": True}
 
 
-def test_articles_rewrite_needs_instructions():
+@pytest.mark.parametrize("verb", ["fix", "rewrite"])
+def test_articles_fix_and_rewrite_need_instructions(verb):
     with pytest.raises(SystemExit):
-        _run(["articles", "rewrite", "article-1"])
+        _run(["articles", verb, "article-1"])
 
 
 # --- musings ------------------------------------------------------------------

@@ -595,13 +595,21 @@ def _cmd_articles_unpublish(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/articles/{args.article_id}/unpublish")
 
 
-def _cmd_articles_rewrite(args: argparse.Namespace) -> None:
+def _send_back_body(args: argparse.Namespace) -> dict:
     body = {"instructions": args.instructions}
     if args.model_id:
         body["model_id"] = args.model_id
     if args.force:
         body["force"] = True
-    _do_request(args, "POST", f"/articles/{args.article_id}/rewrite", body)
+    return body
+
+
+def _cmd_articles_fix(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", f"/articles/{args.article_id}/fix", _send_back_body(args))
+
+
+def _cmd_articles_rewrite(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", f"/articles/{args.article_id}/rewrite", _send_back_body(args))
 
 
 # --- feedback subcommands -----------------------------------------------
@@ -1766,36 +1774,49 @@ def build_parser() -> argparse.ArgumentParser:
     unpublish_parser.add_argument("article_id")
     unpublish_parser.set_defaults(func=_cmd_articles_unpublish)
 
+    fix_parser = articles_sub.add_parser(
+        "fix",
+        help=(
+            "Fix the mistakes you say an article has, keeping the rest of it as it is (the model "
+            "edits the passages with a problem). A published article stays up until the fix is "
+            "ready, then comes down; the fix goes through the reviews again and waits in the inbox"
+        ),
+    )
     rewrite_parser = articles_sub.add_parser(
         "rewrite",
         help=(
-            "Rewrite an article to fix what you say is wrong with it. A published article stays "
-            "up until its rewrite is ready, then comes down; the rewrite goes through the reviews "
-            "again and waits in the inbox"
+            "Write an article again as a completely new one, from its research and fresh data, "
+            "without what you say is wrong with it (to correct a few mistakes, use `articles fix`). "
+            "A published article stays up until the new one is ready, then comes down; it goes "
+            "through the reviews again and waits in the inbox"
         ),
     )
-    rewrite_parser.add_argument("article_id")
-    rewrite_parser.add_argument(
-        "--instructions",
-        "-i",
-        required=True,
-        help='What is wrong with the article, e.g. "the second section confuses staking with lending"',
-    )
-    rewrite_parser.add_argument(
-        "--model",
-        dest="model_id",
-        help="A registered model to rewrite with (admin_cli models list). Default: the topic's model",
-    )
-    rewrite_parser.add_argument(
-        "--force",
-        action="store_true",
-        default=False,
-        help=(
-            "Published articles only: take it down now, before rewriting, instead of leaving it "
-            "up until the rewrite is ready. If the rewrite then fails, it waits in the inbox, down"
-        ),
-    )
-    rewrite_parser.set_defaults(func=_cmd_articles_rewrite)
+    for verb, send_back_parser, func in (
+        ("fix", fix_parser, _cmd_articles_fix),
+        ("rewrite", rewrite_parser, _cmd_articles_rewrite),
+    ):
+        send_back_parser.add_argument("article_id")
+        send_back_parser.add_argument(
+            "--instructions",
+            "-i",
+            required=True,
+            help='What is wrong with the article, e.g. "the second section confuses staking with lending"',
+        )
+        send_back_parser.add_argument(
+            "--model",
+            dest="model_id",
+            help=f"A registered model to {verb} it with (admin_cli models list). Default: the topic's model",
+        )
+        send_back_parser.add_argument(
+            "--force",
+            action="store_true",
+            default=False,
+            help=(
+                f"Published articles only: take it down now, before the {verb}, instead of leaving it "
+                f"up until the {verb} is ready. If the {verb} then fails, it waits in the inbox, down"
+            ),
+        )
+        send_back_parser.set_defaults(func=func)
 
     feedback_lock_parser = articles_sub.add_parser(
         "feedback-lock",

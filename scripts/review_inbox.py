@@ -22,10 +22,12 @@ dropped connection never loses progress. However the session ends (the last item
 error), it closes by saying what was done: how many of the batch you got through and what you
 decided on them.
 
-A held article also has w (Re-Write): pick one of the registered models and the article is rewritten
-in the background to fix what it was held for (lambdas/common/rewrite.py), while you move on to the
-next item. It comes back to this inbox when it is done -- to approve, reject or rewrite again -- with
-the model and what the rewrite cost. If the rewrite fails, the original comes back with the reason.
+A held article also has f (Fix) and w (Re-Write): pick one of the registered models and, in the
+background, the article has the mistakes it was held for corrected and the rest kept as it is (f), or
+is written again as a completely new article without them (w) (lambdas/common/rewrite.py), while you
+move on to the next item. It comes back to this inbox when it is done -- to approve, reject, fix or
+re-write again -- with the model and what it cost. If it fails, the original comes back with the
+reason.
 
 A skipped item is left exactly as it is, and hidden from your next reviews for a while (a small local
 file, never sent anywhere) so a rerun gives you the next batch instead of the same ones.
@@ -60,7 +62,13 @@ _FRESH_REVIEW_NOTE = "fresh-data review"
 _CLAIM_NOTE = re.compile(r" -- (?:stale|contradicted|unsupported) \((?:minor|major)\)")
 
 HELP_LINE = "[y] Approve | [r] Reject | [z] Skip | [v] View all | [q] Quit -> "
-REWRITE_HELP_LINE = "[y] Approve | [r] Reject | [w] Re-Write | [z] Skip | [v] View all | [q] Quit -> "
+REWRITE_HELP_LINE = (
+    "[y] Approve | [r] Reject | [f] Fix | [w] Re-Write | [z] Skip | [v] View all | [q] Quit -> "
+)
+# The keys that send a held article back, and the mode each asks for (lambdas/common/rewrite.py):
+# f corrects the mistakes it was held for and keeps the rest, w writes a completely new article.
+REWRITE_KEYS = {"f": "fix", "w": "rewrite"}
+MODE_LABELS = {"fix": "Fix", "rewrite": "Re-Write"}
 # One keystroke picks a model, so the picker shows at most this many.
 MAX_MODEL_CHOICES = 9
 
@@ -129,7 +137,7 @@ class Item:
     routine: bool = False  # waits for a person by design (a financial topic), nothing wrong
     caution: bool = False  # held for a reason a person should look at before approving
     approve_note: str = ""  # what approving does, when that is not obvious
-    can_rewrite: bool = False  # held for something a Re-Write can try to fix
+    can_rewrite: bool = False  # held for something a Fix or Re-Write can try to put right
     ref: dict = field(default_factory=dict)  # what the source needs to act on it
 
     @property
@@ -169,12 +177,13 @@ class ContentSource(ABC):
         return True
 
     def rewrite_models(self) -> list[dict]:
-        """The models a Re-Write can use (GET /models' rows). Only sources whose items can be
-        rewritten (Item.can_rewrite) need this."""
+        """The models a Fix or Re-Write can use (GET /models' rows). Only sources whose items can
+        be sent back (Item.can_rewrite) need this."""
         raise NotImplementedError
 
-    def rewrite(self, item: Item, model_id: str) -> str:
-        """Start a Re-Write of `item` with `model_id`. Returns a short message."""
+    def rewrite(self, item: Item, model_id: str, mode: str = "fix") -> str:
+        """Start a Fix (`mode` "fix") or Re-Write ("rewrite") of `item` with `model_id`. Returns a
+        short message."""
         raise NotImplementedError
 
 
@@ -207,8 +216,8 @@ class ModerationSource(ContentSource):
         sent_back = _SENT_BACK_REASON in reasons
         flagged = [r for r in reasons if r not in routine and r != _SENT_BACK_REASON]
         notes = [str(n) for n in row.get("review_notes") or []]
-        # A Re-Write from here retries with the same note (lambdas/admin_api_handler.py drops any
-        # note a rewrite is not given).
+        # A Fix or Re-Write from here retries with the same note (lambdas/admin_api_handler.py
+        # drops any note a rewrite is not given).
         instructions = str(row.get("rewrite_instructions") or "") if sent_back else ""
         why = (["Financial topic: always reviewed by a person."] if routine else []) + flagged
         if sent_back:
@@ -231,7 +240,9 @@ class ModerationSource(ContentSource):
             },
         )
         if row.get("last_rewrite_error"):
-            item.notes.append(f"The last Re-Write did not work: {row['last_rewrite_error']}")
+            # An item with no mode was claimed before there were two: a fix.
+            label = MODE_LABELS.get(str(row.get("rewrite_mode")), "Fix")
+            item.notes.append(f"The last {label} did not work: {row['last_rewrite_error']}")
             item.caution = True
         rewrite = row.get("rewrite") or {}
         try:
@@ -260,12 +271,13 @@ class ModerationSource(ContentSource):
             self._models = [row for row in rows if row.get("enabled") is not False]
         return self._models
 
-    def rewrite(self, item: Item, model_id: str) -> str:
+    def rewrite(self, item: Item, model_id: str, mode: str = "fix") -> str:
         body = {"model_id": model_id}
         if item.ref.get("instructions"):
             body["instructions"] = item.ref["instructions"]
-        self.api.post(f"/moderation-queue/{item.ref['queue_id']}/rewrite", body)
-        return "rewriting in the background: it will be back in your inbox when it is done"
+        self.api.post(f"/moderation-queue/{item.ref['queue_id']}/{mode}", body)
+        doing = "fixing its mistakes" if mode == "fix" else "writing it again as a new article"
+        return f"{doing} in the background: it will be back in your inbox when it is done"
 
     def approve(self, item: Item) -> str:
         self.api.post(f"/moderation-queue/{item.ref['queue_id']}/approve")
@@ -349,7 +361,9 @@ def _rewrite_fact(rewrite: dict) -> str:
     cost = rewrite.get("cost_aud")
     cost_text = f"~${float(cost):.3f} AUD" if isinstance(cost, int | float) else "cost: no data"
     model = rewrite.get("model_label") or rewrite.get("model_id")
-    line = f"Re-Write #{rewrite.get('number', '?')} by {model} ({cost_text})"
+    # Older records have no mode: those with edits were fixes, those without wrote the text anew.
+    mode = rewrite.get("mode") or ("fix" if "edits" in rewrite else "rewrite")
+    line = f"{MODE_LABELS.get(mode, 'Re-Write')} #{rewrite.get('number', '?')} by {model} ({cost_text})"
     edits, kept = rewrite.get("edits"), rewrite.get("kept_percent")
     if isinstance(edits, int | float) and isinstance(kept, int | float):  # older rewrites have neither
         line += f"; {int(edits)} passage{'' if edits == 1 else 's'} edited, {int(kept)}% kept as it was"
@@ -366,14 +380,16 @@ def _model_line(n: int, model: dict) -> str:
     return f"  [{n}] {name}{price}"
 
 
-def choose_model(models: list[dict], key_reader: Callable[[], str], out) -> str | None:
-    """Ask which model a Re-Write uses. Returns its model_id, or None when the person backs out
-    (or there is no model to choose)."""
+def choose_model(
+    models: list[dict], key_reader: Callable[[], str], out, label: str = "Re-Write"
+) -> str | None:
+    """Ask which model a Fix or Re-Write (`label`) uses. Returns its model_id, or None when the
+    person backs out (or there is no model to choose)."""
     if not models:
         _emit("  ! No enabled models are registered (admin_cli models), so nothing can rewrite it.", out)
         return None
     shown = models[:MAX_MODEL_CHOICES]
-    _emit("  Re-Write with which model?", out)
+    _emit(f"  {label} with which model?", out)
     for n, model in enumerate(shown, start=1):
         _emit(_model_line(n, model), out)
     valid = "".join(str(n) for n in range(1, len(shown) + 1))
@@ -563,9 +579,9 @@ class MockSource(ContentSource):
             {"model_id": "practice-large", "display_name": "Practice Large"},
         ]
 
-    def rewrite(self, item: Item, model_id: str) -> str:
-        self.log.append(("rewrite", f"{item.key}:{model_id}"))
-        return f"would rewrite with {model_id} (practice: nothing was sent)"
+    def rewrite(self, item: Item, model_id: str, mode: str = "fix") -> str:
+        self.log.append((mode, f"{item.key}:{model_id}"))
+        return f"would {mode} it with {model_id} (practice: nothing was sent)"
 
 
 class SkipStore:
@@ -746,6 +762,7 @@ def render_item(item: Item, index: int, total: int, now: datetime, width: int | 
 class Summary:
     approved: int = 0
     rejected: int = 0
+    fixed: int = 0
     rewritten: int = 0
     skipped: int = 0
     errors: int = 0
@@ -758,7 +775,9 @@ class Summary:
     @property
     def reviewed(self) -> int:
         """Items settled one way or another (a failed attempt is not: the item is still waiting)."""
-        return self.approved + self.rejected + self.rewritten + self.skipped + self.already_handled
+        return (
+            self.approved + self.rejected + self.fixed + self.rewritten + self.skipped + self.already_handled
+        )
 
     @property
     def remaining(self) -> int:
@@ -770,6 +789,8 @@ class Summary:
 
     def line(self) -> str:
         parts = f"{self.approved} approved, {self.rejected} rejected, {self.skipped} skipped"
+        if self.fixed:
+            parts += f", {self.fixed} sent for a Fix"
         if self.rewritten:
             parts += f", {self.rewritten} sent for a Re-Write"
         if self.errors:
@@ -872,8 +893,8 @@ def _decide(source, item, summary, store, dry_run, key_reader, out) -> None:
             if not dry_run:
                 store.add(item.skip_key)
             return
-        if key == "w" and item.can_rewrite:
-            if _rewrite(source, item, summary, store, dry_run, key_reader, out):
+        if key in REWRITE_KEYS and item.can_rewrite:
+            if _rewrite(source, item, summary, store, dry_run, key_reader, out, REWRITE_KEYS[key]):
                 return
             continue
         if key in ("y", "r"):
@@ -885,7 +906,7 @@ def _decide(source, item, summary, store, dry_run, key_reader, out) -> None:
                 return
             # a failure: stay on this item so you can retry it, skip it, or quit
             continue
-        _emit("  Press y, r, w, z, v or q." if item.can_rewrite else "  Press y, r, z, v or q.", out)
+        _emit("  Press y, r, f, w, z, v or q." if item.can_rewrite else "  Press y, r, z, v or q.", out)
 
 
 def _emit_summary(summary: Summary, limit: int, out) -> None:
@@ -911,34 +932,42 @@ def _confirmed(key_reader: Callable[[], str], out) -> bool:
     return answer == "y"
 
 
-def _rewrite(source, item, summary, store, dry_run, key_reader, out) -> bool:
-    """Ask for a model and start a Re-Write. True when it is settled (started, or already
-    handled elsewhere); False to stay on the item (backed out, or it failed)."""
+def _rewrite(source, item, summary, store, dry_run, key_reader, out, mode: str = "fix") -> bool:
+    """Ask for a model and start a Fix or Re-Write (`mode`). True when it is settled (started, or
+    already handled elsewhere); False to stay on the item (backed out, or it failed)."""
+    label = MODE_LABELS[mode]
     try:
         models = source.rewrite_models()
     except ApiError as exc:
         _emit(f"  ! Could not read the models: {exc.message}", out)
         return False
-    model_id = choose_model(models, key_reader, out)
+    model_id = choose_model(models, key_reader, out, label)
     if model_id is None:
         return False
+
+    def count() -> None:
+        if mode == "fix":
+            summary.fixed += 1
+        else:
+            summary.rewritten += 1
+
     if dry_run:
-        _emit(f"  (dry run) would rewrite with {model_id}.", out)
-        summary.rewritten += 1
+        _emit(f"  (dry run) would {mode} it with {model_id}.", out)
+        count()
         return True
     try:
-        message = source.rewrite(item, model_id)
+        message = source.rewrite(item, model_id, mode)
     except ApiError as exc:
         if exc.status == 409:
             _emit("  Already handled elsewhere: nothing to do.", out)
             summary.already_handled += 1
             store.forget(item.skip_key)
             return True
-        _emit(f"  ! Could not start a Re-Write: {exc.message}", out)
+        _emit(f"  ! Could not start a {label}: {exc.message}", out)
         summary.errors += 1
         return False
     _emit(f"  OK: {message}", out)
-    summary.rewritten += 1
+    count()
     store.forget(item.skip_key)
     return True
 

@@ -41,20 +41,22 @@ class Suggestion:
     what_it_does: str | None = None  # what running it changes, so the operator knows before they do
 
 
-_REWRITE_PUBLISHED = (
-    "Rewrites the article in the background while it stays up, with your note as the thing to "
-    "fix. When the rewrite is ready the article comes down, with its musings, and the rewrite "
-    "waits in the inbox. If the rewrite fails, nothing changes."
+# A fault in one place is a Fix (common/rewrite.py): the model corrects what the note says and
+# keeps the rest of the article as it is. `articles rewrite` writes a new article, never needed here.
+_FIX_PUBLISHED = (
+    "Fixes the article in the background while it stays up, with your note as the thing to "
+    "correct; the rest of it is kept as it is. When the fix is ready the article comes down, with "
+    "its musings, and the fixed article waits in the inbox. If the fix fails, nothing changes."
 )
 
 # Kinds of finding -> what to suggest. The keys are the only kinds a tool may report.
 CATALOGUE: dict[str, Suggestion] = {
     "draft_truncated": Suggestion(
-        action="Rewrite the article so it is finished",
-        arguments='articles rewrite {id} -i "the draft was cut short"',
+        action="Fix the article so it is finished",
+        arguments='articles fix {id} -i "the draft was cut short"',
         what_it_does=(
-            "Rewrites the article in the background, with your note as the thing to fix. "
-            "The rewrite goes through the reviews again and comes back to the inbox."
+            "Fixes the article in the background, with your note as the thing to correct and the "
+            "rest kept as it is. The fix goes through the reviews again and comes back to the inbox."
         ),
     ),
     # Professor Grizzlewick approved a financial article (common/reviewer.py): a person checks it.
@@ -105,7 +107,7 @@ CATALOGUE: dict[str, Suggestion] = {
             "once and is reviewed twice more, and is put back again if a review is not confident."
         ),
     ),
-    # A blank musing is fixed where it is: the article is fine, so it is not rewritten.
+    # A blank musing is fixed where it is: the article is fine, so it is not sent back.
     "musing_no_text": Suggestion(
         action="Have the article's blank musing written again",
         arguments="musings regenerate --article {id}",
@@ -119,22 +121,22 @@ CATALOGUE: dict[str, Suggestion] = {
     # Published things that look wrong (content.py). The words after -i are fixed per kind, for
     # the operator to edit before running: never the title or the body itself.
     "title_markup": Suggestion(
-        action="Rewrite the article so its title is plain text",
-        arguments='articles rewrite {id} -i "the title has markdown around it"',
-        what_it_does=_REWRITE_PUBLISHED,
+        action="Fix the article so its title is plain text",
+        arguments='articles fix {id} -i "the title has markdown around it"',
+        what_it_does=_FIX_PUBLISHED,
     ),
     "body_code_fence": Suggestion(
-        action="Rewrite the article so its body is not a block of code",
-        arguments='articles rewrite {id} -i "the whole body is inside a code fence"',
-        what_it_does=_REWRITE_PUBLISHED,
+        action="Fix the article so its body is not a block of code",
+        arguments='articles fix {id} -i "the whole body is inside a code fence"',
+        what_it_does=_FIX_PUBLISHED,
     ),
     "title_markup_and_body_code_fence": Suggestion(
-        action="Rewrite the article so its title is plain text and its body is not a block of code",
+        action="Fix the article so its title is plain text and its body is not a block of code",
         arguments=(
-            'articles rewrite {id} -i "the title has markdown around it and the whole body is '
+            'articles fix {id} -i "the title has markdown around it and the whole body is '
             'inside a code fence; remove both"'
         ),
-        what_it_does=_REWRITE_PUBLISHED,
+        what_it_does=_FIX_PUBLISHED,
     ),
     # Sign-ins to the assistant itself (sign_in_tool.py). The id is a username an administrator made.
     "sign_in_locked": Suggestion(
