@@ -15,7 +15,7 @@ import pytest
 from moto import mock_aws
 from table_schemas import KEYS
 
-from common import dynamo, model_cull, model_fleet
+from common import dynamo, evals_settings, model_cull, model_fleet
 from ops_agent import policy
 from ops_mcp import memory, model_ranch, suggestions
 
@@ -488,6 +488,32 @@ def test_a_culled_model_put_back_by_a_restore_is_not_waiting_to_be_culled_again(
     result = model_ranch.model_ranch(now=later)
     assert cull_card(result) is None and "A cull proposal" not in result["spoken"]
     assert model_cull.apply(later)["culled_ids"] == []
+
+
+def test_the_next_cycles_proposal_after_an_earlier_apply_is_waiting_in_full(culling):
+    """The weekly cycle updates `cull_proposal` alone, so the last apply's `last_cull_apply` stays on
+    the state row beside the new proposal. That apply belongs to the earlier proposal, so its leftovers
+    must not stand in for the new one: every model the new proposal names is waiting."""
+    put_model(culling, QUIET, **BELOW_THE_TOTAL_GATE)
+    put_proposal(culling)
+    assert model_cull.apply(NOW)["culled_ids"] == [QUIET]
+
+    later_model = "maker.later-v1:0"
+    put_model(culling, later_model, **BELOW_THE_TOTAL_GATE)
+    # The real writer, at the time the first proposal expires: next Friday's cycle.
+    next_cycle = datetime(2026, 11, 5, 17, 0, tzinfo=UTC)
+    assert model_fleet.cull_proposal(evals_settings.get_settings(), next_cycle)["proposed"] == 1
+    state = dynamo.get_config_row(model_fleet.STATE_ID)
+    # Were the row replaced, the earlier apply would be gone and this test would pass whatever the
+    # ranch's match of the apply to its proposal did.
+    assert state["last_cull_apply"]["proposed_at"] == "2026-10-30T04:00:00+11:00"
+    assert state["cull_proposal"]["proposed_at"] == next_cycle.isoformat()
+
+    result = model_ranch.model_ranch(now=NOW + timedelta(days=7))
+
+    assert cull_card(result)["where"]["models"] == 1
+    assert [entry["model_id"] for entry in result["cull_proposal"]["models"]] == [later_model]
+    assert "A cull proposal of 1 model is waiting." in result["spoken"]
 
 
 def test_what_is_said_names_the_gated_model_and_the_weakest_pairing_in_under_120_words(ranch):
