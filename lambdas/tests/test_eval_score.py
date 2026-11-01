@@ -18,7 +18,11 @@ message is scored once; resume sends only what has no result (an error has none)
 scored; a verdict once written is never lost to a failure after it; a scoring run never trips the
 judge's wire; the results add up from the rows; a past article's draft prompt is rebuilt byte for byte
 as the daily cycle sent it, without a write; and no offline or judge code writes to S3 or the
-prompt-hash table.
+prompt-hash table. And: the judge is none of the models it scores through another inference profile
+either; a run one of whose messages can cost more than the whole daily cap is refused (its dry run and
+resume too), and such a message, the cap lowered since, is counted finished for resume rather than sent
+back every 900 s; and a failure before the claim never loses a message (eval-work delivers it again
+when the run's header could not be read; after that it is counted finished for resume).
 """
 
 from __future__ import annotations
@@ -28,20 +32,24 @@ import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 from table_schemas import KEYS, create_table
 
 import daily_cycle_handler
+import eval_jobs_handler
 from common import (
     dynamo,
     eval_judge,
     eval_score,
     evals,
     evals_rollup,
+    evals_settings,
     goal_rotation,
     prompts,
     prompts_registry,
@@ -373,6 +381,32 @@ def test_the_judge_may_be_none_of_the_models_it_scores(aws):
     # Named by its ARN, the judge is still the same model.
     arn = f"arn:aws:bedrock:{REGION}::foundation-model/{CANDIDATE}"
     assert refused(judge_model_id=arn).status == 400
+
+
+# One model reached through two system-defined inference profiles, each a registry row of its own
+# (model_catalog.account_models), so both can be live in one deployment.
+JUDGE_AU, JUDGE_GLOBAL = f"au.{JUDGE}", f"global.{JUDGE}"
+
+
+def test_the_judge_may_not_be_a_candidate_reached_through_another_geo_profile(aws):
+    for model_id in (JUDGE_AU, JUDGE_GLOBAL):
+        put_model(aws, model_id)
+    put_article(aws)
+    caught = refused(judge_model_id=JUDGE_GLOBAL, model_ids=[JUDGE_AU])
+    assert caught.status == 400 and "is one of the models it would score" in caught.message
+    # Two routes to one model as two candidates are no judge-author conflict: each is scored.
+    put_model(aws, f"au.{CANDIDATE}")
+    status, _ = start(judge_model_id=JUDGE, model_ids=[CANDIDATE, f"au.{CANDIDATE}"], dry_run=True)
+    assert status == 200
+
+
+def test_an_article_drafted_on_the_judges_model_through_another_geo_profile_is_no_item(aws):
+    """The live version is drafted through the au. profile; a judge on the global. one would compare its
+    own draft."""
+    article = put_article(aws, drafter=JUDGE_AU)
+    assert eval_score._eligible(article, JUDGE_GLOBAL, {}) is None
+    assert eval_score._eligible(article, JUDGE, {}) is None
+    assert eval_score._eligible(article, OTHER, {}) is not None
 
 
 @pytest.mark.parametrize(
@@ -828,6 +862,97 @@ def test_the_cap_check_counts_a_retried_draft_so_no_one_message_takes_the_day_pa
     assert result["status"] == "paused" and models.calls == []
 
 
+# --- a message whose most is more than the whole day's cap -----------------------------------------------
+
+# A candidate priced as a large model (0.015 / 0.075 USD per 1K tokens): its draft at one attempt is
+# 12,000 x 0.015 + 4,096 x 0.075 = 0.4872 USD, so one message is priced at A$0.80952, well under the A$2
+# cap; but its retried draft can bill 24,000 x 0.015 + 12,288 x 0.075 = 1.2816 USD (A$1.9224), and with
+# the live draft's retry (A$0.12816) and the verdict (A$0.03) one message's most is A$2.08056: more than
+# the whole day's cap, so no day ever leaves enough for it.
+BIG_PRICES = {
+    "input_price_usd_per_1k_tokens": Decimal("0.015"),
+    "output_price_usd_per_1k_tokens": Decimal("0.075"),
+}
+# One message's most on the fixture's models: two retried drafts (A$0.12816 each) and a verdict (A$0.03).
+MESSAGE_MOST_AUD = 0.28632
+
+
+def test_a_run_one_of_whose_messages_can_cost_more_than_the_whole_days_cap_is_refused(aws, models):
+    put_model(aws, CANDIDATE, **BIG_PRICES)
+    put_article(aws)
+    queue = FakeQueue()
+
+    with pytest.raises(eval_score.Refused) as caught:
+        start(queue, sample=1)
+
+    assert caught.value.status == 409 and "more than the whole daily evals spend cap" in caught.value.message
+    assert caught.value.extra["message_ceiling_aud"] == 2.0806
+    assert queue.sent == [] and eval_score.list_runs()["count"] == 0
+    # A dry run is refused too: no day could run it, so there is nothing to ask the operator.
+    assert refused(sample=1, dry_run=True).status == 409
+    # Under the cap, the plan shows one message's most.
+    put_model(aws, CANDIDATE)
+    assert start(sample=1, dry_run=True)[1]["message_ceiling_aud"] == round(MESSAGE_MOST_AUD, 4)
+
+
+def test_a_message_whose_most_is_more_than_the_whole_cap_is_finished_not_sent_back_every_day(aws, models):
+    """The run fitted when it started; the cap was lowered under one message's most before the message
+    was delivered. No day can pay for it, so waiting 900 s at a time would never end: the message is
+    counted finished with no row, the run closes, and resume sends it again once the cap is raised."""
+    put_article(aws)
+    run_id, queue = started(aws, sample=1)
+    set_evals(aws, evals_daily_spend_cap_aud=Decimal("0.2"))
+    back = FakeQueue()
+
+    [result] = consume_all(queue.records(), now=NOW + timedelta(days=1), queue=back)
+
+    assert result == {"status": "dropped", "reason": "over_cap"}
+    assert back.sent == [] and models.calls == [] and rows(aws, run_id) == []
+    assert meta(aws, run_id)["status"] == "done" and meta(aws, run_id)["finished_items"] == {0}
+    assert evals_item(aws, "spend", "day#2026-10-28") is None  # nothing was held
+
+    set_evals(aws, evals_daily_spend_cap_aud=Decimal("2"))
+    tomorrow = NOW + timedelta(days=1)
+    assert eval_score.resume(run_id, now=tomorrow, sqs=(again := FakeQueue()))["resent"] == 1
+    assert consume_all(again.records(), now=tomorrow) == [{"status": "scored", "verdict": "good"}]
+    assert meta(aws, run_id)["status"] == "done"
+
+
+def test_resume_is_refused_when_one_message_can_cost_more_than_the_whole_cap(aws, models):
+    """Resume checks the run's one-attempt estimate (A$0.12744 a message here), which fits a A$0.2 cap;
+    a message's most (two retried drafts and a verdict) fits no day under that cap."""
+    put_article(aws)
+    run_id, _ = started(aws, sample=1)
+    eval_score.cancel(run_id, now=NOW)
+    set_evals(aws, evals_daily_spend_cap_aud=Decimal("0.2"))
+    again = FakeQueue()
+
+    with pytest.raises(eval_score.Refused) as caught:
+        eval_score.resume(run_id, now=NOW + timedelta(days=1), sqs=again)
+
+    assert caught.value.status == 409 and "more than the whole daily evals spend cap" in caught.value.message
+    assert caught.value.extra["message_ceiling_aud"] == round(MESSAGE_MOST_AUD, 4)
+    assert again.sent == [] and meta(aws, run_id)["status"] == "cancelled"
+
+
+def test_resume_prices_a_message_without_the_live_draft_its_item_has_kept(aws, models):
+    """The consumer holds the live version's draft only while the item has none kept (live#<n>), so
+    resume measures each message against the whole cap the same way: one whose item's live draft is kept
+    fits a cap that two retried drafts would not."""
+    put_article(aws)
+    run_id, queue = started(aws, model_ids=[CANDIDATE, OTHER], sample=1)
+    first, _ = queue.records()
+    consume_all([first])  # the item's live draft is kept
+    eval_score.cancel(run_id, now=NOW)
+    set_evals(aws, evals_daily_spend_cap_aud=Decimal("0.2"))  # over one retried draft and a verdict
+    tomorrow = NOW + timedelta(days=1)
+
+    answer = eval_score.resume(run_id, now=tomorrow, sqs=(again := FakeQueue()))
+
+    assert answer["resent"] == 1
+    assert consume_all(again.records(), now=tomorrow) == [{"status": "scored", "verdict": "good"}]
+
+
 def first_message_hold_aud() -> float:
     """What the consumer holds for an item's first message: the most it can cost, two drafts (the
     candidate's and the live one on AUTHOR) with their retries and a verdict."""
@@ -1047,6 +1172,17 @@ def test_the_judge_is_neither_model_on_the_article_as_it_is_now(aws, models):
     assert models.calls == [] and meta(aws, run_id)["status"] == "done"
 
 
+def test_the_judge_is_neither_model_through_another_geo_profile_on_the_article_as_it_is_now(aws, models):
+    for model_id in (JUDGE_AU, JUDGE_GLOBAL):
+        put_model(aws, model_id)
+    put_article(aws)
+    run_id, queue = started(aws, judge_model_id=JUDGE_GLOBAL)
+    put_article(aws, drafter=JUDGE_AU)  # its lineage now says the judge's model drafted it, through au.
+
+    assert consume_all(queue.records()) == [{"status": "judge_is_author"}]
+    assert models.calls == [] and meta(aws, run_id)["status"] == "done"
+
+
 def test_an_item_whose_findings_are_gone_has_no_verdict_and_its_run_still_closes(aws, models):
     put_article(aws)
     run_id, queue = started(aws)
@@ -1119,6 +1255,117 @@ def test_a_verdict_whose_write_lost_its_reply_is_not_overwritten_by_the_failure(
     [row] = rows(aws, run_id)
     assert (row["outcome"], row["verdict"]) == ("scored", "good") and "stage" not in row
     assert meta(aws, run_id)["status"] == "done" and meta(aws, run_id)["finished_items"] == {0}
+
+
+# --- a failure before the claim --------------------------------------------------------------------------
+
+
+def _throttled(operation: str) -> ClientError:
+    error = {"Code": "ProvisionedThroughputExceededException", "Message": "Rate of requests exceeds"}
+    return ClientError({"Error": error}, operation)
+
+
+class ThrottledOnce:
+    """The Evals table, whose first `method` call on a row whose sort key starts with `prefix` is
+    throttled; every other call reaches the table."""
+
+    def __init__(self, table, method: str | None, prefix: str | None):
+        self.table, self.method, self.prefix, self.throttled = table, method, prefix, []
+
+    def __getattr__(self, name):
+        if name != self.method:
+            return getattr(self.table, name)
+
+        def once(**kwargs):
+            sk = str((kwargs.get("Key") or kwargs.get("Item") or {}).get("sk", ""))
+            if not self.throttled and sk.startswith(self.prefix):
+                self.throttled.append(sk)
+                raise _throttled(name)
+            return getattr(self.table, name)(**kwargs)
+
+        return once
+
+
+CONTEXT = SimpleNamespace(aws_request_id="req-1")
+
+
+def deliver(records: list[dict]) -> list[dict]:
+    """eval-work's mapping: each record to eval-jobs in a batch of its own (with the message id the
+    mapping gives it), delivered again while the answer names it among its batchItemFailures, up to the
+    queue's three receives (then its DLQ has it). Every answer, in order."""
+    answers = []
+    for m, record in enumerate(records):
+        record = {"messageId": f"message-{m}", **record}
+        for _ in range(3):
+            answer = eval_jobs_handler.handler({"Records": [record]}, CONTEXT)
+            answers.append(answer)
+            if {"itemIdentifier": record["messageId"]} not in answer.get("batchItemFailures", []):
+                break
+    return answers
+
+
+@pytest.mark.parametrize(
+    "method,prefix",
+    [("get_item", "meta"), ("get_item", "item#"), ("get_item", "live#"), ("update_item", "day#"),
+     ("put_item", "item#"), (None, None)],
+    ids=["the run's header", "the item's row", "the live draft's row", "the cap's hold", "the claim",
+         "the settings"],
+)  # fmt: skip
+def test_a_transient_failure_before_the_claim_never_loses_the_message(aws, models, method, prefix):
+    """eval-work's mapping deletes a record whenever eval-jobs answers without naming it among its batch
+    item failures. A score message whose consumer fails before it claims the item's row has no row, so
+    it must not simply vanish, leaving its run open for good: a failure reading the run's header (before
+    anything says which of the run's messages it is) has eval-work deliver it again; a later one counts
+    it finished with no row, so the run closes and `evals runs resume` sends it again."""
+    put_article(aws)
+    run_id, queue = started(aws)
+    table = ThrottledOnce(aws.Table("Evals"), method, prefix)
+    real_settings, settings_calls = evals_settings.get_settings, []
+
+    def settings_throttled_once():
+        if method is None and not settings_calls:
+            settings_calls.append(1)
+            raise _throttled("GetItem")
+        return real_settings()
+
+    with (
+        patch.object(evals_rollup, "evals_table", return_value=table),
+        patch.object(evals_settings, "get_settings", side_effect=settings_throttled_once),
+    ):
+        answers = deliver(queue.records())
+
+    assert table.throttled or settings_calls  # the failure did happen, before the claim
+    header = meta(aws, run_id)
+    assert header["status"] == "done" and header["finished_items"] == {0}
+    if prefix == "meta":
+        assert answers[0]["batchItemFailures"] == [{"itemIdentifier": "message-0"}]
+        assert [answer["results"][0]["status"] for answer in answers] == ["retry", "scored"]
+    else:
+        assert len(answers) == 1 and "batchItemFailures" not in answers[0]
+        assert rows(aws, run_id) == [] and models.calls == []
+        assert eval_score.resume(run_id, now=NOW, sqs=(again := FakeQueue()))["resent"] == 1
+        assert consume_all(again.records()) == [{"status": "scored", "verdict": "good"}]
+    assert [row["outcome"] for row in rows(aws, run_id)] == ["scored"]
+    days = aws.Table("Evals").query(
+        KeyConditionExpression="entity = :e", ExpressionAttributeValues={":e": "spend"}
+    )["Items"]
+    assert days and all(day["held_aud"] == 0 for day in days)  # no hold is left behind
+
+
+def test_a_failure_marking_the_run_running_after_the_claim_is_the_messages_result(aws, models, capsys):
+    """Once the row is claimed, a failure is recorded as the message's outcome (an error, which resume
+    sends again), never left as a live claim that resume holds back for CLAIM_STALE."""
+    put_article(aws)
+    run_id, queue = started(aws)
+
+    with patch.object(eval_judge, "_set_status", side_effect=_throttled("UpdateItem")):
+        assert consume_all(queue.records()) == [{"status": "error"}]
+
+    [row] = rows(aws, run_id)
+    assert (row["outcome"], row["stage"]) == ("error", "unexpected")
+    assert meta(aws, run_id)["status"] == "done" and models.calls == []
+    assert "ProvisionedThroughputExceededException" in capsys.readouterr().out
+    assert eval_score.resume(run_id, now=NOW, sqs=FakeQueue())["resent"] == 1
 
 
 CANDIDATE_CALL_AUD = (1000 * 0.001 + 100 * 0.005) / 1000 * 1.5

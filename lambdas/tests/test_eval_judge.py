@@ -21,7 +21,8 @@ the call's cost is counted, and left counted, never in place of the paid verdict
 an article's pair row records the text it judged; a failure after the run's header is read still
 counts the item finished, judged when its pair row was written; the judge's call is never traced; a
 cancelled run's item is dropped; a retried message counts once; a run that marks more than 80% of at
-least 10 judged items bad turns the judge off, once; the two rubrics are code-only specs pinned at v1.
+least 10 judged items bad turns the judge off, once; the two rubrics are code-only specs pinned at v1;
+and the judge is never the author's model reached through another inference profile either.
 """
 
 from __future__ import annotations
@@ -617,6 +618,53 @@ def test_an_item_with_no_recorded_author_is_skipped_for_there_is_no_model_to_sco
     assert consume(finding_item()) == {"status": "skipped", "reason": "no_author"}
     assert model.calls == []
     assert evidence_lines(capsys.readouterr().out, "judge_skipped")[0]["code"] == "no_author"
+
+
+# One model reached through two system-defined inference profiles: model_catalog.account_models registers
+# each profile as a registry row of its own, so both can be live in one deployment.
+AUTHOR_AU, AUTHOR_GLOBAL = f"au.{AUTHOR}", f"global.{AUTHOR}"
+
+
+def test_the_same_model_through_another_geo_profile_or_its_arn_is_still_the_author():
+    """pick_judge sees the model, not the route to it (section 3, deviation 9)."""
+    record = {"lineage": {"calls": drafted(AUTHOR_AU)}}
+    authors = eval_judge.judged_authors(record, {"model_id": AUTHOR_AU})
+    assert eval_judge.pick_judge([AUTHOR_GLOBAL], authors) is None
+    assert eval_judge.pick_judge([AUTHOR_GLOBAL, FALLBACK], authors) == FALLBACK
+    arn = f"arn:aws:bedrock:{REGION}:123456789012:inference-profile/{AUTHOR_AU}"
+    assert eval_judge.pick_judge([arn, FALLBACK], frozenset({AUTHOR_GLOBAL})) == FALLBACK
+    # The author's own record keeps the route it was called by.
+    assert authors == {AUTHOR_AU}
+
+
+def test_a_judge_on_another_geo_profile_of_the_authors_model_never_judges_its_article(aws, model, written):
+    """The article was written through the au. profile and judge_model_id names the global. one, the
+    same model: the chain's next option, the default row's fallback, judges it."""
+    for model_id in (AUTHOR_AU, AUTHOR_GLOBAL):
+        put_model(aws, model_id)
+    set_evals(aws, judge_model_id=AUTHOR_GLOBAL)
+    put_article(aws, drafter=AUTHOR_AU)
+    start_run(aws)
+
+    consume(article_item())
+
+    assert model.models == [FALLBACK]
+
+
+def test_a_finding_on_one_geo_profile_is_never_judged_by_its_model_on_another(aws, model, written):
+    """The default row's fallback (judge chain option 2) is the au. profile and the Finding's summary was
+    written through the global. one: the model must not judge its own Finding."""
+    for model_id in (AUTHOR_AU, AUTHOR_GLOBAL):
+        put_model(aws, model_id)
+    aws.Table("ModelConfig").put_item(
+        Item={"config_id": "default", "model_id": DEFAULT, "fallback_model_id": AUTHOR_AU}
+    )
+    put_finding(aws, author=AUTHOR_GLOBAL)
+    start_run(aws)
+
+    consume(finding_item())
+
+    assert model.models == [DEFAULT]
 
 
 def _delete_object(key: str) -> None:

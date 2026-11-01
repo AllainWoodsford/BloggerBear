@@ -30,7 +30,8 @@ attempts are billed, so that draft costs about two and a half times its estimate
 when its estimate is more than today's cap leaves (eval_judge.remaining_aud, the day row the judge spends
 against), when it is more than `score_max_cost_aud` without `yes`, and when it records without `yes`. A
 `dry_run` answers the plan and writes nothing: the CLI shows it, with the environment, and asks before
-it starts the run.
+it starts the run. A run one of whose messages can cost more than the whole daily cap, its drafts retried
+(most_per_message_aud), is refused outright, its dry run too: no day could pay for that message.
 
 **The run** is the evals table's `run#<run_id>` (section 4.4): its header (`meta`: status, estimate_aud,
 spent_aud, created_at, the combinations and the items) and a row per item and combination,
@@ -66,7 +67,11 @@ that fails, or a failure it does not expect once the row is claimed, is recorded
 outcome (`error`), so the run still closes; an error is no result, so `resume` sends the message again
 and the retry keeps what the failed attempt spent on the row. A result already written is never
 rewritten by a failure after it (counting the message finished, say): that is tried again instead. A
-consumer that dies leaves its claim, which goes stale after CLAIM_STALE.
+consumer that dies leaves its claim, which goes stale after CLAIM_STALE. A failure before the row is
+claimed, and a message that can cost more than the whole cap (lowered since the run was started), count
+the message finished with no row, so the run closes and `resume` sends it again; a failure reading the
+run's header, before the message can be placed in its run, has eval-work deliver it again
+(eval_judge.RETRY).
 """
 
 from __future__ import annotations
@@ -223,8 +228,9 @@ def parse_request(body) -> dict:
         if canonical_model_id(model_id) in {canonical_model_id(seen) for seen in candidates}:
             raise Refused(400, f"'{model_id}' is named twice in 'model_ids'")
         candidates.append(model_id)
-    # The judge is never an author (section 3, deviation 9): it compares each candidate model's draft.
-    if canonical_model_id(judge) in {canonical_model_id(model_id) for model_id in candidates}:
+    # The judge is never an author (section 3, deviation 9): it compares each candidate model's draft. As
+    # models (eval_judge.same_model): through another inference profile it is still the same model.
+    if eval_judge.same_model(judge) in {eval_judge.same_model(model_id) for model_id in candidates}:
         raise Refused(400, f"the judge '{judge}' is one of the models it would score: name another judge")
     prompt_id = body.get("prompt_id")
     if prompt_id not in SCORABLE:
@@ -335,7 +341,7 @@ def _eligible(article: dict, judge: str, topics: dict) -> dict | None:
     if topic_id is None or article_id is None or live_model is None:
         return None
     # The judge is neither model it compares; the live version is drafted on a model still fit to draft.
-    if canonical_model_id(live_model) == canonical_model_id(judge) or not eval_judge._fit(live_model):
+    if eval_judge.same_model(live_model) == eval_judge.same_model(judge) or not eval_judge._fit(live_model):
         return None
     if topic_id not in topics:
         topics[topic_id] = dynamo.get_topic(topic_id)
@@ -403,6 +409,41 @@ def estimate_aud(judge: str, combos: list[dict], items: list[dict]) -> float:
         draft(combo["model_id"]) + draft(item["live_model_id"]) + compare
         for item in items
         for combo in combos
+    )
+
+
+def message_ceiling_aud(judge: str, candidate: str, live_model: str | None) -> float:
+    """The most one message can cost: the candidate's draft and, while its item has no live draft kept
+    (`live_model`; None once it has), the live version's, each retried (_draft_ceiling_tokens), and the
+    verdict. The consumer holds this much of the day's cap before its calls."""
+    draft_in, draft_out = _draft_ceiling_tokens()
+    most = eval_judge.call_cost_aud(candidate, draft_in, draft_out) + eval_judge.call_cost_aud(
+        judge, COMPARE_ESTIMATE_INPUT_TOKENS, COMPARE_MAX_TOKENS
+    )
+    if live_model is not None:
+        most += eval_judge.call_cost_aud(live_model, draft_in, draft_out)
+    return most
+
+
+def most_per_message_aud(judge: str, pairs) -> float:
+    """The most any one message can cost (message_ceiling_aud) of `pairs`, each a message's candidate
+    model and its item's live model (None where that draft is kept). A run with a message whose most is
+    more than the whole daily cap is refused (start, resume): no day could ever pay for it, so the
+    consumer would send it back to wait for a day that never comes."""
+    return max(message_ceiling_aud(judge, candidate, live) for candidate, live in set(pairs))
+
+
+def _refuse_over_whole_cap(most: float, settings: dict, **figures) -> None:
+    """Refused (409) when one of a run's messages can cost `most`, more than the whole daily cap."""
+    cap = float(settings["evals_daily_spend_cap_aud"])
+    if most <= cap:
+        return
+    raise Refused(
+        409,
+        f"one message can cost up to A${most:.4f} with its retried drafts, more than the whole daily evals "
+        f"spend cap (A${cap:g}), so no day could pay for it: raise the cap with `evals set "
+        "--daily-spend-cap`, or score cheaper models",
+        **{"message_ceiling_aud": round(most, 4), **figures},
     )
 
 
@@ -487,6 +528,7 @@ def start(body, *, now: datetime | None = None, sqs=None) -> tuple[int, dict]:
             "and whose draft's model is recorded, fit to draft and not the judge"
         )
     estimate = estimate_aud(judge, combos, items)
+    most = most_per_message_aud(judge, [(c["model_id"], i["live_model_id"]) for c in combos for i in items])
     settings = evals_settings.get_settings()
     table = evals_rollup.evals_table()
     remaining = eval_judge.remaining_aud(table, now, settings)
@@ -499,10 +541,13 @@ def start(body, *, now: datetime | None = None, sqs=None) -> tuple[int, dict]:
         "items": len(items),
         "messages": len(items) * len(combos),
         "estimate_aud": round(estimate, 4),
+        "message_ceiling_aud": round(most, 4),
         "remaining_aud": round(max(remaining, 0.0), 4),
         "score_max_cost_aud": settings["score_max_cost_aud"],
         "record": request["record"],
     }
+    # Before a dry run's answer too: no day could run it, so there is nothing to ask the operator.
+    _refuse_over_whole_cap(most, settings, **plan)
     if request["dry_run"]:
         return 200, {"dry_run": True, **plan}
     if estimate > remaining:
@@ -736,9 +781,19 @@ def resume(run_id, *, now: datetime | None = None, sqs=None) -> dict:
     ]
     if not numbers:
         raise Refused(409, f"every message of run {run_id} has its result, or is being scored")
+    settings = evals_settings.get_settings()
+    # Each message to send, priced as its consumer holds it: without the live draft once its item has one.
+    kept = {str(row.get("sk")) for row in _rows(table, run_id, LIVE)}
+    articles = meta["articles"]
+    pairs = [
+        (combos[m // count]["model_id"],
+         None if f"{LIVE}{m % count}" in kept else articles[m % count]["live_model_id"])
+        for m in numbers
+    ]  # fmt: skip
+    _refuse_over_whole_cap(most_per_message_aud(str(meta["judge_model_id"]), pairs), settings)
     total = int(meta.get("messages") or len(combos) * count)
     need = _number(meta.get("estimate_aud")) / total * len(numbers)
-    remaining = eval_judge.remaining_aud(table, now, evals_settings.get_settings())
+    remaining = eval_judge.remaining_aud(table, now, settings)
     if need > remaining:
         raise Refused(
             409, "what is left of the run costs more than today's evals spend cap leaves; try tomorrow, or "
@@ -960,9 +1015,19 @@ def _emit(run_id: str, n: int, combo: dict, item: dict, label: str, delta: int, 
 
 
 def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, sqs) -> dict:
-    """Score one item for one combination of run `run_id` (see the module's docstring for the order)."""
+    """Score one item for one combination of run `run_id` (see the module's docstring for the order).
+    eval-work deletes the message once this returns, so a failure before the item's row is claimed must
+    neither lose it nor leave its run open for good. Reading the run's header, nothing yet says which of
+    the run's messages it is, so it cannot be counted: eval-work is asked to deliver it again
+    (eval_judge.RETRY; after three receives its DLQ has it). After that, a failure is counted finished
+    with no row, as an unsent message is (_count_unsent), so the run still closes and `evals runs
+    resume` sends it again."""
     table = evals_rollup.evals_table()
-    meta = _meta(table, run_id)
+    try:
+        meta = _meta(table, run_id)
+    except Exception as exc:  # noqa: BLE001 - eval-work delivers the message again
+        print(f"eval_score: could not read run {run_id}'s header: {exc!r}; its message is delivered again")
+        return {"status": eval_judge.RETRY}
     if meta is None:
         print(f"eval_score: run {run_id} has no header; its message is dropped")
         return {"status": "dropped", "reason": "no_run"}
@@ -981,7 +1046,24 @@ def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, 
     if meta.get("job") != SCORE_JOB or k is None or not known:
         print(f"eval_score: a message that is not one of run {run_id}'s; dropped")
         return {"status": "refused"}
-    combo, m = combos[k], k * len(articles) + n
+    m = k * len(articles) + n
+    try:
+        return _score_message(table, raw, run_id, meta, item, combos[k], m, now, sqs)
+    except Exception as exc:  # noqa: BLE001 - counted finished with no row: the run closes, resume sends it
+        print(f"eval_score: message {m} of run {run_id} failed before its row was claimed: {exc!r}")
+        try:
+            eval_judge._finish(table, run_id, m, now)
+        except Exception as again:  # noqa: BLE001 - one line: the run stays open without this message
+            print(f"eval_score: could not count message {m} of run {run_id} finished: {again!r}")
+        return {"status": ERROR, "reason": "unexpected"}
+
+
+def _score_message(
+    table, raw: str, run_id: str, meta: dict, item: dict, combo: dict, m: int, now: datetime, sqs
+) -> dict:
+    """_score's work once it knows the message is number `m` of its run. Raises only before the item's
+    row is claimed: once it is, a failure is recorded as the message's outcome."""
+    n, articles = item["n"], meta["articles"]
     ((prompt_id, label),) = combo["prompt_versions"].items()
     key = eval_judge._run_key(run_id, f"{ITEM}{n}#{combo['code']}")
     existing = table.get_item(Key=key, ConsistentRead=True).get("Item")
@@ -995,12 +1077,18 @@ def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, 
     judge, candidate = str(meta["judge_model_id"]), combo["model_id"]
     live_model = str(articles[n]["live_model_id"])
     # The most the message can cost, a retried draft included, so no one message takes the day past it.
-    draft_in, draft_out = _draft_ceiling_tokens()
-    estimate = eval_judge.call_cost_aud(candidate, draft_in, draft_out) + eval_judge.call_cost_aud(
-        judge, COMPARE_ESTIMATE_INPUT_TOKENS, COMPARE_MAX_TOKENS
-    )
-    if table.get_item(Key=eval_judge._run_key(run_id, f"{LIVE}{n}"), ConsistentRead=True).get("Item") is None:
-        estimate += eval_judge.call_cost_aud(live_model, draft_in, draft_out)
+    kept = table.get_item(Key=eval_judge._run_key(run_id, f"{LIVE}{n}"), ConsistentRead=True).get("Item")
+    estimate = message_ceiling_aud(judge, candidate, live_model if kept is None else None)
+    if estimate > float(settings["evals_daily_spend_cap_aud"]):
+        # More than the whole day's cap, lowered since the run was started or resumed (both refuse such a
+        # message): no day can pay for it, so sending it back to wait 900 s would never end. Counted
+        # finished with no row, the run closes, and resume sends it again once the cap is raised.
+        print(
+            f"eval_score: message {m} of run {run_id} can cost up to A${estimate:.4f}, more than the whole "
+            "daily evals spend cap; `evals runs resume` sends it again once the cap is raised"
+        )
+        eval_judge._finish(table, run_id, m, now)
+        return {"status": "dropped", "reason": "over_cap"}
     # Held on the day's spend row before the claim (eval_judge.reserve), so two messages scored at once
     # can never both take the last of the cap; given back once the calls' costs are counted.
     held = eval_judge.reserve(table, now, settings, estimate)
@@ -1010,10 +1098,12 @@ def _score(raw: str, run_id: str, item: dict, combination: dict, now: datetime, 
         row = {**key, "n": n, "combo": combo["code"], **_spent_before(existing)}
         if not _claim(table, row, now):
             return {"status": "dropped", "reason": "being_scored"}
-        eval_judge._set_status(table, run_id, eval_judge.RUNNING, (eval_judge.QUEUED, eval_judge.PAUSED))
         scored_row = {**row, "prompt_id": prompt_id, "prompt_version": label}
         scoring = _Scoring(table, run_id, m, scored_row, settings, now)
         try:
+            # Inside the claim's guard: a failure here is the message's outcome, not a live claim that
+            # resume would hold back until it goes stale.
+            eval_judge._set_status(table, run_id, eval_judge.RUNNING, (eval_judge.QUEUED, eval_judge.PAUSED))
             return _scored(scoring, meta, item, combo, live_model)
         except Exception as exc:  # noqa: BLE001 - recorded as the message's outcome, so the run closes
             print(f"eval_score: item {n} of run {run_id} failed: {exc!r}")
@@ -1098,7 +1188,7 @@ def _scored(scoring: _Scoring, meta: dict, item: dict, combo: dict, live_model: 
     # The judge is neither model it compares (section 3, deviation 9), checked again on the article as
     # it is now.
     live_model = draft_model(article) or live_model
-    if canonical_model_id(judge) in {canonical_model_id(live_model), canonical_model_id(candidate)}:
+    if eval_judge.same_model(judge) in {eval_judge.same_model(live_model), eval_judge.same_model(candidate)}:
         return scoring.done("judge_is_author")
     parts = _daily_cycle().rebuild_draft_prompt(topic, article)
     if parts is None:

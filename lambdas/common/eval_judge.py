@@ -34,7 +34,8 @@ Two halves, both run by eval-jobs (eval_jobs_handler.py):
 (section 4.5): `judge_model_id`, else the model-config default row's `fallback_model_id`, else
 BEDROCK_MODEL_ID, that is fit for text (model_fleet.suitable(TEXT), and not disabled; a model the
 registry has no row for is fit, as model_routing treats it) and wrote none of the item
-(evals.author_of, and the model its verdict scores). When every option wrote it, the item is skipped
+(evals.author_of, and the model its verdict scores), compared as models (`same_model`), so one model
+reached through two inference profiles is one author. When every option wrote it, the item is skipped
 with a `judge_skipped` evidence line. So is an item whose author is not recorded (a Finding from
 before research tracking): there is no model for its verdict to score.
 
@@ -102,12 +103,15 @@ from common.adapters.base import SEEN_KEY
 from common.bedrock import invoke_model_tracked
 from common.costing import USD_TO_AUD_RATE, call_cost_usd, pricing_for
 from common.fresh_review import resolve_review_steering
-from common.model_pricing import canonical_model_id
+from common.model_pricing import base_model_id, canonical_model_id
 from common.relevance import topic_label
 
 JUDGE_JOB = "judge"
 # Offline scoring runs' job (section 5.3), whose consumer is common/eval_score.py.
 SCORE_JOB = "score"
+# What a consumer answers for a record it could not even place in its run (eval_score._score): eval-jobs
+# names that record among its batch item failures, so eval-work delivers it again rather than delete it.
+RETRY = "retry"
 # The events' `source`, and the role code the judge writes as `by` and into a Finding's reviewed_by.
 SOURCE = "eval_jobs"
 ROLE = "judge"
@@ -344,11 +348,20 @@ def fit_options(settings: dict, config: dict | None = None) -> list[str]:
     return [model_id for model_id in chain(settings, config) if _fit(model_id)]
 
 
+def same_model(model_id) -> str | None:
+    """What every id of one model shares, for telling an author from a judge: its base id
+    (model_pricing.base_model_id), with no ARN and no geo prefix. model_catalog registers each system
+    inference profile (au., apac., global., ...) as a row of its own, so two ids of one model can both
+    be live, and a model is no less its own judge through another route to it. None for a non-id."""
+    return base_model_id(model_id) if isinstance(model_id, str) and model_id else None
+
+
 def pick_judge(options: list[str], authors: frozenset[str]) -> str | None:
-    """The first option that wrote none of the item (`authors`, canonical ids); None when every option
-    did."""
+    """The first option that is none of the models that wrote the item (`authors`, compared as models:
+    same_model); None when every option is one of them."""
+    wrote = {same_model(author) for author in authors}
     for model_id in options:
-        if canonical_model_id(model_id) not in authors:
+        if same_model(model_id) not in wrote:
             return model_id
     return None
 
