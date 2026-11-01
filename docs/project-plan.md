@@ -1597,11 +1597,23 @@ Lambda asynchronously with `{"action": "rewrite"}`. It runs there, not in a Lamb
 needs exactly that Lambda's timeout, permissions and CoinGecko key.
 
 - **Input to the model:** the article, the reasons it was held (minus the routine "financial topic"
-  routing reason) and its review notes, the findings it was written from, and fresh data from the adapter.
+  routing reason) and the claims its fresh-data review flagged (minus that review's notes about itself:
+  figures inside the tolerance, a review that could not run, the daily cycle's own correction), the
+  findings it was written from, and fresh data from the adapter.
+- **A correction, not a new article:** the model replies with edits (`{"find": <a passage quoted from
+  the article>, "replace": <its replacement>}`), and code applies them (`apply_edits`), so every
+  sentence no edit quotes comes through exactly as it was. Writing the whole article out again let a
+  rewrite reword sentences nothing was wrong with, and the reviews that ran on it found new problems
+  there: fixing an article became a loop instead of a refinement. A quote that is not in the article
+  (whitespace aside) or is in it more than once, overlapping edits, a reply that changes nothing, and
+  edits that replace more than half the article (`REWRITE_MIN_KEPT`) fail the rewrite. The inbox shows
+  how many passages were edited and how much was kept as it was.
 - **Guards:** the same plain-code checks as the automatic revision (`revision_violations`: no figure or
   link that appears in none of the sources, a sensible title), with a looser length bound and no heading
   check, since fixing "investment advice" can mean removing a section. Then the fresh-data review and the
-  compliance review run again on the new text.
+  compliance review run again on the new text. The compliance review gets the fresh data as a source
+  too (`fresh_data`): the rewrite may correct a figure from it, and checked against the findings alone
+  that corrected figure was held as fabricated.
 - **Always back to a person:** the old item becomes `rewritten`, and a new `pending` item carries the
   rewritten article back to the inbox with the model and cost (`Re-Write #n by <model> (~$x AUD)`). A
   rewrite never publishes anything.
