@@ -15,7 +15,8 @@ production, with an Alexa+ add-on waiting on Amazon's toolkit access), and the v
 OpenCV AI Competition 2026, opt-in through `VISION_ENABLED` and on in dev, where the `rail-cities` topic
 writes up one city a week. The §11 entries below record each pipeline enhancement as it shipped; the
 assistant and the vision work are in `docs/PROGRESS.md` and [docs/architecture/](architecture/README.md).
-Still open: some Phase 0 GitHub/AWS
+Since then (November 2026): the queue platform, prompts as assets, continuous evals and the Model
+Ranch, each behind a switch of its own (§11, the last entry). Still open: some Phase 0 GitHub/AWS
 settings (branch protection, a production reviewer, a shared WAF ACL, a working destroy-dev) and Phase 6's
 WAF tuning -- `docs/PROGRESS.md` tracks them.
 
@@ -56,10 +57,11 @@ WAF tuning -- `docs/PROGRESS.md` tracks them.
 
 ## 4) Pipelines
 ### Research Tick
-0. Heartbeat: each topic has its own EventBridge schedule (`research_cadence`). The tick
-   does real work only when `research_interval_hours` (topic, else pipeline default) has
-   passed since the last run, with 5 minutes' slack for scheduler jitter
-   (`common/research_schedule.py`); otherwise it logs "not due" and stops
+0. Heartbeat: each topic has its own EventBridge schedule (`research_cadence`), or, once it is
+   on the queue platform (`dispatch_mode` `queue`, §11), a job the dispatcher sends to the work
+   queue at the same turns. The tick does real work only when `research_interval_hours` (topic,
+   else pipeline default) has passed since the last run, with 5 minutes' slack for scheduler
+   jitter (`common/research_schedule.py`); otherwise it logs "not due" and stops
 1. Load topic + adapter config
 2. Fetch current source state via adapter (web searches go to GDELT, falling back to
    AgentCore web search when GDELT fails)
@@ -73,6 +75,10 @@ Current schedules (runtime data, set through the Admin API, not Terraform):
   `topics × stagger_minutes` after its hour, then one slot apart. The hand-kept minutes below
   stand until `topics reschedule` is run. A paused topic's schedules are disabled and the tick
   refuses it.
+- **A topic on the queue has no schedules** (§11, "The queue platform, prompts as assets,
+  continuous evals and the Model Ranch"): the dispatcher reads the same effective schedules every
+  minute, sends the topic's research job to the work queue and starts its daily cycle itself.
+  Every topic stays on its schedules until it is moved, one at a time.
 - **Production:** every topic researches every 4 hours on a fixed UTC cron, staggered a
   minute apart (github-trending `:01`, crypto `:02`, tech-market-news `:03`, wow-forever
   `:04`, at 00/04/08/12/16/20 UTC), with a 4-hour interval.
@@ -1652,8 +1658,10 @@ the same failures reproduced from a home connection, so the cause was GDELT's ow
   News RSS is free and fast but unofficial.
 - **Deploy permissions:** the bootstrap deploy roles may manage `bedrock-agentcore:*` only in
   `ap-northeast-1`, plus the `*-agentcore-gateway` role. Bootstrap is applied by hand, and a plan run
-  without its usual `-var`s (`domain_name`, `budget_alert_email`) proposes destroying the DNS zone and the
-  budget alarm -- `prevent_destroy` stops it. Keep them in the git-ignored `infra/bootstrap/terraform.tfvars`.
+  without its usual `-var`s proposes destroying the budget alarm (`budget_alert_email` is empty by
+  default). `domain_name` then takes its default, the original deployment's domain: a deployment on
+  another domain would have its DNS zone replaced, which `prevent_destroy` stops, and one with no zone
+  would get one for that domain. Keep them in the git-ignored `infra/bootstrap/terraform.tfvars`.
 
 Also fixed alongside: the CoinGecko key reached only the research-tick Lambda, so the review (which runs
 in the daily-cycle Lambda) called CoinGecko keyless. Both Lambdas now share `local.coingecko_env_variables`.
@@ -1847,17 +1855,20 @@ the actual API Gateway and AgentCore spend, and why the Historic totals are all 
 - **Scheduler fix:** add `InvokeStatsRollover` and `InvokeCostExplorerPoll` to `scheduler_invoke` in both
   environments, with a test that every `aws_scheduler_schedule` target has a matching invoke statement, so
   a new scheduled Lambda can't miss it again.
-- **Pipeline dashboard (`bloggerbear-<env>-pipeline`):** the metrics have data (24 research-tick runs in a
+- **Pipeline dashboard (`<prefix>-<env>-pipeline`):** the metrics have data (24 research-tick runs in a
   day), but the dashboard sets no time range or period, so it opens on CloudWatch's 3-hour default and
   shows a few dots; and each widget draws Duration (thousands of ms) on the same axis as the counts,
   flattening them. Set a 7-day default with hourly periods, move Duration to the right axis, and add text
-  headers.
+  headers. *(Replaced since, with the Lambda runs dashboard below, by the pipeline-health dashboard:
+  see "The queue platform, prompts as assets, continuous evals and the Model Ranch" at the end of
+  §11.)*
 - **New Lambda runs dashboard:** invocation counts per Lambda (research ticks, daily cycle, digest, musings,
   weekly reflection, rollover, cost poll, the two APIs), plus feedback -- accepted, comments kept,
   rejected, dropped by the screening model, model checks used up -- over whatever span the dashboard's
   time picker sets. The public API now logs a tag-only `accepted a feedback submission (comment kept|vote
   only)` line next to its rejection line, and three more metric filters count them. The pipeline
-  dashboard also gets a "recent errors" log table across every Lambda.
+  dashboard also gets a "recent errors" log table across every Lambda. *(The three metric filters,
+  the feedback totals and the recent-errors table live on in pipeline health.)*
 - **A Lambda's log group before the Lambda:** dev's rebuild after a destroy (2026-10-02) failed with
   `ResourceAlreadyExistsException` on `/aws/lambda/bloggerbear-dev-public-api`. The public API was created
   and deployed, its first request arrived at 14:58:57, and Lambda made the log group itself (no retention)
@@ -1949,9 +1960,12 @@ whole moderation queue, history included.
   (`KEYS_ONLY`). An article's live item is the newest by `created_at`; its full item is then read with a
   strongly consistent GetItem, because index reads can trail the table and the caller acts on `status`.
 - `list_prompt_refinements(topic_id=...)` Queries the table's own hash key instead of scanning.
-- The Lambda role may `dynamodb:Query` on `<table>/index/*` (a separate statement: nothing else runs
-  against an index). The deploy role's `dynamodb:*` on `table/bloggerbear-*` already covers creating
-  indexes, so no bootstrap apply is needed.
+- The Lambda role may `dynamodb:Query` on the indexes of the tables that have one (Articles,
+  ModerationQueue and SecurityEvents: `<table>/index/*`, in a statement of its own, since nothing
+  else runs against an index). A table given an index needs its line there, and
+  `test_terraform_wiring.py` fails until it has one; listing only those tables keeps the role's
+  inline policies inside IAM's 10,240-character cap. The deploy role's `dynamodb:*` on
+  `table/<prefix>-*` already covers creating indexes, so no bootstrap apply is needed.
 - Function signatures and return shapes are unchanged. Test fixtures create tables through
   `lambdas/tests/table_schemas.py`, which holds the same index definitions; a wiring test fails if it and
   Terraform drift apart.
@@ -2025,7 +2039,10 @@ CloudWatch Logs role for it, which is an account-wide singleton, so it lives in 
 (`aws_api_gateway_account`), together with the deploy role's permission for `/aws/apigateway/bloggerbear-*`.
 
 **Dashboards** (`infra/modules/observability/api_waf_dashboards.tf`). Like the pipeline dashboard, both open
-on 7 days of hourly points.
+on 7 days of hourly points. *(Removed since: pipeline health draws each API's requests, errors and
+p95 latency and each web ACL's blocks per rule, and the widgets below are kept as locals in that
+file, drawn by no dashboard. See "The queue platform, prompts as assets, continuous evals and the
+Model Ranch" at the end of §11.)*
 - **API Gateway**, per API:
   - requests, 4XX and 5XX
   - latency against integration latency at p50, p90 and p99
@@ -2061,7 +2078,8 @@ The three scaling PRs above took the limits that were nearest. These are still o
 fix that was sketched for it:
 
 - **Spend has no hard ceiling.** Each call's cost is tracked and the AWS Budget sends an e-mail,
-  but nothing stops a run. The fix is a per-topic and a global token budget, checked in code
+  but nothing stops a run (continuous evals' judge and scoring runs have a daily cap of their own;
+  the pipeline still has none). The fix is a per-topic and a global token budget, checked in code
   before each model call and failing closed, with provisioned throughput or inference profiles for
   headroom.
 - **A compliance failure retries the whole daily cycle.** The state machine retries the 300 s run
@@ -2075,9 +2093,11 @@ fix that was sketched for it:
   real scale, is a second-Region Bedrock fallback, Lambda aliases with traffic shifting in place
   of one all-or-nothing apply, and an identity provider for admin, with roles and a per-person
   audit.
-- **Two schedules per topic** stop fitting in an hour at about twelve topics:
-  [dispatcher-sqs-enhancement.md](enhancements/dispatcher-sqs-enhancement.md), designed and not
-  built.
+
+One more limit was listed here: two schedules per topic, which stop fitting in an hour at about
+twelve topics. It is built: the queue platform (the last entry of §11) puts each topic moved to it
+on one dispatcher and a FIFO work queue, with one setting, `worker_concurrency`, capping how many
+of their research jobs run at once.
 
 ### Paged listings and a shorter pipeline box
 
@@ -2165,14 +2185,15 @@ assistant's catalogue entry. The §7 exception it had is withdrawn.
 
 ### Staggered schedules by slot, pausing a topic, and the digest's steering
 
-**Status: built** (#302; design for the next step in
-docs/enhancements/dispatcher-sqs-enhancement.md).
+**Status: built** (#302). The next step, the dispatcher, is built too: the queue platform, in the
+last entry of this section.
 
 **Problem.** Every topic's two schedules were staggered by hand, a minute apart, so a new topic
 needed a free minute chosen by a person, and a topic could not be stopped without deleting it.
 With every topic's research heartbeat and daily cycle a few minutes apart, the source APIs and
-Bedrock get one caller at a time instead of all of them at once, which is the strategy against
-rate limits until the dispatcher lands.
+Bedrock get one caller at a time instead of all of them at once. That was the whole strategy
+against rate limits until the dispatcher landed; for a topic on the queue, `worker_concurrency`
+now caps the research jobs in flight as well.
 
 **The stagger.** Two settings, both in DynamoDB and both on the admin CLI (`common/stagger.py`):
 
@@ -2203,7 +2224,11 @@ state, both schedules in plain words ("every 4 hours at :05 past", "daily at 09:
 written; `topics reschedule` rewrites every topic's schedules with the stagger as it is now
 (after a change to `stagger_minutes`, after a topic is added or deleted, or to give topics from
 before slots existed their slots, in topic-id order; `--dry-run` shows the plan). Twelve
-five-minute slots fill an hour: beyond that the dispatcher is the answer, not a shorter gap.
+five-minute slots fill an hour. Past that the offsets carry into the hour field as above, and the
+dispatcher, now built, is the answer rather than a shorter gap: a topic moved to the queue keeps its
+slot's minute, the dispatcher reads the same effective schedules, and at most `worker_concurrency`
+research jobs run at once however many topics share a minute. `topics reschedule` writes no
+schedules for a topic on the queue.
 
 **Pausing a topic.** `topics pause <id>` writes `paused = true` (and `paused_at`) on the Topics
 row, which is the source of truth: the research tick and the daily cycle refuse a paused topic
@@ -2258,12 +2283,12 @@ GitHub variable by the deploy workflows (`<SWITCH>_DEV` / `<SWITCH>_PROD`, else 
 | `waf_site_enabled` (production) | no shared CloudFront ACL on the site and the API CDN | about US$7 |
 | `waf_log_all_requests` | the admin ACL logs blocks and counts only | CloudWatch Logs ingestion |
 
-Every firewall resource that gained a `count` has a `moved` block to its new index, so the
-first apply destroys or creates no firewall resource (it adds the resource policy and the admin
-routes, and redeploys each API's stage once). The lists built from those resources (the edge
-dashboard's ACLs, the security-events subscriptions, the assistant's firewall log groups) are
-conditional on the same switches, with the `for _ in (switch ? [1] : [])` idiom the
-observability module already uses, so a switched-off ACL is never read.
+Every firewall resource that gained a `count` has a `moved` block to its new index, so the first
+apply destroys or creates no firewall resource (it adds the resource policy and the admin routes,
+and redeploys each API's stage once). The lists built from those resources (the dashboard's ACLs,
+now pipeline health's, the security-events subscriptions, the assistant's firewall log groups) are
+conditional on the same switches, with the `for _ in (switch ? [1] : [])` idiom the observability
+module already uses, so a switched-off ACL is never read.
 
 **The admin API's allowlist is always on.** The key decision: the operator's addresses
 (`admin_allowed_cidrs`, the same sensitive secret the IP set is built from) are now also the
@@ -2283,3 +2308,72 @@ that back as a change on every plan.
 release host, since the registry is behind this environment's proxy), `terraform fmt`, and
 `lambdas/tests/test_terraform_cost_switches.py`, which holds the switches, the counts, the
 moved blocks, the workflows and the docs to each other.
+
+### The queue platform, prompts as assets, continuous evals and the Model Ranch
+
+**Status: built** (about thirty PRs under the "Model Evals" and "Prompt as Asset" milestones, then
+a bug sweep and a documentation sweep). Each part stays inert, or in shadow, until it is switched
+on: the queue platform one topic at a time, prompts with `PROMPT_AS_ASSET_ENABLED`, continuous evals
+and the Model Ranch with `EVALS_ENABLED` ([configuration.md](configuration.md)).
+
+**Problem.** Prompts were constants in the code: changing one needed a deploy, no version was
+recorded, and nothing measured which model or prompt wrote well. Models were picked at random, by
+price or by access. And every topic had two EventBridge schedules with hand-set stagger slots,
+which stops fitting at about twelve topics, with nothing capping how many model calls run at once.
+
+**The queue platform** (`infra/modules/work-queue`, `common/dispatch.py`). One dispatcher Lambda
+runs every minute and reads every topic's effective schedules through a cron matcher
+(`common/cron_match.py`). For a topic on the queue it sends the research job to a FIFO queue,
+`<prefix>-<env>-work.fifo`, one job per topic at a time, which the research tick takes at most
+`worker_concurrency` at once (`WORKER_CONCURRENCY`, 2 by default); and it starts the daily cycle
+itself, as an execution named `<slug>-<local date>-<n>`, at most `daily_starts_per_tick` a minute. A
+conditional claim on the topic's row stops two ticks doing the same work. Until a topic moves, the
+dispatcher only shadows it, recording on its row what it would have done and counting where that
+differs from what the schedules did. `topics update <id> --dispatch-mode queue` moves one topic once
+shadow mode has watched it clean for a full day (`shadow_clean_days`) and the schedules on record
+are the ones the dispatcher works out now (after a topic is added or deleted, or the stagger
+changes, `topics reschedule` writes them), and deletes its two schedules;
+`topics reschedule --dispatch-mode schedule` puts every topic on the queue back on them. The fixed
+jobs (the reviewer bear, the model catalog, the stats rollover, the cost poll, the weekly
+reflection, musing feedback and the evals' own jobs) keep their schedules.
+
+**Prompts as assets.** Forty prompts are registered (`common/prompts_registry.py`), each with the
+copy in the code it falls back to. Thirty-one can be served as assets: the repo's
+`prompts/<lambda_id>/<prompt_name>/latest/vN.txt` files are the desired state, published by
+`.github/workflows/prompts.yml` to `<prefix>-<env>-prompts` (dev on a merge to `dev`; production
+under the `production-prompts` environment's review and on every published release), with each
+approved file's hash in `<prefix>-<env>-prompt-hashes`. A prompt is served from its asset only when
+every check passes (the hash approved, the placeholders and locked blocks in place, the size), and
+otherwise from the code's copy with a `prompt_fallback` evidence line. Two files in one `latest/`
+folder split the runs between them, one draw per run. Nine prompts are code-only and never read an
+asset: the ops agent's system prompt, the compliance reviews, vision triage, comment screening, the
+judge's two rubrics and offline scoring's comparison. Each call's prompt id and version go into the
+article's lineage. `prompts pause` and `prompts set --assets off` act within five minutes, with no
+deploy. Both write a `prompt_fallback` line on every render they turn away, so the prompt-fallback
+alarm fires while they are set, as expected.
+
+**Continuous evals.** Whenever something says a model or a prompt did well or badly (an article
+completed, a person's approve, reject or rewrite, a reader's vote, the judge's or a person's
+review), the code writes one event, ids and codes only, to the `<prefix>-<env>-evals` log group
+(kept 120 days). Every hour eval-jobs adds the events up into day totals per model, prompt version
+and model and prompt pairing in the evals table, and writes each model's windows (`daily_perf`,
+`weekly_perf`, `monthly_perf`, `total_perf`) onto its models row. A judge model reviews new
+Findings and articles every few hours, never its own work, and its verdicts count towards the
+gates only while it agrees well enough with people's (`approve --source findings` is where a person
+gives them). Offline scoring runs (`evals score`) compare other models or prompt versions on past
+articles and never touch the prompts bucket. A daily cap bounds the evals' own model spend
+([Stats and costs](architecture/stats-and-costs.md#continuous-evals-spend)).
+
+**The Model Ranch.** The rotation guard leaves gated models (a window below its gate, with at least
+`min_events` events behind it) out of every candidate list, but never the default, the fallback,
+the judge or a topic's own model; the rewrite picker ranks the suitable, active models by the Wilson
+lower bound of their good share. The weekly cycle proposes models to cull, `evals cull --apply`
+archives and deletes them once `evals set --cull on` allows it, and `models restore` puts one back.
+`evals forgive`, `punish`, `ungate` and `revoke` are the operator's corrections, and the operator's
+assistant answers from `model_ranch` and `prompt_metrics`.
+
+**Watching it.** Each environment has two dashboards, `<prefix>-<env>-pipeline-health` and, while
+evals are on, `<prefix>-<env>-ranch-and-prompts`, in place of the dashboards before them. New alarms
+watch the dispatcher's heartbeat, the work queue's oldest job and dead-letter queue, prompt
+fallbacks, the rollup's heartbeat and eval-work's oldest job
+([observability.md](observability.md#the-queue-platforms-and-evals-alarms)).

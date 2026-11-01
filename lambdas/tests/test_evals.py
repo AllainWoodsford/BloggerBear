@@ -1,4 +1,4 @@
-"""Continuous evals' events (common/evals.py; docs/enhancements/model-ranch-prompt-assets-evals.md
+"""Continuous evals' events (common/evals.py; docs/enhancements/archive/model-ranch-prompt-assets-evals.md
 section 4.3).
 
 What is held: the scoring table is section 4.3's; each reason's event id has its own shape; an

@@ -1,5 +1,5 @@
 """The evals rollup: adds the scored events in the evals log group up into the evals table, and puts
-each model's scores on its models row (docs/enhancements/model-ranch-prompt-assets-evals.md,
+each model's scores on its models row (docs/enhancements/archive/model-ranch-prompt-assets-evals.md,
 sections 4.4, 4.6, 4.9 and 5.3).
 
 Run hourly by eval-jobs (eval_jobs_handler.py, `{"job": "rollup"}`), and on demand by the admin API's

@@ -1,8 +1,10 @@
 # CI and the checks: what runs, when, and how to run it yourself
 
-Eight GitHub Actions workflows live in `.github/workflows/`. Four check pull requests, three deploy
-or destroy, and one runs every scan on demand. This page says what each one does, what stands
-between a merge and a deploy, and how to run the same checks on your own machine before you push.
+Nine GitHub Actions workflows live in `.github/workflows/`. Four check pull requests, three deploy
+or destroy, one runs every scan on demand, and one, `prompts`, both checks the prompts tree on a
+pull request and publishes it to each deployment's prompts bucket. This page says what each one
+does, what stands between a merge and a deploy, and how to run the same checks on your own machine
+before you push.
 
 Every setting a workflow reads (secrets, variables, switches) is in
 [configuration.md](configuration.md#github-secrets-and-variables).
@@ -14,6 +16,7 @@ Every setting a workflow reads (secrets, variables, switches) is in
 - [What is required to merge](#what-is-required-to-merge)
 - [ruff-autofix](#ruff-autofix)
 - [on-demand-scan](#on-demand-scan)
+- [prompts](#prompts)
 - [Run the same checks yourself](#run-the-same-checks-yourself)
 - [The pre-commit hook](#the-pre-commit-hook)
 - [Where the code is](#where-the-code-is)
@@ -22,7 +25,7 @@ Every setting a workflow reads (secrets, variables, switches) is in
 
 | Workflow (file) | Runs on | What it runs | What it changes |
 |---|---|---|---|
-| `pr-checks.yml` | Every pull request. | `validate`: `terraform init` (no backend), `fmt -check` and `validate` in each `infra/environments/*`, then `terraform test` in each module that has tests. `secret-scan`: Trufflehog over the pull request's commits. `gitleaks`: Gitleaks over the pull request's commits, with `.gitleaks.toml`. `pii-denylist`: `scripts/pii_denylist_check.py` over what the pull request adds. | Nothing. No AWS credentials. |
+| `pr-checks.yml` | Every pull request. | `validate`: `terraform init` (no backend), `fmt -check` and `validate` in each `infra/environments/*`, then `terraform test` in `infra/bootstrap` and in each module that has tests. `secret-scan`: Trufflehog over the pull request's commits. `gitleaks`: Gitleaks over the pull request's commits, with `.gitleaks.toml`. `pii-denylist`: `scripts/pii_denylist_check.py` over what the pull request adds. | Nothing. No AWS credentials. |
 | `security.yml` | Every pull request. Also called by `terraform.yml` and `terraform-production-release.yml` before they apply. | `security`: Trivy over `infra/` (fails on HIGH and CRITICAL), Trivy over the whole repository for vulnerable dependencies and secrets (reports MEDIUM and up, fails on HIGH and CRITICAL), Bandit over `lambdas/` and `scripts/`. `checkov`: Checkov over the Terraform, as `.checkov.yaml` says. | Nothing. |
 | `python-ci.yml` | Pull requests that touch `lambdas/**`, `scripts/**`, `pyproject.toml`, `.claude/skills/**`, `docs/hackathon/**` or the workflow itself. Pushes to `prod` that touch `lambdas/**`, `scripts/**`, `pyproject.toml`, `.claude/skills/**` or the workflow. Also called by `terraform.yml` and `terraform-production-release.yml`. | `lint-test`: installs the requirements on Python 3.11, prints `pip freeze --all`, runs `ruff check lambdas/ scripts/`, then `pytest lambdas/ scripts/ -n auto --dist loadfile` (every test, spread across the runner's CPUs). | Nothing. A Ruff failure puts the diff `ruff check --fix` would make in the job summary. |
 | `ruff-autofix.yml` | Pull requests opened, pushed to or reopened that touch `lambdas/**`, `scripts/**` or `pyproject.toml`. | `autofix`: Ruff's safe fixes, then `ruff check` again. [More below](#ruff-autofix). | With the `RUFF_AUTOFIX_TOKEN` secret: pushes a commit to the pull request's branch. Without it: nothing (the diff goes in the job summary). |
@@ -30,12 +33,14 @@ Every setting a workflow reads (secrets, variables, switches) is in
 | `terraform-production-release.yml` | A GitHub Release is published. | `security` and `lint-test` on the release tag, then `apply`. | Applies `infra/environments/production`. Deploys the production admin API's stage once more. |
 | `destroy-dev.yml` | By hand only, with the input `confirm` set to `destroy`. | `destroy`. | Destroys `infra/environments/dev`. |
 | `on-demand-scan.yml` | A pull request labelled `security-scan`, or by hand (Actions tab, with an optional ref). | Every security, secret and personal-data check, more thoroughly than a pull request runs them. [More below](#on-demand-scan). | Nothing. A results table in the job summary. |
+| `prompts.yml` | `gates`: pull requests that touch `prompts/**`, `lambdas/common/prompts*.py`, `scripts/prompt_lint.py`, `scripts/publish_prompts.py` or the workflow. `publish-dev`: pushes to `dev` with the same paths, or by hand from `dev`. `publish-production`: every published release, or by hand from `dev`. Both publish jobs are skipped while the repository's `PROMPT_AS_ASSET_ENABLED` is not `true`. | `gates`: the prompt lint, the personal-data check, Trufflehog, Gitleaks, the lint's and the publisher's tests, Trivy and Checkov, with no secret. The publish jobs: the personal-data check over the prompt files, then `scripts/publish_prompts.py`, which lints again. [More below](#prompts). | `gates`: nothing. A publish job: that deployment's prompts bucket and prompt-hash table, signed in as its publisher role. |
 
 Every action is pinned to a commit, and Terraform and every scanner to a version. The versions
 are in [the table below](#the-tool-versions).
 
-A pull request from `dev` into `prod` gets `pr-checks`, `security`, and `python-ci` if its paths
-match. `ruff-autofix` skips it: it never touches the `dev` or `prod` branch.
+A pull request from `dev` into `prod` gets `pr-checks` and `security`, and `python-ci` and the
+`prompts` gates if their paths match. `ruff-autofix` skips it: it never touches the `dev` or `prod`
+branch.
 
 ## What gates a deploy
 
@@ -74,6 +79,26 @@ Only one dev deploy or destroy runs at a time: `apply-dev` and `destroy-dev.yml`
 What a deploy does not run again: `pr-checks.yml`. So `terraform test`, Trufflehog, Gitleaks and
 the personal-data check run on the pull request only.
 
+Both deploys pass the queue platform's, prompts' and evals' switches to Terraform
+(`EVALS_ENABLED`, `WORKER_CONCURRENCY`, `PROMPT_AS_ASSET_ENABLED`, and the prompts publisher role's
+ARN from `AWS_DEV_PROMPTS_ROLE_ARN` or `AWS_PROD_PROMPTS_ROLE_ARN`):
+[configuration.md](configuration.md#the-queue-platform-prompts-and-evals) says what each does.
+
+**Prompts** (`prompts.yml`) are published apart from the code, by their own jobs, each gated as the
+code's deploys are ([More below](#prompts)):
+
+1. A merge to `dev` that touches the prompts tree, the prompts code or the workflow starts
+   `publish-dev`. A release starts `publish-production`, under the `production` environment, beside
+   the code's own deploy; so with prompts as assets on, every release asks for two approvals, the
+   deploy's and the prompts'. Between releases, production's prompts are published by hand from
+   `dev`, under the `production-prompts` environment, whose required reviewer is the owner.
+2. Each runs only while the repository's `PROMPT_AS_ASSET_ENABLED` is `true`.
+3. A release's run checks out the release's tag and stops, before it signs in to AWS, unless the
+   tag's commit is on `prod`, as the code's deploy does.
+4. Each runs the personal-data check, with the list, over every prompt file it is about to publish,
+   then signs in as that deployment's publisher role through OIDC. The publisher lints the tree again
+   and refuses on any error.
+
 **Destroying dev** (`destroy-dev.yml`): start it by hand on the `dev` branch and type `destroy`.
 It runs `terraform destroy -auto-approve` in `infra/environments/dev`. There is no workflow that
 destroys production.
@@ -95,10 +120,14 @@ Mind the path filters when you choose:
   outside `docs/hackathon/`. For a change to `infra/` or `frontend/`, lint and tests first run in
   `terraform.yml`, after the merge to `dev` and before the apply.
 - `ruff-autofix` runs only for `lambdas/`, `scripts/` and `pyproject.toml`.
+- The `prompts` workflow's `gates` job runs only for its own paths (`prompts/**`,
+  `lambdas/common/prompts*.py`, `scripts/prompt_lint.py`, `scripts/publish_prompts.py` and the
+  workflow).
 - `pr-checks` and `security` run on every pull request.
 
 GitHub leaves a required check pending when path filtering skips its workflow, so a pull request
-that never triggers `python-ci` would wait for it forever if `python-ci` were required.
+that never triggers `python-ci` would wait for it forever if `python-ci` were required. The same
+holds for the `prompts` gates.
 
 ## ruff-autofix
 
@@ -153,12 +182,83 @@ credentials, no plan, no deploy.
 
 | Job | What it does, beyond what a pull request runs |
 |---|---|
-| `terraform` | `terraform fmt -check -recursive -diff infra/` (every module and bootstrap, with diffs); `validate` in `infra/bootstrap` as well as every environment; `terraform test -verbose` in each module with tests. |
+| `terraform` | `terraform fmt -check -recursive -diff infra/` (every module and bootstrap, with diffs); `validate` in `infra/bootstrap` as well as every environment; `terraform test -verbose` in `infra/bootstrap` and each module with tests. |
 | `code-and-dependencies` | Trivy over `infra/` and over the repository at every severity (report only), with every dependency it found listed; then the same HIGH and CRITICAL gates as `security.yml`. Bandit at every severity and confidence (report only), then the same gate. |
 | `checkov` | Every Checkov check, `.checkov.yaml`'s repository-wide skips included (report only); then the same gate as `security.yml`. A `checkov:skip` comment on a resource still applies. |
 | `secrets-and-personal-data` | Gitleaks and Trufflehog over the **whole history**, every branch and tag (Trufflehog with unverified results too); the personal-data check over **every tracked file**, not just what a change adds. Accepted history findings are listed in `.gitleaksignore`. |
 
 A `summary` job writes one row per job to the run's summary. The run fails if any job failed.
+
+## prompts
+
+`prompts.yml` checks and publishes the prompts tree (`prompts/`, its rules in
+[prompts/README.md](../prompts/README.md)): the prompt files the Lambdas serve in place of the
+copies in the code once prompts as assets are on
+([configuration.md](configuration.md#prompts-as-assets)). Terraform owns the prompts bucket and the
+prompt-hash table, never what is in them; the bucket lets only the publisher's role write. Every
+publish is a release (`admin_cli prompts releases` lists them).
+
+**`gates`**, on a pull request that touches the paths in [the table](#the-workflows). It runs with
+no secret of any kind: everything in it runs code from the pull request, and the run's own
+`GITHUB_TOKEN` is read-only. A merge is gated by these, in order:
+
+1. **The prompt lint** (`scripts/prompt_lint.py`): every rule the Lambdas and the publisher rely on,
+   against this tree, against the base's (`--base-ref`: a version keeps its bytes, and a new one is
+   numbered above every earlier one), and against the latest release's code (`--release-ref`, the
+   release `gh release view` names, the one production runs). The release pass flags a prompt that
+   release cannot read yet as `skip-at-production`, which is not an error. With no release published
+   the release pass is skipped; any other failure to name the release fails the gate, to be run
+   again. It names files, lines and rules, never a prompt's words.
+2. **The personal-data check** over what the pull request adds, with no list (the job has no
+   secret), so it passes with a notice. `pr-checks`' `pii-denylist` runs it with the list on every
+   pull request, and each publish job runs it again, with the list, over the tree it publishes.
+3. **Trufflehog and Gitleaks**, pinned as in `pr-checks`.
+4. **The lint's and the publisher's tests** (`scripts/tests/test_prompt_lint.py`,
+   `scripts/tests/test_publish_prompts.py`), after installing what `python-ci` installs.
+5. **Trivy** over the repository (MEDIUM and up reported, HIGH and CRITICAL fail) and **Checkov**
+   over this workflow (its GitHub Actions checks) and `infra/modules/prompts`, at the versions and
+   checksums `security.yml` uses.
+
+**`publish-dev`** runs on a push to `dev` (a merge) with those paths, or by hand from `dev` with
+`environment` set to `dev`. It runs in no GitHub environment, because the dev publisher role
+(`gha-<prefix>-dev-prompts`, from `infra/bootstrap`) trusts the `dev` branch and an environment would
+change the OIDC subject. It runs the personal-data check over every prompt file with the
+`PII_DENYLIST` secret, signs in with `AWS_DEV_PROMPTS_ROLE_ARN`, and runs `scripts/publish_prompts.py
+--environment dev`.
+
+**`publish-production`** runs in one of two ways, each approved by a person before it starts:
+
+- **With every published release**, under the `production` environment. It checks out the release's
+  tag and stops, before anything else, unless the tag's commit is on `prod`.
+- **By hand from `dev`**, with `environment` set to `production`, under the `production-prompts`
+  environment (required reviewer: the owner; deployment branch: `dev`), which the owner creates once
+  ([the production runsheet](production-runsheet.md#the-production-prompts-environment)). It
+  publishes `dev`'s tree against the latest release.
+
+Either way it names the release production runs (the tag, or `gh release view` for a dispatch, and
+fails when no release is published), runs the personal-data check with the list, signs in with
+`AWS_PROD_PROMPTS_ROLE_ARN` as `gha-<prefix>-prod-prompts`, which trusts those two environments and
+no other, and runs the publisher for production with that release. A prompt the release cannot read
+yet is left in the bucket as it is. `AWS_PROD_PROMPTS_ROLE_ARN` is a repository secret, not a
+`production` one, because a job under `production-prompts` cannot read the `production`
+environment's secrets. A release's prompts run and its deploy run side by side: on the release whose
+deploy first creates production's bucket, approve the prompts run once the deploy has finished, or
+re-run it.
+
+**Both publish jobs**:
+
+- are skipped while the repository-level `PROMPT_AS_ASSET_ENABLED` is not `true`. A job's `if:` is
+  decided before the job enters an environment, so the gate reads the repository's value, never an
+  environment's;
+- run one at a time per deployment, and a later run waits rather than cancel one half-way;
+- never run for a pull request.
+
+**By hand** (Actions tab, **prompts**, **Run workflow**, on `dev`; or `gh workflow run prompts.yml
+--ref dev -f environment=...`), the inputs are `environment` (`production`, the default, or `dev`),
+`release_id` (a rollback: an earlier release of that deployment, from `prompts releases`, published
+again and pinned; every later publish puts it back until a run clears the pin), `clear_pin` (publish
+the tree as a new release and clear the pin) and `dry_run` (print the plan, write nothing). The
+inputs reach the publisher through the environment, never the shell's text.
 
 ## Run the same checks yourself
 
@@ -168,13 +268,13 @@ From the repository root, in Git Bash on Windows or any shell on Linux or macOS.
 
 | Tool | CI's version | Pinned in |
 |---|---|---|
-| Python | 3.11 | `python-ci.yml`, `ruff-autofix.yml`, the deploy workflows (`actions/setup-python`) |
+| Python | 3.11 | `python-ci.yml`, `ruff-autofix.yml`, `prompts.yml`, the deploy workflows (`actions/setup-python`) |
 | Ruff | the `ruff==` line in `lambdas/requirements-dev.txt` (0.6.9 today) | `lambdas/requirements-dev.txt` |
 | Bandit | 1.7.10 | `security.yml`, `on-demand-scan.yml` |
-| Checkov | 3.3.25, in a virtual environment of its own | `security.yml`, `on-demand-scan.yml` |
-| Trivy | 0.74.0, checksum-verified | `security.yml` ("Install Trivy"), `on-demand-scan.yml` |
-| Gitleaks | 8.30.1; `.gitleaks.toml` needs 8.30.0 or newer | `pr-checks.yml`, `on-demand-scan.yml` ("Install Gitleaks and Trufflehog", with checksums) |
-| Trufflehog | 3.97.4 | `pr-checks.yml`, `on-demand-scan.yml` |
+| Checkov | 3.3.25, in a virtual environment of its own | `security.yml`, `on-demand-scan.yml`, `prompts.yml` |
+| Trivy | 0.74.0, checksum-verified | `security.yml` ("Install Trivy"), `on-demand-scan.yml`, `prompts.yml` |
+| Gitleaks | 8.30.1; `.gitleaks.toml` needs 8.30.0 or newer | `pr-checks.yml`, `prompts.yml`, `on-demand-scan.yml` ("Install Gitleaks and Trufflehog", with checksums) |
+| Trufflehog | 3.97.4 | `pr-checks.yml`, `prompts.yml`, `on-demand-scan.yml` |
 | Terraform | 1.16.2 (the code allows 1.10 or newer) | every workflow that runs Terraform |
 
 Another Ruff reports and fixes different things than CI does, so use the pinned one:
@@ -212,7 +312,25 @@ pytest lambdas/ scripts/ -n auto --dist loadfile   # CI's command: every test, o
   - `scripts/tests/test_generate_cli_reference.py` fails when `lambdas/ops_mcp/cli_reference.json`
     is out of date. Fix it with `python scripts/generate_cli_reference.py`.
   - `scripts/tests/test_setup_repo.py` fails when a workflow reads a secret or variable that
-    `scripts/setup_repo.py` does not know about.
+    `scripts/setup_repo.py` does not know about, and when a setting the `prompts` publish jobs read
+    is somewhere their environments cannot see it (`AWS_PROD_PROMPTS_ROLE_ARN` must be at
+    repository level).
+  - `lambdas/tests/test_terraform_wiring.py` fails when a workflow reads a setting that has no row
+    in [configuration.md](configuration.md#github-secrets-and-variables).
+
+### The prompt lint (`prompts`)
+
+Before you push a change under `prompts/`, run what the `gates` job runs first:
+
+```bash
+python scripts/prompt_lint.py --base-ref origin/dev   # against dev's tree, and the newest v* tag's code
+python scripts/prompt_lint.py --no-release            # without the pass against a release
+pytest scripts/tests/test_prompt_lint.py scripts/tests/test_publish_prompts.py
+```
+
+CI names the release itself (`--release-ref`, from `gh release view`); without it the lint takes the
+newest `v*` tag, so fetch tags first (`git fetch --tags`). The lint's rules and what each finding
+means: [scripts/README.md](../scripts/README.md#the-prompts-tree-prompt_lintpy-and-publish_promptspy).
 
 ### Code and dependency scans (`security`)
 
@@ -258,7 +376,8 @@ done
 ```
 
 `fmt -check` there covers each environment's own files only. `on-demand-scan` checks every
-module and the bootstrap too, and validates the bootstrap, which no other workflow does:
+module and the bootstrap too, and runs `validate` in the bootstrap as well (`pr-checks` plans it in
+its tests, below):
 
 ```bash
 terraform fmt -check -recursive -diff infra/
@@ -266,12 +385,18 @@ terraform -chdir=infra/bootstrap init -backend=false -input=false
 terraform -chdir=infra/bootstrap validate
 ```
 
-The module tests (`pr-checks`): today the `observability` and `ops-assistant` modules have them.
-They plan each module with a mocked AWS provider, so they need no credentials, and they catch an
-expression that only fails once real values flow through it, which `validate` does not.
+The Terraform tests (`pr-checks`, and `on-demand-scan` with `-verbose`): today the bootstrap and
+the `evals`, `observability`, `ops-assistant`, `prompts` and `work-queue` modules have them.
+They plan each with a mocked AWS provider, so they need no credentials and read no secret, and they
+catch an expression that only fails once real values flow through it, which `validate` does not.
+The bootstrap's are there because it is applied once, by hand, and never by CI, so nothing else
+plans it before your own apply: a `for_each` over a data source once passed `validate` and failed
+at plan. They plan it with no domain and no budget email (no zone, no budget), with the
+separation switch off, with a state bucket the separation refuses (stopped at its precondition),
+and with a domain and a budget email set.
 
 ```bash
-for dir in infra/modules/*; do
+for dir in infra/bootstrap infra/modules/*; do
   if ls "$dir"/tests/*.tftest.hcl >/dev/null 2>&1; then
     terraform -chdir="$dir" init -backend=false -input=false
     terraform -chdir="$dir" test
@@ -347,6 +472,8 @@ it once, on purpose: `git commit --no-verify`.
 ## Where the code is
 
 - The workflows: `.github/workflows/`. Each one's comments say why it is built the way it is.
+- The prompts tree and its rules: `prompts/` and `prompts/README.md`; its lint and publisher:
+  `scripts/prompt_lint.py` and `scripts/publish_prompts.py`.
 - What Checkov runs and skips: `.checkov.yaml`.
 - Gitleaks' extra rules: `.gitleaks.toml`; accepted findings in the history: `.gitleaksignore`.
 - The personal-data check: `scripts/pii_denylist_check.py`.

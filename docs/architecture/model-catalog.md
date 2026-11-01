@@ -2,7 +2,9 @@
 
 How the Models registry keeps itself current: one Lambda that finds the models the account can
 call, looks their prices up again, puts a doubtful price back, keeps the registry under its cap,
-and keeps the topics' model rotations working. This page follows that work across the layers:
+keeps the topics' model rotations working, records what each model is for, and, while continuous
+evals are on, proposes the models whose scores have fallen far enough to cull. This page follows
+that work across the layers:
 the schedules and the admin API that start it, Bedrock and the two price sources it reads, the
 rows it writes, and where a price ends up being used.
 
@@ -44,10 +46,13 @@ Resource names below use `<prefix>` (your `unique_name_prefix`) and `<env>` (`de
 - [The steps](#the-steps)
 - [What invokes it](#what-invokes-it)
 - [Discover](#discover)
+- [Model purpose and classify](#model-purpose-and-classify)
 - [Reprice](#reprice)
 - [The reviews](#the-reviews)
 - [One run at a time, and what cannot hold it up](#one-run-at-a-time-and-what-cannot-hold-it-up)
+- [What each job reports](#what-each-job-reports)
 - [The weekly cycle](#the-weekly-cycle)
+- [The cull proposal, and restoring a model](#the-cull-proposal-and-restoring-a-model)
 - [Disabling a model in use](#disabling-a-model-in-use)
 - [Routing around an inactive model](#routing-around-an-inactive-model)
 - [How a price is used](#how-a-price-is-used)
@@ -99,9 +104,9 @@ flowchart LR
 
 | # | Step | What happens | Where in the code / infra |
 |---|---|---|---|
-| 1 | **What invokes it** | Three fixed schedules start its jobs: discover and reprice every second day, the rotation cycle on Fridays. The admin API starts discover or reprice on demand, and a pricing run starts its own ticks and reviews on one-shot schedules ([in detail](#what-invokes-it)). | `lambdas/model_catalog_handler.py`; `handle` in `lambdas/common/model_catalog.py`; `aws_scheduler_schedule.model_catalog_discover`, `_reprice` and `_cycle` in each environment's `main.tf`; `_start_model_catalog_job` in `lambdas/admin_api_handler.py` |
+| 1 | **What invokes it** | Three fixed schedules start its jobs: discover and reprice every second day, the rotation cycle on Fridays. The admin API starts discover, reprice or classify on demand, and a pricing run starts its own ticks and reviews on one-shot schedules ([in detail](#what-invokes-it)). | `lambdas/model_catalog_handler.py`; `handle` in `lambdas/common/model_catalog.py`; `aws_scheduler_schedule.model_catalog_discover`, `_reprice` and `_cycle` in each environment's `main.tf`; `_start_model_catalog_job` in `lambdas/admin_api_handler.py` |
 | 2 | **Catch up first** | Before any job, a pricing run whose next tick or review is more than 30 minutes late is run on the spot, and a run slot left by a run that died is freed ([in detail](#one-run-at-a-time-and-what-cannot-hold-it-up)). | `settle_overdue`, `is_overdue`, `_release_orphaned_slot` in `model_catalog.py` |
-| 3 | **Discover: list** | Bedrock is asked for every active model and system inference profile in the region, from every provider. Models the registry has, pruned ones and recently denied ones are left out ([in detail](#listing)). | `account_models`, `discover` in `model_catalog.py`; `ModelCatalogRead` in the Lambda role |
+| 3 | **Discover: list** | Bedrock is asked for every active model and system inference profile in the region, from every provider, each with its purpose and inputs. Models the registry has, pruned ones and recently denied ones are left out ([in detail](#listing)). | `account_models`, `discover` in `model_catalog.py`; `ModelCatalogRead` in the Lambda role |
 | 4 | **Discover: probe, then add** | Each new text model is called once for one token. One the account cannot call is not added and not tried again for 30 days; up to 5 others are added, switched off and unpriced ([in detail](#the-access-probe-and-adding)). | `probe_access`, `recently_denied`, `recheck_access` in `model_catalog.py`; `add_model_if_missing` in `lambdas/common/dynamo.py` |
 | 5 | **Discover when full: prune** | Once the registry holds `max_models`, discover lists nothing and removes models instead, never one in use. Each pruned model's price is archived first ([in detail](#pruning-once-the-registry-is-full)). | `prune`, `prune_order`, `protected_models` in `lambdas/common/model_fleet.py`; `archive_models` in `dynamo.py` |
 | 6 | **Reprice: the queue and its ticks** | Reprice claims the one run slot and queues up to 50 models, the one looked up longest ago first. It checks 5 at once, then 5 more on a one-shot schedule 5 minutes later, until the queue is empty ([in detail](#the-queue-and-its-ticks)). | `queue_order`, `reprice`, `advance`, `schedule_tick` in `model_catalog.py`; `<prefix>-<env>-price-tick-*` schedules |
@@ -109,13 +114,13 @@ flowchart LR
 | 8 | **A changed price applies at once** | A price that differs is written to the model's row straight away and recorded on the run with the old one, so it is on probation ([in detail](#applying-a-changed-price)). | `price_models` and `set_model_fields`; the `pricing-run#<run id>` row of `<prefix>-<env>-model-config` |
 | 9 | **The reviews** | 1 and 2 hours after the queue is done (by default), each changed price is looked up again on its own and checked. One that fails goes back to its old price at once, and each review that put a price back writes one row to FailedExecutions as it ends ([in detail](#the-reviews)). | `schedule_reviews`, `review`, `_review_tick`, `_check`, `_revert`, `_end_pass`, `_record_failure` in `model_catalog.py`; `<prefix>-<env>-price-review-*` schedules; `<prefix>-<env>-failed-executions` |
 | 10 | **The run closes** | A price put back quietly at the last review, because every lookup of it errored, gets no FailedExecutions row. The old prices of the models that kept their new one go to the content bucket, and the run slot is freed ([in detail](#put-back-or-kept)). | `_end_pass`, `_finalise`, `write_snapshot` in `model_catalog.py`; `pricing/` in `<prefix>-<env>-content` |
-| 11 | **The weekly cycle** | Every topic with a rotation list loses the models that are switched off or that the account cannot call, and gains one new model while it has room ([in detail](#the-weekly-cycle)). | `cycle`, `rotation_picks` in `model_fleet.py` |
-| 12 | **Disabling a model, and routing around one** | Disabling a model takes it out of every topic and the shared pool at once. A call whose topic still names a switched-off model is routed to another ([in detail](#disabling-a-model-in-use)). | `_put_model` in `admin_api_handler.py`; `deactivated`, `application_roles` in `model_fleet.py`; `_route_around` in `lambdas/common/model_routing.py` |
+| 11 | **The weekly cycle** | Every topic with a rotation list loses the models that are switched off, that the account cannot call or that are not text models, and gains one new model while it has room, never one the Model Ranch has gated. While evals are on, the cycle then proposes the models to cull ([in detail](#the-weekly-cycle)). | `cycle`, `rotation_picks`, `cull_proposal` in `model_fleet.py`; `_cull_proposal` in `model_catalog.py` |
+| 12 | **Disabling a model, and routing around one** | Disabling a model takes it out of every topic and the shared pool at once. A call whose topic still names a switched-off model, or one that is not a text model, is routed to another ([in detail](#disabling-a-model-in-use)). | `_put_model` in `admin_api_handler.py`; `deactivated`, `application_roles` in `model_fleet.py`; `_route_around` in `lambdas/common/model_routing.py` |
 | 13 | **Where a price is used** | Each article's cost is worked out from its calls' tokens once, when it is written; the Stats page works every call out again each time it is rebuilt ([in detail](#how-a-price-is-used)). | `pricing_for`, `calculate_lineage_cost_aud` in `lambdas/common/costing.py`; `build_stats` in `lambdas/common/stats.py`; `list_priced_models` in `dynamo.py` |
 
 ## What invokes it
 
-One Lambda, `<prefix>-<env>-model-catalog`, is started five ways:
+One Lambda, `<prefix>-<env>-model-catalog`, is started six ways:
 
 | What invokes it | Event | What it does |
 |---|---|---|
@@ -123,6 +128,7 @@ One Lambda, `<prefix>-<env>-model-catalog`, is started five ways:
 | `<prefix>-<env>-model-reprice`, `cron(0 3 1/2 * ? *)` Australia/Sydney | `{"job": "reprice", "trigger": "schedule"}` | Reprice, unless `reprice_enabled` is `false` |
 | `<prefix>-<env>-model-cycle`, `cron(0 4 ? * FRI *)` Australia/Sydney | `{"job": "cycle", "trigger": "schedule"}` | The rotation cycle, unless `cycle_enabled` is `false` |
 | `POST /models/discover` and `POST /models/reprice` (`models discover`, `models reprice`) | `{"job": ...}` | That job now, even when it is paused |
+| `POST /models/classify` (`models classify`) | `{"job": "classify"}` | Classify, which has no schedule ([below](#model-purpose-and-classify)) |
 | A run's own one-shot schedules | `{"job": "tick", ...}` or `{"job": "review", "run_id": ...}` | The next tick of a run's queue, or its next review |
 
 The first two run on odd days of the month, the closest EventBridge cron comes to every second
@@ -160,8 +166,9 @@ Otherwise it asks Bedrock in the deployment's region for:
   routes to an active foundation model (`ListInferenceProfiles`).
 
 Each comes back shaped as a registry row: its id, the model's name and provider (for a profile,
-its base model's), and a `pricing_unit` of `tokens` for a model that writes text, or `other` for
-an image, video, speech or embedding model. Only `tokens` models are ever priced.
+its base model's), a `pricing_unit` of `tokens` for a model that writes text, or `other` for an
+image, video, speech or embedding model, and its `model_purpose` and `model_inputs`
+([below](#model-purpose-and-classify)). Only `tokens` models are ever priced.
 
 Left out are the models the registry already has, the ones the fleet pruned (the `model-archive`
 row) and the ones a probe found denied in the last 30 days. What is left is sorted text models
@@ -217,6 +224,41 @@ A run that cannot reach its target because of that says so (`short_by`).
 Before a model's row is deleted, its name, provider and prices go into the `model-archive` row
 of `model-config`, which nothing prunes. The articles that used it keep their cost (step 13), and
 discover never adds it back. `models add` does, by hand.
+
+## Model purpose and classify
+
+Every registry row records what its model is for, from what Bedrock says it writes and reads:
+
+- `model_purpose`: `text` when `TEXT` is among its output modalities, else the first of `image`,
+  `embedding`, `video` and `speech` it writes, else `other`; `unknown` for a registry model Bedrock
+  no longer lists;
+- `model_inputs`: its input modalities, upper case, in Bedrock's order.
+
+Discover records both for the models it adds. **Suitability** (`model_fleet.suitable`) reads them:
+a call that writes text needs a model whose purpose is `text`, and vision triage, which reads an
+image, needs a text model whose inputs include `IMAGE`. A row with no purpose yet is judged by the
+older rule, a token-priced model being a text model, so nothing the pipeline routes to stops until
+it has been classified. Routing, the weekly cycle, the shared pool, the rotation guard's candidates,
+the judge and the rewrite picker all take only suitable models, and the admin API refuses an
+unsuitable model, with a 400, as a topic's model, fallback or rotation candidate, as the default or
+fallback in `model-config`, in the shared pool, and as the judge's model.
+
+**Classify** (`models classify`, `POST /models/classify`) records the purpose and inputs of every
+registry row from what Bedrock lists now, for rows from before purposes were recorded. It runs in
+the background like discover, on demand only. It reads the whole listing (`listed_models`), not only
+the active, on-demand models discover may add: every foundation model whatever its lifecycle, every
+system-defined inference profile over one of them, and every application inference profile this
+account made, by its ARN, which writes what its base model writes. A model in none of those gets
+`unknown` and keeps its inputs. An ARN of a custom, provisioned or imported model is left
+unclassified, since the catalog makes none of the calls that list those, and is counted unchanged.
+A row already saying the same is left alone, so the job may be run any number of times. While evals
+are on, the hourly rollup also classifies any model with no purpose yet, from the same listing.
+
+**Fields that survive a rewrite of the row.** `models add` writes the whole row again, so it carries
+through what the catalog and the ranch record (`CATALOG_MODEL_FIELDS`: the discovery and access
+fields, the purpose and inputs, and every score the rollup writes). It writes only if the row is
+still the one it read; when another writer changed it meanwhile it reads again and retries once, and
+when the row changed under it twice it answers 409 and writes nothing.
 
 ## Reprice
 
@@ -404,20 +446,64 @@ own schedule runs it.
 If a run fails while it starts (writing its row, or its first tick), it is marked `failed` and the
 slot is released before the error goes to the log.
 
+## What each job reports
+
+Each job prints one `model_catalog_job` evidence line in `/aws/lambda/<prefix>-<env>-model-catalog`
+when it ends, with its counts and never a model's name or id: what discover added and found denied,
+what pruning removed, what the cycle added and dropped, what a reprice changed and confirmed, what a
+review passed, put back or dropped, and what classify recorded. The observability module turns them
+into the **model-catalog counter row** on the pipeline-health dashboard, one metric filter per
+counter: discovered, pruned, classified, denied, repriced, reverted (a review's `reverted` plus its
+`unconfirmed`, the prices the last review put back because no review could look them up) and dropped
+(a review's `review_dropped`, prices someone else changed meanwhile)
+([observability.md](../observability.md#pipeline-health-panel-by-panel)).
+
 ## The weekly cycle
 
 On Fridays at 04:00 Sydney time, `model_fleet.cycle` goes through every topic that has a rotation
 list (`model_id_candidates`). A topic with no list is left alone.
 
-1. It removes the models the registry marks switched off or a probe found denied. A model with no
-   registry row is kept.
+1. It removes the models the registry marks switched off, a probe found denied, or that are not
+   text models ([suitability](#model-purpose-and-classify)). A model with no registry row is kept.
 2. If the list then holds fewer than `rotation_max` (10), it adds one model it does not have: an
    active, priced text model not found denied, that is nobody's fallback (the `default` row's or
-   any topic's). The cheapest in `value_for_money` mode, the most expensive in `frontier`.
+   any topic's) and that the Model Ranch has not gated
+   ([prompts and evals](prompts-and-evals.md#gates-and-the-rotation-guard)). The cheapest in
+   `value_for_money` mode, the most expensive in `frontier`.
 
 So a list grows by at most one model a week. Discovered models start switched off and unpriced,
 so the cycle draws on one only once you have enabled it and it has a price. What the cycle changed
 is `last_cycle_result` on the state row (`topics_changed`, `added`, `dropped_inactive`).
+
+## The cull proposal, and restoring a model
+
+Pruning keeps the registry under its cap; culling removes models whose work has scored badly.
+Continuous evals keep each model's scores on its row ([prompts and evals](prompts-and-evals.md#the-rollup-and-the-windows)),
+and the weekly cycle, after it has refreshed the rotations, proposes what to cull
+(`model_fleet.cull_proposal`). It deletes nothing.
+
+- **Who is proposed:** every registry model whose `total_perf` is below the evals `total_gate`
+  (−1,000) with at least `min_events` (10) events behind it, that plays no role, worked out live
+  (the default, the fallback, a topic's model or fallback, a rotation, the shared pool, the judge),
+  whose price is not locked and whose gates no `ungated_until` holds open. Worst total first.
+- **Where it goes:** `cull_proposal` on the `model-catalog-state` row, with each model's total, the
+  events behind it and why, and `expires_at` the next cycle's time. An empty proposal is written
+  too, so "nothing to cull" can be told from "never looked".
+- **When:** only while evals are on, and only while the weekly cycle runs
+  (`model-catalog set --cycle on`): a paused cycle proposes nothing, and the last proposal expires
+  at the time the cycle was due. `cull_enabled` does not stop the proposal; it gates only the apply.
+
+`evals cull` shows the proposal and the last cull applied. `evals cull --apply` (refused with 409
+while `cull_enabled` is false, or when the proposal is missing or expired) checks each model again
+against the live rules, then archives and deletes up to `cull_max_per_run` (3) of them, worst total
+first, through pruning's own path: each one's row is kept in the `model-archive` row, and discover
+never adds it back. What it did goes on the state row as `last_cull_apply`.
+
+`models restore <id>` puts a culled or pruned model back from the archive: a culled model's row as
+the archive kept it, a pruned one's price and names only, switched off, for `models add` to enable.
+Its `ungated_until` is set seven days ahead, and when its total is below zero an Admin Forgive
+brings it to zero (at the next rollup). The archive entry is deleted last, so a restore that fails
+part-way can be sent again. More in [prompts and evals](prompts-and-evals.md#culling-a-proposal-then-an-apply).
 
 ## Disabling a model in use
 
@@ -454,13 +540,16 @@ next reprice may replace that price, and pruning no longer protects it.
 This part runs in the other Lambdas, at the moment a call picks its model
 (`resolve_model` in `common/model_routing.py`). Only a topic's own model, its rotation pick or its
 `model_id`, is checked against the registry. When the registry marks that model `enabled: false`,
-the call goes to:
+or it is not suitable for the call ([suitability](#model-purpose-and-classify)), the call goes to:
 
 1. the fallback, unless it is switched off too;
 2. else the default, unless it is switched off too;
-3. else a random active text model from the registry that a probe has not found denied.
+3. else a random active text model from the registry that a probe has not found denied, and that
+   the Model Ranch has not gated.
 
-Only the third is written back to the topic, in place of the switched-off model in its rotation
+While evals are on, the rotation draw itself leaves out gated models first
+([prompts and evals](prompts-and-evals.md#gates-and-the-rotation-guard)). Only the third is written
+back to the topic, in place of the switched-off model in its rotation
 list or as its `model_id`, so the next run starts there. A model with no registry row counts as
 active, and a registry that cannot be read routes as if nothing were switched off. Which calls
 follow this routing, and which always use `BEDROCK_MODEL_ID`, is in
@@ -473,11 +562,11 @@ priced from the first of these that has a price for the model (`pricing_for` in
 `common/costing.py`). A row or archive entry with no price is passed over:
 
 1. the model's registry row, by the id as given, then by its canonical id. A row with no price yet,
-   as every discovered model starts, falls through, so a new geographic profile of Claude Haiku
-   4.5 is still priced from the built-in entry;
+   as every discovered model starts, falls through, so a new geographic profile of the model the
+   built-in entry holds is still priced from it;
 2. the archived price of a model the fleet pruned (`model-archive`);
-3. the built-in entry (`DEFAULT_MODEL_PRICES` in `common/model_pricing.py`), which holds Claude
-   Haiku 4.5 only, for every geographic profile of it.
+3. the built-in entry (`DEFAULT_MODEL_PRICES` in `common/model_pricing.py`), which holds one model
+   only, for every geographic profile of it.
 
 One call that nothing prices leaves the whole cost unknown, never part-summed and never $0.
 
@@ -491,11 +580,13 @@ so it moves with the registry.
 
 | What | Where | Written by | Kept |
 |---|---|---|---|
-| Each model: enabled, prices, `pricing_unit`, `price_source`, `price_checked_at`, `price_attempted_at`, `price_evidence_hash`, `price_locked`, access | `<prefix>-<env>-models` | discover (adds), reprice and reviews (prices), pruning (deletes), the admin API (`models add`, `models disable`) | until pruned or deleted |
+| Each model: enabled, prices, `pricing_unit`, `price_source`, `price_checked_at`, `price_attempted_at`, `price_evidence_hash`, `price_locked`, access | `<prefix>-<env>-models` | discover (adds), reprice and reviews (prices), pruning and culling (deletes), the admin API (`models add`, `models disable`, `models restore`) | until pruned, culled or deleted |
+| Each model's purpose and inputs (`model_purpose`, `model_inputs`), and the Model Ranch's scores, roles and `ungated_until` | the same rows | discover and classify (purpose); the evals rollup (scores, roles, and the purpose of a model with none); `evals ungate` and `models restore` (`ungated_until`) | as the row; every writer carries them through |
+| The cull proposal, and the last cull applied | `cull_proposal` and `last_cull_apply` on the `model-catalog-state` row | the weekly cycle; `evals cull --apply` | until the next cycle; until the next apply |
 | The settings and pause flags | `model-catalog` row of `<prefix>-<env>-model-config` | the admin API (`model-catalog set`) | as set |
 | What each job last did, and the run slot | `model-catalog-state` row | the Lambda only, so saving the settings never wipes it | each job's entry until its next run |
 | One pricing run: its queue, changes with old and new prices, reviews due and done, what was put back | `pricing-run#<run id>` row | the Lambda | 14 days after it closes (TTL) |
-| Pruned models' prices | `model-archive` row | pruning | for good; nothing prunes it |
+| Pruned and culled models | `model-archive` row: a pruned model's price, a culled model's row | pruning; `evals cull --apply` | until `models restore` takes one back |
 | Models a probe found denied | `model-access-denied` row | discover | each one counts for 30 days |
 | A topic's rotation list, model and fallback | `model_id_candidates`, `model_id`, `fallback_model_id` on its `<prefix>-<env>-topics` row | the cycle, `deactivated`, routing; you | as set |
 | A price put back | a `model_pricing` row in `<prefix>-<env>-failed-executions` | each review that put one back | 7 days (TTL) |
@@ -530,14 +621,17 @@ from its invocation context, unless `MODEL_CATALOG_FUNCTION_ARN` points them els
 | The Lambda and its invocations | `lambdas/model_catalog_handler.py`; `handle`, `run_job`, `run_review`, `run_tick` in `lambdas/common/model_catalog.py` | `aws_lambda_function.model_catalog` (`<prefix>-<env>-model-catalog`, Python 3.11, 600 s, 256 MB) |
 | The schedules | `schedule_tick`, `schedule_reviews`, `_schedule_once` | `aws_scheduler_schedule.model_catalog_discover`, `_reprice`, `_cycle`; `aws_iam_role.scheduler_invoke` |
 | Discover and the probes | `account_models`, `discover`, `probe_access`, `recheck_access` | `ModelCatalogRead`, `BedrockInvoke` |
+| Purpose and classify | `model_purpose`, `model_inputs`, `listed_models`, `listable`, `purpose_fields`, `classify`, `CATALOG_MODEL_FIELDS` in `model_catalog.py`; `suitable` in `model_fleet.py`; `put_model_if_unchanged` in `dynamo.py` | `ModelCatalogRead` |
+| What each job reports | `model_catalog_job` in `lambdas/common/evidence.py` | the `model_catalog_counters` metric filters in `infra/modules/observability/pipeline_health.tf` |
+| The cull proposal and restore | `cull_proposal`, `cull_check`, `cull_roles` in `model_fleet.py`; `apply`, `restore` in `lambdas/common/model_cull.py` | `POST /evals/cull/apply`, `POST /models/{model_id}/restore` |
 | Reprice and its sources | `queue_order`, `reprice`, `advance`, `price_models`, `PriceList`, `WebPrices`, `PriceLookup`; `common/web_search.py` | `module "web_search"`; `aws_iam_role_policy.lambda_web_search` |
 | Reviews, reverts and the snapshot | `review`, `_review_tick`, `_check`, `_revert`, `_end_pass`, `_finalise`, `write_snapshot`, `_record_failure` | the content bucket's `pricing/`; `<prefix>-<env>-failed-executions` |
 | One run at a time | `settle_overdue`, `is_overdue`, `_release_orphaned_slot`; `claim_config_field`, `release_config_field` in `common/dynamo.py` | the `model-catalog-state` row |
 | Pruning, the cycle, disabling | `prune`, `cycle`, `deactivated`, `application_roles` in `lambdas/common/model_fleet.py`; `archive_models`, `get_model_archive` in `dynamo.py` | `<prefix>-<env>-models`, `<prefix>-<env>-topics` |
 | Routing around an inactive model | `resolve_model`, `_route_around` in `lambdas/common/model_routing.py` | |
 | How a price is used | `pricing_for`, `calculate_lineage_cost_aud` in `lambdas/common/costing.py`; `DEFAULT_MODEL_PRICES`, `canonical_model_id` in `lambdas/common/model_pricing.py`; `build_stats` in `lambdas/common/stats.py` | |
-| The admin API's routes | `_put_model`, `_start_model_catalog_job`, `_get_model_catalog_config_route`, `_put_model_catalog_config_route` in `lambdas/admin_api_handler.py` (`POST /models`, `POST /models/discover`, `POST /models/reprice`, `GET` and `PUT /model-catalog-config`) | `routes` of `module "admin_api"` in each environment's `main.tf` |
-| The commands | `models list\|add\|disable\|discover\|reprice`, `model-catalog get\|set` in `scripts/admin_cli.py` | |
+| The admin API's routes | `_put_model`, `_start_model_catalog_job`, `_classify_models_route`, `_get_model_catalog_config_route`, `_put_model_catalog_config_route` in `lambdas/admin_api_handler.py` (`POST /models`, `POST /models/discover`, `POST /models/reprice`, `POST /models/classify`, `GET` and `PUT /model-catalog-config`) | `routes` of `module "admin_api"` in each environment's `main.tf` |
+| The commands | `models list\|add\|disable\|discover\|reprice\|classify\|restore`, `model-catalog get\|set`, `evals cull` in `scripts/admin_cli.py` and `scripts/admin_cli_evals.py` | |
 | The assistant's view | `model_catalog_status` in `lambdas/ops_mcp/model_prices.py`; `_pricing_findings` in `lambdas/ops_mcp/tools.py` | |
 
 ## Design history
@@ -548,6 +642,10 @@ from its invocation context, unless `MODEL_CATALOG_FUNCTION_ARN` points them els
   cycling and the access probes. Its "Not done here" lists what is still not built: automatic
   prices for image, video, speech and embedding models, prompt-cache prices, and geo-profile
   premiums, which you set by hand with `--lock-price`.
+- [model-ranch-prompt-assets-evals.md](../enhancements/archive/model-ranch-prompt-assets-evals.md): model
+  purpose and suitability, the fields every writer carries through, the catalog's counters, and the
+  cull proposal and restore, with continuous evals around them
+  ([prompts and evals](prompts-and-evals.md)).
 - [project-plan.md](../project-plan.md#ai-lineage-cost-tracking-pluggable-model-routing-and-a-public-stats-page)
   §11, "AI lineage, cost tracking, pluggable model routing, and a public Stats page": the registry
   and the routing the catalog keeps current.

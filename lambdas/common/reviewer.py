@@ -841,10 +841,10 @@ def do_task(task: dict, hands: Hands, now: datetime, *, joke: int = 0, settings:
     fails is "error", logged, and the run goes on."""
     settings = settings or effective_settings(None)
     # Each task is about one article, so its questions draw their A/B arms by the article's id, the
-    # item key a judge's run uses (section 4.1 of docs/enhancements/model-ranch-prompt-assets-evals.md):
-    # the skeptic's or the final review's question and the whole read that follows land on the same
-    # side of their splits, the other articles of the tick draw on their own, and an article asked
-    # again on a later run is given the same versions.
+    # item key a judge's run uses (section 4.1 of
+    # docs/enhancements/archive/model-ranch-prompt-assets-evals.md): the skeptic's or the final review's
+    # question and the whole read that follows land on the same side of their splits, the other articles of
+    # the tick draw on their own, and an article asked again on a later run is given the same versions.
     with prompts.bind_run(task.get("article_id")):
         try:
             if task["task"] == "content":

@@ -1,7 +1,7 @@
 """Call traces: while the evals setting `trace_calls` is on, every model call that builds a lineage
 call is stored whole, for a person to read back what a prompt version was given and what it wrote.
 
-docs/enhancements/model-ranch-prompt-assets-evals.md, PR18c. One JSON object per call, at
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR18c. One JSON object per call, at
 `traces/<subject>/<stage>.json` in the content bucket: `{prompt_id, version, model_id,
 rendered_prompt, reply, tokens}`. The subject is the one continuous evals score (section 4.3): an
 article's id for the daily cycle's calls and a Re-Write's, `<topic_id>#<captured_at>` for the

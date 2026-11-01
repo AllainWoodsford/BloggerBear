@@ -1,5 +1,5 @@
 """The dispatcher's decisions: which topic is due for what this minute, how a job is claimed, and
-what is sent (docs/enhancements/model-ranch-prompt-assets-evals.md sections 4.5, 4.7 and 5.1).
+what is sent (docs/enhancements/archive/model-ranch-prompt-assets-evals.md sections 4.5, 4.7 and 5.1).
 
 One dispatcher run (a *tick*) every minute replaces the two EventBridge Scheduler schedules each
 topic owns today. For every topic it reads the same effective expressions the stagger writes
@@ -27,9 +27,9 @@ are constants here, and the tests hold them to the spec.
 or started; the tick records what it would have done on the row (`shadow_last_research_dispatch_at`,
 `shadow_last_daily_dispatch_at`) and counts `shadow_mismatches` against what the Scheduler path
 really did. A topic whose `dispatch_mode` is `queue` has no schedules left, so it is dispatched for
-real whatever the shadow setting says; a topic on its schedules is only ever shadowed. Zero
-mismatches over a day is what the per-topic cutover (Q2) asks for, so a mismatch is only ever
-counted where the two paths really disagreed:
+real whatever the shadow setting says; a topic on its schedules is only ever shadowed. A full day
+with no mismatch of either kind is what the per-topic cutover (Q2) asks for (`shadow_clean_days`,
+below), so a mismatch is only ever counted where the two paths really disagreed:
 
 - **research**: a turn is recorded when the live path would have claimed it (the topic due, and
   no record younger than the claim's expiry, research_claim_expiry), or when the Scheduler path's

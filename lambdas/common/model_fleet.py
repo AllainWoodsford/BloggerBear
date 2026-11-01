@@ -73,7 +73,7 @@ TEXT_PURPOSE = "text"
 EVALS_CONFIG_ID = evals_settings.CONFIG_ID
 JUDGE_FIELD = "judge_model_id"
 # Every role a model can play, as the models row's `model_roles` lists them (section 4.6 of
-# docs/enhancements/model-ranch-prompt-assets-evals.md): protected_models' roles, and price_locked.
+# docs/enhancements/archive/model-ranch-prompt-assets-evals.md): protected_models' roles, and price_locked.
 # In model_roles, `judge` marks the judge in effect (section 4.5's chain, the one `evals status`
 # names). Protection reads `judge_model_id` as stored, because the default judge is protected as
 # `fallback` or `default` already.

@@ -1,7 +1,7 @@
 ---
 doc: progress-tracker
 schema_version: 1
-last_updated: 2026-10-19
+last_updated: 2026-11-01
 source_of_truth: docs/project-plan.md
 phases:
   - id: phase-0
@@ -157,9 +157,10 @@ Spec: `docs/enhancements/archive/phase-0-foundations.md`
   table; locking is native S3 (`use_lockfile = true`) — code complete; the
   one-time local apply is done by hand (last applied 2026-09-27, adding the
   AgentCore deploy permissions). Keep its variables in the git-ignored
-  `infra/bootstrap/terraform.tfvars`: a plan without `domain_name` and
-  `budget_alert_email` proposes destroying the DNS zone and budget
-  (`prevent_destroy` blocks it)
+  `infra/bootstrap/terraform.tfvars`: a plan without `budget_alert_email`
+  proposes destroying the budget, and one without `domain_name` takes its
+  default, the original deployment's domain, so a deployment on another
+  domain would see its DNS zone replaced (`prevent_destroy` blocks that)
 - [x] `infra/modules/static-site`: reusable module (S3 + CloudFront + OAC),
   parameterized for `enable_custom_domain` and `force_destroy`
 - [x] `infra/environments/dev`: region `ap-southeast-2`, no custom domain,
@@ -609,7 +610,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   schedule` / `topics reschedule`; `topics pause` / `resume` (schedules disabled, the handlers
   refuse, "Paused" on the topic page, a musing each way); the digest kept general with no
   figures and no longer held for a person on a financial contributor alone (project-plan §11;
-  the dispatcher design revised for it, docs/enhancements/dispatcher-sqs-enhancement.md)
+  the dispatcher design revised for it, docs/enhancements/archive/dispatcher-sqs-enhancement.md)
 - [x] Render-blocking CSS kept on purpose; async preload reverted (#127)
 - [x] GitHub Trending no longer scrapes `github.com/trending`: it calls the
   official REST Search API (most-starred repos created in the last week),
@@ -970,42 +971,91 @@ submission-round entries after them are docs and tests, with nothing to deploy.
 
 ### Model Ranch, prompts as assets, continuous evals, the queue platform (2026-10-25)
 
-Spec: [model-ranch-prompt-assets-evals.md](enhancements/model-ranch-prompt-assets-evals.md). One PR per
-line, in three parallel stacks (queue, prompts, evals); ticked only by the final docs PR, as the spec's
-owner decisions say (an agreed override of "check off in the same PR" for this feature).
+Spec, archived now that it is built: [model-ranch-prompt-assets-evals.md](enhancements/archive/model-ranch-prompt-assets-evals.md)
+([what shipped and what did not](enhancements/archive/README.md)). One PR per line, in three parallel
+stacks (queue, prompts, evals); ticked by the final docs PR, as the spec's owner decisions say (an
+agreed override of "check off in the same PR" for this feature).
 
-- [ ] **PR0** — the spec (this section) and the superseded note on the dispatcher proposal
-- [ ] **Q0** — queue wiring: `cron_match`, `dispatch`, `WORKER_CONCURRENCY`, pipeline-config `dispatch_shadow` and `daily_starts_per_tick` (inert)
-- [ ] **Q1** — the work-queue module: `work.fifo`, `work-dlq.fifo`, the dispatcher in shadow mode, the research-tick event-source mapping
-- [ ] **Q2** — per-topic `dispatch_mode` with pre-flight, manual triggers routed through the queue, `topics reschedule --dispatch-mode schedule`
-- [ ] **P0** — prompts wiring: the switch, the publisher-role variable, the `prompt_fallback` evidence event and its alarm (inert)
-- [ ] **PR1** — `fresh_review._DELIMITER_TAG` covers `claims_to_fix`
-- [ ] **PR2** — bootstrap: the two publisher roles and the evals log-group statement (manual apply)
-- [ ] **PR3** — `common/prompts.py`: `get_prompt`, `vanilla_prompt`, `bind_run`, the registry (inert)
-- [ ] **PR4** — the prompts module (bucket, hash table), `GET /prompts`, pause/resume, releases, `prompts set`; `admin_cli prompts`
-- [ ] **PR5** — `prompts.yml`, `prompt_lint.py`, `publish_prompts.py` (release reconcile, hash table rebuilt per release)
-- [ ] **PR6** — migrate the drafting prompts (ideation, draft, title)
-- [ ] **PR7** — migrate the review prompts; compliance stays code-only; `bedrock_redact_review` deleted
-- [ ] **PR8** — migrate the research and vision summary prompts; triage stays code-only
-- [ ] **PR9** — migrate the rewrite and reviewer-bear prompts
-- [ ] **PR10** — migrate the small prompts (gear, reflection, web price, musings); the code-only specs record `vanilla:vN`
-- [ ] **PR1b** — model purpose and suitability, ranch fields preserved on overwrite, `model_catalog_job` counters, `models classify`
-- [ ] **E0** — evals wiring: the switch, `logs_insights` move, the `evals` stats category (inert)
-- [ ] **PR12** — `common/evals.py` and the evals module (table, log group, grants; the rest gated) (bootstrap applied first)
-- [ ] **PR13** — the hourly rollup, the `evals` settings row, `evals status|digest|rollup`
-- [ ] **PR13b** — `evals forgive|punish|ungate|revoke`
-- [ ] **PR11b** — dashboards: `pipeline_health` (with the model-catalog counter row) and `ranch_and_prompts` replace the three
-- [ ] **PR14** — eval events: completion, admin review, rewrite, votes
-- [ ] **PR15** — the rotation guard as a filter; the rewrite picker ranked by performance
-- [ ] **PR16** — culling in proposal mode; `evals cull --apply`; `models restore`
-- [ ] **PR17** — `topic_review_steering` in the fresh-data review
-- [ ] **PR18** — the LLM judge through the eval queue, calibrated against human reviews, with a tripwire
-- [ ] **PR18b** — offline scoring runs: `evals score`, `evals runs`
-- [ ] **PR18c** — call traces (opt-in)
-- [ ] **PR19** — human review of Findings in `approve --source findings`
-- [ ] **PR20** — the assistant's `model_ranch` and `prompt_metrics` tools; the agent prompt; the Friday digest
-- [ ] **PR21** — bug sweep
-- [ ] **PR22** — documentation sweep: configuration, models, observability, runsheets, two architecture pages, README, this checklist ticked; the spec archived
+- [x] **PR0** — the spec (this section) and the superseded note on the dispatcher proposal
+- [x] **Q0** — queue wiring: `cron_match`, `dispatch`, `WORKER_CONCURRENCY`, pipeline-config `dispatch_shadow` and `daily_starts_per_tick` (inert)
+- [x] **Q1** — the work-queue module: `work.fifo`, `work-dlq.fifo`, the dispatcher in shadow mode, the research-tick event-source mapping
+- [x] **Q2** — per-topic `dispatch_mode` with pre-flight, manual triggers routed through the queue, `topics reschedule --dispatch-mode schedule`
+- [x] **P0** — prompts wiring: the switch, the publisher-role variable, the `prompt_fallback` evidence event and its alarm (inert)
+- [x] **PR1** — `fresh_review._DELIMITER_TAG` covers `claims_to_fix`
+- [x] **PR2** — bootstrap: the two publisher roles and the evals log-group statement (manual apply)
+- [x] **PR3** — `common/prompts.py`: `get_prompt`, `vanilla_prompt`, `bind_run`, the registry (inert)
+- [x] **PR4** — the prompts module (bucket, hash table), `GET /prompts`, pause/resume, releases, `prompts set`; `admin_cli prompts`
+- [x] **PR5** — `prompts.yml`, `prompt_lint.py`, `publish_prompts.py` (release reconcile, hash table rebuilt per release)
+- [x] **PR6** — migrate the drafting prompts (ideation, draft, title)
+- [x] **PR7** — migrate the review prompts; compliance stays code-only; `bedrock_redact_review` deleted
+- [x] **PR8** — migrate the research and vision summary prompts; triage stays code-only
+- [x] **PR9** — migrate the rewrite and reviewer-bear prompts
+- [x] **PR10** — migrate the small prompts (gear, reflection, web price, musings); the code-only specs record `vanilla:vN`
+- [x] **PR1b** — model purpose and suitability, ranch fields preserved on overwrite, `model_catalog_job` counters, `models classify`
+- [x] **E0** — evals wiring: the switch, `logs_insights` move, the `evals` stats category (inert)
+- [x] **PR12** — `common/evals.py` and the evals module (table, log group, grants; the rest gated) (bootstrap applied first)
+- [x] **PR13** — the hourly rollup, the `evals` settings row, `evals status|digest|rollup`
+- [x] **PR13b** — `evals forgive|punish|ungate|revoke`
+- [x] **PR11b** — dashboards: `pipeline_health` (with the model-catalog counter row) and `ranch_and_prompts` replace the three
+- [x] **PR14** — eval events: completion, admin review, rewrite, votes
+- [x] **PR15** — the rotation guard as a filter; the rewrite picker ranked by performance
+- [x] **PR16** — culling in proposal mode; `evals cull --apply`; `models restore`
+- [x] **PR17** — `topic_review_steering` in the fresh-data review
+- [x] **PR18** — the LLM judge through the eval queue, calibrated against human reviews, with a tripwire
+- [x] **PR18b** — offline scoring runs: `evals score`, `evals runs`
+- [x] **PR18c** — call traces (opt-in)
+- [x] **PR19** — human review of Findings in `approve --source findings`
+- [x] **PR20** — the assistant's `model_ranch` and `prompt_metrics` tools; the agent prompt; the Friday digest
+- [x] **PR21** — bug sweep
+- [x] **PR22** — documentation sweep: configuration, models, observability, runsheets, two architecture pages and the assistant's walk-throughs of them, README, this checklist ticked; the spec archived
+
+#### What shipped
+
+Built in #380 to #411 (#401 aside), then the bug sweep and the docs sweep. Every deploy carries all
+three parts, and each changes nothing until it is switched on
+([configuration.md](configuration.md#the-queue-platform-prompts-and-evals)).
+
+- **The queue platform** ([architecture/queue-platform.md](architecture/queue-platform.md)): one
+  dispatcher a minute reads every topic's cadence, sends due research turns to `work.fifo`, which
+  the research tick drains at most `WORKER_CONCURRENCY` at a time, and starts the daily runs
+  itself. It shadows every topic still on its two schedules until the topic is moved, after a
+  pre-flight, with `topics update <id> --dispatch-mode queue`; `topics reschedule --dispatch-mode
+  schedule` moves every topic back. The fixed global jobs keep their own schedules.
+- **Prompts as assets** ([architecture/prompts-and-evals.md](architecture/prompts-and-evals.md#prompts-as-assets),
+  [prompts/README.md](../prompts/README.md)): the migrated prompts are templates whose asset copies
+  live in `prompts/`, published by `.github/workflows/prompts.yml` to each environment's prompts
+  bucket, with a hash table of what the publisher approved; two files in a `latest/` folder are an
+  A/B split, drawn once per run, and every lineage records each prompt's version. Anything that
+  fails a check is served from the code's copy, with a fallback line and an alarm. The compliance
+  review, vision triage, comment screening, the judge's rubric and the agent's system prompt stay
+  code-only. `admin_cli prompts` lists, pauses and switches them off.
+- **Continuous evals and the Model Ranch** ([architecture/prompts-and-evals.md](architecture/prompts-and-evals.md#continuous-evals-and-the-model-ranch),
+  [models.md](models.md#the-model-ranch-scores-gates-and-culling)): scored events in the evals log
+  group, added up hourly into the evals table and each model's row; gates that keep a badly
+  scoring model out of the rotation, and a rewrite picker ranked by score; culling as a weekly
+  proposal that an operator applies; forgive, punish, ungate and revoke; a judge calibrated against
+  people's verdicts; offline scoring runs, opt-in call traces and human review of Findings; the
+  assistant's `model_ranch` and `prompt_metrics`, a Friday digest, and two dashboards,
+  pipeline-health and ranch-and-prompts, in place of the pipeline, lambda-runs and edge dashboards.
+  `admin_cli evals` drives it.
+
+**Done once, by the owner.** The first three are in the production runsheet's
+[enable order](production-runsheet.md#the-enable-order), with their commands; the last is optional:
+
+- Apply `infra/bootstrap` by hand in each account whose bootstrap predates this work, before the
+  first deploy that carries it: it makes the two prompts publisher roles, and every deploy now
+  creates the evals log group, which the old deploy roles may not.
+- Create the `production-prompts` GitHub environment (required reviewer: you; deployment branch
+  `dev`), and set `AWS_DEV_PROMPTS_ROLE_ARN` and `AWS_PROD_PROMPTS_ROLE_ARN` at repository level from
+  the bootstrap's outputs.
+- Turn the parts on, dev before production: topics to the queue one at a time once shadow mode has
+  watched them, then `PROMPT_AS_ASSET_ENABLED`, then `EVALS_ENABLED`. Culling stays proposal-only
+  until `evals set --cull on` and `evals cull --apply`.
+- Run `python scripts/admin_cli.py models classify` (then `models list` for the PURPOSE column) in
+  each environment after its first deploy with this work, so rows from before purposes were
+  recorded are judged by purpose now. Until a row is classified it is judged by the old
+  token-priced rule, and once evals are on the hourly rollup classifies any row that has no purpose
+  ([models.md](models.md#what-a-model-is-for-purpose-and-suitability)).
 
 ## Backlog / not yet scheduled
 

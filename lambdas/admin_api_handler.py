@@ -849,7 +849,7 @@ def _update_topic(event: dict) -> dict:
 
 
 def _move_to_queue(topic_id: str, updated: dict, *, topics: list[dict], config, confirm: bool) -> dict | None:
-    """The cutover of one topic from its schedules to the queue (docs/enhancements/
+    """The cutover of one topic from its schedules to the queue (docs/enhancements/archive/
     model-ranch-prompt-assets-evals.md, Q2), up to the row write the caller makes; returns the
     refusal to answer with, or None to go on.
 
@@ -3265,7 +3265,7 @@ def _put_model_catalog_config_route(event: dict) -> dict:
     return _get_model_catalog_config_route(event)
 
 
-# --- Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md, PR13) ---------------------
+# --- Continuous evals (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR13) ------------------
 #
 # The `evals` settings row (common/evals_settings.py), starting a rollup now (common/evals_rollup.py,
 # run in eval-jobs, invoked asynchronously: reading the log can take minutes), and what is happening
@@ -3479,8 +3479,8 @@ def _review_finding_route(event: dict) -> dict:
     return _response(status, answer) if isinstance(answer, dict) else _error(status, answer)
 
 
-# --- Offline scoring runs (common/eval_score.py, docs/enhancements/model-ranch-prompt-assets-evals.md,
-# PR18b) ----------------------------------------------------------------------------------------------
+# --- Offline scoring runs (common/eval_score.py,
+# docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR18b) --------------------------------
 #
 # Starting one (with `dry_run`, only its plan: what `admin_cli evals score` shows before it asks), the
 # runs and one run's progress and results, cancelling a run and sending a scoring run's unscored
@@ -3537,7 +3537,7 @@ def _resume_evals_run_route(event: dict) -> dict:
     return _evals_run_answer(lambda: (202, eval_score.resume(_path_param(event, "run_id"))))
 
 
-# --- Call traces (common/call_traces.py; docs/enhancements/model-ranch-prompt-assets-evals.md, PR18c) --
+# --- Call traces (common/call_traces.py; docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR18c)
 #
 # One article's model calls as they were sent and answered, stored while trace_calls was on: its own
 # (traces/<article_id>/), and the research calls of the Findings its lineage names
@@ -3641,7 +3641,7 @@ def _put_reviewer_config_route(event: dict) -> dict:
     return _get_reviewer_config_route(event)
 
 
-# --- Prompts as assets (common/prompts.py, docs/enhancements/model-ranch-prompt-assets-evals.md) ----
+# --- Prompts as assets (common/prompts.py, docs/enhancements/archive/model-ranch-prompt-assets-evals.md) ----
 #
 # What is published and what is served: each registered prompt's files under latest/ with their
 # tags, hash rows and pause state, the publisher's releases, and the `prompts` row of the
@@ -3734,8 +3734,10 @@ def _list_prompts_route(event: dict) -> dict:
 
 def _pause_prompt_route(event: dict) -> dict:
     """Pull one version of a prompt: `{prompt_id, version}` is added to the `prompts` row's
-    paused_versions, and every run serves the prompt's other files (or its vanilla) instead. Only a
-    registered asset prompt can be paused: a code-only one is never read from the bucket."""
+    paused_versions. The arm is still drawn over every file under latest/ (prompts._read_asset):
+    a run that draws the paused version serves the vanilla (fallback code `paused`), and a run
+    that draws another file keeps it. Only a registered asset prompt can be paused: a code-only
+    one is never read from the bucket."""
     return _edit_paused_versions(event, pause=True)
 
 

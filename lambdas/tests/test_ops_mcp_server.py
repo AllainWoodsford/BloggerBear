@@ -529,6 +529,8 @@ def test_the_architecture_feature_enum_is_the_catalogues_features(client):
         "security-incidents",
         "reviewer-bear",
         "model-catalog",
+        "queue-platform",
+        "prompts-and-evals",
     }
     described = " ".join(tools["architecture"]["description"].split())
     assert '"how does the vision pipeline work?"' in described
@@ -539,6 +541,8 @@ def test_the_architecture_feature_enum_is_the_catalogues_features(client):
         ("security-incidents", '"how are security incidents made?"'),
         ("reviewer-bear", '"what does the reviewer bear do?"'),
         ("model-catalog", '"how are model prices kept current?"'),
+        ("queue-platform", '"how does the work queue run a topic?"'),
+        ("prompts-and-evals", '"how are models scored?"'),
     ):
         assert f"{key} (how" in described and asked in described, key
     # And so is every feature added later, as docs/architecture/README.md's "Adding a feature" says.
@@ -557,7 +561,7 @@ def test_the_instructions_send_how_each_flow_is_built_to_its_feature():
     for phrase in (
         '`feature` "article-research"',
         'pass `feature` "site-and-feedback", "stats-and-costs", "security-incidents", '
-        '"reviewer-bear" or "model-catalog"',
+        '"reviewer-bear", "model-catalog", "queue-platform" or "prompts-and-evals"',
         "what the reviewer bear does (no guide describes him)",
         "for what is happening now, use the tool for it",
     ):

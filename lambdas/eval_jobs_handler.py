@@ -1,5 +1,5 @@
-"""Eval jobs Lambda handler: continuous evals' own jobs (docs/enhancements/model-ranch-prompt-assets-evals.md,
-section 5.3; infra/modules/evals).
+"""Eval jobs Lambda handler: continuous evals' own jobs
+(docs/enhancements/archive/model-ranch-prompt-assets-evals.md, section 5.3; infra/modules/evals).
 
 Invoked three ways, and only while evals are switched on (the module makes the function, its two
 schedules and its queue's mapping only then):

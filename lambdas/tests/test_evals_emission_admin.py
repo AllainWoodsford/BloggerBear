@@ -1,4 +1,4 @@
-"""The admin API's continuous-evals events (common/evals_emission.py; docs/enhancements/
+"""The admin API's continuous-evals events (common/evals_emission.py; docs/enhancements/archive/
 model-ranch-prompt-assets-evals.md, section 4.3, PR14): a person's approve or reject is one Admin
 Review per prompt of the article, and a person's rewrite is one Article Rewrite for the model that
 wrote it.

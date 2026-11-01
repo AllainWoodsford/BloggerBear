@@ -159,7 +159,7 @@ def _table(key: str, purpose: str, keys: tuple[str, ...], **more) -> Component:
 # pipeline_health.tf), and the ranch and prompts one while evals are on (infra/modules/evals).
 _PIPELINE_DASHBOARD = f"{PREFIX}{ENV}-pipeline-health"
 _RANCH_DASHBOARD = f"{PREFIX}{ENV}-ranch-and-prompts"
-# Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): a Lambda that cannot use a
+# Prompts as assets (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): a Lambda that cannot use a
 # prompt asset carries on with the copy in its code and logs a prompt_fallback line; the alarm (the
 # observability module's filter over every pipeline log group) reports the first in an hour. It is
 # listed on the functions whose prompts become assets, the ones that can fall back.
@@ -179,10 +179,17 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             (
                 "Written by",
-                "the Admin API (admin_cli topics ...); research-tick and daily-cycle "
+                "the Admin API (admin_cli topics ...; once the day's daily turn has passed, a move to the "
+                "queue, a resume and a topic made on the queue also write the daily claim, "
+                "last_daily_dispatched_on); research-tick and daily-cycle "
                 "stamp last_research_at and last_article_at, with last_article_run (the run that wrote "
                 "the article, so a retry of that run writes nothing), and, for a topic that rotates "
-                "through subjects, last_article_by_subject (each subject's last article)",
+                "through subjects, last_article_by_subject (each subject's last article); research-tick "
+                "also stamps last_research_attempt_at when it takes its turn, before it asks the source; "
+                "the dispatcher writes its claims (research_claimed_at, last_daily_dispatched_on and "
+                "daily_claim_n) and, in shadow mode, the shadow record (shadow_last_research_dispatch_at, "
+                "shadow_last_daily_dispatch_at, shadow_mismatches, shadow_unchecked, shadow_checked_days, "
+                "shadow_clean_days, shadow_research_mismatch_at and shadow_research_matched_at)",
             ),
             ("Read by", "every pipeline function, the public API, the assistant"),
         ),
@@ -348,8 +355,11 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             (
                 "Written by",
-                "the Admin API (admin_cli models ...); model-catalog (discover adds rows, reprice "
-                "and its checks change prices)",
+                "the Admin API (admin_cli models ...; `evals ungate` holds a model's gates open, "
+                "`evals cull --apply` deletes the culled models' rows by the prune path and `models "
+                "restore` puts one back); model-catalog (discover adds rows, reprice and its checks "
+                "change prices, `models classify` records each model's purpose); eval-jobs' hourly "
+                "rollup (each model's scores and roles, and the purpose of a row that has none)",
             ),
             (
                 "Read by",
@@ -373,8 +383,12 @@ CATALOGUE: tuple[Component, ...] = (
             (
                 "Written by",
                 "the Admin API (model-config, pipeline-config, feedback-config, model-catalog set, and "
-                "prompts pause/resume/set, the \"prompts\" row of prompt asset switches); the public "
-                "API (rate-limit counters); model-catalog (its state and pricing runs)",
+                "prompts pause/resume/set, the \"prompts\" row of prompt asset switches; `evals set`, "
+                "the \"evals\" row; `evals cull --apply`, its last_cull_apply on model-catalog-state "
+                "and the culled models in the \"model-archive\" row; `models restore`, which takes a "
+                "model out of that archive); the public API (rate-limit counters); model-catalog (its "
+                "state, with the weekly cycle's cull_proposal, and its pricing runs); the dispatcher "
+                "(last_tick on the pipeline row)",
             ),
             ("Read by", "every pipeline function, the assistant (its access switch, model_catalog)"),
             ("Expires", "the rate-limit counters, and a pricing run 14 days after it closes, by TTL"),
@@ -406,7 +420,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "eval-jobs' hourly rollup, from the evals log group (`evals rollup` runs it now), its "
                 "judge (runs, pairs, spend), its offline scoring jobs (run items, the live drafts they "
                 "compare with, spend) and its Friday digest (the index row's last_digest_on); the admin "
-                "API, its adjust# rows (`evals forgive` and `evals punish`), its offline runs (`evals "
+                "API, its adjust# rows (`evals forgive`, `evals punish`, and `models restore`'s forgive "
+                "of a culled model back to zero), its offline runs (`evals "
                 "score`, `evals runs cancel|resume`: run headers) and a person's verdicts as pairs (a "
                 "Finding reviewed with `approve --source findings`, an article approved or rejected)",
             ),
@@ -1016,8 +1031,11 @@ CATALOGUE: tuple[Component, ...] = (
             ("Kept for", "120 days"),
             (
                 "Written by",
-                "common/evals.py emit(), from any pipeline Lambda and the admin API (`evals forgive` "
-                "and `evals punish`), only while evals are on",
+                "common/evals.py emit(), only while evals are on: the daily cycle (an article's "
+                "completion) and any Lambda whose prompt falls back to the code's copy; the admin API "
+                "(a person's approve or reject, a Re-Write, a reviewed Finding, `evals forgive`, `evals "
+                "punish`, and `models restore`'s forgive); the public API (a reader's vote); eval-jobs "
+                "(the judge's verdicts, offline scoring runs)",
             ),
             ("Read by", "eval-jobs' hourly rollup (Logs Insights), and the ranch-and-prompts dashboard"),
         ),
@@ -1442,15 +1460,14 @@ def resolve_layer(raw) -> str | None:
 #
 # The owner's ask: a layer answers "what is this made of?", not "how does this one thing work?".
 # A feature is a smaller, logical grouping that cuts across the layers: the parts that together
-# make one thing the project does, told in the order the work flows through them. There are seven,
+# make one thing the project does, told in the order the work flows through them. There are nine,
 # each told from its page under docs/architecture/: article research (from a topic's data source to
 # an article in S3), the vision pipeline (from a satellite site to a map in an article,
 # blogger-vision.md), the site and reader feedback, stats and costs, security incidents, the
-# reviewer bear and the model catalog. The other three pages there (the admin CLI, this assistant
-# and Alexa+) have no entry: they name the parts to ask about instead. More can be added the same
-# way ("prompts as assets" is the next one the owner has in mind) by adding a Feature below, as
-# docs/architecture/README.md's "Adding a feature" says; resolve_feature picks the feature with the
-# longest alias the words hold.
+# reviewer bear, the model catalog, the queue platform, and prompts and evals. The other three pages
+# there (the admin CLI, this assistant and Alexa+) have no entry: they name the parts to ask about
+# instead. More can be added the same way by adding a Feature below, as docs/architecture/README.md's
+# "Adding a feature" says; resolve_feature picks the feature with the longest alias the words hold.
 #
 # A step's `parts` are catalogue resources as "kind:key" (tests/test_ops_mcp_architecture.py
 # holds that each exists, so a feature cannot name a resource the catalogue lost) and, for what is
@@ -2169,6 +2186,211 @@ FEATURES: tuple[Feature, ...] = (
             "rotation cycle", "weekly cycle", "pruning", "prune", "model fleet", "fleet",
         ),
     ),
+    # docs/architecture/queue-platform.md's steps, as the assistant tells them, in the page's order:
+    # its twelve in ten, with the tick and its record (1 and 12) one step, and the daily run (7) told
+    # with the step that starts it (4).
+    Feature(
+        key="queue-platform",
+        title="The queue platform (from a topic's cadence to a queued job or a started run)",
+        said="the queue platform",
+        summary="How a topic is run once it leaves its two schedules: one dispatcher a minute reads "
+        "every cadence, claims what is due on the topic's row, queues research jobs and starts "
+        "daily runs, after shadow mode has watched it.",
+        steps=(
+            # dispatcher_handler.py; Dispatcher.tick in common/dispatch.py; aws_scheduler_schedule.
+            # dispatcher (rate(1 minute)) in infra/modules/work-queue.
+            Step(
+                "Every minute",
+                "The dispatcher's schedule invokes it each minute. It reads the pipeline row and every "
+                "topic, skips a paused one, and prints one dispatcher_tick line with what it did.",
+                ("schedule:dispatcher", "function:dispatcher", "table:model-config", "table:topics"),
+            ),
+            # effective_cadences and parse_cadences in dispatch.py; common/cron_match.py.
+            Step(
+                "Reading the cadence",
+                "The topic's two expressions, as the stagger writes them for the Scheduler, go "
+                "through the cron matcher. One it cannot read is logged and the topic skipped, never "
+                "guessed at.",
+                ("function:dispatcher", "common/cron_match.py"),
+            ),
+            # research_turn, is_due, claim_research, research_message and research_dedup_id.
+            Step(
+                "Research due",
+                "A research turn since the last tick, and the topic due: it is claimed on its row, "
+                "then one job goes to the FIFO work queue, in the topic's own group.",
+                ("table:topics", "queue:work"),
+            ),
+            # daily_turn_passed, _daily_done, claim_daily, execution_name and _start_daily in
+            # dispatch.py; the state machine's NameTheRun.
+            Step(
+                "Daily due",
+                "Once today's first daily turn has passed in the topic's zone and today is not yet "
+                "claimed, the day is claimed and the daily-cycle state machine started under a name "
+                "made of the topic, the date and the claim number.",
+                ("table:topics", "state_machine:daily-cycle", "function:daily-cycle"),
+            ),
+            # aws_lambda_event_source_mapping.research_tick; _queue_record and _stamp in
+            # research_tick_handler.py.
+            Step(
+                "The research job",
+                "The research tick takes one job at a time, at most worker_concurrency at once, and "
+                "runs at the minute the dispatcher found the topic due.",
+                ("queue:work", "function:research-tick"),
+            ),
+            # aws_sqs_queue.work_dlq and its mapping; dlq_handler.py.
+            Step(
+                "Dead letters",
+                "A job received three times without finishing goes to the dead-letter queue, whose "
+                "handler writes a research_job row to failed executions.",
+                ("queue:work-dlq", "function:dlq-handler", "table:failed-executions"),
+            ),
+            # _shadow_research, _judge_research, _shadow_daily and _daily_ran in dispatch.py.
+            Step(
+                "Shadow mode",
+                "A topic still on its schedules is never sent or started. The tick records what it "
+                "would have done and counts where the schedules did otherwise.",
+                ("table:topics", "schedule:topic-schedules", "state_machine:daily-cycle"),
+            ),
+            # _move_to_queue and _update_topic in admin_api_handler.py; cutover_refusals and
+            # cutover_day in dispatch.py.
+            Step(
+                "The cutover",
+                "Moving a topic runs a pre-flight and asks first, deletes its two schedules, then "
+                "writes queue mode and, after today's turn, today's claim.",
+                ("function:admin-api", "schedule:topic-schedules", "table:topics"),
+            ),
+            # _trigger_on_the_queue in admin_api_handler.py; manual_research_dedup_id and
+            # manual_execution_name in dispatch.py.
+            Step(
+                "Manual runs",
+                "A manual run of a topic on the queue sends a research job of its own to the work "
+                "queue, or starts the state machine under a manual name, and touches no claim.",
+                ("function:admin-api", "queue:work", "state_machine:daily-cycle"),
+            ),
+            # _update_topic, _reschedule_topics and _apply_topic_schedules in admin_api_handler.py.
+            Step(
+                "The way back",
+                "Back to schedule mode, for one topic or every one: the row says schedule first, then "
+                "its two schedules are written again.",
+                ("function:admin-api", "schedule:topic-schedules"),
+            ),
+        ),
+        aliases=(
+            "queue", "queues", "queue platform", "work queue", "dispatcher", "dispatch",
+            "dispatch mode", "cutover", "shadow mode", "worker concurrency", "research job",
+            "research jobs", "topic schedules", "per topic schedules", "queue mode",
+            "schedule mode",
+        ),
+    ),
+    # docs/architecture/prompts-and-evals.md's steps, as the assistant tells them: the prompts half's
+    # nine in three, and the evals half's eleven in eight.
+    Feature(
+        key="prompts-and-evals",
+        title="Prompts and evals (from a published prompt to a model's score)",
+        said="prompts and evals",
+        summary="How the text a model is given is chosen, published and served, and how every model "
+        "and prompt version is scored on what it wrote, so a model that keeps doing badly stops "
+        "being picked.",
+        steps=(
+            # common/prompts_registry.py (all_specs); PromptSpec and validate in common/prompts.py;
+            # prompts/ and prompts/README.md.
+            Step(
+                "The template",
+                "Every prompt is a registered template with the code's own copy, the vanilla. A "
+                "published version in the prompts folder may reword it, but its locked blocks must "
+                "come last and unchanged.",
+                ("common/prompts_registry.py", "prompts/ in the repository"),
+            ),
+            # .github/workflows/prompts.yml; scripts/prompt_lint.py and scripts/publish_prompts.py.
+            Step(
+                "The publish",
+                "The prompts workflow gates a change, then publishes each release: the hashes approved "
+                "first, the files after, the old ones retired.",
+                ("GitHub Actions (the prompts workflow)", "bucket:prompts", "table:prompt-hashes"),
+            ),
+            # get_prompt, _read_asset, arm_index, lineage_fields and _fallback in common/prompts.py.
+            Step(
+                "Serving a prompt",
+                "A Lambda serves the version its run draws only when every check passes, and "
+                "otherwise the code's copy, with a fallback line. The lineage records which version "
+                "each call was given.",
+                ("bucket:prompts", "table:prompt-hashes", "table:model-config"),
+            ),
+            # common/evals.py and evals_emission.py; prompts._count_fallback.
+            Step(
+                "Scored events",
+                "Each article stored, person's decision, reader's vote and judge's verdict writes one "
+                "event, ids and codes only, to the evals log.",
+                ("log_group:evals", "function:daily-cycle", "function:admin-api", "function:public-api"),
+            ),
+            # common/evals_rollup.py; aws_scheduler_schedule.rollup.
+            Step(
+                "The hourly rollup",
+                "Each hour the events are added up into day rows per model, prompt version and pairing, "
+                "and each model's windows go on its row.",
+                ("schedule:eval-rollup", "function:eval-jobs", "table:evals", "table:models"),
+            ),
+            # Guard and filter_healthy in common/model_ranch.py; rank_rewrite_models in
+            # scripts/review_inbox.py.
+            Step(
+                "The gates",
+                "A model below a gate, with enough events behind it, is left out of rotations, the pool "
+                "and the rewrite picker until it recovers. The default, fallback and judge never are.",
+                ("table:models", "common/model_ranch.py"),
+            ),
+            # model_fleet.cull_proposal and cull_check; common/model_cull.py.
+            Step(
+                "Culling",
+                "The weekly cycle proposes the models whose total is below the total gate, with enough "
+                "events behind it, that play no role. Only an operator's apply deletes them, and a "
+                "restore puts one back.",
+                ("function:model-catalog", "table:model-config", "table:models"),
+            ),
+            # select and consume in common/eval_judge.py; aws_scheduler_schedule.judge;
+            # aws_sqs_queue.eval_work.
+            Step(
+                "The judge",
+                "Every few hours, unjudged Findings and articles are queued, and for each a model that "
+                "did not write it says good or bad, within the day's spend cap.",
+                (
+                    "schedule:eval-judge",
+                    "queue:eval-work",
+                    "function:eval-jobs",
+                    "Amazon Bedrock (the judge's model)",
+                ),
+            ),
+            # judge_agreement and calibrated in evals_rollup.py; common/human_review.py.
+            Step(
+                "Calibration",
+                "The judge's verdicts count towards the gates only while they agree often enough with "
+                "people's: their approvals and rejections, and their reviews of Findings.",
+                ("table:evals", "table:findings"),
+            ),
+            # start and consume in common/eval_score.py.
+            Step(
+                "Offline runs",
+                "An operator's scoring run redrafts past articles with other models or prompt versions, "
+                "and the judge compares each with the live draft, within the same spend cap.",
+                ("queue:eval-work", "function:eval-jobs", "table:evals", "bucket:prompts"),
+            ),
+            # evals_status.py and evals_digest.py; ops_mcp/model_ranch.py; the ranch-and-prompts
+            # dashboard.
+            Step(
+                "Reading it back",
+                "Evals status in the admin CLI, this assistant's model_ranch and prompt_metrics, the "
+                "Friday digest and the dashboard show the scores.",
+                ("dashboard:ranch-and-prompts", "function:ops-mcp", "topic:alerts"),
+            ),
+        ),
+        aliases=(
+            "prompts", "prompt", "prompt assets", "prompts as assets", "prompt versions",
+            "prompt version", "a b test", "ab test", "a b split", "publish prompts",
+            "prompt fallback", "evals", "eval", "continuous evals", "eval queue", "model ranch",
+            "ranch", "model scores", "models scored", "model scoring", "scores", "scoring",
+            "gates", "gated", "rotation guard", "judge", "llm judge", "calibration", "culling",
+            "cull", "offline scoring", "offline runs", "call traces",
+        ),
+    ),
 )
 FEATURE_KEYS = tuple(feature.key for feature in FEATURES)
 
@@ -2535,12 +2757,12 @@ def _layers_overview(env: str | None) -> dict:
         [layer.title, layer.summary, ", ".join(name for name, _ in layer.services)] for layer in LAYERS
     ]
     # Every feature is named, and the words are counted (test_ops_mcp_architecture.py): with seven,
-    # "step by step across the layers" no longer fits in what can be listened to.
+    # "step by step across the layers" no longer fit in what can be listened to, and with nine the
+    # question is the `ask` below, word for word.
     return {
         "spoken": (
             f"BloggerBear is built in {len(LAYERS)} layers: {listed}. They're on screen with what "
-            "each does. Which would you like to hear about, or everything in detail? I can also "
-            f"walk through {features}."
+            f"each does. Which layer, or everything in detail? I can also walk through {features}."
         ),
         "findings": [],
         "environment": env,

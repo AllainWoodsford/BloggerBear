@@ -1,5 +1,5 @@
 """The week's evals digest by email (common/evals_digest.py; PR20 of
-docs/enhancements/model-ranch-prompt-assets-evals.md): off by default; while `digest_email` is on,
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md): off by default; while `digest_email` is on,
 sent to the alerts topic once on a Friday, from eight in the settings' timezone, by a claim on the
 evals index row that a retry or the next hour finds taken; given back when the publish fails, so the
 next hour sends; and written from GET /evals/digest's own answer with ids, codes and numbers only."""

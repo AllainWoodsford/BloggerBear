@@ -1,4 +1,4 @@
-"""Culling in proposal mode (docs/enhancements/model-ranch-prompt-assets-evals.md, PR16): the weekly
+"""Culling in proposal mode (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR16): the weekly
 cycle's proposal (common/model_fleet.cull_proposal), applying it (POST /evals/cull/apply,
 common/model_cull.apply), putting a model back (POST /models/{model_id}/restore,
 common/model_cull.restore), the `cull` part of GET /evals/status, and the routes' place in both

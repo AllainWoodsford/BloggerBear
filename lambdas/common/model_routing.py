@@ -38,7 +38,7 @@ configured. A model with no registry row counts as fit. Every lookup here fails 
 that cannot be read routes exactly as before.
 
 **A gated model is no candidate** (common/model_ranch.py, the rotation guard; section 4.5 of
-docs/enhancements/model-ranch-prompt-assets-evals.md). While evals are on, the rotation draw is over
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md). While evals are on, the rotation draw is over
 the topic's candidates the Model Ranch has not gated, and the registry pick an unfit model is routed
 to is never a gated one, so no gated model is ever written to a topic either. When every candidate
 is gated, the topic's own `model_id` is used, else the default: never the whole list again. The

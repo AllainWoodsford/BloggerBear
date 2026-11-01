@@ -1,6 +1,6 @@
 """Where continuous evals' events come from: the four points in the pipeline that know a model or
 a prompt did well or badly, and the rules they share for what an article's prompts and its model
-are (docs/enhancements/model-ranch-prompt-assets-evals.md, sections 4.3 and 5.4).
+are (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections 4.3 and 5.4).
 
 - **Article Completion** (+2), from daily_cycle_handler's `_stored`, the moment an article's row is
   written, held or published: one event per prompt of the article, `completion:<article_id>:<prompt_id>`.

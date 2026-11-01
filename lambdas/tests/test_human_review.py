@@ -1,4 +1,4 @@
-"""A person's review of research Findings (common/human_review.py; docs/enhancements/
+"""A person's review of research Findings (common/human_review.py; docs/enhancements/archive/
 model-ranch-prompt-assets-evals.md, sections 3's deviation 10, 4.3, 4.4 and 5.3, PR19): the admin API's
 GET /evals/findings and POST /evals/findings/review, and the person's verdict an article's approve or
 reject keeps (common/evals_emission.py).

@@ -334,7 +334,7 @@ EVENTS: dict[str, dict[str, str]] = {
         "splits": "int",
         "ms": "int",
     },
-    # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): a prompt asset could
+    # Prompts as assets (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): a prompt asset could
     # not be read, or failed its checks, and the code's own copy of the prompt was used instead.
     # `code` says why (s3_error, no_files, missing_placeholder, hash_unapproved, paused, ...);
     # `version` is the asset's version tag when one was read. The prompt's text is never here.

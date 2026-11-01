@@ -16,11 +16,12 @@ weekly row. Each Monday a rollover moves that row into history and onto an all-t
 a poll reads the AWS bill from Cost Explorer. The page shows each of those sources in its own
 section.
 
-The Stats page exists because one of the project's rules is that every cost is on show. An
-article's cost was always on the article. But much of the spend belongs to no article: musings, the
-weekly reflection, naming gear, screening comments, the operator's assistant, vision triage, pricing
-models, and the reviewer bear. And the AWS bill is more than tokens. So the spend that belongs to no
-article and the whole AWS bill are tracked too. Two rules hold for the figures on the page:
+The Stats page exists because one of the project's rules is that every cost is on show. An article's
+cost was always on the article. But much of the spend belongs to no article: musings, the weekly
+reflection, naming gear, screening comments, the operator's assistant, vision triage, pricing
+models, the reviewer bear, and continuous evals' judge and offline scoring runs. And the AWS bill is
+more than tokens. So the spend that belongs to no article and the whole AWS bill are tracked too.
+Two rules hold for the figures on the page:
 
 - Each figure covers exactly one period.
 - A token estimate is never added to the bill, because they are the same dollars counted two ways.
@@ -57,6 +58,7 @@ Resource names below use `<prefix>` (your `unique_name_prefix`) and `<env>` (`de
 - [The steps](#the-steps)
 - [What is counted](#what-is-counted)
 - [The rows](#the-rows)
+- [Continuous evals' spend](#continuous-evals-spend)
 - [The weekly rollover](#the-weekly-rollover)
 - [The daily cost poll](#the-daily-cost-poll)
 - [The Stats page, section by section](#the-stats-page-section-by-section)
@@ -67,7 +69,7 @@ Resource names below use `<prefix>` (your `unique_name_prefix`) and `<env>` (`de
 flowchart LR
     subgraph spend["1-3. What spends"]
         daily["Lambda daily-cycle<br/>an article and its lineage"]
-        others["musings, weekly reflection, gear names,<br/>comment screening, assistant,<br/>vision triage, model pricing, reviewer"]
+        others["musings, weekly reflection, gear names,<br/>comment screening, assistant,<br/>vision triage, model pricing, reviewer,<br/>evals judge and scoring runs"]
         activity["feedback, loot drops, web search,<br/>pipeline Lambdas' run time"]
     end
     subgraph rows["4-7. The rows"]
@@ -100,8 +102,8 @@ flowchart LR
 | # | Step | What happens | Where in the code / infra |
 |---|---|---|---|
 | 1 | **An article's own cost** | Every model call that goes into an article is recorded with its model and tokens. The article's `lineage` holds those calls, their cost in AUD, and the research calls of the Findings it was written from. One call that nothing can price leaves the whole article unpriced, never part-summed. When the article is drafted, its whole cost is also added onto this week's row, under `articles`. So are the calls of each rewrite. | `invoke_model_tracked` in `lambdas/common/bedrock.py`; `build_lineage` and `build_research_lineage` in `lambdas/common/costing.py`; `record_article_lineage` in `lambdas/common/stats_tracking.py`, called by `lambdas/daily_cycle_handler.py` and `lambdas/common/rewrite.py`; the `articles` table |
-| 2 | **Spend on no article** | Each model call outside an article goes through `tracked_claude`, with a category. The call's tokens and cost are added onto this week's row under that category. Work that makes several calls at once (an assistant run, a vision triage decision) is added in one go. A call with no price is counted as an unpriced call, never as free. Recording never loses the model's answer: a failed write is logged and dropped. | `tracked_claude`, `record_model_usage` and `record_assistant_run` in `lambdas/common/stats_tracking.py` (`BEDROCK_CATEGORIES`) |
-| 3 | **Activity and run time** | Plain counters go onto the same row. They are feedback kept and feedback rejected for its comment, loot drops, AgentCore web searches (each priced at a fixed US$0.007), and GDELT searches that fell back to AgentCore. The pipeline's Lambdas time themselves and add their milliseconds. These are the research tick, the daily cycle, the weekly reflection, musing feedback, the reviewer, the model catalog, the rollover, the cost poll and the dead-letter handler. The public and admin APIs do not, so a request pays no extra write. Neither do the assistant, the vision worker, or the security and sign-in event handlers. | `record_*` in `stats_tracking.py`; `track_lambda_duration` in `lambdas/common/lambda_timing.py` |
+| 2 | **Spend on no article** | Each model call outside an article goes through `tracked_claude`, with a category. The call's tokens and cost are added onto this week's row under that category. Work that makes several calls at once (an assistant run, a vision triage decision) is added in one go. Continuous evals' calls (the judge's, and an offline scoring run's drafts and verdicts) are added one at a time under `evals`, and also counted against the evals' own daily cap ([below](#continuous-evals-spend)). A call with no price is counted as an unpriced call, never as free. Recording never loses the model's answer: a failed write is logged and dropped. | `tracked_claude`, `record_model_usage` and `record_assistant_run` in `lambdas/common/stats_tracking.py` (`BEDROCK_CATEGORIES`); `_record_spend` in `lambdas/common/eval_judge.py` |
+| 3 | **Activity and run time** | Plain counters go onto the same row. They are feedback kept and feedback rejected for its comment, loot drops, AgentCore web searches (each priced at a fixed US$0.007), and GDELT searches that fell back to AgentCore. The pipeline's Lambdas time themselves and add their milliseconds. These are the research tick, the daily cycle, the weekly reflection, musing feedback, the reviewer, the model catalog, the rollover, the cost poll, the dead-letter handler, and the queue platform's dispatcher, which runs every minute. The public and admin APIs do not, so a request pays no extra write. Neither do the assistant, the vision worker, the security and sign-in event handlers, or eval-jobs. | `record_*` in `stats_tracking.py`; `track_lambda_duration` in `lambdas/common/lambda_timing.py` |
 | 4 | **This week's row** | Every increment is an `ADD` onto one of 8 shard rows (`current#0` to `current#7`), picked at random, so no single item is hot. The base row, `current`, holds the poll's readings, which are set rather than added. Reading the week sums the base row and every shard, strongly consistent, so the rollover copies every write already made. | `increment_current_stats`, `get_current_stats` in `lambdas/common/dynamo.py`; `<prefix>-<env>-stats-current` |
 | 5 | **The weekly rollover** | Mondays at 13:15 Sydney time, 15 minutes after the weekly reflection, so the reflection's own cost lands in the week it reflects on. It copies the week's row into history, keyed by the week's Monday, and adds its counters onto the all-time row. Then it deletes this week's rows. | `lambdas/stats_rollover_handler.py`; `split_for_rollover` in `stats_tracking.py`; `aws_scheduler_schedule.stats_rollover` |
 | 6 | **The daily cost poll** | Every day at 10:00 UTC, it reads the AWS bill by service from Cost Explorer. The bill reaches as far as yesterday, never today. It writes this week's bill so far onto this week's row, and each complete week's bill onto that week's history row. Then it adds up the all-time bill again. | `lambdas/cost_explorer_poll_handler.py`; `fetch_costs` in `lambdas/common/cost_explorer.py`; `record_aws_bill` in `stats_tracking.py`; `aws_scheduler_schedule.cost_explorer_poll` |
@@ -114,7 +116,7 @@ flowchart LR
 | On this week's row | What it is | Written by |
 |---|---|---|
 | `articles_*` | Each drafted article's whole cost (authoring and research), as one entry. Each rewrite of an article (a held one from the review inbox, or any article you rewrite with `articles rewrite`) adds its own calls as another entry, even a rewrite that failed after its model call. So a rewritten article has more than one entry. An entry with any unpriced call counts as one unpriced article. | `record_article_lineage` |
-| `musings_*`, `weekly_reflection_*`, `gear_identity_*`, `comment_screening_*`, `assistant_*`, `vision_triage_*`, `model_pricing_*`, `reviewer_*` | Calls, tokens in and out, cost in AUD and unpriced calls, per category | `tracked_claude`, `record_model_usage`, `record_assistant_run` |
+| `musings_*`, `weekly_reflection_*`, `gear_identity_*`, `comment_screening_*`, `assistant_*`, `vision_triage_*`, `model_pricing_*`, `reviewer_*`, `evals_*` | Calls, tokens in and out, cost in AUD and unpriced calls, per category. `evals_*` is the evals judge and offline scoring runs, while evals are on | `tracked_claude`, `record_model_usage`, `record_assistant_run` |
 | `feedback_given`, `feedback_rejected_comment`, `loot_drops` | Feedback stored; whole submissions refused because their comment failed the screen (a closed site, a bad token or the decoy field is not counted); gear announced as a loot drop | the public API; `common/musings.py` |
 | `web_search_agentcore_queries`, `web_search_agentcore_cost_aud`, `web_search_gdelt_fallbacks` | AgentCore queries and their estimated cost; GDELT searches that fell back | `lambdas/common/web_search.py` |
 | `lambda_ms_<function>` | Milliseconds each timed Lambda ran this week. It is a lower bound, since a cold start's setup is not timed. | `track_lambda_duration` |
@@ -151,6 +153,61 @@ The model calls left out this way are still paid for, so they are in the AWS bil
 | `articles-backfill` | same | A marker: the one-time `stats backfill-articles` has run |
 
 A week on the page runs from one Monday's rollover to the next, and is named by its Monday.
+
+## Continuous evals' spend
+
+While evals are on (`EVALS_ENABLED`), eval-jobs makes model calls of its own. The judge reads
+Findings and articles and gives each a verdict, and an offline scoring run (`evals score`) drafts
+past articles again with other models or prompt versions and has the judge compare the drafts. No
+article comes of either, so their cost is spend on no article. Each call is recorded in three
+places, all in the same AUD at the same fixed rate:
+
+| Where | What | Kept |
+|---|---|---|
+| This week's row, `evals_*` | The call's tokens and its cost, or one unpriced call, like every other category. The Stats page shows it as "Model evals". | rolled over each Monday, like every category |
+| The evals table's day row: `entity` `spend`, `sk` `day#<yyyy-mm-dd>` (`<prefix>-<env>-evals`) | `spent_aud` and `calls` for the day, the day in the evals settings' `timezone` (`Australia/Sydney` by default), and `held_aud`. A call on a model with no price is counted here at A$0.05, never as free. This is the row the daily cap is checked against. `spent_aud` also counts what consumers hold for calls they are making (the daily cap, below), and `held_aud` says how much of it is held. | for good: the evals table expires nothing |
+| The run's own rows, `run#<run_id>` on the same table | The run header's `spent_aud`, for a judge run and an offline run alike. An offline run's item rows also hold each item's tokens and `cost_aud`. `evals runs list` and `evals runs get <run_id>` show them. | for good |
+
+So the week's `evals_*` figure and the day rows can differ a little: an unpriced call is a count
+on the week's row and A$0.05 on a day row, and a day row runs midnight to midnight in the evals
+time zone while a week runs from one Monday's rollover to the next. A day row's `spent_aud` also
+keeps any hold that was never given back (a consumer that died mid-call, or a give-back that
+failed), for good; its `held_aud` says how much.
+
+**The daily cap.** `evals_daily_spend_cap_aud` (A$2 by default; `evals set --daily-spend-cap N`)
+bounds what the judge and offline runs spend together in a day:
+
+- The judge's hourly selector sends no more items than the day's remaining cap pays for, at one
+  estimated call each (4,000 tokens in and 200 out, at the judge model's price).
+- `evals score` is refused when its estimate is more than the day's cap has left, and needs
+  `--yes` when the estimate is more than `score_max_cost_aud` (A$5 by default;
+  `evals set --score-max-cost N`). The estimate it prints is approximate: it counts the live
+  version's draft for every combination, though that draft is made once per item, and it leaves
+  out the one retry of a draft cut off at its token limit, which bills both attempts.
+- A run with a job that could cost more than the whole daily cap is refused outright (409), its
+  dry run too, since no day could pay for that job. A job's most is the candidate's draft and,
+  until its item's live draft is kept on the run, the live version's, each with its retry, plus
+  the verdict (`message_ceiling_aud` in the admin API's answer). `evals runs resume` refuses the
+  same, pricing only the jobs it would send.
+- Before its calls the consumer holds their cost on the day row, in one conditional write: one
+  estimated call for the judge, and for a scoring job the most it can cost, its retried drafts
+  included. The write adds the hold to `spent_aud`, and to `held_aud`, only while `spent_aud`
+  stays within the cap, and the hold is given back once the calls' real costs are added. When the
+  hold does not fit, the consumer marks the run `paused: spend cap` and sends the job back to the
+  queue to wait 15 minutes, and again each time it comes back while the cap holds, so the run
+  carries on by itself once the day turns or the cap is raised. A scoring job whose most is more
+  than the whole cap (lowered since its run was started or resumed) is not sent back: it is
+  counted finished with no result, so its run still closes.
+- `evals runs resume <run_id>` sends again a scoring run's jobs that have no result: one that
+  failed, one that could not be sent back, and one counted finished without a result (over the
+  whole cap, or failed before it was claimed).
+- eval-work runs two jobs at once, but the second job's hold already counts the first's, so the
+  two can never both take the last of the cap. A day ends over its cap only by what calls cost
+  beyond the holds taken for them. A consumer that dies holding leaves the day under its cap,
+  never over.
+
+The cap is the evals' alone. The pipeline's own model calls have none, and the AWS budget on
+Bedrock only emails ([the Bedrock budget](../observability.md#the-bedrock-budget)).
 
 ## The weekly rollover
 
@@ -215,7 +272,7 @@ Total Stats and Weekly Stats have the same three parts:
    queries and cost, and GDELT fallbacks.
 
 The categories are labelled on the page in `OBSERVABILITY_CATEGORY_LABELS` in `app.js` (for
-example, `reviewer` is "Reviewer bear").
+example, `reviewer` is "Reviewer bear", and `evals` is "Model evals").
 
 ## When a week goes missing
 
@@ -256,6 +313,7 @@ Two other repairs go through the admin API:
 | History and the all-time row | `lambdas/common/dynamo.py` (`put_stats_history_row`, `increment_stats_totals`, `set_stats_totals_fields`, `set_stats_history_week_fields`) | `<prefix>-<env>-stats-history` |
 | The Articles section | `lambdas/common/stats.py` | the `articles-snapshot` row |
 | The API and the page | `_stats` in `lambdas/public_api_handler.py`; `frontend/app.js` | `GET /stats` on `<prefix>-<env>-public-api`, cached by `infra/modules/api-cdn/` |
+| Continuous evals' spend | `_record_spend`, `reserve`, `release`, `remaining_aud` and `select` in `lambdas/common/eval_judge.py`; `start`, `resume`, `most_per_message_aud` and `consume` in `lambdas/common/eval_score.py`; the settings in `lambdas/common/evals_settings.py` | the `spend` and `run#` rows of `<prefix>-<env>-evals` (`infra/modules/evals`) |
 | The missed-run alarm | | `aws_cloudwatch_metric_alarm` for `schedule-invocations-dropped` in `infra/modules/observability/main.tf` |
 | Repairs | `scripts/repair_stats_week.py`; `stats` and `lineage` in `scripts/admin_cli.py` | |
 

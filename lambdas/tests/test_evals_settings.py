@@ -1,4 +1,4 @@
-"""The evals settings (common/evals_settings.py; docs/enhancements/model-ranch-prompt-assets-evals.md,
+"""The evals settings (common/evals_settings.py; docs/enhancements/archive/model-ranch-prompt-assets-evals.md,
 section 4.5): the `evals` row of the model-config table, in the model catalog's pattern.
 
 What is held: every setting and default is section 4.5's; the gates and the judge's thresholds are

@@ -12,13 +12,15 @@ Settings live in seven places:
 | [Bootstrap variables](#bootstrap-variables) | The state bucket, the deploy roles, the DNS zone | `-var` on the one-time local `terraform apply` |
 | [Environment Terraform variables](#environment-terraform-variables) | The domain, the model, a few switches | `infra/environments/<env>/terraform.tfvars`, by pull request |
 | [SSM Parameter Store](#ssm-parameter-store) | API keys for the data sources; [who may reach the admin API](#the-admin-apis-address-allowlist) | `aws ssm put-parameter`, or the console; the allowlist with `python scripts/admin_allowlist.py` |
-| [DynamoDB](#dynamodb-settings-changed-with-no-deploy) | Models, pipeline behaviour, topics | `python scripts/admin_cli.py`, or the console |
+| [DynamoDB](#dynamodb-settings-changed-with-no-deploy) | Models, pipeline behaviour, topics, the prompts' kill switch and pauses, the evals settings | `python scripts/admin_cli.py`, or the console |
 | [The model catalog's environment variables](#the-model-catalogs-environment-variables) | Which Lambda `models reprice` and `models discover` start (not on/off switches; nothing to set) | Terraform, with a default in the code |
 | [Your own machine](#your-own-machine) | Where the admin CLI points | Environment variables |
 
 Two more are set in a console and nowhere else: [AWS account settings](#aws-account-settings) and
 [GitHub repository settings](#github-repository-settings). The optional vision work spans
 several of these, so its settings are gathered in [Vision and rail access](#vision-and-rail-access).
+So do the queue platform, prompts as assets and continuous evals: their switches, settings and the
+order to turn them on are in [The queue platform, prompts and evals](#the-queue-platform-prompts-and-evals).
 The `adapter_config` keys of the other four adapters are in [Adapter settings](#adapter-settings).
 
 Account IDs here are AWS's documentation placeholders. `<env>` is `dev` or `production`.
@@ -52,13 +54,13 @@ be on the `production` environment or on the repository.
 | `WAF_LOG_ALL_REQUESTS` | variable | repo or `production` | A cost-saving switch: `false` has the admin web ACL log only what a rule blocked or counted. `WAF_LOG_ALL_REQUESTS_DEV` / `WAF_LOG_ALL_REQUESTS_PROD` first, then this, then `true`. | `false` |
 | `ALERT_EMAIL_DEV` | secret | repo | Where dev's alarm emails go. Optional: without it the alarms still fire, but nobody is told. | `you@example.com` |
 | `ALERT_EMAIL_PROD` | secret | `production` | Where production's alarm emails go. Optional. | `you@example.com` |
-| `PII_DENYLIST` | secret | repo | Your own personal strings (a name, a home address), one per line. The `pii-denylist` check refuses a pull request that adds one. Optional. | not shown, on purpose |
+| `PII_DENYLIST` | secret | repo | Your own personal strings (a name, a home address), one per line. The `pii-denylist` check refuses a pull request that adds one, and the prompts workflow's publish jobs check every prompt file against it before they publish. Optional. | not shown, on purpose |
 | `RUFF_AUTOFIX_TOKEN` | secret | repo | A fine-grained token with contents:write on this repository only, so the `ruff-autofix` workflow can push safe lint fixes to a pull request's branch. Optional: without it the workflow only reports the fixes. Not set by the setup script. | not shown |
-| `EVALS_ENABLED` | variable | repo or `production` | Set to `true` to run continuous evals: scored events from the pipeline, rolled up hourly into the evals table, and the judge ([the design](enhancements/model-ranch-prompt-assets-evals.md)). Read as a switch, like `VISION_ENABLED`: only `true`, in any letter case, turns it on; unset or anything else is off, which is the default. Until the evals module is deployed it only sets the Lambdas' `EVALS_ENABLED` environment variable, which nothing reads yet. Set on the `production` environment alone to differ there. | `true` |
-| `WORKER_CONCURRENCY` | variable | repo or `production` | How many queue jobs the pipeline's workers may run at once: the work queue's `maximum_concurrency`, the one knob that caps the model calls and source requests in flight however many topics there are ([the queue platform](enhancements/model-ranch-prompt-assets-evals.md)). Optional: unset, it is `2`, the smallest value an SQS event source mapping accepts; less fails the plan. Read as `WORKER_CONCURRENCY` on the `production` environment, else the repository's, so each environment can have its own. Nothing reads it until the work-queue module is deployed. | `3` |
-| `PROMPT_AS_ASSET_ENABLED` | variable | repo or `production` | Set to `true` to have the Lambdas read their prompts from the prompts bucket (prompts as assets: [the design](enhancements/model-ranch-prompt-assets-evals.md)) instead of the copies in their code. Read as a switch, like `VISION_ENABLED`: only `true`, in any letter case, turns it on; unset or anything else is off, which is the default and changes no prompt. Until the prompts bucket is deployed it only sets the Lambdas' `PROMPT_AS_ASSET_ENABLED` environment variable. Prompts are published only while the repository's value is `true`: a publish job decides whether to run before it enters an environment, so it never sees `production`'s own value. On the `production` environment, set it only to `false`, to keep production off while dev has it on; `true` there alone would turn production's Lambdas on with nothing published to their bucket, and every prompt they read from it would fall back to the code's copy and raise the `prompt_fallback` alarm. | `true` |
-| `AWS_DEV_PROMPTS_ROLE_ARN` | secret | repo | Bootstrap's `dev_prompts_role_arn` output: the role the prompts publisher signs in as to write dev's prompts bucket, named `gha-<prefix>-dev-prompts`. A bootstrap applied before the role existed needs applying again, with the same arguments, to make it. Optional: unset, Terraform is handed an empty string and gives the bucket no publisher. A secret, like the deploy role's ARN: it carries the account ID. | `arn:aws:iam::111111111111:role/gha-bloggerbear-dev-prompts` |
-| `AWS_PROD_PROMPTS_ROLE_ARN` | secret | repo | Bootstrap's `prod_prompts_role_arn` output: the same, for production, `gha-<prefix>-prod-prompts`. At repository level, not on `production`: production's prompts are published under both `production-prompts` and `production`, and an environment's secret reaches only its own jobs. | `arn:aws:iam::123456789012:role/gha-bloggerbear-prod-prompts` |
+| `EVALS_ENABLED` | variable | repo or `production` | Set to `true` to run continuous evals ([the switch](#continuous-evals-and-the-model-ranch)): the scored events the pipeline writes, the hourly rollup into the evals table, the gates the rotation guard reads, the judge, the weekly cull proposal and offline scoring runs. Read as a switch, like `VISION_ENABLED`: only `true`, in any letter case, turns it on; unset or anything else is off, which is the default. Off, no event is written, and the evals module makes only the evals table, its log group and the Lambdas' rights to them; on, it adds the eval-work queue, the eval-jobs Lambda with its two schedules and its alarms, and the ranch-and-prompts dashboard. Set on the repository, it also turns evals on in production at the next release, because the release job's `vars.EVALS_ENABLED` falls back to the repository's value: set it to `false` on the `production` environment to keep production off until dev has run with it. Set on the `production` environment alone to differ there. | `true` |
+| `WORKER_CONCURRENCY` | variable | repo or `production` | How many research jobs from the work queue may run at once: the `maximum_concurrency` of the research tick's event source mapping on `<prefix>-<env>-work.fifo` ([the queue platform](#the-queue-platform)), the one knob that caps the model calls and source requests in flight for the topics on the queue, however many there are. Topics still on their schedules are not counted against it. Each running job takes one of the account's concurrent Lambda executions. Optional: unset, it is `2`, the smallest value an SQS event source mapping accepts; less fails the plan. Read as `WORKER_CONCURRENCY` on the `production` environment, else the repository's, so each environment can have its own. A change takes effect at the next deploy. | `3` |
+| `PROMPT_AS_ASSET_ENABLED` | variable | repo or `production` | Set to `true` to have the Lambdas read their prompts from the prompts bucket ([prompts as assets](#prompts-as-assets)) instead of the copies in their code, and to let the prompts workflow publish. Read as a switch, like `VISION_ENABLED`: only `true`, in any letter case, turns it on; unset or anything else is off, which is the default and changes no prompt. Each deploy hands its Lambdas the value it sees: dev's the repository's, a release the `production` environment's, else the repository's. Prompts are published only while the repository's value is `true`: a publish job decides whether to run before it enters an environment, so it never sees `production`'s own value. So while dev tries assets, set it to `false` on the `production` environment: production's Lambdas stay on their code copies, though each release still publishes production's prompts to its bucket. On the `production` environment, set it only to `false`; `true` there alone would turn production's Lambdas on with nothing published to their bucket, and every prompt they read from it would fall back to the code's copy and raise the `<prefix>-<env>-prompt-fallback` alarm. | `true` |
+| `AWS_DEV_PROMPTS_ROLE_ARN` | secret | repo | Bootstrap's `dev_prompts_role_arn` output: the role the prompts workflow's dev publish signs in as, `gha-<prefix>-dev-prompts`, which may write dev's prompts bucket and prompt-hashes table and nothing else. The dev deploy also hands it to Terraform, whose bucket policy then refuses every write to the bucket by anyone else. A bootstrap applied before the role existed needs applying again, with the same arguments, to make it. Optional until prompts as assets are on: unset, Terraform is handed an empty string and gives the bucket no such policy, and the dev publish cannot sign in. A secret, like the deploy role's ARN: it carries the account ID. | `arn:aws:iam::111111111111:role/gha-<prefix>-dev-prompts` |
+| `AWS_PROD_PROMPTS_ROLE_ARN` | secret | repo | Bootstrap's `prod_prompts_role_arn` output: the same, for production, `gha-<prefix>-prod-prompts`, read by the production publish and by the release deploy. At repository level, not on `production`: production's prompts are published under both `production-prompts` and `production`, and an environment's secret reaches only its own jobs. The role itself trusts runs in those two environments and no others. | `arn:aws:iam::123456789012:role/gha-<prefix>-prod-prompts` |
 
 **Not in this table, on purpose: the CoinGecko API key, the GitHub API token and your IP
 address.** None is a GitHub secret and the setup script sets none of them. They are kept in AWS,
@@ -110,7 +112,17 @@ account ([separate AWS accounts](deployment-separate-accounts.md#bootstrap-once-
 | `web_search_regions` | The Regions the deploy roles may create the web search gateway in, as a list: `-var='web_search_regions=["ap-northeast-1","us-east-1"]'`. Every `WEB_SEARCH_REGION` value you use, dev's and production's, must be in it. Only `us-east-1`, `eu-west-1` and `ap-northeast-1`. | `["ap-northeast-1"]` |
 
 Its outputs feed the other tables: `dev_deploy_role_arn`, `prod_deploy_role_arn`,
-`state_bucket_name`, `hosted_zone_id`, `hosted_zone_name_servers`.
+`dev_prompts_role_arn`, `prod_prompts_role_arn`, `state_bucket_name`, `hosted_zone_id`,
+`hosted_zone_name_servers`.
+
+None of these variables is about the queue platform, prompts or evals, but two things the bootstrap
+does are. It makes the two prompts publisher roles, `gha-<prefix>-dev-prompts` and
+`gha-<prefix>-prod-prompts` (the `AWS_*_PROMPTS_ROLE_ARN` secrets above). And it lets the deploy
+roles create the evals log group, `<prefix>-<env>-evals`, whose name is outside the `/aws/lambda/`,
+`/aws/apigateway/` and `aws-waf-logs-` names they could already create. Every deploy creates that
+log group, evals on or off, so **a bootstrap applied before the evals work must be applied again,
+with the same variables, before the first deploy that carries it**, or that apply stops on
+`logs:CreateLogGroup`.
 
 ## Environment Terraform variables
 
@@ -143,6 +155,10 @@ Do not set these in `terraform.tfvars`; CI supplies them from the GitHub setting
 - `web_search_region`: the `WEB_SEARCH_REGION` variables above; `ap-northeast-1` when unset.
 - `waf_regional_enabled`, `waf_admin_allowlist`, `waf_log_all_requests` and, in production only,
   `waf_site_enabled`: the firewall switches, from the `WAF_*` variables above.
+- `evals_enabled`, `prompt_as_asset_enabled` and `worker_concurrency`: the `EVALS_ENABLED`,
+  `PROMPT_AS_ASSET_ENABLED` and `WORKER_CONCURRENCY` variables above.
+- `prompts_publisher_role_arn`: the `AWS_DEV_PROMPTS_ROLE_ARN` or `AWS_PROD_PROMPTS_ROLE_ARN`
+  secret; a role ARN carries the account ID.
 
 `unique_name_prefix` is the `UNIQUE_NAME_PREFIX` setting: every name in the environment is
 `<prefix>-<env>-<resource>`, and its default is `bloggerbear`. It is at most 14 characters. The
@@ -166,7 +182,10 @@ follow-up ([vision.md §10](enhancements/archive/vision.md#10-still-open)).
 
 The times of the fixed jobs (the weekly reflection, the Stats rollover, the cost poll, the feedback
 musing, the weekly backup, the reviewer bear and the model catalog's jobs) are not variables: they
-are written in each environment's `main.tf`.
+are written in each environment's `main.tf`. Nor are the feature schedules in the modules: the
+dispatcher every minute (`infra/modules/work-queue`), and, while evals are on, the rollup at five past
+every hour Sydney time and the judge's selector hourly (`infra/modules/evals`; how often the judge
+really runs is the `judge_interval_hours` setting).
 
 ### The ops assistant's limits
 
@@ -295,8 +314,10 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | Setting | Table and item | Command | Default |
 |---|---|---|---|
 | The model registry: each model's name, provider and price, whether it is switched on (`enabled`), and whether the reprice may change its price (`price_locked`). The model catalog adds every model the account can call (`enabled: false`, with `region`, `discovered_at`, `pricing_unit`) and keeps its price current (`price_source`, `price_checked_at`, `price_evidence_hash`) | `<prefix>-<env>-models`, one item per `model_id` | `models add` (also switches a discovered model on; `--lock-price`), `models list`, `models discover`, `models reprice` | Empty until the first discover (every second day). Claude Haiku 4.5 has a built-in price |
+| On a model's row, what the Model Ranch writes: its purpose and inputs (`model_purpose`, `model_inputs`, from Bedrock's listing, written by the model catalog's discover and `models classify`, and by the evals rollup for a model not yet classified), its scores (`daily_perf`, `weekly_perf`, `monthly_perf`, `total_perf`, with `perf_events` and `perf_updated_at`) and the roles it plays (`model_roles`, for display), from the hourly evals rollup; and an operator's hold on its gates (`ungated_until`, an ISO time) | `<prefix>-<env>-models`, the model's item | `evals ungate --model <model_id> --hours N` (1 to 720; 0 ends the hold); `models restore <model_id>` holds a restored model's gates open for 7 days; `models list` and `evals status` show them | None until the rollup has scored the model |
 | The model catalog: pause the discover (every second day, 02:00 Sydney), reprice (03:00) or rotation cycle (Fridays 04:00), and how a changed price is checked (`discover_enabled`, `reprice_enabled`, `cycle_enabled`, `review_after_hours`, `review_tolerance_pct`, `max_change_factor`, `max_web_lookups`; [model-catalog-refresh.md](enhancements/archive/model-catalog-refresh.md)) | `<prefix>-<env>-model-config`, item `config_id` = `model-catalog` | `model-catalog get`, `model-catalog set --discover on\|off --reprice on\|off --cycle on\|off --review-after-hours 1,2 ...` | All three on; checked 1 and 2 hours later, within 5%, at most 10x from the old price, 10 web searches a run. The days are the schedules' crons, in Terraform |
 | What the model catalog last did (`last_discover_at`, `last_reprice_at` and their results) and the pricing run under review (`active_run_id`). Written by the job only | `<prefix>-<env>-model-config`, item `config_id` = `model-catalog-state` | `model-catalog get` | No item until a job runs |
+| The weekly cull proposal (`cull_proposal`: each model whose total is below the total gate and that plays no role, with its total, its events and why, expiring at the next cycle) and the last cull applied (`last_cull_apply`). The proposal is written by the weekly rotation cycle, only while evals are on and the cycle runs (`model-catalog set --cycle on`); nothing is deleted until an operator applies it ([culling](#the-evals-settings)) | `<prefix>-<env>-model-config`, item `config_id` = `model-catalog-state` | `evals cull` shows both; `evals cull --apply` archives then deletes up to `cull_max_per_run` of them, while `cull_enabled` is on; `models restore <model_id>` puts one back | No proposal until a cycle runs with evals on |
 | A pricing run: each changed model's old and new price, its check times and what each check found. Pruned by TTL 14 days after it closes | `<prefix>-<env>-model-config`, items `config_id` = `pricing-run#<run id>` | `model-catalog get` (the run under review) | None |
 | The global default and fallback model | `<prefix>-<env>-model-config`, item `config_id` = `default` | `model-config set --model-id … --fallback-model-id …` | No item: the model Terraform set (`BEDROCK_MODEL_ID`), no fallback. |
 | The shared rotation pool: the models a topic's `model_id` moves to, at random, after an article the daily cycle publishes by itself or a run with no usable angle ([models.md](models.md#the-shared-rotation-pool)) | `<prefix>-<env>-model-config`, item `config_id` = `model-rotation` | `model-rotation get`, `model-rotation set --candidates …` (`""` clears it) | No item: no pool, so nothing rotates this way |
@@ -304,8 +325,13 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | The stagger: the minutes between one topic's schedules and the next (`stagger_minutes`; 0 turns it off), then `topics reschedule` to apply it | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --stagger-minutes N`, `topics schedule`, `topics reschedule` | 5 minutes: slot 1 researches at :05 past, slot 2 at :10, ...; the daily cycles start one slot past the hour's last heartbeat (topics × 5 minutes), then one slot apart |
 | A topic's slot in the stagger (`stagger_slot`), and the schedules written for it (`research_schedule`, `daily_schedule`) | `<prefix>-<env>-topics`, one item per topic | `topics create\|update --stagger-slot N` (`""` for the next free one); `topics schedule` shows them | The next free slot when the topic is created or first edited |
 | A topic paused: no research tick, no candidate ideas, no article until it is resumed (`paused`, `paused_at`, `resumed_at`); its schedules disabled; "Paused" on its page; a musing each way | same item | `topics pause <topic_id>`, `topics resume <topic_id>` | Running |
+| The dispatcher ([the queue platform](#the-queue-platform)): its shadow mode for topics still on their schedules (`dispatch_shadow`), and how many daily cycles it may start in one minute (`daily_starts_per_tick`, 1 to 10; the rest wait a minute). It keeps `last_tick` on the same row, where its next minute's research window starts | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --dispatch-shadow on\|off --daily-starts-per-tick N` (`''` clears either) | Shadow on; 3 a minute |
+| Whether a topic runs from its two EventBridge schedules or from the dispatcher and the work queue (`dispatch_mode`: `schedule`, or absent, or `queue`), and the dispatcher's record of it: shadow mode's (`shadow_last_research_dispatch_at`, `shadow_last_daily_dispatch_at`, `shadow_mismatches`, `shadow_unchecked`, `shadow_checked_days`, `shadow_clean_days`, `shadow_research_mismatch_at`, `shadow_research_matched_at`) and the live claims (`last_daily_dispatched_on`, `daily_claim_n`, `research_claimed_at`). Only `dispatch_mode` is yours to set; the dispatcher writes the rest, and the cutover, a resume and a backup restore also write `last_daily_dispatched_on` | same item as the topic | `topics update <topic_id> --dispatch-mode queue\|schedule` (it asks first; `--yes` does not); `topics reschedule --dispatch-mode schedule` moves every queue topic back; `topics schedule` shows the mode and the shadow record | `schedule`: its two schedules |
 | The fresh-data review of each draft (`review_mode`), and what enforce mode does when a review cannot run (`review_on_unavailable`, pipeline-wide only). A topic's own `review_mode` wins over the pipeline-wide one | `<prefix>-<env>-model-config`, item `config_id` = `pipeline`; a topic's own `review_mode` on its item in `<prefix>-<env>-topics` | `pipeline-config set --review-mode off\|shadow\|enforce`, `--review-on-unavailable hold\|note`; for one topic, `topics create\|update --review-mode off\|shadow\|enforce` (`""` clears it on update) | `shadow`; hold |
+| An operator's note on what a topic's fresh-data review should look for (`topic_review_steering`): one line of plain text, at most 500 characters, set into the review's prompt as an operator note marked untrusted. The evals judge reads it too; the compliance review never does | `<prefix>-<env>-topics`, the topic's item | `topics update <topic_id> --review-steering '...'` (`''` clears it) | None |
 | Who may reach the operator's assistant | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --assistant-access open\|allowlist\|off` | `open` |
+| Prompts as assets, with no deploy ([prompts as assets](#prompts-as-assets)): the kill switch (`prompt_assets`: `on` or `off`) and the versions taken out of service (`paused_versions`, entries `<prompt_id>@<version>`). Every Lambda reads the row and keeps it five minutes | `<prefix>-<env>-model-config`, item `config_id` = `prompts` | `prompts set --assets on\|off` (`''` clears it, back to on); `prompts pause <prompt_id> <version>`, `prompts resume <prompt_id> <version>`; `prompts list` shows what is served | No item: assets on (while `PROMPT_AS_ASSET_ENABLED` is), nothing paused |
+| The evals settings: the gates, culling, the judge, the spend caps, call traces, the rollup's time zone and left-out sources, and the Friday digest ([every setting](#the-evals-settings)); and, written by the judge's tripwire, why it turned the judge off (`judge_paused_reason`) | `<prefix>-<env>-model-config`, item `config_id` = `evals` | `evals get`; `evals set --cull on\|off --judge on\|off --daily-spend-cap AUD ...` (`''` clears one); the gates and the judge's calibration thresholds in the console only | No item: the defaults in [the evals settings](#the-evals-settings) |
 | Security incidents: listing them, marking one seen or dealt with, opening one by hand ([the pipeline](architecture/security-incidents.md)) | `<prefix>-<env>-security-events`, one item per incident | `security list`, `security acknowledge\|resolve\|reopen <event_id>`, `security open --severity … --summary …` | Opened automatically; a high one emails the alert address |
 | The key a client's address is hashed with before an incident is stored (`secret`), so the security-events table never holds an IP: an incident keeps `client_hash`, the first 16 hex characters of an HMAC-SHA256 of the address. Deleting the row makes a new key at the next incident; from then on the same client hashes differently, and its new incidents no longer group with its old ones. A backup leaves the row out, so a restored or new deployment makes its own key ([the keyed hash](architecture/security-incidents.md#the-keyed-hash-of-the-client)) | `<prefix>-<env>-model-config`, item `config_id` = `security-events-hash-key` | none: made on first use (`get_security_hash_key` in `lambdas/common/dynamo.py`); delete the row in the console to start a new key | No item until the first incident: a random 32-byte key, made with a conditional write so racing Lambdas share one |
 | A user locked out of the assistant after failed sign-ins | `<prefix>-<env>-sign-ins`, one item per sign-in event | `sign-ins list`, `sign-ins unlock <username>` | Locked after 5 failures in 15 minutes; lifts by itself |
@@ -315,8 +341,7 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | Whether the reviewer bear may approve this topic's held articles himself (`reviewer_may_approve`: `true`, `false`, or unset for his `may_approve` setting). A topic with `force_manual_review` always waits for a person | same item | `topics update --reviewer-may-approve on\|off` (`""` clears it) | Unset: the project's default, on |
 | The reviewer bear's settings: his pause flag (`enabled`), whether he may approve (`may_approve`, a topic's own `reviewer_may_approve` wins), each of his five tasks (`fix_content`, `review_held`, `review_published`, `watch_flags`, `defang_held`) and his limits (`stale_after_hours`, `published_per_run`, `published_lookback`, `max_rewrites`, `content_days`, `tasks_per_tick`, `tick_minutes`, `defang_after_days`) and the bears' back-and-forth (`chat_chance_pct`, `reply_chance_pct`). Read at the start of each run | `<prefix>-<env>-model-config`, item `config_id` = `reviewer` | `reviewer get`, `reviewer set --enabled on\|off --may-approve on\|off --defang-after-days N ...` (`""` clears one) | Every switch on; 48 hours, 5 articles a run (from the newest 25), 3 rewrites, 7 days of content findings, 2 tasks a tick 5 minutes apart, 10 days before task 5 |
 | The reviewer bear's run under way: its queue of tasks, its tick, what each task came to (`run_id`, `queue`, `counts`, `woken`, `next_tick_at`). Written by his Lambda only | `<prefix>-<env>-model-config`, item `config_id` = `reviewer-state` | none (read it in the console) | No item until his first run |
-| On an article: when the reviewer bear last reviewed it and found it fine (`reviewer_reviewed_at`), that he took it down after readers downvoted it (`reviewer_held_at`: it is a person's to decide from
-then on, for good), what he cut when he published it after `defang_after_days` (`reviewer_defanged`: when, how many sentences, for how many flags; the original body is kept as `articles/<id>.before-defang.md`), and his flag on a financial article he approved (`reviewer_flag` = `financial_approved`, `reviewer_flagged_at`), which the assistant reports until a person clears it | `<prefix>-<env>-articles`, the article's item | Read them on the article's item in the console (`articles get` does not show them); `articles checked <article_id>` clears the flag | None |
+| On an article: when the reviewer bear last reviewed it and found it fine (`reviewer_reviewed_at`), that he took it down after readers downvoted it (`reviewer_held_at`: it is a person's to decide from then on, for good), what he cut when he published it after `defang_after_days` (`reviewer_defanged`: when, how many sentences, for how many flags; the original body is kept as `articles/<id>.before-defang.md`), and his flag on a financial article he approved (`reviewer_flag` = `financial_approved`, `reviewer_flagged_at`), which the assistant reports until a person clears it | `<prefix>-<env>-articles`, the article's item | Read them on the article's item in the console (`articles get` does not show them); `articles checked <article_id>` clears the flag | None |
 | How far back a topic's daily article reads findings (`findings_window_hours`), never past its last article. Widen it for a topic that does not write every day about the same thing (a rotating topic, whose cities each have some days of the week, or a weekly topic), so a finding made on a day it does not write about its subject is still drafted. Whole hours, 1 to 336: findings expire after 14 days | same item | `topics create\|update --findings-window-hours N` (`""` clears it) | 24 hours |
 | A topic that rotates through its subjects, one a day ([the day-subject hook](enhancements/archive/dailysubject_hook.md)): `rotation` in its `adapter_config`, either the seven weekdays each naming a subject (`{"MON": "sydney", ...}`) or a list of subjects cycled one a day (or one a week, with `rotation_period` `"week"`), every subject at least once, and `rotation_timezone`, the zone whose calendar day decides (an IANA name). Read by an adapter that names a day subject: `rail_access` (its sites are the subjects, and `rotation_timezone` defaults to the topic's `daily_timezone`; [A `rail_access` topic](#a-rail_access-topic)). The daily cycle then writes about the day's subject only, from the Findings that report it (at most 48 of that subject's own), and keeps that subject's last article (`last_article_by_subject`, beside `last_article_at`: `topics get` and the assistant's `topics_overview` for one topic show it). `findings list --next-article` and the assistant's `topic_findings` answer for the day's subject. Set `findings_window_hours` to the longest gap between one subject's days, plus a day. **Adopt a rota on a new topic, not on one that has published:** each subject's first window starts from `findings_window_hours`, not from the topic's last article (a subject with no last article of its own is bounded by the window alone), so a topic changed with `topics update` would draft again, on each subject's first day, Findings its last article already used. Create the rotating topic and pause or delete the old one ([restart, not migrate](enhancements/archive/dailysubject_hook.md#44-migrating-the-four-deployed-topics)) | same item | `topics create --config-json`, or `topics update --adapter-config-json` on a topic that has not published yet (the whole config: read it, edit it, send it back) | No rota: the topic writes about everything it watches. `rotation_timezone` unset: the topic's `daily_timezone` if the adapter passes it (`rail_access` does), else UTC |
 | A topic's goal rotation (`editorial_goal_rotation`): 2 to 7 editorial goals, each `{"name", "primary_focus"}`, taken in turn so one set of findings is written up from different sides ([common/goal_rotation.py](../lambdas/common/goal_rotation.py)). Each goal's focus stands in for `editorial_goals.primary_focus`; the topic's `exclusion_criteria` apply to every goal. New findings get the goal after the one used last; with nothing new, the daily run *revisits* the findings of the last set (still unexpired, the day's subject's only on a rotating topic) under the next goal not yet used on them, and stops (`no_findings`) once every goal has had them. A retry of a run that already stored its article never revisits: it finds its own run on the topic (`last_article_run`) and returns `already_written` ([runs that fail](architecture/article-research.md#runs-that-write-nothing-and-runs-that-fail)). The state is `goal_rotation_state` on the topic item (subject key, or `*` for the whole topic, to the goal used last, the goals used on the current set and its oldest and newest `captured_at`), written by the daily cycle. An article records its goal as `editorial_goal`, and `revisit` when it was one; a revisit's research is not counted again. Ignored on a topic with a daily editorial goal (the crypto feed) | same item | `topics create\|update --goal-rotation-json '[...]'` (`'[]'` clears it; the state is kept) | No rotation: one goal, and nothing new writes nothing |
@@ -672,3 +697,238 @@ The rail task needs no new secret, parameter or variable: `VISION_ENABLED` is th
 shares with the ship task, and nothing else is added. Earth Search STAC, the Sentinel-2 COGs in the
 `sentinel-cogs` bucket, the Overpass API and GDELT need no key, secret or parameter: nothing is
 added to the tables above for them.
+
+## The queue platform, prompts and evals
+
+Three parts built together ([the design](enhancements/archive/model-ranch-prompt-assets-evals.md)). Each is
+deployed with the code, and each changes nothing until you turn it on. Their settings sit in several
+of the tables above; this section gathers them.
+
+| Part | What is deployed | Its switch | Until it is on |
+|---|---|---|---|
+| [The queue platform](#the-queue-platform) | The dispatcher (`<prefix>-<env>-dispatcher`, every minute), the work queue `<prefix>-<env>-work.fifo` in front of the research tick, its dead-letter queue and alarms (`infra/modules/work-queue`) | Each topic's `dispatch_mode`; `WORKER_CONCURRENCY` is its one knob | Every topic runs from its two schedules, and the dispatcher only shadows them |
+| [Prompts as assets](#prompts-as-assets) | The prompts bucket `<prefix>-<env>-prompts` and the table `<prefix>-<env>-prompt-hashes` (`infra/modules/prompts`); the `prompts` workflow publishes to them | `PROMPT_AS_ASSET_ENABLED` | Every prompt is the copy in the code, and nothing is published |
+| [Continuous evals and the Model Ranch](#continuous-evals-and-the-model-ranch) | Always the evals table `<prefix>-<env>-evals` and the log group of the same name; while on, the eval-work queue, the eval-jobs Lambda, its schedules and alarms, and the ranch-and-prompts dashboard (`infra/modules/evals`) | `EVALS_ENABLED` | No event is written, nothing is scored, gated or culled, and no judge runs |
+
+### The enable order
+
+Dev first, then production, one part at a time. The commands, and how to tell each step worked, are
+in the production runsheet's [enable order](production-runsheet.md#the-enable-order).
+
+0. **The queue platform.** Shadow mode watches every topic from the first deploy. Once `topics
+   schedule` shows a topic a few days clean in a row (`N clean in a row`, `shadow_clean_days`; the
+   move itself asks for one), move it with `topics update <id> --dispatch-mode queue`: dev's topics
+   first, then production's after its release, a plain feed topic first. Run `topics reschedule`
+   first if a topic has been added or deleted, or the stagger changed, since the schedules were last
+   written: until then the move is refused.
+1. **The bootstrap, by hand**, if it was applied before the prompts and evals work: it makes the two
+   prompts publisher roles and lets the deploy roles create the evals log group. Then create the
+   `production-prompts` GitHub environment and set `AWS_DEV_PROMPTS_ROLE_ARN` and
+   `AWS_PROD_PROMPTS_ROLE_ARN`.
+2. **Prompts in dev.** `PROMPT_AS_ASSET_ENABLED` = `true` on the repository and `false` on the
+   `production` environment, a dev deploy, then a publish. `prompts list` shows every asset's
+   current version (v1, and v2 for the reviewer bear's three) approved, and the `prompt-fallback`
+   alarm stays quiet.
+3. **Evals in dev.** `EVALS_ENABLED` = `true` on the repository and `false` on the `production`
+   environment, then a dev deploy. Within two hours every part of `evals status` answers.
+4. **Production.** Releases publish production's prompts from step 2 on. Remove the `production`
+   environment's two `false` values and publish a release; approve its prompts publish too. Culling
+   stays proposal-only; to cull, `evals set --cull on`, then `evals cull --apply`.
+
+### The queue platform
+
+One dispatcher run a minute (a *tick*) in place of each topic's two EventBridge schedules, a FIFO
+work queue between it and the research tick, and one knob for how many queue jobs run at once
+however many topics there are. For a topic on the queue, research that is due goes to `work.fifo` as
+a job in the topic's own message group, so one topic's jobs run one at a time; a daily cycle that is
+due is started on the daily-cycle state machine as an execution named `<slug>-<local date>-<n>`, so a
+second start is refused by Step Functions itself. A claim on the topic's row stops two ticks queueing
+the same work. A send or start that fails gives its claim back, a daily claim with its number, so
+the next minute's retry sends the same execution name and Step Functions never runs the day twice,
+even when the failed start had reached it.
+
+| Setting | Where | Default | What it does |
+|---|---|---|---|
+| `WORKER_CONCURRENCY` | [GitHub variable](#github-secrets-and-variables) | 2 | How many research jobs from `work.fifo` run at once, as its event source mapping's `maximum_concurrency`. At least 2. Needs a deploy |
+| `dispatch_shadow` | `pipeline` row | on | Shadow mode for topics still on their schedules: the dispatcher sends and starts nothing for them, and records on each what it would have done. Off, it leaves them alone. A topic on the queue is dispatched either way |
+| `daily_starts_per_tick` | `pipeline` row | 3 | Daily cycles the dispatcher may start in one minute, 1 to 10; the rest start the next minute |
+| `dispatch_mode` | the topic's item | `schedule` | `queue` moves the topic to the dispatcher and deletes its two schedules; `schedule` writes them again |
+
+**Shadow mode, as built.** For a topic on its schedules the dispatcher records each turn it would
+have taken and compares it with what the Scheduler did:
+
+- A research turn is judged 5 minutes after it: a mismatch when the schedule's research tick took
+  no turn within 5 minutes of it. The tick stamps `last_research_attempt_at` once it finds the
+  topic due (or is forced), before it asks the source, and `last_research_at` only once the source
+  answers; shadow mode reads the later of the two, so a fetch that failed is not a mismatch. A
+  run-now is never a mismatch. Each judged turn is dated on the row: on time in
+  `shadow_research_matched_at`, a mismatch in `shadow_research_mismatch_at`. A heartbeat that drifts
+  off its computed minute is counted at the first turn after the drift began (and at each later one
+  when the topic's research interval is shorter than its cadence's period), and never gives a turn
+  on time.
+- A `rate(...)` research cadence is recorded but never judged: the Scheduler's minute for a rate
+  cannot be worked out from the expression.
+- A daily turn is judged on the last day shadow mode recorded: a mismatch when that day saw no
+  execution of the topic, so the first check comes at the second shadow daily turn. A day the check
+  could not answer (Step Functions refused, or its pages ran out) is counted in `shadow_unchecked`,
+  never as a match; a day it did answer, in `shadow_checked_days`. A day it answered with a match,
+  with no research mismatch since the daily record before, adds one to `shadow_clean_days`; a
+  mismatch of either kind, or an unchecked day, sets it back to 0.
+
+`topics schedule` shows the record as `N mismatches · N unchecked days · N checked days · N clean in
+a row` (the last once the dispatcher has counted clean days for the topic). The first three cover
+the topic's whole shadow history and never reset; the cutover judges the recent stretch. **The
+cutover's pre-flight** (`topics update <id> --dispatch-mode queue`, answered 400 with every reason)
+asks for at least one clean day in a row and, for a cron research cadence, a research turn judged on
+time since the last research mismatch (`topics schedule` does not show the two research dates; the
+refusal names the mismatch's turn). So an old mismatch, or a record from before a cadence change,
+holds the cutover only until a full day after it has been watched clean, a day or two, and nothing on
+the row needs clearing by hand. A topic whose days were checked before clean days were counted reads
+as clean when it never had a mismatch or an unchecked day. The pre-flight also refuses a paused
+topic, a cadence the dispatcher cannot read (an `at(...)` expression, or a `rate(...)` daily
+cadence), schedules written for the topic (`research_schedule`, `daily_schedule`) that are not the
+ones the dispatcher works out now, or were never recorded (it says to run `topics reschedule` first,
+and to make a cadence or slot change in an update of its own), a slug (the topic id lower-cased,
+every other character but a digit or `-` made `-`, at most 40 characters) another topic shares, and a topic id SQS cannot take as a message group.
+
+**On cutover day** the Scheduler may already have run today's daily cycle. A same-day shadow daily
+record counts as today's dispatch, and the move also writes today's claim
+(`last_daily_dispatched_on`) when today's daily turn has passed, so the topic is not started twice
+today. Its next run is tomorrow's. Both judge today's turn by the schedule the dispatcher works out,
+which is why the pre-flight asks for the written schedules to match it: adding or deleting a topic,
+or changing the stagger, moves every topic's daily minute, and only `topics reschedule` writes them
+all again. The move deletes the topic's two schedules once, before the row says queue.
+
+**What changes for a topic on the queue:**
+
+- A daily cadence with several hours (`9,21`, `*/4`) runs once a day, at its first turn; the
+  Scheduler ran each.
+- `topics trigger <id> --pipeline research_tick` queues a job (it waits behind the topic's own),
+  and `--pipeline daily_cycle` starts an execution named `<slug>-<local date>-manual-<HHMMSS>`.
+- `topics reschedule` writes it no schedules; with `--dispatch-mode schedule` it first moves every
+  queue topic back.
+- A queue topic resumed after today's daily turn has passed is given today's claim in the write
+  that resumes it, as a move then would be, so its next run is tomorrow's, as a schedule enabled
+  again would have it; resumed before the turn, it runs at the turn. A backup restore writes a queue
+  topic's `last_daily_dispatched_on` as the newest of the snapshot's, the live row's (when it is in
+  the same zone) and, once today's turn has passed, today's. Neither starts a second daily run that
+  day.
+
+Its alarms ([observability.md](observability.md)): `<prefix>-<env>-work-queue-age` (a job has waited
+more than 15 minutes), `-work-dlq-messages` and `-work-dlq-received` (a job failed three times;
+`failed-executions list` names it), and `-dispatcher-heartbeat` (no tick finished without raising
+in 15 minutes), beside the dispatcher's errors and throttles alarms that every pipeline Lambda has.
+Its errors alarm also fires when a daily start is throttled (`ThrottlingException`,
+`TooManyRequestsException`, `ExecutionLimitExceeded`): that tick fails at once and the next one
+tries again. It fires as well when Step Functions refuses a daily start for a reason that is not
+the topic's own: the dispatcher's role, the state machine, the service. That excludes
+`ExecutionAlreadyExists`, which counts as the day's run, and a refusal of the topic's execution name
+or input (`InvalidName`, `InvalidExecutionInput`, `ValidationException`), which only skips that
+topic ([the cases](architecture/queue-platform.md#a-daily-run)). Such a tick still runs every other
+topic and writes `last_tick` first, and its log says `start refused` with the topic. Its
+`dispatcher_tick` line's `outcome` is still `error`, so a refusal that lasts 15 minutes fires
+`-dispatcher-heartbeat` too.
+
+### Prompts as assets
+
+A prompt is named `<lambda_id>/<prompt_name>` and has two homes: its copy in the code (the
+*vanilla*, in `lambdas/common/prompts_registry.py`) and the files under `prompts/` in this
+repository ([prompts/README.md](../prompts/README.md)), which the `prompts` workflow publishes to the
+prompts bucket. A Lambda serves a published file when every check passes (the hash table approves
+its bytes, its placeholders and locked blocks are right, it fits) and the vanilla otherwise. One file
+in a prompt's `latest/` folder is the prompt; two or more are an A/B split, one arm per run. Nine
+prompts are code-only and never read from S3: `ops_agent/system`, `reviews/compliance`,
+`reviews/compliance_legacy`, `vision_triage/ships_system`, `vision_triage/rail_system`,
+`comment_screening/screen`, `eval_judge/research_review`, `eval_judge/article_review` and
+`eval_score/compare`.
+
+| Setting | Where | Default | What it does |
+|---|---|---|---|
+| `PROMPT_AS_ASSET_ENABLED` | [GitHub variable](#github-secrets-and-variables) | off | Every Lambda reads assets. Needs a deploy. Off, nothing of the bucket is read for serving and no fallback is reported. Also the gate of both publish jobs, read at repository level only |
+| `AWS_DEV_PROMPTS_ROLE_ARN`, `AWS_PROD_PROMPTS_ROLE_ARN` | GitHub secrets, repository level | unset | The publisher roles. Each is also the one principal its bucket lets write |
+| `prompt_assets` | `prompts` row | `on` | The kill switch, with no deploy: `off` serves every prompt's vanilla (`prompts set --assets off`), each asset prompt's render a reported fallback, so the `prompt-fallback` alarm is in ALARM for every hour with one (and back to OK, with an email, after an hour without) until it is on again |
+| `paused_versions` | `prompts` row | none | Versions taken out of service, `<prompt_id>@<version>` (`prompts pause <prompt_id> <version>`): a run that draws a paused version gets the vanilla (`paused`); runs that draw the prompt's other files keep them |
+| `production-prompts` | GitHub environment | none | Where production's prompts are published between releases, after your approval. Required reviewer: you; deployment branch: `dev`. It needs no secret or variable of its own: everything the publish reads is at repository level |
+
+- **How fast a change lands.** Each Lambda container keeps what it read (the listing, the files,
+  the hash rows and the `prompts` row) for five minutes, so a pause or the kill switch lands within
+  five; a retired file's hash row is still accepted for five minutes after a release, so a
+  superseded version is served for at most ten.
+- **An unreadable `prompts` row is not read as the defaults.** A container keeps the row it last
+  read, past the five minutes, and one that has read none yet serves the vanilla until it can, so a
+  failed read never brings a paused or killed version back.
+- **A fallback is reported.** A Lambda that falls back from an asset prints a `prompt_fallback`
+  line naming the prompt, the version and why. Every pipeline Lambda's log group, eval-jobs'
+  included, feeds the `<prefix>-<env>-prompt-fallback` alarm, which emails at the first fallback in
+  an hour and again when it clears. While evals are on, each fallback is also a Prompt Fallback event
+  in the evals log, counted on the version's row and never scored. The kill switch is a fallback
+  too: while `prompt_assets` is `off`, every asset prompt a Lambda renders writes a line
+  (`assets_off`); the nine code-only prompts above write none. So the alarm is in ALARM for every
+  hour with such a render, and an hour with none (a research tick with nothing new calls no model;
+  the daily cycle runs once a day) sends it back to OK, with an email, until the next render fires
+  it again. Both emails are expected until `prompts set --assets on`: an OK email does not mean the
+  fallbacks have stopped.
+- **Who publishes where.** `publish-dev` runs on a merge to `dev` that touches `prompts/`, the prompts
+  code or the workflow, or by hand from `dev`, as `gha-<prefix>-dev-prompts`, in no environment.
+  `publish-production` runs with every published release, under `production`, and by hand from `dev`
+  under `production-prompts`, as `gha-<prefix>-prod-prompts`. Both are skipped while the repository's
+  `PROMPT_AS_ASSET_ENABLED` is not `true`. Each publish is a release (`prompts releases` lists them);
+  production skips a prompt the release it runs cannot read yet.
+- **Rollback** is a `git revert` and a publish, or, faster, a dispatch with `release_id` set to an
+  earlier release, which pins it: every later publish puts the pinned release back until a dispatch
+  with `clear_pin` publishes the tree again. The commands are in the production runsheet's
+  [prompts section](production-runsheet.md#prompts-publishing-and-rolling-back).
+
+### Continuous evals and the Model Ranch
+
+With `EVALS_ENABLED` on, the pipeline writes scored events (an article completed, a rewrite, a
+reader's vote, a person's or the judge's verdict) to the `<prefix>-<env>-evals` log group, kept 120
+days. eval-jobs adds them up hourly into the evals table, by day, for each model, each prompt version
+and each pair of the two, and writes each model's windows (`daily_perf`, `weekly_perf`,
+`monthly_perf`, `total_perf`) on its models row. From those the rotation guard leaves gated models
+out of the candidates, the weekly cycle proposes models to cull, and the rewrite picker ranks the
+models. eval-jobs also runs the judge and offline scoring runs from the eval-work queue. It answers
+every job, so the queue deletes it: a judge item that failed stays unjudged for a later run, and a
+scoring message that failed, even before its result row was claimed, is counted finished without a
+result, so its run closes and `evals runs resume` sends it again. The exceptions are a scoring
+message whose run's header cannot be read and one that cannot be counted finished after a failure:
+eval-jobs names them in its answer's `batchItemFailures`, so eval-work delivers them again, and after
+three receives moves them to the pipeline's dead-letter queue (`failed-executions list`, kind
+`score_job`). Off, the table and the log group still exist and nothing writes to them; turning it
+off again stops the scoring and the gates, and keeps every total.
+
+#### The evals settings
+
+The `evals` row of `<prefix>-<env>-model-config`, read on every run, so a change needs no deploy:
+`evals get` shows the row, the values in effect and the judge's model, and `evals set` changes one
+(`''` clears it, back to the default). A value that is not valid is ignored, with a line in the log,
+and the default used. The first six are policy: the admin API refuses them, and they are changed by
+editing the row in the console.
+
+| Setting | Default | `evals set` flag | What it does |
+|---|---|---|---|
+| `daily_gate` | -50 | none | A model whose `daily_perf` (today, in `timezone`) is below it, with at least `min_events` events behind it, is gated: left out of the rotation draw, the rotation picks, the shared pool's pick and the rewrite picker until the window recovers. Never the default, fallback or judge model, nor a topic's own `model_id`. -1,000,000 to 0 |
+| `weekly_gate` | -100 | none | The same over the last 7 days |
+| `total_gate` | -1000 | none | The same over the model's whole total, adjustments included; also the line below which a model is proposed for culling |
+| `min_events` | 10 | none | The events a window needs before its gate applies, and before the rewrite picker ranks a model by its score. 1 to 1000 |
+| `judge_min_agreement` | 0.7 | none | How often the judge must agree with people before its verdicts count towards the gates. 0 to 1 |
+| `judge_min_pairs` | 20 | none | Over how many subjects both a person and the judge decided, on the same text (an article's verdicts record which, `rewrite_number`). 1 to 1000 |
+| `cull_enabled` | off | `--cull on\|off` | Lets `evals cull --apply` archive and delete the proposed models; refused (409) while off. It gates the apply, not the proposal: the weekly cycle proposes whenever evals are on and the cycle runs (`model-catalog set --cycle on`), and `models restore` works either way |
+| `cull_max_per_run` | 3 | `--cull-max-per-run N` | Models one apply may delete, worst total first, 1 to 50 |
+| `judge_enabled` | on | `--judge on\|off` | The judge's runs. Its tripwire turns it off, and writes `judge_paused_reason`, when a run marks more than 80% of at least 10 items bad; `evals set --judge on` (or `off`) clears the reason |
+| `judge_interval_hours` | 4 | `--judge-interval-hours N` | Hours between judge runs, 1 to 24: the hourly selector runs only once this has passed since its last run (`last_judge_at`) |
+| `judge_max_items` | 10 | `--judge-max-items N` | Items one judge run reviews, 1 to 50: Findings no judge has reviewed and unjudged articles, in turn, the Findings one topic after another, starting each run from the topic after the last one (`last_judge_topic` on the evals table's index row) |
+| `judge_model_id` | none | `--judge-model-id MODEL_ID` | The judge's model. Unset: model-config's fallback model, else the deployment's default (`BEDROCK_MODEL_ID`). A text model. The judge never judges its own work: an item every option wrote is skipped. Models are compared by their base id, so the same model through another inference profile, or named by its ARN, is still the author |
+| `score_max_cost_aud` | 5 | `--score-max-cost AUD` | The estimate, in Australian dollars, an offline scoring run may reach before `evals score` needs `--yes`. 0 to 100. The estimate is approximate: it leaves out the retry of a draft cut off at its limit, which the check before each call does price |
+| `evals_daily_spend_cap_aud` | 2 | `--daily-spend-cap AUD` | What the judge and the offline scoring runs may spend in a day (in `timezone`), together, 0 to 100, kept on the evals table's `spend` rows. Checked when items are queued, and held before the calls: one conditional write adds a judge call's estimate, or the most a scoring message can cost (its retried drafts included), to the day's row (`held_aud`, counted in `spent_aud` too), given back once the costs are counted, so two items worked at once can never both spend the last of it, and a consumer that dies holding leaves the day under its cap. At the cap a run is paused (`paused: spend cap`) and its items wait, 15 minutes at a time, for the next day. A scoring run one of whose messages can cost more than the whole cap is refused (409) by `evals score`, already at the dry run that shows its estimate, and by `evals runs resume`; a message that meets a cap lowered under its most since is counted finished without a result, for `resume` to send once the cap is raised |
+| `trace_calls` | off; on in dev | `--trace-calls on\|off` | Stores each model call's prompt and reply at `traces/<subject>/<stage>.json` in the private content bucket, dropped after 14 days, for `evals trace <article_id>`. The gear's guidance and the topic's operator note are stored as their sha256, never as text. Dev's root sets `TRACE_CALLS_DEFAULT` to `true` and production's to `false`; it moves only the default, so a value on the row decides in either |
+| `timezone` | `Australia/Sydney` | `--timezone ZONE` | The IANA zone whose days the rollup, the windows, the spend cap and the Friday digest count in |
+| `excluded_sources` | none | `--excluded-sources A,B` (the whole list) | Events the rollup leaves out, at most 20: `human`, `judge` or `system` (who decided), `run:<run id>` (an offline run), or the code of the Lambda that wrote them. `evals revoke --source S [--since ISO]` adds one entry, and the days already final are added up again, by a rollup it starts or the `evals rollup` command it prints |
+| `digest_email` | off | `--digest-email on\|off` | On Fridays, from 08:00 in `timezone`, after the first scheduled hourly rollup, eval-jobs emails the week's digest (as `evals digest` shows it) to the alerts topic. Once a Friday: the day is claimed by `last_digest_on` on the evals table's index row, and a failed send gives the claim back for the next hour |
+
+**Scores and adjustments.** `evals forgive|punish --model <id> --amount N` (or `--prompt <id>
+--version <v>`) moves a model's total by N, 1 to 100 (more with `--allow-cull`), at the next hourly
+rollup, and no window; a prompt version's adjustment is recorded only. `evals ungate --model <id>
+--hours N` holds a model's gates open (`ungated_until`). `models restore <id>` puts a culled model
+back, forgives it to zero and holds its gates open for 7 days; like `evals cull --apply` and the
+adjustments, it is refused while evals are off.

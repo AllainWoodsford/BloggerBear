@@ -289,7 +289,7 @@ resource "aws_cloudwatch_metric_alarm" "security_high_severity" {
   depends_on = [aws_cloudwatch_log_metric_filter.security_high_severity]
 }
 
-# Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): a Lambda that finds a
+# Prompts as assets (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): a Lambda that finds a
 # prompt asset unreadable, or failing its checks, uses the copy in its code and prints one
 # prompt_fallback evidence line (common/evidence.py: the line is one JSON object whose `event` key
 # names the event, which is what the filter selects on). The pipeline carries on, so nothing else

@@ -6,7 +6,7 @@ Iterating over every Topic on a schedule is Phase 3 (EventBridge Scheduler)
 
 Two ways in. Directly (a topic's EventBridge schedule, the Admin API's run-now), the event is
 `{"topic_id": ..., "force": ...}` and the run's time is now. From the work queue (the dispatcher's
-research job, docs/enhancements/model-ranch-prompt-assets-evals.md section 4.7, through the
+research job, docs/enhancements/archive/model-ranch-prompt-assets-evals.md section 4.7, through the
 work-queue module's event source mapping, one record at a time), the event is an SQS batch whose
 one record's body is that same JSON plus `job` (ignored) and `due_checked_at`, the minute the
 dispatcher found the topic due. That minute is the run's time for the not-due check and for the

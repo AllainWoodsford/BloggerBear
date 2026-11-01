@@ -1,7 +1,7 @@
 """Prompts as assets (common/prompts.py, common/prompts_registry.py): the template grammar, the
 spec's own checks, the run-keyed arm, and get_prompt against moto's S3 and DynamoDB: an approved
 asset served, and every way it falls back to the vanilla with its code and its evidence line
-(docs/enhancements/model-ranch-prompt-assets-evals.md, sections 4.1, 4.2 and 4.5)."""
+(docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections 4.1, 4.2 and 4.5)."""
 
 from __future__ import annotations
 

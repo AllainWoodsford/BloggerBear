@@ -1,5 +1,5 @@
-"""The evals judge (common/eval_judge.py; docs/enhancements/model-ranch-prompt-assets-evals.md, sections
-2, 4.3 to 4.5, 4.10 and 5.3), against moto tables and bucket, a stand-in for the eval-work queue that
+"""The evals judge (common/eval_judge.py; docs/enhancements/archive/model-ranch-prompt-assets-evals.md,
+sections 2, 4.3 to 4.5, 4.10 and 5.3), against moto tables and bucket, a stand-in for the eval-work queue that
 keeps what is sent, and a stand-in model that answers what each test tells it to.
 
 What is held: the judge never judges an item any of its models wrote, and passes over one every

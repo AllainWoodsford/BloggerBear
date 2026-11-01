@@ -1,4 +1,4 @@
-"""The week's evals digest by email (docs/enhancements/model-ranch-prompt-assets-evals.md, PR20): on
+"""The week's evals digest by email (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR20): on
 Fridays, while the `digest_email` setting is on (common/evals_settings.py, `admin_cli evals set
 --digest-email on`; off by default), eval-jobs publishes the digest to the alerts topic, the one the
 alarms email through.

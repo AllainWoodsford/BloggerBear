@@ -28,7 +28,7 @@ next item. It comes back to this inbox when it is done -- to approve, reject or 
 the model and what the rewrite cost. If the rewrite fails, the original comes back with the reason.
 The models offered (rewrite_models) are the enabled text models the account can call (not
 `access: denied`) and the Model Ranch has not gated, best first by how their work has been judged
-(section 4.9 of docs/enhancements/model-ranch-prompt-assets-evals.md), each with its score, n and
+(section 4.9 of docs/enhancements/archive/model-ranch-prompt-assets-evals.md), each with its score, n and
 interval.
 
 A skipped item is left exactly as it is, and hidden from your next reviews for a while (a small local

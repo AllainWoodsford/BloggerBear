@@ -1,6 +1,6 @@
 """The Admin CLI's eval commands: the `evals` group of scripts/admin_cli.py, in its own module.
 
-Continuous evals and the Model Ranch (docs/enhancements/model-ranch-prompt-assets-evals.md) give
+Continuous evals and the Model Ranch (docs/enhancements/archive/model-ranch-prompt-assets-evals.md) give
 the CLI an `evals` group. This module is its home, wired into admin_cli's parser by `register`,
 which admin_cli.build_parser calls. Today's commands:
 

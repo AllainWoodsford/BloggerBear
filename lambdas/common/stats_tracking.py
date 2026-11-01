@@ -94,7 +94,7 @@ BEDROCK_CATEGORIES = (
     "model_pricing",
     # Professor Grizzlewick, the reviewer bear, judging held and published articles (common/reviewer.py).
     "reviewer",
-    # Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md): the judge scoring
+    # Continuous evals (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): the judge scoring
     # Findings and articles, and the offline scoring runs' drafts and verdicts. Here before any of
     # them is, so the Stats page and the spend tool already have the row when the first call lands.
     "evals",

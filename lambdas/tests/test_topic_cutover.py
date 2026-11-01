@@ -1,4 +1,4 @@
-"""The per-topic cutover (docs/enhancements/model-ranch-prompt-assets-evals.md, Q2): a topic's
+"""The per-topic cutover (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, Q2): a topic's
 `dispatch_mode` on the admin API, the pre-flight that refuses a move to the queue, the confirmation
 before its two schedules are deleted, the cutover-day claim, the way back (one topic, and every
 topic at once with `topics reschedule`), the cadence check for a topic on the queue, and manual runs

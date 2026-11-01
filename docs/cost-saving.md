@@ -135,9 +135,9 @@ The addresses are no more exposed than they were:
 general rate limit, the feedback route's rate limit, the limits for requests through the CDN,
 and the AWS managed common rule set) and not the admin API's. Their log groups, logging
 configurations, the log resource policy, the security-events subscriptions on those logs and
-their rows on the edge dashboard go with them. The admin API keeps its resource-policy
-allowlist. Both APIs keep API Gateway's own throttling (a ceiling for the whole API, not per
-visitor).
+their blocked-per-rule panels on the pipeline-health dashboard go with them. The admin API keeps
+its resource-policy allowlist. Both APIs keep API Gateway's own throttling (a ceiling for the
+whole API, not per visitor).
 
 **Lost:**
 
@@ -183,7 +183,8 @@ back empty and refuses every admin call until you do.
 managed common rule set at the edge, in front of the cache), its us-east-1 log group, logging
 configuration and policy are not created, and neither the site nor the public API's CDN has a
 web ACL. Production's `wafv2_web_acl_arn` output is then `null`, and dev's `web_acl_arn` (the
-hand-set sharing of that ACL) must stay empty.
+hand-set sharing of that ACL) must stay empty. Production's pipeline-health dashboard leaves the
+ACL's panel off; dev's keeps it, and it draws nothing.
 
 **Lost:** the only firewall in front of the site itself, and the edge rate limit on the public
 API's CDN. CloudFront's own protections and AWS Shield Standard remain. The public API's
@@ -225,8 +226,10 @@ API is busy.
 - The switches: `infra/environments/{dev,production}/variables.tf` (`waf_regional_enabled`,
   `waf_admin_allowlist`, `waf_log_all_requests`; `waf_site_enabled` in production).
 - What they turn off: the `count` on each firewall resource in both `main.tf` files, the
-  `moved` blocks beside them, and the conditional lists the dashboards, the security-events
-  subscriptions and the assistant's `waf_log_groups` are built from.
+  `moved` blocks beside them, and the conditional lists that the pipeline-health dashboard's
+  firewall panels (`waf_regional_acls`, and production's `waf_cloudfront_acl`, on
+  `module "observability"`), the security-events subscriptions and the assistant's
+  `waf_log_groups` are built from.
 - The always-on allowlist: `local.admin_api_resource_policy` in each `main.tf`, attached by
   `infra/modules/rest-api` (`resource_policy`, `resource_policy_enabled`), which also redeploys
   the API when the policy's text changes.

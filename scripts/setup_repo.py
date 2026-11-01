@@ -193,7 +193,7 @@ SETTINGS: tuple[Setting, ...] = (
             env="dev", tf_var="prompts_publisher_role_arn"),
     # At repository level, not on the production environment, although it is production's: the
     # prompts workflow publishes production's prompts under two environments
-    # (docs/enhancements/model-ranch-prompt-assets-evals.md: `production-prompts` on its own,
+    # (docs/enhancements/archive/model-ranch-prompt-assets-evals.md: `production-prompts` on its own,
     # `production` with a release), and the release deploy reads it under `production` too. An
     # environment's secret reaches only that environment's jobs.
     Setting("AWS_PROD_PROMPTS_ROLE_ARN", "secret", "repo", "optional", "role_arn",

@@ -1,18 +1,22 @@
 """The Admin CLI's prompt commands: the `prompts` group of scripts/admin_cli.py, in its own module.
 
-Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): prompt templates the
+Prompts as assets (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): prompt templates the
 publisher puts in the prompts bucket, served by every Lambda in place of the copy in its code when
 the deployment's switch is on and every check passes. These commands read what is published and
 change what is served, through the Admin API's prompts routes:
 
     prompts list                 each registered prompt's files under latest/: version, release,
                                  sha256, whether the hash table approves it, whether it is paused
-    prompts pause <id> <v>       stop serving one version (the prompt's other files, or the copy in
-                                 the code, are served instead); prompts resume undoes it
+    prompts pause <id> <v>       stop serving one version (a run that draws it gets the copy in the
+                                 code, fallback code `paused`; runs that draw the prompt's other
+                                 files keep them); prompts resume undoes it
     prompts releases             what each publish did, newest first, and the one in place
     prompts set --assets off     the kill switch: every prompt is the copy in the code, no deploy
 
 A change reaches every run within five minutes (each Lambda container keeps the settings that long).
+Every render a pause or the kill switch turns to the code's copy writes a `prompt_fallback` line,
+so while either is set the prompt-fallback alarm is in ALARM for every hour that has one: expected,
+not a fault.
 `register` wires the group into admin_cli's parser; admin_cli.build_parser calls it.
 """
 
@@ -117,8 +121,9 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
     pause_parser = prompts_sub.add_parser(
         "pause",
         help=(
-            "Stop serving one version of a prompt: its other files under latest/, or the copy in the "
-            "code, are served instead, within five minutes"
+            "Stop serving one version of a prompt, within five minutes: a run that draws it gets the "
+            "copy in the code (fallback code `paused`); runs that draw the prompt's other files under "
+            "latest/ keep them"
         ),
     )
     pause_parser.add_argument("prompt_id", help="<lambda_id>/<prompt_name>, as `prompts list` shows it")
@@ -142,7 +147,13 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
     releases_parser.set_defaults(func=prompts_releases)
 
     set_parser = prompts_sub.add_parser(
-        "set", help="The kill switch: --assets off serves every prompt's copy in the code, without a deploy"
+        "set",
+        help=(
+            "The kill switch: --assets off serves every prompt's copy in the code, without a deploy; "
+            "each render of an asset prompt then writes a prompt_fallback line, so the prompt-fallback "
+            "alarm is expected in ALARM in every hour with a render while it is off (and back to OK, "
+            "with an email, in an hour without one)"
+        ),
     )
     set_parser.add_argument(
         "--assets",

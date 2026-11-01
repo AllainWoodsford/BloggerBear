@@ -171,6 +171,13 @@ python scripts/admin_cli.py pipeline-config set --review-on-unavailable note
 # One topic can differ from the pipeline-wide mode ('' clears it back to inheriting):
 python scripts/admin_cli.py topics update github-trending --review-mode enforce
 python scripts/admin_cli.py topics update github-trending --review-mode ""
+# A note on what this topic's fresh-data review should look at (topic_review_steering): one line of
+# plain text, at most 500 characters, no newline, tab or other control character; '' clears it.
+# It reaches the fresh-data review and the evals judge, set apart as the operator's note, and never
+# the compliance review, so it cannot loosen the publish gate.
+python scripts/admin_cli.py topics update finance-crypto-investing \
+    --review-steering "Check every price and percentage against the snapshot."
+python scripts/admin_cli.py topics update finance-crypto-investing --review-steering ""
 # How the review is doing, from the records it leaves on articles: counts by outcome and
 # topic, unavailable reasons, what enforcement WOULD have held and revised (the number that
 # decides whether turning it on is safe), readiness against the plan's starting thresholds,
@@ -187,6 +194,14 @@ python scripts/admin_cli.py pipeline-config set --research-interval-hours 2 --re
 python scripts/admin_cli.py pipeline-config set --assistant-access allowlist
 python scripts/admin_cli.py pipeline-config set --assistant-access off
 python scripts/admin_cli.py pipeline-config set --assistant-access ""
+# The dispatcher (the queue platform; see "Schedules, the stagger and pausing" below). Shadow mode,
+# on by default, only records on each topic still on its schedules what it would have done; off, it
+# leaves those topics alone. A topic on the queue is dispatched either way. The start cap is how many
+# daily cycles one dispatcher minute may start (1-10, default 3); the rest wait a minute. '' clears
+# either, back to its default. Both apply from the next minute, no deploy.
+python scripts/admin_cli.py pipeline-config set --dispatch-shadow off
+python scripts/admin_cli.py pipeline-config set --daily-starts-per-tick 5
+python scripts/admin_cli.py pipeline-config set --dispatch-shadow "" --daily-starts-per-tick ""
 python scripts/admin_cli.py topics delete github-trending
 python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick   # a manual run always runs now, whatever the interval
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --no-wait
@@ -233,6 +248,8 @@ python scripts/admin_cli.py articles publish <article_id>
 python scripts/admin_cli.py articles unpublish <article_id>
 python scripts/admin_cli.py articles rewrite <article_id> --instructions "the second section confuses staking with lending"
 python scripts/admin_cli.py articles rewrite <article_id> -i "too long; cut the history section" --model <model_id>
+# Without --model: while evals are on, the best-ranked model approve's Re-Write offers first (below);
+# otherwise the topic's own model.
 python scripts/admin_cli.py articles rewrite <article_id> -i "names the wrong company" --force   # take it down now
 
 python scripts/admin_cli.py failed-executions list
@@ -276,12 +293,24 @@ python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5
 # - cycle: on Fridays at 04:00 it refreshes the topics' rotation lists (`model-catalog set
 #   --cycle off` pauses it).
 # `models add` with the same id switches a discovered model on; --lock-price keeps the reprice
-# off a price you set on purpose.
+# off a price you set on purpose. When another writer changes the row while it is written, it reads
+# it again and retries once; a second change answers 409 and writes nothing: send it again.
 python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0" \
     --display-name "Claude Haiku 4.5" --provider anthropic \
     --input-price 0.0011 --output-price 0.0055 --lock-price
 python scripts/admin_cli.py models reprice     # now, even when paused, with its own two checks
 python scripts/admin_cli.py models discover    # now, even when paused
+# Each model's purpose (text, image, embedding, video, speech, other; unknown once Bedrock no longer
+# lists it) and inputs, recorded from Bedrock's listing now, in the background. `models list` shows
+# a row from before purposes were recorded as `unclassified`, judged as a text model until this runs.
+# Application inference profiles are listed and classified by the model under them; a custom,
+# provisioned or imported model's ARN is left as it is (never `unknown`; with no purpose, its pricing
+# unit still judges it). Only text models are routed to, rotated or accepted (docs/models.md).
+python scripts/admin_cli.py models classify
+# Put a culled (or pruned) model back from the archive (docs/models.md, the Model Ranch): its gates
+# are held open for 7 days and, when its total is below zero, an Admin Forgive brings it to zero. A
+# pruned model comes back switched off. Refused while evals are off.
+python scripts/admin_cli.py models restore <model_id>
 python scripts/admin_cli.py model-catalog get  # paused or not, what each job last did, any run under review
 python scripts/admin_cli.py model-catalog set --reprice off   # pause the scheduled reprice (every second day, 03:00 Sydney; '' or on resumes)
 python scripts/admin_cli.py model-catalog set --discover off  # pause the scheduled discover (every second day, 02:00 Sydney)
@@ -290,7 +319,8 @@ python scripts/admin_cli.py model-catalog set --review-after-hours "1,2" --revie
 python scripts/admin_cli.py model-config get
 python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 # The shared rotation pool: after an article the daily cycle publishes by itself, or a run whose
-# model proposed no usable angle, the topic's model_id becomes one of these at random. Each must be
+# model proposed no usable angle, the topic's model_id becomes one of these at random (never one
+# disabled, uncallable, not a text model, or gated by the Model Ranch at the time). Each must be
 # a registered, enabled, callable (not `access: denied`) text model. `set` replaces the whole pool;
 # '' clears it.
 python scripts/admin_cli.py model-rotation get
@@ -326,8 +356,10 @@ The file gives each city weekdays; the live `rail-cities` was switched to a city
 (Melbourne, Singapore, Boston, Sydney) with a weekly reading and four goals taken in turn:
 [docs/RailVisionSeeding.md §7](../docs/RailVisionSeeding.md#7-a-city-a-week-written-up-from-three-sides).
 
-Which model a call uses, rotation, the model catalog's discovery and repricing, and setting the
-registry up on a new deployment, with a sample `model-config` item: [docs/models.md](../docs/models.md).
+Which model a call uses, rotation, the model catalog's discovery and repricing, what a model is for
+(`models classify`), the Model Ranch's scores, gates and culling (`evals`, `models restore`), and
+setting the registry up on a new deployment, with a sample `model-config` item:
+[docs/models.md](../docs/models.md).
 
 `models`/`model-config` back the AI lineage/cost-tracking enhancement's
 DynamoDB-backed model registry (docs/project-plan.md §11) -- adding a
@@ -403,7 +435,11 @@ to the passages with a problem, and everything else is kept exactly as it was. I
 guards as any rewrite (no figure or link that is in none of the sources), goes through the
 fresh-data and compliance reviews again, and comes back to the inbox
 for you to approve, reject or rewrite again; approving it publishes it. `--model` picks a
-registered model (`models list`); by default it uses the model the topic writes with today. If the
+registered, enabled text model the account can call (`models list`); while evals are on, one the
+Model Ranch has gated is refused (400), with the windows that gate it. Without `--model`, while
+evals are on and a model has enough scored events to be ranked, it takes the best-ranked model the
+`approve` picker offers ([docs/models.md, the rewrite picker](../docs/models.md#the-rewrite-picker))
+and says which; otherwise it says why and uses the model the topic writes with today. If the
 rewrite of an article that was not published (or was taken down with `--force`) fails, the article
 waits in the inbox with the reason, and `[w]` there retries with the same note. Approving it writes a fresh musing about the new version, in place of the ones the
 take-down removed.
@@ -421,6 +457,16 @@ that exhausted its retries and landed on the pipeline dead-letter queue
 and the raw message, for manual follow-up. There's no automatic replay; to
 retry a topic after fixing whatever caused the failure, use
 `topics trigger <topic_id> --pipeline daily_cycle` again.
+
+It also holds a queue job that was received three times without finishing (it timed out or
+crashed, or, for a scoring job, eval-jobs asked for it again each time because it could not read
+the run's header or count the job finished): a topic's research job from the work queue's
+dead-letter queue (`kind: research_job`), and a judge or offline scoring job from eval-work
+(`judge_job`, `score_job`). Retry a research job
+with `topics trigger <topic_id> --pipeline research_tick`; a scoring job's item is sent again by
+`evals runs resume <run_id>` (one whose result was written but never counted leaves `resume`
+nothing to send and its run running: `evals runs cancel <run_id>` ends it, keeping what was
+scored), and an unjudged item is picked again by a later judge run.
 
 The list also holds a row for each model catalog review that put one or more prices back
 (`kind: model_pricing`, no topic; see `lambdas/common/model_catalog.py`). The error's `Cause`
@@ -454,21 +500,76 @@ python scripts/admin_cli.py topics create --topic-id ... --name ... --stagger-sl
 
 ```
 github-trending  (slot 2, running)
+  dispatch: schedule (its two EventBridge schedules run it)
   research: every 4 hours at :10 past
             cron(10 */4 * * ? *)  UTC
   daily:    daily at 09:30  Australia/Sydney
             cron(30 9 * * ? *)
   real research every 4 h · last researched 2026-10-15T04:10:12+00:00 · last article 2026-10-14T23:30:03+00:00
+  shadow: 0 mismatches · 0 unchecked days · 3 checked days · 3 clean in a row · last research turn 2026-10-15T04:10:00+00:00 · last daily turn 2026-10-14T22:30:00+00:00
 ```
 
-Twelve five-minute slots fill an hour; past that, shorten the stagger or read
-docs/enhancements/dispatcher-sqs-enhancement.md.
+`dispatch:` says where the topic runs from: its two schedules, or the queue (the dispatcher runs it,
+and it has no EventBridge schedules). `shadow:` is the dispatcher's record of a topic still on its
+schedules, from its first shadow turn on: the mismatches with what the schedules did, the days its
+daily check could not answer and the days it did, how many of those matched in a row since the
+last mismatch or unchecked day (`N clean in a row`, `shadow_clean_days`, shown once the dispatcher
+has counted clean days for the topic), and the last turns it would have dispatched. The first three
+counts cover the topic's whole shadow history and never reset; the move to the queue judges the
+clean run (below). What each means is in
+[configuration.md](../docs/configuration.md#the-queue-platform).
+
+Twelve five-minute slots fill an hour. Past that, shorten the stagger, or move topics to the queue
+(below): the dispatcher reads the same slots, and one setting (`WORKER_CONCURRENCY`) caps how many
+research jobs run at once, however many topics there are.
+
+**Moving a topic to the queue, and back.** The queue platform runs a dispatcher every minute in
+place of each topic's two schedules. Until you move a topic, it only watches it in shadow mode.
+
+```bash
+python scripts/admin_cli.py topics update github-trending --dispatch-mode queue          # asks first: it deletes the topic's two schedules
+python scripts/admin_cli.py topics update github-trending --dispatch-mode queue --yes    # without asking
+python scripts/admin_cli.py topics update github-trending --dispatch-mode schedule       # back: both schedules written again
+python scripts/admin_cli.py topics reschedule --dispatch-mode schedule --dry-run         # every topic on the queue back, shown first
+python scripts/admin_cli.py topics reschedule --dispatch-mode schedule                   # ... and done
+```
+
+- **The move is refused** (400, with every reason) until shadow mode has watched the topic cleanly:
+  at least one clean day in a row (a full day checked, record to record, with no mismatch of either
+  kind) and, for a cron research cadence, a research turn judged on time since its last research
+  mismatch (`topics schedule` does not show the research turns' dates; the refusal names the
+  mismatch's turn). So an old mismatch holds the move a day or two, and needs no clearing. It is
+  refused for a paused topic too, for a cadence the dispatcher cannot read (an `at(...)`, or a
+  `rate(...)` daily cadence), for a slug another topic shares (the id lower-cased, every character
+  but a letter, digit or `-` made `-`, at most 40) and for a topic id the queue cannot take as a
+  message group. Then it asks, since the schedules are deleted; `--yes` answers for you.
+- **The move is refused while the schedules on record are stale**: "the schedules written for it
+  are not the ones the dispatcher would run", with what was written beside what the dispatcher
+  reads, or "not recorded". A topic added or deleted, or a stagger change, moves every topic's
+  daily minute, and only `topics reschedule` writes them all again; until then the move cannot tell
+  whether today's daily cycle has run. Run `topics reschedule`, then the move again. A cadence or
+  slot changed in the same update is refused the same way: change it in an update of its own first.
+- **On cutover day** the Scheduler may already have run today's article: a shadow daily record from
+  today counts as today's dispatch, and when today's daily turn has passed the move also writes
+  today's claim, so the dispatcher starts nothing more today.
+- **On the queue**, `topics trigger <id> --pipeline research_tick` queues a research job (behind
+  any of the topic's own), and `--pipeline daily_cycle` starts a run named
+  `<slug>-<local date>-manual-<HHMMSS>`. `topics reschedule` writes such a topic no schedules
+  unless `--dispatch-mode schedule` moves every queue topic back first, the bulk undo when the queue
+  is stuck. A daily cadence with several hours (`9,21`) runs once a day, at its first turn; the
+  Scheduler ran each.
+
+The whole procedure, and what to watch for, is the production runsheet's
+[Moving topics to the queue, and back](../docs/production-runsheet.md#moving-topics-to-the-queue-and-back).
 
 **Pausing** a topic stops everything of it until it is resumed: no research tick, no candidate
 ideas, no daily article. The Topics row's `paused` is what the handlers obey, whatever invokes
-them; the two schedules are disabled as well so the heartbeats cost nothing, `topics trigger`
+them; the two schedules are disabled as well so the heartbeats cost nothing (a topic on the queue
+has none, and the dispatcher passes a paused topic over), `topics trigger`
 refuses the topic, the topic page's "Articles in the Pipeline" says Paused, and the bear muses
-about it (a reflective one on a pause, an excited one on a resume). Pausing twice is a no-op.
+about it (a reflective one on a pause, an excited one on a resume). Pausing twice is a no-op. A
+topic on the queue resumed after today's daily turn has passed is given today's claim in the write
+that resumes it, so its next run is tomorrow's, as a schedule enabled again would have it.
 
 ```bash
 python scripts/admin_cli.py topics pause wow-forever
@@ -515,9 +616,12 @@ you, a preview) and waits for one key, no Enter:
 | `q` | Quit. Nothing you already decided is lost |
 
 - **Re-Write** (`w`) sends the article, its hold reasons, its research and current data to the model
-  you pick (any enabled model from `admin_cli models`). It is a correction, not a new article: the
-  model sends back edits to the passages with a problem, and everything else is kept exactly as it
-  was. A rewrite whose edits cannot be placed in the article, that changes nothing, or that replaces
+  you pick. The picker offers the enabled text models the account can call and, while evals are on,
+  not the ones the Model Ranch has gated: those with enough scored events first, best first, each
+  with its score, n and 95 % interval, then the rest by price; with evals off, cheapest first
+  ([docs/models.md, the rewrite picker](../docs/models.md#the-rewrite-picker)). It is a
+  correction, not a new article: the model sends back edits to the passages with a problem, and
+  everything else is kept exactly as it was. A rewrite whose edits cannot be placed in the article, that changes nothing, or that replaces
   more than half of it fails. The result is checked like the automatic revision (no figure or link
   that is in none of the sources), reviewed again, and comes back to this inbox as a new item showing
   `Re-Write #n by <model> (~$cost); <n> passages edited, <k>% kept as it was` and the old title, to
@@ -530,6 +634,8 @@ you, a preview) and waits for one key, no Enter:
   article's lineage (stage `rewrite`) and the week's Stats.
 - **Up to 30 a time**, oldest first, articles before prompt changes. Run it again for the next batch
   (`--limit` changes the size; `--source moderation` or `--source refinements` picks one kind).
+- **Research Findings** are a third kind, never in the default run: `approve --source findings`
+  (below).
 - **Each choice is applied at once**, through the same signed Admin API as every other command, so a quit,
   an error or a dropped connection never loses progress. A reject or a Re-Write is sent the moment you
   press the key, not when the batch is finished: by the time you reach the tenth item, the rewrite of the
@@ -568,6 +674,30 @@ you, a preview) and waits for one key, no Enter:
 - **Approving a prompt change asks where the bear wears it** (see the next section): `t` (or Enter) a ring
   for its topic, `g` an armor slot (it lists what is worn, and says what would be replaced), `b` the
   backpack. `c` backs out and leaves it pending.
+
+**Marking research Findings: `approve --source findings`.** With continuous evals, you can say
+whether what a model made of a source's data is good or bad, one Finding at a time. Each verdict
+scores the model that wrote the summary (a Human Review event, while evals are on) and is how the
+evals judge's agreement with people is measured, so this is the quickest way to calibrate the judge
+([the evaluation runsheet](../docs/evaluation-runsheet.md#4-the-judge-and-calibrating-it)).
+
+```
+python scripts/admin_cli.py approve --source findings          # y good, r bad, z skip, v read it all, q quit
+python scripts/admin_cli.py approve --source findings --mock   # practise on made-up Findings: no AWS
+```
+
+- **The order**: the Findings the judge has already reviewed come first (only a verdict on one of
+  those pairs with the judge's), then the rest, oldest first, from the last 14 days. A card shows the
+  topic, when it was captured, the summary and its sources' titles and links, and whether the judge
+  has reviewed it. It never shows the judge's verdict, nor the model that wrote it: the Admin API
+  does not send them.
+- **A verdict is written once.** Marking the same Finding again writes nothing new; the other
+  verdict the second time is refused.
+- **Skips stay on your machine**, as for articles. The queue is read a page at a time
+  (`GET /evals/findings?count=&offset=`, whose `more` says whether there is anything after the page),
+  so Findings you skipped do not hide the ones behind them; after ten pages it says more are waiting
+  behind your skips, and `--reset-skipped` forgets them.
+- A Finding from before research recorded its model has nothing to score, and is not offered.
 
 ## What the bear wears: `equipment`
 
@@ -753,6 +883,206 @@ The defaults, and the flag that sets each:
 the edge that this does not set:
 [docs/architecture/site-and-feedback.md](../docs/architecture/site-and-feedback.md).
 
+## Prompts as assets: `prompts`
+
+The pipeline's prompts can be served from the prompts bucket instead of the copies in the code, once
+`PROMPT_AS_ASSET_ENABLED` is on and the `prompts` workflow has published them
+([configuration.md](../docs/configuration.md#prompts-as-assets); the files and their rules are in
+[prompts/README.md](../prompts/README.md)). These commands read what is published and change what is
+served, with no deploy. A change reaches every Lambda within five minutes; a version superseded by a
+publish is served for at most ten.
+
+```bash
+python scripts/admin_cli.py prompts list                          # each prompt's files under latest/, and whether assets are served
+python scripts/admin_cli.py prompts list --json                   # the raw answer
+python scripts/admin_cli.py prompts pause daily_cycle/draft v2    # stop serving one version
+python scripts/admin_cli.py prompts resume daily_cycle/draft v2   # serve it again
+python scripts/admin_cli.py prompts releases                      # what each publish did, newest first
+python scripts/admin_cli.py prompts releases --limit 50 --json    # default 20, at most 200
+python scripts/admin_cli.py prompts set --assets off              # the kill switch: every prompt is the copy in the code
+python scripts/admin_cli.py prompts set --assets ""               # cleared: back to on
+```
+
+- **`prompts list`** first says whether this deployment serves assets, and why not when it does
+  not: the deployment switch (`PROMPT_AS_ASSET_ENABLED`), the kill switch (`prompt_assets`), the
+  bucket, and what is paused. Then one row per file under each registered prompt's `latest/`: its
+  version, the release that published it, the start of its sha256, its hash row's status (`live`, or
+  `retired` and when) and whether it is paused. A prompt with no file there (a code-only prompt, or
+  one nothing has published) is one row naming the code's version it serves, and why.
+- **`prompts pause <prompt_id> <version>`** takes one version out of service: a run that draws
+  that version gets the copy in the code instead (fallback code `paused`, with a `prompt_fallback`
+  line), and runs that draw the prompt's other files under `latest/` keep them. The split is not
+  redrawn, so an A/B split's other arms keep only their own share. It is the failure-day step for a
+  bad prompt; `prompts set --assets off` takes every asset out at once.
+- **`prompts releases`** lists the publishes, newest first, marking the one in place (`current`)
+  and the one a rollback holds to (`pinned`). A rollback is a dispatch of the `prompts` workflow
+  with `release_id`, not a CLI command
+  ([the production runsheet](../docs/production-runsheet.md#prompts-publishing-and-rolling-back)).
+- A Lambda container that cannot read the `prompts` settings row keeps the settings it last read,
+  and one that has read none yet serves the code's copies until it can, so a failed read never
+  brings a paused or switched-off version back.
+- A Lambda that falls back from an asset to the code's copy says so in a `prompt_fallback` log line
+  (the `<prefix>-<env>-prompt-fallback` alarm emails at the first in an hour), and `evals status`
+  counts the last 24 hours' fallbacks. With the kill switch on, every asset prompt's call falls back
+  and writes one, so the alarm is in ALARM for every hour with one; an hour with none (a research
+  tick with nothing new calls no model; the daily cycle runs once a day) sends it back to OK, with an
+  email, and the next call fires it again. Both emails are expected until `prompts set --assets ""`,
+  not a second fault: an OK email does not mean the fallbacks have stopped.
+
+## The prompts tree: `prompt_lint.py` and `publish_prompts.py`
+
+Both run in the `prompts` workflow ([docs/ci-and-checks.md](../docs/ci-and-checks.md#prompts)).
+Run the lint yourself before you push a change under `prompts/`; the publisher is the workflow's.
+
+```bash
+python scripts/prompt_lint.py --base-ref origin/dev   # this tree, held to dev's versions and the newest v* tag's code
+python scripts/prompt_lint.py --release-ref v0.4.0    # name the release production runs
+python scripts/prompt_lint.py --no-release            # skip the pass against a release
+```
+
+**`prompt_lint.py`** checks every rule the Lambdas and the publisher rely on: each folder is a prompt
+the code registers as an asset (a code-only prompt has no files); each file is named for its version
+(`vN.txt`) and is UTF-8 with LF line endings; each file in `latest/` passes the template rules (its
+placeholders, its locked blocks at the end, its size); none holds a phrase that contradicts a locked
+block; no two files have the same bytes; and a version keeps its bytes for ever, a new one numbered
+above every earlier one, against `--base-ref` and the release. The second pass, against the release
+production runs (`--release-ref`, or the newest `v*` tag), flags a prompt that release cannot read
+yet as `skip-at-production`: not an error, since production's publish leaves that prompt alone until
+a release knows it. It names files, lines and rules, never a prompt's words. Exit 0 when the tree can
+be published, 1 on any error, 2 on a usage error.
+
+**`publish_prompts.py --environment dev|production`** makes one deployment's bucket hold exactly the
+tree's `latest/` folders, approving each file's bytes in the hash table first, so a run that stops
+part-way leaves the previous release serving. Only the publisher's role may write either, so it is
+run by the workflow. `--dry-run` prints the plan and writes nothing; `--release-ref` names the release
+production runs (needed to publish the tree to production); `--release-id <id>` pins an earlier
+release, a rollback, which every later publish puts back until `--clear-pin` publishes the tree
+again; `--bucket`, `--table`, `--root` and `--commit` override what it would work out. It never
+deletes outside `latest/` and never prints a prompt's text.
+
+## Continuous evals and the Model Ranch: `evals`
+
+With `EVALS_ENABLED` on, the pipeline scores its models and prompts as it runs, and the Model Ranch
+gates, ranks and culls models by those scores. What the scores are and what they do:
+[docs/models.md, the Model Ranch](../docs/models.md#the-model-ranch-scores-gates-and-culling); the
+judge, offline runs and calibration:
+[docs/evaluation-runsheet.md, continuous evals](../docs/evaluation-runsheet.md#continuous-evals);
+every setting: [configuration.md](../docs/configuration.md#the-evals-settings).
+
+**Settings, status and the digest:**
+
+```bash
+python scripts/admin_cli.py evals get                     # the evals row, the values in effect and the judge's model
+python scripts/admin_cli.py evals status                  # are evals working, and what are they holding back?
+python scripts/admin_cli.py evals digest                  # day totals per model and prompt version, the last 7 days
+python scripts/admin_cli.py evals digest --since 2026-10-01   # from a day or an ISO time, 120 days back at most
+python scripts/admin_cli.py evals rollup                  # run the hourly rollup now, in the background
+python scripts/admin_cli.py evals rollup --from 2026-10-20 --to 2026-10-27   # add those days up again (--to defaults to today)
+```
+
+`evals set` changes any of these (a setting not sent is unchanged; `''` clears one, back to its
+default). The gates, `min_events` and the judge's calibration thresholds have no flag: they are
+edited on the `evals` row in DynamoDB only.
+
+| Flag | Setting | Default |
+|---|---|---|
+| `--cull on\|off` | `cull_enabled`: let `evals cull --apply` delete; the weekly proposal is made either way | off |
+| `--cull-max-per-run N` | `cull_max_per_run`, 1 to 50 | 3 |
+| `--judge on\|off` | `judge_enabled`; setting it also clears `judge_paused_reason` | on |
+| `--judge-interval-hours N` | `judge_interval_hours`, 1 to 24 | 4 |
+| `--judge-max-items N` | `judge_max_items`, 1 to 50 | 10 |
+| `--judge-model-id MODEL_ID` | `judge_model_id`, a text model | model-config's fallback, else `BEDROCK_MODEL_ID` |
+| `--score-max-cost AUD` | `score_max_cost_aud`: an offline run's estimate past this needs `--yes`, 0 to 100 | 5 |
+| `--daily-spend-cap AUD` | `evals_daily_spend_cap_aud`: what the judge and offline runs spend a day together, 0 to 100 | 2 |
+| `--trace-calls on\|off` | `trace_calls`: store each model call for `evals trace` | off; on in dev |
+| `--timezone ZONE` | `timezone`, whose days the rollup counts | `Australia/Sydney` |
+| `--excluded-sources A,B` | `excluded_sources`, the whole list (`evals revoke` adds one) | none |
+| `--digest-email on\|off` | `digest_email`: email the digest to the alerts topic on Fridays | off |
+
+**A model's score, its gates, culling:**
+
+```bash
+python scripts/admin_cli.py evals forgive --model <model_id> --amount 50           # raise its total, no window
+python scripts/admin_cli.py evals punish --model <model_id> --amount 50            # lower it
+python scripts/admin_cli.py evals punish --model <model_id> --amount 500 --allow-cull
+python scripts/admin_cli.py evals forgive --prompt daily_cycle/draft --version v2 --amount 10   # recorded only
+python scripts/admin_cli.py evals ungate --model <model_id> --hours 48             # hold its gates open (1 to 720; 0 ends it)
+python scripts/admin_cli.py evals cull                    # the weekly cull proposal and the last cull applied
+python scripts/admin_cli.py evals cull --apply            # shows the proposal and asks; refused while --cull is off
+python scripts/admin_cli.py evals cull --apply --yes      # without showing or asking
+python scripts/admin_cli.py models restore <model_id>     # put a culled model back
+```
+
+- `forgive` and `punish` take `--model`, or `--prompt <lambda_id>/<prompt_name>` with `--version`
+  (`vN`, or `vanilla:vN`). `--amount` is 1 to 100; `--allow-cull` allows more. A model's total moves
+  at the next hourly rollup, and the answer shows it before and after; a prompt version's adjustment
+  is recorded, and nothing adds those up yet. A prompt must be one the code registers, a code-only
+  prompt only at a `vanilla:` version, and a `vanilla:` version no later than the code's.
+- `forgive`, `punish`, `cull --apply`, `models restore`, `rollup` and `score` are refused while
+  evals are off. `ungate` and `revoke` are not (a revoke then gives the `evals rollup` command for
+  when they are on).
+
+**Taking a source's events out:**
+
+```bash
+python scripts/admin_cli.py evals revoke --source judge --since 2026-10-27T00:00:00Z
+python scripts/admin_cli.py evals revoke --source run:<run_id>
+```
+
+`--source` is `human`, `judge` or `system` (who decided), `run:<run id>` (an offline run), or the
+code of the Lambda that wrote the events; without `--since`, all of its events. The days already
+final are added up again by a rollup the revoke starts, or by the `evals rollup` command its answer
+prints.
+
+**Offline scoring runs and the judge's runs:**
+
+```bash
+python scripts/admin_cli.py evals score --judge <model_id> --models <model_id>,<model_id> \
+    --prompt daily_cycle/draft=v2,vanilla --sample 20     # shows the estimate and asks first
+python scripts/admin_cli.py evals score ... --record --yes  # also write each verdict as an Offline Review event
+python scripts/admin_cli.py evals score ... --no-wait       # start it and return
+python scripts/admin_cli.py evals runs list               # the newest runs, judge and scoring (--limit, 1 to 100, default 20)
+python scripts/admin_cli.py evals runs get <run_id>       # progress and each combination's results (--wait follows it)
+python scripts/admin_cli.py evals runs cancel <run_id>
+python scripts/admin_cli.py evals runs resume <run_id>    # send again whatever has no result, under today's cap
+```
+
+- `--judge`: the model that compares the drafts, none of `--models` (compared by base model, so the
+  same model through another inference profile is refused too). `--models`: 1 to 5. `--prompt`:
+  a prompt and its versions, each one this deployment published (live, or retired since) or
+  `vanilla`, the copy in the code; only `daily_cycle/draft` can be scored today. At most 10
+  combinations. `--sample`: 1 to 50 past articles (default 10).
+- The CLI first asks for the plan without starting anything and prints the environment, the
+  combinations, the items and the estimate beside what today's spend cap leaves. The estimate is
+  approximate: it leaves out the retry of a draft cut off at its limit, which the hold each job
+  takes on the day's cap before its calls does price. Over the cap left, the run is refused; over
+  `score_max_cost_aud` it needs `--yes`; `--record` always needs `--yes`; otherwise it asks before
+  it starts, then follows the run for up to 30 minutes.
+- The plan itself is refused (409) when one message can cost more than the whole daily cap, its
+  drafts retried (`message_ceiling_aud`): no day could pay for it. Raise the cap (`evals set
+  --daily-spend-cap`) or score cheaper models.
+- A run at the spend cap shows `paused: spend cap` and goes on by itself when a new day's cap allows.
+  `resume` sends again every item with no result: a paused or cancelled run's, one whose send failed,
+  one whose model call failed, one whose job failed before it claimed its item, and one that met a
+  cap lowered below what it can cost. It is refused (409) when every message has its result or is
+  being scored, when what is left costs more than today's cap leaves, and when one of its messages
+  can cost more than the whole cap. A job eval-jobs cannot place in its run or count finished is
+  delivered again by eval-work, and after three receives is a `score_job` in `failed-executions list`.
+
+**Call traces:**
+
+```bash
+python scripts/admin_cli.py evals trace <article_id>
+```
+
+While `trace_calls` is on, each model call recorded in a lineage is stored for 14 days in the private
+content bucket: its prompt id and version, model, rendered prompt, reply and tokens. `evals trace`
+shows an article's, and those of the research behind it (or, given the id a run that stored no
+article traced its calls under, that run's). Each carries the id of the run that stored it (a
+Re-Write's `rewrite_id`), and a Re-Write stage left from an earlier attempt is marked `superseded`.
+The gear's guidance and the topic's operator note are stored only as their sha256. Comment
+screening and the judge are never traced.
+
 ## Backups, restores and article exports: `backup`
 
 Terraform builds the skeleton; a **snapshot** is the data loaded into it. It is one file,
@@ -787,6 +1117,8 @@ python scripts/admin_cli.py backup resume <job_id>          # restart one shown 
 python scripts/admin_cli.py backup restore backup/bloggerbear-dev/snapshots/20261017T160000Z-schedule.jsonl.gz
 #   The name is the job's start in UTC: Sunday 3am in Sydney is Saturday 16:00 UTC (17:00 when Sydney is on standard time).
 #   --no-pages / --no-schedules skip those steps; --bucket reads it from another allowed bucket.
+#   A topic on the queue keeps the newest daily claim of the snapshot's, the live row's (same zone)
+#   and, once today's daily turn has passed, today's, so the restore starts no second run that day.
 
 # Copy every article (its row as JSON, its final text and figures) to a bucket, with manifest.json.
 python scripts/admin_cli.py backup export                                   # into the backup bucket's exports/
@@ -1239,7 +1571,9 @@ python scripts/generate_cli_reference.py --check  # change nothing; exit 1 if it
 in the message if you forget. Two things the generator decides, both read from the parser:
 
 - **Which commands the assistant never fills in.** A command whose last word deletes or takes
-  something down (`delete`, `unpublish`, `reject`, and a few more in `DESTRUCTIVE_VERBS`) and any
+  something down (`delete`, `unpublish`, `reject`, and a few more in `DESTRUCTIVE_VERBS`, among them
+  `pause`, `punish`, `cull`, `cancel` and `restore`, so `topics pause`, `prompts pause`, `evals
+  punish`, `evals cull`, `evals runs cancel`, `models restore` and `backup restore` too) and any
   `--force` flag are marked destructive; the assistant shows those as a template with
   `<placeholders>`. A new command of that kind under another name needs its word added to
   `DESTRUCTIVE_VERBS`; the test lists the marked commands so the change is seen in review.
@@ -1277,6 +1611,10 @@ for the `dlq_handler: daily_cycle failed for topic_id=test-topic: ...` log
 line. Without Terraform, get the queue URL with
 `aws sqs get-queue-url --queue-name bloggerbear-dev-pipeline-dlq`. (Both names start with
 your `UNIQUE_NAME_PREFIX`; `bloggerbear` is the default.)
+
+A body with a `job` field (`research`, `judge`, `score`) is a queue job instead: its line reads
+`dlq_handler: <job> job for topic_id=... failed` and its row has `kind: <job>_job`. The work
+queue's dead-letter queue (`<prefix>-dev-work-dlq.fifo`) feeds the same handler.
 
 Responses are pretty-printed JSON on stdout. A non-2xx response prints the
 error body to stderr and exits non-zero.

@@ -59,6 +59,8 @@ Resource names below use `<prefix>` (your `unique_name_prefix`) and `<env>` (`de
 - [His report and the conversation with BloggerBear](#his-report-and-the-conversation-with-bloggerbear)
 - [Where his state lives](#where-his-state-lives)
 - [Models, costs and limits](#models-costs-and-limits)
+- [His prompts](#his-prompts)
+- [His decisions and continuous evals](#his-decisions-and-continuous-evals)
 - [What the public pages say about him](#what-the-public-pages-say-about-him)
 - [Where it lives](#where-it-lives)
 - [Design history](#design-history)
@@ -464,6 +466,59 @@ replies are counted under "Musings". See [Stats and costs](stats-and-costs.md).
 
 All but the last two are in `common/reviewer.py`.
 
+## His prompts
+
+His three questions to the topic's model are prompts like any other
+([prompts and evals](prompts-and-evals.md)), registered in `common/prompts_registry.py` and served
+through `prompts.get_prompt`: `reviewer/skeptic` (the majors, `judge_majors`), `reviewer/published`
+(the read, `judge_published`) and `reviewer/defang` (the final review, `judge_defang`). An operator
+can publish a new version of one, pause one, or split one A/B, with no deploy.
+
+They are **version 2**. His approval publishes, so nothing in the material may pose as the end of the
+article, as flags of its own, or as a reply. The article and its flags reach the model only inside
+two blocks that `common/reviewer.py` builds:
+
+- `article_block`: `<article_text>`, the title, and the text cut to `BODY_MAX_CHARS`, `</article_text>`;
+- `flags_block`: `<review_flags>`, the flags, each closed up onto one line and then numbered in code,
+  `</review_flags>`. The verdicts answer by those numbers, so every numbered line in the block is
+  one this code numbered.
+
+Any `<article_text` or `<review_flags` tag inside the material is broken (`_break_delimiters`), so
+the material cannot close its block early. Each block is a value with its tags inside it, so a
+published version can place a block but can neither rename its tags nor set the material down
+outside them. Each prompt tells the model that everything inside the blocks is untrusted data, and
+ends with its JSON reply contract, which is locked: no version can move or reword it. A quote for
+the final review's cut is matched against the article as written, so only a sentence that holds one
+of the two tags is quoted differently, and that article waits for a person.
+
+Version 1 set the article and the flags under plain labels. Its files are in `prompts/reviewer/*/archive/`.
+A deployment still serving them falls back to the version 2 copy in the code, with a
+`prompt_fallback` line each time, because version 1's placeholders are not version 2's, until the
+publish that retires them.
+
+**His A/B draws.** Each task's questions draw their arms by the article's id, so the skeptic's or the
+final review's question and the read that follows land on the same side of their splits, and an
+article asked about again on a later run is given the same versions. A fallback is counted once per
+article on each run: he binds his run's id with the article's (`prompts.bind_request`), and the
+fallback's event id is built from it. The assistant's `prompt_fallback` card looks back three days,
+longer than his every-second-day cadence, so his fallback does not read as fixed on the day between
+his runs.
+
+## His decisions and continuous evals
+
+While continuous evals are on ([prompts and evals](prompts-and-evals.md#where-events-come-from)):
+
+- **His decisions score nothing.** His approvals, rejections and rewrites take the admin API's own
+  routes, but the Admin Review and Article Rewrite events, and the person's verdict an approve or a
+  reject keeps for the judge's calibration, are written only for a person's decision. An AI
+  reviewer's verdict is not a person's, and only the calibrated judge's verdicts may count towards
+  the gates.
+- **His model is the topic's, through the gates.** `resolve_model` leaves the models the Model Ranch
+  has gated out of a topic's rotation before it draws, so his reads and judgements never use one;
+  the default, the fallback and a topic's own `model_id` are served whatever their scores.
+- **The judge still reads his articles.** An article he approved, rejected or sent for a rewrite is
+  judged like any other, by a model that wrote none of it.
+
 ## What the public pages say about him
 
 - **The Terms, section 2** ([AI-generated content](../../frontend/terms.html#ai-generated-content)):
@@ -491,6 +546,7 @@ The Terms say "about two days" and "about ten days". If you move `stale_after_ho
 |---|---|---|
 | His Lambda | `lambdas/reviewer_handler.py` (`handler`, `handle`, `_advance`, `schedule_tick`, `build_hands`, `_report`, `_converse`) | `aws_lambda_function.reviewer` (`<prefix>-<env>-reviewer`, on the shared `lambda_exec` role), while `reviewer_enabled` |
 | What he decides | `lambdas/common/reviewer.py` (`SETTINGS`, `plan`, `start`, `tick`, `do_task`, `held_issues`, `judge_majors`, `judge_published`, `judge_defang`, `cut_sentences`, `may_approve`, `summary`) | the `reviewer` and `reviewer-state` rows of `<prefix>-<env>-model-config` |
+| His prompts | `REVIEWER_SPECS` in `lambdas/common/prompts_registry.py`; `_article_block`, `_flags_block`, `_break_delimiters`, `_ask_about` in `common/reviewer.py`; `prompts/reviewer/` | the prompts bucket, while assets are on ([prompts and evals](prompts-and-evals.md#the-reviewer-bears-blocks)) |
 | How he acts | `lambdas/admin_api_handler.py` (`reviewer_approve`, `reviewer_reject`, `reviewer_rewrite`, `reviewer_regenerate_musings`, `reviewer_hold`, `reviewer_replace_body`, `_mark_article_checked`, `_get_reviewer_config_route`, `_put_reviewer_config_route`) | the admin API's `GET` and `PUT /reviewer-config` and `POST /articles/{article_id}/checked` |
 | His voice | `lambdas/common/musings.py` (`REVIEWER_KINDS`, `generate_and_store_reviewer_report`, `generate_and_store_reviewer_rejection`, `generate_and_store_reviewer_hold`, `generate_and_store_bloggerbear_reply`, `generate_and_store_reviewer_answer`) | `<prefix>-<env>-musings` |
 | His portrait and the feed | `frontend/bears/grizzlewick.svg`; `CHARACTERS` in `frontend/moods.js`; the musings view in `frontend/app.js` | the site bucket |

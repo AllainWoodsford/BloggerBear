@@ -26,7 +26,7 @@ and a cron that names days is never carried past midnight (that would move it to
 What was actually written is recorded on the Topics row (`research_schedule`, `daily_schedule`)
 so it can be read in DynamoDB and shown by the admin CLI (`topics schedule`), and the whole
 set is rewritten by `topics reschedule`. The dispatcher design
-(docs/enhancements/dispatcher-sqs-enhancement.md) reads the same slot as its spacing.
+(docs/enhancements/archive/dispatcher-sqs-enhancement.md) reads the same slot as its spacing.
 
 Topic-agnostic: nothing here knows about any adapter or domain.
 """

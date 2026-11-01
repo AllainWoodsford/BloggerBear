@@ -209,7 +209,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "content" {
 }
 
 # -----------------------------------------------------------------------
-# Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md, section 5.2): the
+# Prompts as assets (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, section 5.2): the
 # bucket the prompt templates are published to (<prefix>-dev-prompts) and the table of the
 # hashes the publisher approved (<prefix>-dev-prompt-hashes). Terraform owns them, never what
 # is in them: the publisher role infra/bootstrap makes writes every object and row, and the
@@ -767,7 +767,7 @@ locals {
     # (`model-catalog` row, discover_enabled / reprice_enabled, on unless set to false).
     MODEL_CATALOG_FUNCTION_NAME = "${var.unique_name_prefix}-dev-model-catalog"
 
-    # Continuous evals (module.evals below; docs/enhancements/model-ranch-prompt-assets-evals.md):
+    # Continuous evals (module.evals below; docs/enhancements/archive/model-ranch-prompt-assets-evals.md):
     # the table the hourly rollup keeps its day totals in, the log group every scored event is
     # written to (common/evals.py), whether evals run at all, and the queue the judge and offline
     # scoring jobs go through. The table and the log group are made whether or not evals are on, so
@@ -781,13 +781,13 @@ locals {
     EVAL_WORK_QUEUE_URL = module.evals.work_queue_url
 
     # The FIFO work queue the dispatcher sends research jobs to (module.work_queue below, phase Q1
-    # of docs/enhancements/model-ranch-prompt-assets-evals.md). Read by the dispatcher (which the
+    # of docs/enhancements/archive/model-ranch-prompt-assets-evals.md). Read by the dispatcher (which the
     # module also tells it directly) and, from the per-topic cutover (Q2), by the admin API's
     # manual triggers; harmless on every other Lambda. Not a cycle although the module is given
     # this map: its work_queue_url output depends on the queue alone.
     WORK_QUEUE_URL = module.work_queue.work_queue_url
 
-    # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): the bucket the
+    # Prompts as assets (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): the bucket the
     # prompt templates are published to and the table of their approved hashes (module.prompts
     # above), and whether the code reads them at all ("false" keeps every prompt as the copy in the
     # code). The switch is var.prompt_as_asset_enabled, from the PROMPT_AS_ASSET_ENABLED GitHub
@@ -800,7 +800,7 @@ locals {
     PROMPT_AS_ASSET_ENABLED = var.prompt_as_asset_enabled ? "true" : "false"
 
     # Call traces (common/call_traces.py): whether the evals setting trace_calls is on while the evals
-    # row does not say. On here, as section 4.5 of docs/enhancements/model-ranch-prompt-assets-evals.md
+    # row does not say. On here, as section 4.5 of docs/enhancements/archive/model-ranch-prompt-assets-evals.md
     # has it ("dev root sets true"); production's root says "false". `admin_cli evals set
     # --trace-calls off` still turns it off. The traces expire after 14 days (the content bucket's
     # expire-call-traces rule) and nothing public can read them.
@@ -1234,7 +1234,7 @@ module "admin_api" {
     "POST /models/{model_id}/restore",
     "GET /model-catalog-config",
     "PUT /model-catalog-config",
-    # Continuous evals (docs/enhancements/model-ranch-prompt-assets-evals.md): the evals settings row,
+    # Continuous evals (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): the evals settings row,
     # starting a rollup now, what evals are doing, a digest of the day totals, and an operator's
     # forgive or punish, gate override and revoked source, and applying the weekly cull proposal. See
     # admin_api_handler.py's evals routes and `admin_cli evals
@@ -1267,7 +1267,7 @@ module "admin_api" {
     "GET /evals/traces/{article_id}",
     "GET /reviewer-config",
     "PUT /reviewer-config",
-    # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): each registered
+    # Prompts as assets (docs/enhancements/archive/model-ranch-prompt-assets-evals.md): each registered
     # prompt's published files with their hash status and pause state, the releases, pausing and
     # resuming one version, and the kill switch. See admin_api_handler.py's prompts routes and
     # `admin_cli prompts`.
@@ -1610,7 +1610,7 @@ resource "aws_lambda_event_source_mapping" "dlq_handler" {
 
 # -----------------------------------------------------------------------
 # The queue platform (infra/modules/work-queue; phase Q1 of
-# docs/enhancements/model-ranch-prompt-assets-evals.md): a dispatcher every minute in place of each
+# docs/enhancements/archive/model-ranch-prompt-assets-evals.md): a dispatcher every minute in place of each
 # topic's two schedules, a FIFO work queue in front of the research tick, and worker_concurrency,
 # the one knob on how many queue jobs run at once. Shadow mode only until a topic's dispatch_mode is
 # "queue" (Q2): the dispatcher records what it would have done and sends nothing, and the per-topic
@@ -2930,7 +2930,7 @@ locals {
 }
 
 # -----------------------------------------------------------------------
-# Continuous evals (infra/modules/evals; docs/enhancements/model-ranch-prompt-assets-evals.md,
+# Continuous evals (infra/modules/evals; docs/enhancements/archive/model-ranch-prompt-assets-evals.md,
 # section 5.3): the evals table and log group, and lambda_exec's rights on them, on eval-work and
 # on the alerts topic, always; the eval-work queue, the eval-jobs function, its schedules, metric
 # filters and alarms only while var.evals_enabled is on (the EVALS_ENABLED GitHub variable, off by
@@ -2991,7 +2991,7 @@ module "observability" {
 
   # Every pipeline Lambda's log group, for the prompt-fallback alarm: a Lambda that cannot use a
   # prompt asset prints one prompt_fallback evidence line and carries on with the copy in its
-  # code (docs/enhancements/model-ranch-prompt-assets-evals.md). The log group resources, not
+  # code (docs/enhancements/archive/model-ranch-prompt-assets-evals.md). The log group resources, not
   # names built by hand, so the metric filters depend on them. eval-jobs' group is the evals
   # module's own, so it comes from that module: offline scoring drafts through the live asset.
   prompt_fallback_log_groups = concat(

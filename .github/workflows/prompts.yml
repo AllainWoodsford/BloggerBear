@@ -2,7 +2,7 @@ name: prompts
 
 # The prompts tree (prompts/, its rules in prompts/README.md): its own gates on a pull request, and
 # its own publish to each deployment's prompts bucket, apart from the code's deploys
-# (docs/enhancements/model-ranch-prompt-assets-evals.md, sections 2 and 4.2). The repository's
+# (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections 2 and 4.2). The repository's
 # latest/ folders are the desired state and every publish is a release: scripts/publish_prompts.py
 # writes the bucket and the hash table that approves each file, and scripts/prompt_lint.py refuses
 # a tree the Lambdas could not serve. Terraform owns the bucket and the table (infra/modules/prompts),

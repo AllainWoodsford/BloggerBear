@@ -1,6 +1,6 @@
 """The Admin CLI's prompt commands (scripts/admin_cli_prompts.py): `prompts list|pause|resume|releases|set`,
 wired into admin_cli's parser by `register` with admin_cli's helpers lent to it
-(docs/enhancements/model-ranch-prompt-assets-evals.md, P0 and PR4)."""
+(docs/enhancements/archive/model-ranch-prompt-assets-evals.md, P0 and PR4)."""
 
 from __future__ import annotations
 

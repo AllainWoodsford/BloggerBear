@@ -1,6 +1,6 @@
 """Prompts as assets: a prompt's text read from S3 when it may be, the copy in the code when not.
 
-docs/enhancements/model-ranch-prompt-assets-evals.md (sections 4.1, 4.2 and 4.5). A prompt is
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md (sections 4.1, 4.2 and 4.5). A prompt is
 named `<lambda_id>/<prompt_name>` and has two homes: the registry (common/prompts_registry.py), a
 `PromptSpec` per prompt with the code's own template, the **vanilla**, and the S3 bucket, where the
 publisher workflow puts the asset files under `<prompt_id>/latest/` (one file: the prompt; two or
@@ -44,8 +44,9 @@ random.
 
 **The cache.** Everything read is kept for CACHE_TTL_S in the container: the listing, the tags,
 bodies by sha256, hash rows and the `prompts` row, so a warm container costs no more than one
-round of reads every five minutes per prompt, and a superseded or paused version is served for at
-most the TTL plus the retire grace (600 s). `get_prompt` never raises over anything about the
+round of reads every five minutes per prompt, a pause or the kill switch (read from the `prompts`
+row) lands within the TTL (300 s), and a superseded version is served for at most the TTL plus the
+retire grace (600 s). `get_prompt` never raises over anything about the
 asset: every read is guarded and every failure is a vanilla with its code. What it does not
 guard is a mistake at the call site that would break the vanilla as well (an id the registry does
 not have, a value that cannot be rendered); the tests catch those.

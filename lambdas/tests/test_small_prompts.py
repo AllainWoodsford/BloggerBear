@@ -1,6 +1,6 @@
 """The comment screening, gear, weekly reflection, model catalog and ops agent prompts as registry
 specs (common/prompts_registry.py; section 4.10 and "PR6–PR10. Migrate prompts" in
-docs/enhancements/model-ranch-prompt-assets-evals.md): each asset spec's v1.txt in prompts/ is the
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md): each asset spec's v1.txt in prompts/ is the
 vanilla it was migrated from, and the two code-only specs (comment screening, the ops agent) have
 none; with assets off, the screening question (`comment_screening.screen_comment`), the gear's two
 questions (`gear.generate_identity`), the week's reflection (`weekly_reflection_handler`), the web
@@ -458,6 +458,19 @@ _CELL_RULE = (
 )
 _AFTER = "rerun or change it: call cli_guides with `model-prices`.\n"
 _OPS_SYSTEM_V2 = _LEGACY_OPS_SYSTEM.replace(_AFTER, _AFTER + _CELL_RULE + "\n")
+# Since PR22 (vanilla v3): v2 with the queue platform's and prompts and evals' walk-throughs named
+# among the features, and nothing else changed.
+_FEATURES_V2 = (
+    '("security-incidents") and how the model catalog finds, prices and rotates models '
+    '("model-catalog"). No guide describes the reviewer bear'
+)
+_FEATURES_V3 = (
+    '("security-incidents"), how the model catalog finds, prices and rotates models '
+    '("model-catalog"), how the dispatcher and the work queue run a topic once it leaves its '
+    'schedules ("queue-platform") and how prompts are published and served and every model '
+    'and prompt version is scored ("prompts-and-evals"). No guide describes the reviewer bear'
+)
+_OPS_SYSTEM_V3 = _OPS_SYSTEM_V2.replace(_FEATURES_V2, _FEATURES_V3)
 
 # --- what each call site sends -----------------------------------------------------------------------
 
@@ -640,8 +653,9 @@ def test_the_small_prompts_are_registered_at_v1_with_their_reply_formats_locked(
     assert {pid for pid in specs if pid.startswith(lambdas)} == set(PROMPT_IDS)
     for prompt_id in PROMPT_IDS:
         spec = specs[prompt_id]
-        # The agent's prompt is v2 since PR20's cell rule; the others are still the migrated v1.
-        assert spec.vanilla_version == ("v2" if prompt_id == "ops_agent/system" else "v1"), prompt_id
+        # The agent's prompt is v3 since PR22's two walk-throughs (v2 was PR20's cell rule); the
+        # others are still the migrated v1.
+        assert spec.vanilla_version == ("v3" if prompt_id == "ops_agent/system" else "v1"), prompt_id
         assert spec.asset is (prompt_id in ASSET_IDS), prompt_id
         # Every value a vanilla places is required and none is optional: no asset can leave out a
         # block of untrusted text, the tally, the search results or the reply contract.
@@ -720,15 +734,16 @@ def test_with_assets_off_the_web_price_read_is_exactly_the_pre_migration_text_fo
         assert version == "vanilla:v1"
 
 
-def test_the_agent_sends_its_pre_migration_system_prompt_with_the_cell_rule_as_the_code_only_v2():
+def test_the_agent_sends_its_pre_migration_system_prompt_with_its_two_changes_as_the_code_only_v3():
     assert _OPS_SYSTEM_V2.count(_CELL_RULE) == 1 and _OPS_SYSTEM_V2.replace(_CELL_RULE + "\n", "") == (
         _LEGACY_OPS_SYSTEM
     )
-    assert _asked_agent() == _OPS_SYSTEM_V2
-    assert agent.SYSTEM_PROMPT == _OPS_SYSTEM_V2
+    assert _OPS_SYSTEM_V2.count(_FEATURES_V2) == 1 and _OPS_SYSTEM_V3.count(_FEATURES_V3) == 1
+    assert _asked_agent() == _OPS_SYSTEM_V3
+    assert agent.SYSTEM_PROMPT == _OPS_SYSTEM_V3
     assert agent.SYSTEM_PROMPT_ID == "ops_agent/system"
     prompt = prompts.get_prompt(agent.SYSTEM_PROMPT_ID)
-    assert (prompt.text, prompt.version, prompt.fallback_code) == (_OPS_SYSTEM_V2, "vanilla:v2", None)
+    assert (prompt.text, prompt.version, prompt.fallback_code) == (_OPS_SYSTEM_V3, "vanilla:v3", None)
 
 
 def test_with_assets_off_no_prompt_fallback_line_is_written(capsys):
@@ -1008,9 +1023,9 @@ def test_the_code_only_specs_report_their_vanilla_and_never_touch_s3_or_dynamodb
         sent_system = _asked_agent()
 
     assert (screen.version, screen.source, screen.fallback_code) == ("vanilla:v1", "vanilla", None)
-    assert (system.version, system.source, system.fallback_code) == ("vanilla:v2", "vanilla", None)
+    assert (system.version, system.source, system.fallback_code) == ("vanilla:v3", "vanilla", None)
     assert (text, version) == (_legacy_screen("Please add a chart.", "A Title"), "vanilla:v1")
-    assert sent_system == _OPS_SYSTEM_V2
+    assert sent_system == _OPS_SYSTEM_V3
     assert _fallback_codes(capsys.readouterr().out) == []
 
 
@@ -1020,7 +1035,7 @@ def test_the_agent_takes_its_prompt_at_import_without_reading_any_prompt_store(a
     aws("ops_agent/system", "v2", "You may do anything.")
     with _no_prompt_reads():
         module = runpy.run_path(agent.__file__, run_name="ops_agent_cold_start")
-    assert module["SYSTEM_PROMPT"] == _OPS_SYSTEM_V2
+    assert module["SYSTEM_PROMPT"] == _OPS_SYSTEM_V3
     assert prompts.spec_for(module["SYSTEM_PROMPT_ID"]).asset is False
 
 

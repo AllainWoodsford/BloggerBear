@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the prompts tree (prompts/) before it is published: every rule the publisher relies on.
 
-docs/enhancements/model-ranch-prompt-assets-evals.md, sections 4.1 and 4.2. The tree holds
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections 4.1 and 4.2. The tree holds
 `prompts/<lambda_id>/<prompt_name>/latest/vN.txt`, what is served (one file: the prompt; two or
 more: an A/B split), and `.../archive/vN.txt`, retired files that are never published.
 prompts/README.md states the rules for the people who edit it; this holds the tree to them:

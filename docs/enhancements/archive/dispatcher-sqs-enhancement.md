@@ -1,10 +1,10 @@
 # Enhancement: one dispatcher and an SQS work queue instead of per-topic schedules
 
-**Status:** being built as phase Q of [the Model Ranch spec](model-ranch-prompt-assets-evals.md) (2026-10-25); its step 3, removing per-topic scheduling, is superseded: schedule mode stays as the permanent undo · **First draft:** 2026-10-03 · **Revised:** 2026-10-15, for
+**Status:** superseded by [the Model Ranch spec](model-ranch-prompt-assets-evals.md), which built it as its phase Q, the queue platform ([architecture/queue-platform.md](../../architecture/queue-platform.md)), and archived with it (2026-11-01); its step 3, removing per-topic scheduling, was not built: schedule mode stays as the permanent undo · **First draft:** 2026-10-03 · **Revised:** 2026-10-15, for
 the stagger, the pause and the vision stack · **Do it when:** about 15–20 topics (twelve
 five-minute slots fill an hour), or as soon as Bedrock (or GDELT/CoinGecko) starts throttling
 scheduled runs.
-**Background:** the schedule limit in [project-plan.md, "Still open at scale"](../project-plan.md#still-open-at-scale).
+**Background:** the schedule limit in [project-plan.md, "Still open at scale"](../../project-plan.md#still-open-at-scale).
 
 This revision keeps the shape of the first draft and changes what the dispatcher reads and what
 the worker runs, so that it builds on what is now in the Topics table and does not break the

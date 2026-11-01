@@ -574,7 +574,7 @@ def test_the_vision_pipeline_walks_from_a_site_to_the_person_who_approves(dev, m
     assert "or satellite imagery (see the vision pipeline)" in research
 
 
-# The five features added with their pages under docs/architecture/: (first step, last step, a step
+# The seven features added with their pages under docs/architecture/: (first step, last step, a step
 # that comes before another, words the table holds, catalogue resources it names).
 NEW_FEATURES = {
     "site-and-feedback": (
@@ -643,6 +643,37 @@ NEW_FEATURES = {
             "never one in use",
         ),
         {("function", "model-catalog"), ("table", "models"), ("table", "topics")},
+    ),
+    "queue-platform": (
+        "Every minute",
+        "The way back",
+        ("The cutover", "Manual runs"),
+        (
+            "bloggerbear-dev-dispatcher (Lambda function)",
+            "bloggerbear-dev-work.fifo (SQS queue)",
+            "worker_concurrency",
+            "never guessed at",
+            "touches no claim",
+        ),
+        {
+            ("function", "dispatcher"),
+            ("queue", "work"),
+            ("queue", "work-dlq"),
+            ("schedule", "topic-schedules"),
+        },
+    ),
+    "prompts-and-evals": (
+        "The template",
+        "Reading it back",
+        ("Serving a prompt", "Scored events"),
+        (
+            "bloggerbear-dev-prompts (S3 bucket)",
+            "bloggerbear-dev-prompt-hashes (DynamoDB table)",
+            "bloggerbear-dev-evals (CloudWatch log group)",
+            "locked blocks must come last",
+            "a model that did not write it",
+        ),
+        {("bucket", "prompts"), ("table", "evals"), ("log_group", "evals"), ("queue", "eval-work")},
     ),
 }
 
@@ -741,6 +772,17 @@ def test_article_research_has_a_title_that_fits_and_a_spoken_answer_to_listen_to
         ("model rotation", "model-catalog"),
         ("how are new models discovered", "model-catalog"),
         ("how does repricing work", "model-catalog"),
+        ("the queue platform", "queue-platform"),
+        ("how does the dispatcher work", "queue-platform"),
+        ("how does the work queue run a topic", "queue-platform"),
+        ("how does a topic move to the queue", "queue-platform"),
+        ("what is shadow mode", "queue-platform"),
+        ("prompts and evals", "prompts-and-evals"),
+        ("how are prompts published", "prompts-and-evals"),
+        ("how are models scored", "prompts-and-evals"),
+        ("the model ranch", "prompts-and-evals"),
+        ("how does the judge work", "prompts-and-evals"),
+        ("how does an A/B test of a prompt work", "prompts-and-evals"),
     ],
 )
 def test_each_new_feature_is_found_from_the_operators_own_words(words, key):
@@ -788,6 +830,20 @@ def test_each_new_feature_is_found_from_the_operators_own_words(words, key):
         ("how do dropped comments become security incidents", "security-incidents"),
         # The rail sites are the vision pipeline's, not the site's.
         ("the rail sites", "vision-pipeline"),
+        # Rotation is the catalog's weekly cycle; the guard that keeps a gated model out of it is
+        # prompts and evals'. Models are the catalog's; how they are scored is prompts and evals'.
+        ("model rotation", "model-catalog"),
+        ("how does the rotation guard work", "prompts-and-evals"),
+        ("how are models scored", "prompts-and-evals"),
+        ("what do models cost", "model-catalog"),
+        # The weekly reflection's prompt refinements are the site's, not a published prompt.
+        ("the weekly reflection's prompt refinements", "site-and-feedback"),
+        # The eval queue is the judge's; the work queue and research jobs are the queue platform's.
+        ("the eval queue", "prompts-and-evals"),
+        ("how do research jobs get queued", "queue-platform"),
+        ("how does research work", "article-research"),
+        # The judge of the reviewer bear's own is still the reviewer bear.
+        ("how does the reviewer bear judge articles", "reviewer-bear"),
     ],
 )
 def test_words_two_features_share_go_to_the_one_they_mean(words, key):
@@ -799,7 +855,8 @@ def test_a_feature_nobody_has_gets_the_list(dev):
     assert answer["spoken"] == (
         "I don't know that feature. The features I can walk through are article research, "
         "the vision pipeline, the site and reader feedback, stats and costs, security incidents, "
-        "the reviewer bear and the model catalog; or ask for a layer."
+        "the reviewer bear, the model catalog, the queue platform and prompts and evals; or ask for "
+        "a layer."
     )
     assert "table" not in answer and answer["features"][0]["key"] == "article-research"
     assert architecture.resolve_feature(None) is None and architecture.resolve_feature(" ") is None
@@ -832,10 +889,10 @@ def test_with_nothing_it_names_the_layers_and_asks_which_one(dev):
     assert answer["spoken"] == (
         "BloggerBear is built in 9 layers: the edge, the presentation layer, the API gateways, "
         "identity and access, orchestration, compute, the AI layer, data and storage and "
-        "observability. They're on screen with what each does. Which would you like to hear "
-        "about, or everything in detail? I can also walk through article research, the vision "
-        "pipeline, the site and reader feedback, stats and costs, security incidents, the "
-        "reviewer bear and the model catalog."
+        "observability. They're on screen with what each does. Which layer, or everything in "
+        "detail? I can also walk through article research, the vision pipeline, the site and "
+        "reader feedback, stats and costs, security incidents, the reviewer bear, the model "
+        "catalog, the queue platform and prompts and evals."
     )
     assert len(answer["spoken"].split()) < 75  # short enough to listen to
     assert answer["features"] == [
@@ -849,6 +906,8 @@ def test_with_nothing_it_names_the_layers_and_asks_which_one(dev):
                 "security-incidents",
                 "reviewer-bear",
                 "model-catalog",
+                "queue-platform",
+                "prompts-and-evals",
             ],
             architecture.FEATURES,
             strict=True,

@@ -233,6 +233,41 @@ in .34"):
 | "...whether model prices are being updated", "...about the last reprice", "...whether repricing is paused" | `model_catalog`: discover and reprice paused or not, what each last did, and a pricing run under review with when its next check is (counts and times only; the model ids are on the page) |
 | "...whether any model prices were put back" | `pipeline_health` (its `model_pricing_reverted` finding) |
 | "...how to pause repricing", "...how to reprice the models now" | `cli_guides` with `model-prices`: the help and a suggested command are on the page |
+| "...how the models are doing", "...whether any model is gated", "...why a model isn't being picked" | `model_ranch`, where evals are on: how many models have scores, which are gated, how many are kept all the same as the default, fallback or judge or held open by an override, the judge's agreement with people, a cull proposal waiting, and the weakest pairing of a model with a prompt version |
+| "...whether the judge is working", "...whether the judge is calibrated" | `model_ranch`: its judge part (on or off, its agreement over how many pairs, and whether its verdicts count yet) |
+| "...how the prompts are doing", "...whether the new prompt is better" | `prompt_metrics`, where evals are on: how many prompt versions have scores and how many have enough to judge, the prompts split between versions, and any that fell back to the code's copy in the last three days (today and the two before; the reviewer bear runs every second day) |
+| "...what needs attention" | `follow_up` and `watch_list`, which also carry the Model Ranch's cards: a gated model, a prompt that fell back, a judge not yet calibrated, a cull proposal waiting |
+
+**The Model Ranch** ([docs/models.md](../docs/models.md#the-model-ranch-scores-gates-and-culling)).
+`model_ranch` and `prompt_metrics` are listed only where continuous evals are on (`EVALS_ENABLED`)
+and the MCP server is given the evals table; elsewhere they are not offered (the page's agent then
+says evals are off). The briefing can call them too. The MCP server is given the deployment's
+`BEDROCK_MODEL_ID`, so the tools treat the default model as never gated and name the judge exactly as
+the pipeline does.
+
+- **What Alexa+ hears.** Everything they return is an id, a code or a number (model ids, prompt ids
+  and versions, roles, counts), so Alexa+ hears what the page shows. `spoken` stays under 120 words
+  and names at most two ids, with how many more; the table is on the page.
+- **One answer, a bounded read.** Each call reads the evals table at most 150 times. When that runs
+  out, the answer says so (`complete` is false) and what may be missing, rather than leaving it out
+  unsaid.
+- **"Insufficient data".** A prompt version is never called better or worse while its judged events
+  (its good plus its bad, not every event) are fewer than `min_events`. Its all-time total
+  (`all_time`) is a field of its own, never part of the window's numbers.
+- **One prompt, by its id.** `prompt_metrics` takes a prompt only by its id as written
+  (`daily_cycle/draft`), with no matching of spoken words as a topic has. By voice, ask about all
+  the prompts; ask about one on the ask page.
+- **Reasoning by pairing.** The server's instructions, like the page agent's prompt
+  (`ops_agent/system`, v2), say to look at the pairing of a model and a prompt version before blaming
+  either.
+- **Not tools.** The owner's spec named them `get_model_ranch_health` and `get_prompt_ab_metrics`.
+  Those names appear in the tools' descriptions, but no tool has them.
+- **Watching.** Where evals are on, `watch` also takes a `model` (its model id) or a `prompt` (its
+  prompt id), and the next briefing's `watch_list` says whether the model is still gated or the
+  prompt still falls back.
+- **The cards' commands** (`evals ungate`, `prompts list`, `approve --source findings`, `evals cull
+  --apply`, or `evals set --cull on` first while culling is off) are on the page. The assistant is
+  read-only and never runs them.
 
 For the vision pipeline and a topic's Findings Alexa+ hears counts, ages and reasons only, from
 fixed words: never a site's name, an error's text or what a Finding's summary says. Those are on

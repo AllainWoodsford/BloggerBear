@@ -1,6 +1,6 @@
 """The registry of prompts: every PromptSpec the code has, for common/prompts.py and the lint.
 
-docs/enhancements/model-ranch-prompt-assets-evals.md (section 4.10 is the inventory). Each
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md (section 4.10 is the inventory). Each
 migration PR moves a call site's inline template here as a `PromptSpec` (its vanilla, with the
 version and pinned sha256, the placeholders it takes and the locked blocks that end it) and
 renders through `prompts.get_prompt`; the publisher's lint (scripts/prompt_lint.py) imports
@@ -1289,13 +1289,17 @@ _OPS_AGENT_SYSTEM = "\n".join(
         "screen.",
         # The other walk-throughs (ops_mcp/architecture.py's FEATURES). Each shares its words with
         # a tool or a guide: "how does feedback become gear?" reads like the gear guide, "how are
-        # costs tracked?" like spend, "how are incidents made?" like security_events. The reviewer
-        # bear has no guide at all, so "what does he do?" would get "there is no guide for that".
+        # costs tracked?" like spend, "how are incidents made?" like security_events, "how are models
+        # scored?" like model_ranch. The reviewer bear has no guide at all, so "what does he do?"
+        # would get "there is no guide for that".
         "The same goes for how one of these is built end to end: how a reader's vote becomes the "
         "bear's gear and musings (`feature` \"site-and-feedback\"), how costs reach the Stats page "
         "(\"stats-and-costs\"), how what the firewalls block becomes a security incident "
-        "(\"security-incidents\") and how the model catalog finds, prices and rotates models "
-        "(\"model-catalog\"). No guide describes the reviewer bear, Professor Grizzlewick, so asked "
+        "(\"security-incidents\"), how the model catalog finds, prices and rotates models "
+        "(\"model-catalog\"), how the dispatcher and the work queue run a topic once it leaves its "
+        "schedules (\"queue-platform\") and how prompts are published and served and every model "
+        "and prompt version is scored (\"prompts-and-evals\"). No guide describes the reviewer "
+        "bear, Professor Grizzlewick, so asked "
         "what he does or how he works, call architecture with `feature` \"reviewer-bear\" instead "
         "of cli_guides. For what is happening now (an incident, the spend, a reprice), call the "
         "tool for it, not a feature.",
@@ -1492,10 +1496,11 @@ OPS_AGENT_SPECS = (
     PromptSpec(
         prompt_id="ops_agent/system",
         vanilla=_OPS_AGENT_SYSTEM,
-        # v2 (PR20): the rule on reasoning by model and prompt cell. Code-only, so nothing publishes it;
-        # the version is what lineage records.
-        vanilla_version="v2",
-        vanilla_sha256="0e131e290cc4970462ecb1358c768c562ab7aece0f1c1c7d07ac239d192f4e59",
+        # v2 (PR20): the rule on reasoning by model and prompt cell. v3 (PR22): the queue platform's
+        # and prompts and evals' walk-throughs among the features. Code-only, so nothing publishes
+        # it; the version is what lineage records.
+        vanilla_version="v3",
+        vanilla_sha256="95efd1ccdfb058a48ba3267dcd3c21d34ad2a5417282565f9c8f1b6ada8a4592",
         required=frozenset(),
         optional=frozenset(),
         locked=(),

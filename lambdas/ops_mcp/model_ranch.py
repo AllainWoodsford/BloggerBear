@@ -1,6 +1,7 @@
 """The Model Ranch, for the operator's assistant: how each model is scoring and whether the gates hold
-it back, and how the versions of a prompt compare (docs/enhancements/model-ranch-prompt-assets-evals.md,
-PR20). The owner's spec named the two tools `get_model_ranch_health` and `get_prompt_ab_metrics`.
+it back, and how the versions of a prompt compare
+(docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR20). The owner's spec named the two
+tools `get_model_ranch_health` and `get_prompt_ab_metrics`.
 
 **model_ranch** is one row per model that has scores: its windows (today, the last seven days, the
 month so far, all time) with the events behind each and the mean per event, as the hourly rollup put

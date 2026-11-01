@@ -1,8 +1,8 @@
-"""The admin API's evals routes (admin_api_handler.py; docs/enhancements/model-ranch-prompt-assets-evals.md,
-PR13 and PR13b): GET/PUT /evals-config, POST /evals/rollup, GET /evals/status, GET /evals/digest, the
-perf fields on GET /models, POST /evals/adjust, /evals/ungate and /evals/revoke
-(common/evals_adjust.py), and the routes' place in both environments' Terraform. Culling's routes
-and its part of the status (PR16) are test_model_cull.py's.
+"""The admin API's evals routes (admin_api_handler.py;
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR13 and PR13b): GET/PUT /evals-config, POST
+/evals/rollup, GET /evals/status, GET /evals/digest, the perf fields on GET /models, POST /evals/adjust,
+/evals/ungate and /evals/revoke (common/evals_adjust.py), and the routes' place in both environments'
+Terraform. Culling's routes and its part of the status (PR16) are test_model_cull.py's.
 
 What is held: the settings route sets and clears what the CLI may, `timezone` (a DynamoDB reserved
 word) included, and refuses the DynamoDB-only settings; setting the judge's switch clears why the
@@ -939,7 +939,7 @@ def test_an_adjustment_of_a_model_not_in_the_registry_is_refused(logs, aws):
         ("reviews/compliance", "v2", "'reviews/compliance' is code-only"),
         # Past the registry's own vanilla: a version no deployment has served yet.
         (DRAFT, "vanilla:v2", f"'{DRAFT}' has no vanilla:v2: its vanilla is vanilla:v1"),
-        ("ops_agent/system", "vanilla:v3", "its vanilla is vanilla:v2"),
+        ("ops_agent/system", "vanilla:v4", "its vanilla is vanilla:v3"),
     ],
 )
 def test_an_adjustment_of_a_prompt_version_the_registry_cannot_have_is_refused(
@@ -959,7 +959,7 @@ def test_an_adjustment_of_a_prompt_version_the_registry_cannot_have_is_refused(
         (DRAFT, "v7"),  # any asset version: the publisher's, which the registry does not list
         (DRAFT, "vanilla:v1"),  # the registry's own vanilla
         ("reviews/compliance", "vanilla:v1"),  # a code-only prompt at its vanilla
-        ("ops_agent/system", "vanilla:v1"),  # a vanilla the registry's v2 replaced
+        ("ops_agent/system", "vanilla:v2"),  # a vanilla the registry's v3 replaced
     ],
 )
 def test_an_adjustment_of_a_prompt_version_the_registry_can_have_is_written(logs, aws, prompt_id, version):

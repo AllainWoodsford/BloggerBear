@@ -1,9 +1,9 @@
-"""The assistant's Model Ranch (ops_mcp/model_ranch.py; docs/enhancements/model-ranch-prompt-assets-evals.md,
-PR20), against moto tables: model_ranch's windows, gates, week on week and weakest pairings, the judge
-and the cull proposal; prompt_metrics' versions, their numbers per model, "insufficient data" and the
-all-time total apart from the window; the cards each finds; what is said (ids, codes and numbers, under
-120 words, nothing a model or a stranger wrote); the read budget; and the memory's watch on a model or
-a prompt and its follow-up of the two cards about an id."""
+"""The assistant's Model Ranch (ops_mcp/model_ranch.py;
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR20), against moto tables: model_ranch's
+windows, gates, week on week and weakest pairings, the judge and the cull proposal; prompt_metrics' versions,
+their numbers per model, "insufficient data" and the all-time total apart from the window; the cards each
+finds; what is said (ids, codes and numbers, under 120 words, nothing a model or a stranger wrote); the read
+budget; and the memory's watch on a model or a prompt and its follow-up of the two cards about an id."""
 
 from __future__ import annotations
 

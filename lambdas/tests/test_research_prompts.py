@@ -1,5 +1,5 @@
 """The research prompts as registry specs (common/prompts_registry.py; section 4.10 and "PR6–PR10.
-Migrate prompts" in docs/enhancements/model-ranch-prompt-assets-evals.md): each v1.txt in prompts/
+Migrate prompts" in docs/enhancements/archive/model-ranch-prompt-assets-evals.md): each v1.txt in prompts/
 is the vanilla it was migrated from, and the code-only vision triage prompts have none; with assets
 off, every summary prompt the research tick sends (its own generic one, the crypto feed's three, the
 rail access monitor's and the ships monitor's) and both triage system prompts are byte for byte the

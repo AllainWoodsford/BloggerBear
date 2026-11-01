@@ -460,7 +460,7 @@ data "aws_iam_policy_document" "gha_deploy" {
   }
 
   # The evals log group, <prefix>-<env>-evals (infra/modules/evals, from
-  # docs/enhancements/model-ranch-prompt-assets-evals.md): the first log group of ours whose name
+  # docs/enhancements/archive/model-ranch-prompt-assets-evals.md): the first log group of ours whose name
   # is not under /aws/lambda/, /aws/apigateway/ or aws-waf-logs-, so none of the statements above
   # reaches it and its first apply would stop on logs:CreateLogGroup the way WafLogGroups' did.
   # The same shape as those: logs:* on both ARN forms, on the one name the module gives it under
@@ -552,8 +552,9 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = ["arn:aws:cloudwatch:${var.aws_region}:*:alarm:${var.unique_name_prefix}-*"]
   }
 
-  # Phase 6: the pipeline-health dashboard (module.observability's
-  # aws_cloudwatch_dashboard.pipeline). Separate statement from
+  # Phase 6: the dashboards (module.observability's
+  # aws_cloudwatch_dashboard.pipeline_health, and module.evals'
+  # aws_cloudwatch_dashboard.ranch_and_prompts). Separate statement from
   # CloudWatchAlarms above since dashboard ARNs are a different shape --
   # no region segment. Same "missing since Phase 6" gap.
   # cloudwatch:* rather than an enumerated list -- see DynamoDBAppTables
@@ -978,7 +979,7 @@ resource "aws_iam_role_policy_attachment" "gha_prod_deploy_not_dev" {
 }
 
 # -----------------------------------------------------------------------
-# Prompts publisher roles (prompts as assets: docs/enhancements/model-ranch-prompt-assets-evals.md)
+# Prompts publisher roles (prompts as assets: docs/enhancements/archive/model-ranch-prompt-assets-evals.md)
 #
 # The prompts workflow (.github/workflows/prompts.yml) copies the repository's prompts/ tree to an
 # environment's prompts bucket and records each file's hash in that environment's prompt-hashes

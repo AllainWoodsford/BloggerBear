@@ -8,7 +8,7 @@ The pages here describe the project by **feature** instead. A feature is a small
 of the parts that together do one job, in the order the work flows through them. Each page has the
 same shape: why the feature exists, a diagram, the steps, and where each step lives in the code.
 
-Seven of the ten pages have a matching entry in the operator's assistant: ask it about the
+Nine of the twelve pages have a matching entry in the operator's assistant: ask it about the
 feature, and it walks through the same steps with this environment's resource names on screen
 (`architecture` with `feature`, in `lambdas/ops_mcp/architecture.py`). Each one's call is in its
 row below, such as `architecture(feature="article-research")`. Where a page has more steps than a
@@ -29,12 +29,11 @@ vision worker's log in `vision_region` and each vision topic's running state
 | [Stats and costs](stats-and-costs.md) | How every model call and request becomes a number on the Stats page: lineage on each article, the tracked categories, the weekly rollover, the daily Cost Explorer poll, and what to do about a missed week. In the assistant: `architecture(feature="stats-and-costs")`. |
 | [Security incidents](security-incidents.md) | How what the firewalls block, an attack-shaped comment and a run of failed sign-ins become security incidents: the log subscriptions that feed them, grouping by client, rule and 15 minutes, severity and the trends, the high-severity alarm and its email, the keyed hash kept instead of an address, and the commands that work through them. In the assistant: `architecture(feature="security-incidents")`. |
 | [Professor Grizzlewick: the reviewer bear](reviewer-bear.md) | How a second bear decides what the admins have left waiting: woken every second day, a plan made with no model call, his five tasks worked through on one-shot ticks (content findings, held articles, recent published ones, his financial flags, the de-fanged publish of long-waiting articles), how he acts through the admin API's own paths, what he never does, and his musings. In the assistant: `architecture(feature="reviewer-bear")`. |
-| [The model catalog: discovery, prices and the model fleet](model-catalog.md) | How the model registry keeps itself current: discover with its access probes, reprice from the Price List and the web, a changed price on probation until its reviews pass, the weekly rotation cycle, pruning under the cap, and what one run at a time protects. The operator's side of it is [models.md](../models.md). In the assistant: `architecture(feature="model-catalog")`. |
+| [The model catalog: discovery, prices and the model fleet](model-catalog.md) | How the model registry keeps itself current: discover with its access probes, each model's purpose and classify, reprice from the Price List and the web, a changed price on probation until its reviews pass, the weekly rotation cycle, the cull proposal and restoring a model, pruning under the cap, and what one run at a time protects. The operator's side of it is [models.md](../models.md). In the assistant: `architecture(feature="model-catalog")`. |
+| [The queue platform: the dispatcher, the work queue and the cutover](queue-platform.md) | How a topic's research and daily article are started once it leaves its two schedules: the dispatcher every minute, the cron matcher, the claims on the topic's row, research jobs on the FIFO work queue and `worker_concurrency`, daily runs named for the topic and the day, shadow mode as built, the cutover and its pre-flight, cutover day, the way back, manual runs, pausing and a restore. In the assistant: `architecture(feature="queue-platform")`. |
+| [Prompts as assets and continuous evals: the Model Ranch](prompts-and-evals.md) | How the text a model is given is chosen, and how every model and prompt version is scored: templates and `get_prompt`, the prompts bucket and the hash table, the publisher and its release order, pausing and the kill switch, A/B draws and lineage versions, the reviewer bear's blocks; then scored events, the hourly rollup and its windows, gates and the rotation guard, culling, forgive and punish, the judge and its calibration, human review, offline scoring runs, call traces, and what the CLI, the assistant and the Friday digest show. In the assistant: `architecture(feature="prompts-and-evals")`. |
 
 ## Adding a feature
-
-A future one might be "prompts as assets": where prompts live, how reader feedback refines them,
-and how a refinement is approved and worn.
 
 1. Write a page here in the same shape as the existing ones: why it exists, a diagram, the steps,
    and where each step lives in the code.
@@ -48,9 +47,13 @@ and how a refinement is approved and worn.
    (a test holds the `Literal` equal to `FEATURE_KEYS`), and give it an entry in that tool's
    docstring: what it walks through, and a question it answers. The docstring is the tool's
    description, which both the agent and Alexa+ read. Name the key, with the question that should
-   reach it, in the agent's prompt (`SYSTEM_PROMPT` in `lambdas/ops_agent/agent.py`) and in
-   `_INSTRUCTIONS` in `server.py`, which Alexa+ reads instead of the agent's prompt. Tests look for
-   every key in the docstring, the prompt and the instructions.
+   reach it, in the agent's prompt and in `_INSTRUCTIONS` in `server.py`, which Alexa+ reads instead
+   of the agent's prompt. The agent's prompt is `ops_agent/system` in
+   `lambdas/common/prompts_registry.py` (`agent.SYSTEM_PROMPT` reads it): a code-only prompt, so a
+   change to its text bumps its `vanilla_version` and pinned `vanilla_sha256`
+   ([code-only prompts](prompts-and-evals.md#code-only-prompts)). Tests look for every key in the
+   docstring, the prompt and the instructions, and pin the list of keys and the spoken list of
+   features (`lambdas/tests/test_ops_mcp_server.py`, `test_ops_mcp_architecture.py`).
    Choose its `said` and `aliases` with `resolve_feature` in mind: an exact name wins, and
    otherwise every alias found as whole words in the question is scored and the **longest** wins
    (a tie goes to the earlier feature). So "the vision research pipeline" goes to the vision

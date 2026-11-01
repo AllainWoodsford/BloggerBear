@@ -1,5 +1,5 @@
 """The review prompts as registry specs (common/prompts_registry.py; section 4.10 and "PR6–PR10.
-Migrate prompts" in docs/enhancements/model-ranch-prompt-assets-evals.md): each v1.txt in prompts/
+Migrate prompts" in docs/enhancements/archive/model-ranch-prompt-assets-evals.md): each v1.txt in prompts/
 is the vanilla it was migrated from, and the code-only compliance prompts have none; with assets
 off, every prompt `fresh_review.run_review`, `run_revision` and `compliance.review_draft` send is
 byte for byte the text the inline builders made before the migration, across the inputs that change

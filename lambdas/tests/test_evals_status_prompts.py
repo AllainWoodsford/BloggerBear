@@ -1,4 +1,4 @@
-"""GET /evals/status's two prompt parts (common/evals_status.py; docs/enhancements/
+"""GET /evals/status's two prompt parts (common/evals_status.py; docs/enhancements/archive/
 model-ranch-prompt-assets-evals.md, PR13 and PR14, where prompts as assets meet evals): the prompt
 release in place, from the publisher's releases/current.json, and the prompt fallbacks of the last
 24 hours, from the observability module's PromptFallback metric.

@@ -1,8 +1,9 @@
-"""The Admin API's prompts routes (admin_api_handler.py; docs/enhancements/model-ranch-prompt-assets-evals.md,
-PR4): GET /prompts (each registered prompt's files under latest/ with version, release, sha256, hash
-status and pause state), POST /prompts/pause and /prompts/resume (the `prompts` row's
-paused_versions), GET /prompts/releases and PUT /prompts/config (the kill switch), against moto's S3
-and DynamoDB. Each answers with the deployment's switch off, and with no bucket at all."""
+"""The Admin API's prompts routes (admin_api_handler.py;
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, PR4): GET /prompts (each registered prompt's
+files under latest/ with version, release, sha256, hash status and pause state), POST /prompts/pause and
+/prompts/resume (the `prompts` row's paused_versions), GET /prompts/releases and PUT /prompts/config (the kill
+switch), against moto's S3 and DynamoDB. Each answers with the deployment's switch off, and with no bucket at
+all."""
 
 from __future__ import annotations
 

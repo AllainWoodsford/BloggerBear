@@ -1,5 +1,5 @@
 """The daily cycle's drafting prompts as registry specs (common/prompts_registry.py; section 4.10
-and "PR6–PR10. Migrate prompts" in docs/enhancements/model-ranch-prompt-assets-evals.md): each
+and "PR6–PR10. Migrate prompts" in docs/enhancements/archive/model-ranch-prompt-assets-evals.md): each
 v1.txt in prompts/ is the vanilla it was migrated from; with assets off, every prompt `_ideate`,
 `_draft_article` and `_draft_title` send is byte for byte the text the inline f-strings built
 before the migration, across the inputs that change it; the largest realistic render stays well

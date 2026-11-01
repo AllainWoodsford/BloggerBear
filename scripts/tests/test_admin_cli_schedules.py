@@ -1,6 +1,6 @@
 """The admin CLI's schedule commands (docs/project-plan.md §11, Staggered schedules): `topics
 schedule`, `topics reschedule`, `topics pause`, `topics resume`, the `--stagger-slot` flag and
-`pipeline-config set --stagger-minutes`; and the per-topic cutover's (docs/enhancements/
+`pipeline-config set --stagger-minutes`; and the per-topic cutover's (docs/enhancements/archive/
 model-ranch-prompt-assets-evals.md, Q2): `topics update --dispatch-mode` with its confirmation,
 `topics reschedule --dispatch-mode schedule` and each topic's mode in `topics schedule`."""
 

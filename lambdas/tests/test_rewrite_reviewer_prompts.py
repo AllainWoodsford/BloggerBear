@@ -1,5 +1,5 @@
 """The rewrite and reviewer-bear prompts as registry specs (common/prompts_registry.py; section 4.10
-and "PR6–PR10. Migrate prompts" in docs/enhancements/model-ranch-prompt-assets-evals.md): each
+and "PR6–PR10. Migrate prompts" in docs/enhancements/archive/model-ranch-prompt-assets-evals.md): each
 v1.txt in prompts/ is the vanilla it was migrated from, and each of the reviewer's v2.txt files his
 v2 vanilla; with assets off, the Re-Write's prompt (`rewrite.run_rewrite`) is byte for byte the text
 the inline builder made before the migration, and Professor Grizzlewick's three questions

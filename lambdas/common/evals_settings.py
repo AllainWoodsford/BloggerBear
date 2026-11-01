@@ -1,7 +1,7 @@
 """The evals settings: the `evals` row of the model-config table (`config_id = "evals"`), read on
 every run, so changing one needs no deploy.
 
-docs/enhancements/model-ranch-prompt-assets-evals.md, section 4.5. The same pattern as the model
+docs/enhancements/archive/model-ranch-prompt-assets-evals.md, section 4.5. The same pattern as the model
 catalog's settings (common/model_catalog.py): SETTINGS names every setting with its default,
 `validate_setting` says why a value is not valid, and `effective_settings` gives every setting's
 value in effect, the row's where it is valid and the default otherwise, so a hand edit that breaks

@@ -992,7 +992,7 @@ def test_a_prefetch_event_refuses_a_paused_topic_or_one_with_no_network(aws_reso
     assert result == {"status": "error", "reason": "unknown topic_id: nope"}
 
 
-# --- a research job from the work queue (docs/enhancements/model-ranch-prompt-assets-evals.md 4.7) ---
+# --- a research job from the work queue (docs/enhancements/archive/model-ranch-prompt-assets-evals.md 4.7) --
 
 # The dispatcher found the topic due at 09:05:30 Sydney (22:05:30 UTC; one topic in slot 1, the
 # default stagger: its heartbeat at :05), and its job reached the research tick 7 minutes later.

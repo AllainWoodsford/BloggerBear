@@ -1,6 +1,6 @@
 # =============================================================================
 # Prompts as assets: the bucket the prompt templates are published to, and the table of the
-# hashes the publisher approved (docs/enhancements/model-ranch-prompt-assets-evals.md, sections
+# hashes the publisher approved (docs/enhancements/archive/model-ranch-prompt-assets-evals.md, sections
 # 4.2 and 5.2).
 #
 # Terraform owns the bucket and the table, never what is in them. The publisher (its own role,
