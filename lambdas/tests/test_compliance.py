@@ -300,6 +300,43 @@ def test_a_fabrication_naming_something_absent_from_the_sources_holds():
     assert "Sequoia" in " ".join(result["reasons"])
 
 
+# A Re-Write corrects a stale figure from the topic's fresh data (common/rewrite.py). Checked against
+# the findings alone, the corrected figure looked invented, so the fix came back as a new problem.
+CORRECTED = "Cloudflare's security-audit-skill gained over 170 stars, about 18,240 in total."
+
+
+def test_a_figure_corrected_from_the_fresh_data_is_not_called_fabricated():
+    with patch(
+        "common.compliance.invoke_model_tracked", return_value=_tracked_result("NONE")
+    ) as mock_invoke:
+        result = compliance.review_draft(
+            CORRECTED, NONFINANCIAL, "model-id", source_material=SOURCE, fresh_data="stars: 18,241"
+        )
+
+    assert result["compliant"] is True and result["reasons"] == []
+    prompt = mock_invoke.call_args[0][0]
+    assert "repo X gained 171 stars" in prompt and "stars: 18,241" in prompt
+    assert prompt.index("which the draft may have been corrected from") < prompt.index("stars: 18,241")
+
+
+def test_without_the_fresh_data_the_same_figure_is_held():
+    result, _ = _review("NONE", draft=CORRECTED)
+
+    assert result["compliant"] is False
+    assert "18240" in result["reasons"][0]
+
+
+def test_the_fresh_data_alone_still_gets_the_source_aware_review():
+    _, mock_invoke = _review("NONE", source="")
+
+    assert "<source_material>" not in mock_invoke.call_args[0][0]  # nothing to check against
+    with patch(
+        "common.compliance.invoke_model_tracked", return_value=_tracked_result("NONE")
+    ) as mock_invoke:
+        compliance.review_draft(CORRECTED, NONFINANCIAL, "model-id", source_material="", fresh_data="x")
+    assert "<source_material>" in mock_invoke.call_args[0][0]
+
+
 def test_an_invented_figure_in_the_draft_holds_even_if_the_model_says_none():
     # The model missed it; code checks every figure against the sources.
     draft = DRAFT + " It now serves 400,000 enterprise customers."
