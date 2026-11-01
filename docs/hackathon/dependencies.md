@@ -21,7 +21,7 @@ otherwise.
 | `lambdas/requirements-vision-cool.txt` | `requests==2.34.2`, `awslambdaric==4.1.0`, `networkx==3.4.2`; never OpenCV or numpy, which the COOL image brings | the COOL worker image (`docker/vision-cool/Dockerfile`); the Graviton session installs its pins, without `awslambdaric`, into a folder beside the vendor's own Python environment ([the COOL benchmark runsheet](../cool-benchmark-runsheet.md), steps 4 and 6) |
 | `lambdas/requirements-dev.txt` | the four files above (`-r`), and `boto3==1.34.162`, `moto==5.0.13`, `pytest==9.1.1`, `PyYAML==6.0.3`, `ruff==0.6.9` | CI's Python job (`.github/workflows/python-ci.yml`); a developer's machine |
 | `scripts/requirements.txt` | `requests==2.34.2`, `boto3==1.34.162`, `rjsmin==1.2.5`, `rcssmin==1.2.2` | CI; the admin CLI and the operator's scripts; the site's minifier at deploy |
-| `constraints-py311.txt` (repository root) | all 68 distributions CI's job installs, transitive ones included | the judges only: [REPRODUCE.md](REPRODUCE.md) tier 1a passes it with `-c`. Neither CI's install nor any Lambda's packaging reads it |
+| `constraints-py311.txt` (repository root) | all 70 distributions CI's job installs, transitive ones included | the judges only: [REPRODUCE.md](REPRODUCE.md) tier 1a passes it with `-c`. Neither CI's install nor any Lambda's packaging reads it |
 
 The Graviton session's third venv, for the "what OpenCV 5 changed" row, pins
 `opencv-python-headless==4.14.0.94` beside `numpy==2.4.4`, `requests==2.34.2` and `networkx==3.4.2`
@@ -63,11 +63,12 @@ requirements files are the ones the run installed. Until then the file was gener
 from a Python 3.11.17 venv built from the same three requirements files, whose 68 distributions are
 exactly their dependency closure (pip, setuptools and wheel are not listed: that venv had none).
 A fresh venv installed from it with all three files resolved those 68 and nothing else, on the
-same day. `lambdas/tests/test_requirements.py` holds every direct pin equal to its line in the
-file, so a requirements change that forgets it fails CI. The file is outside Trivy's
+same day. On 1 November, after the deadline, `pytest-xdist` and its one dependency `execnet` were
+added for parallel test runs, making 70. `lambdas/tests/test_requirements.py` holds every direct
+pin equal to its line in the file, so a requirements change that forgets it fails CI. The file is outside Trivy's
 `--file-patterns` (`security.yml`) on purpose: it deploys nothing. That leaves its transitive
 packages unscanned: Trivy's pip analyzer reads the names a requirements file writes and does not
-resolve their dependencies, so of the 68 pinned here only the direct pins are vulnerability-scanned
+resolve their dependencies, so of the 70 pinned here only the direct pins are vulnerability-scanned
 in CI, and urllib3, cryptography, starlette, Jinja2, Werkzeug, uvicorn and the rest are scanned by
 nothing. For the deployed Lambdas that is the trade "The gap" describes; for a judge's local
 environment it is a known limit, not a claim.
