@@ -71,19 +71,19 @@ HEX_PREFIX = 12
 # An iso time's longest reasonable form: "2026-10-15T03:04:05.123456+00:00".
 MAX_ISO_CHARS = 40
 
-# A code, an id and a model id are matched whole (`fullmatch`), as common/evals.py matches its own:
-# with `match` and `$`, a trailing newline passed, and `rail-sydney\n` was then an id of its own to
-# every reader that groups by these values.
+# Every token kind (a code, an id, a model id, a build prefix, a CPU name, a version) is matched
+# whole (`fullmatch`), as common/evals.py matches its own: with `match` and `$`, a trailing newline
+# passed, and `rail-sydney\n` was then an id of its own to every reader that groups by these values.
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,39}")
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
-_HEX12 = re.compile(r"^[0-9a-f]{12}$")
+_HEX12 = re.compile(r"[0-9a-f]{12}")
 _MODEL = re.compile(r"[A-Za-z0-9._:/-]{1,160}")
 # A CPU's name (vision_contract.cpu_identity): "Neoverse V1 (Graviton3)", "Intel(R) Xeon(R) Platinum
 # 8375C CPU @ 2.90GHz", or the machine name ("aarch64", "unknown") when /proc/cpuinfo names none.
 # A shape, not a filter (a run of plain words passes it): the emitters fill it from cpu_identity()
 # alone, and the worker's serialiser keeps a copy of this pattern.
-_CPU = re.compile(r"^[A-Za-z0-9 @().,_+-]{1,80}$")
-_VERSION = re.compile(r"^[0-9][0-9.]{0,19}$")
+_CPU = re.compile(r"[A-Za-z0-9 @().,_+-]{1,80}")
+_VERSION = re.compile(r"[0-9][0-9.]{0,19}")
 
 # What each tool's `result` may carry in a triage step (common/vision_triage.summarise_step builds
 # it), each field with its own kind. `code` is every tool's failure code (`budget` for a refusal
@@ -444,7 +444,7 @@ def _bool(value):
 
 
 def _hex12(value):
-    if isinstance(value, str) and _HEX12.match(value):
+    if isinstance(value, str) and _HEX12.fullmatch(value):
         return value
     raise _Dropped
 
@@ -459,13 +459,13 @@ def _model(value):
 
 
 def _cpu(value):
-    if isinstance(value, str) and _CPU.match(value):
+    if isinstance(value, str) and _CPU.fullmatch(value):
         return value
     raise _Dropped
 
 
 def _version(value):
-    if isinstance(value, str) and _VERSION.match(value):
+    if isinstance(value, str) and _VERSION.fullmatch(value):
         return value
     raise _Dropped
 

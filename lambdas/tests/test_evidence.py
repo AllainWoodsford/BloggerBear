@@ -143,10 +143,15 @@ def test_the_scalar_kinds(kind, good, bad):
         assert evidence.check(kind, value) is None, (kind, value)
 
 
-@pytest.mark.parametrize(("kind", "value"), [("code", "outcome"), ("id", "rail-sydney"), ("model", MODEL)])
-def test_a_trailing_newline_is_no_part_of_a_code_an_id_or_a_model_id(kind, value):
+@pytest.mark.parametrize(
+    ("kind", "value"),
+    [("code", "outcome"), ("id", "rail-sydney"), ("model", MODEL), ("hex12", BUILD), ("cpu", "AMD64"),
+     ("cpu", CPU), ("version", "5"), ("version", "4.11.0.86")],
+)  # fmt: skip
+def test_a_trailing_newline_is_no_part_of_any_token_kind(kind, value):
     """Matched whole, as common/evals.py matches its own: `$` also matches before a final newline,
-    which made `rail-sydney\\n` an id of its own to every reader grouping by it."""
+    which made `rail-sydney\\n` an id of its own to every reader grouping by it, and `AMD64\\n` a
+    CPU of its own."""
     assert evidence.check(kind, value) == value
     for bad in (f"{value}\n", f"{value}\n\n", f"\n{value}"):
         assert evidence.check(kind, bad) is None, (kind, bad)

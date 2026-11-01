@@ -334,9 +334,9 @@ resource "aws_scheduler_schedule" "judge" {
 # One job per invocation, two at most at once (the smallest maximum_concurrency SQS accepts), so
 # offline runs never crowd the pipeline's model calls. The rights come first: Lambda checks them
 # when it makes the mapping. eval-jobs never raises on a job; a record it wants delivered again (a
-# scoring job whose run's header it could not read, so it cannot count it, or one that failed before its
-# claim and could not be counted finished) it names among the answer's batchItemFailures, and the
-# queue's redrive takes it to the DLQ after three receives.
+# scoring job whose run's header it could not read, so it cannot count it, or one that failed, before
+# its claim or after, and could not be counted finished) it names among the answer's
+# batchItemFailures, and the queue's redrive takes it to the DLQ after three receives.
 resource "aws_lambda_event_source_mapping" "eval_work" {
   count                   = var.enabled ? 1 : 0
   event_source_arn        = aws_sqs_queue.eval_work[0].arn

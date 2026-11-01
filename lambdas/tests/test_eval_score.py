@@ -1470,6 +1470,34 @@ def test_a_message_that_fails_before_the_claim_and_cannot_be_counted_finished_is
     assert all(day["held_aud"] == 0 for day in days)  # no hold is left behind
 
 
+@pytest.mark.parametrize("judge_drafted", [False, True], ids=["a verdict", "a reason with no verdict"])
+def test_a_result_whose_count_fails_twice_is_delivered_again_and_its_copy_counts_it(
+    aws, models, written, judge_drafted
+):
+    """Once the result row is written, counting the message finished can fail twice: after the result,
+    and again in failed(), the same evals table a moment later. resume never sends a message that has
+    its result, so a deleted message would leave its run running for good: eval-work delivers it again,
+    and the copy finds the result and counts it (already_scored), with no model call and no event."""
+    put_article(aws)
+    run_id, queue = started(aws, record=True, yes=True)
+    if judge_drafted:
+        put_article(aws, drafter=JUDGE)  # judge_is_author: done()'s result, which has no verdict
+    finish = throttled_first(eval_judge._finish, 2, "UpdateItem")
+
+    with patch.object(eval_judge, "_finish", side_effect=finish):
+        answers = deliver(queue.records())
+
+    assert answers[0]["batchItemFailures"] == [{"itemIdentifier": "message-0"}]
+    results = [answer["results"][0] for answer in answers]
+    assert results == [{"status": "retry"}, {"status": "dropped", "reason": "already_scored"}]
+    [row] = rows(aws, run_id)
+    assert row["outcome"] == ("judge_is_author" if judge_drafted else "scored")
+    header = meta(aws, run_id)
+    assert header["status"] == "done" and header["finished_items"] == {0}
+    # The first delivery's calls and event only: the copy made none.
+    assert (len(models.calls), len(written)) == ((0, 0) if judge_drafted else (3, 1))
+
+
 def test_a_failure_marking_the_run_running_after_the_claim_is_the_messages_result(aws, models, capsys):
     """Once the row is claimed, a failure is recorded as the message's outcome (an error, which resume
     sends again), never left as a live claim that resume holds back for CLAIM_STALE."""

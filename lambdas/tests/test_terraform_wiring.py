@@ -165,6 +165,19 @@ def test_the_zone_lives_in_bootstrap_and_cannot_be_destroyed_by_accident():
     assert 'output "hosted_zone_id"' in outputs and 'output "hosted_zone_name_servers"' in outputs
 
 
+def test_the_bootstrap_domain_says_its_default_creates_a_zone_and_empty_creates_none():
+    """The default is a real domain, so an apply that does not pass domain_name creates a zone for
+    it. The description once said empty was the default and created nothing, which tells a fork
+    that leaving it out makes no zone."""
+    variable = _read("bootstrap", "variables.tf").split('variable "domain_name" {')[1].split("\n}\n")[0]
+    default = re.search(r'^  default\s*=\s*"([^"]*)"$', variable, re.M).group(1)
+    description = " ".join(variable.split("<<-EOT\n")[1].split("\n  EOT\n")[0].split())
+    assert default != ""
+    assert not re.search(r"empty \(the default\)|default is empty", description, re.I)
+    assert "The default is the original deployment's domain" in description
+    assert '`-var="domain_name="` (empty), which creates no zone' in description
+
+
 # --- production keeps its data ---------------------------------------------------------------------
 
 
@@ -1685,12 +1698,21 @@ def test_no_bootstrap_resource_puts_a_whole_data_source_into_a_string():
     assert sorted(found) == ["gha_deploy_other_environment", "gha_prompts"]
 
 
-def test_pull_requests_plan_the_bootstrap_with_a_mocked_provider_and_never_apply_it():
+@pytest.mark.parametrize(
+    ("workflow", "job", "next_job"),
+    [
+        ("pr-checks.yml", "validate", "secret-scan"),
+        ("on-demand-scan.yml", "terraform", "code-and-dependencies"),
+    ],
+)
+def test_pull_requests_and_the_on_demand_scan_plan_the_bootstrap_with_a_mocked_provider(
+    workflow, job, next_job
+):
     """The bootstrap is applied once, by hand (project rule 6), so before this nothing planned it
     ahead of the owner, and the for_each above passed validate and failed at plan. Its tests plan
-    it with a mocked AWS provider, and pr-checks runs them beside the modules' with no credentials:
-    the validate job signs in to nothing and reads no secret, and nothing in it plans or applies a
-    real configuration."""
+    it with a mocked AWS provider, and pr-checks runs them beside the modules' with no credentials,
+    as the on-demand scan, the thorough one, does too: the job signs in to nothing and reads no
+    secret, and nothing in it plans or applies a real configuration."""
     tests = sorted((INFRA / "bootstrap" / "tests").glob("*.tftest.hcl"))
     assert tests
     for path in tests:
@@ -1699,15 +1721,15 @@ def test_pull_requests_plan_the_bootstrap_with_a_mocked_provider_and_never_apply
         commands = re.findall(r"^\s*command\s*=\s*(\w+)", text, re.M)
         assert commands and set(commands) == {"plan"}, path.name
 
-    pr_checks = (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(encoding="utf-8")
-    validate = pr_checks.split("\n  validate:\n")[1].split("\n  secret-scan:\n")[0]
-    step = validate.split("- name: Terraform test (bootstrap and modules with tests)\n")[1]
+    source = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    body = source.split(f"\n  {job}:\n")[1].split(f"\n  {next_job}:\n")[0]
+    step = body.split("- name: Terraform test (bootstrap and modules with tests)\n")[1]
     assert "for dir in infra/bootstrap infra/modules/*; do" in step
     assert 'terraform -chdir="$dir" init -backend=false -input=false' in step
     assert 'terraform -chdir="$dir" test' in step
     for text in ("configure-aws-credentials", "id-token", "secrets.", "AWS_"):
-        assert text not in validate, text
-    assert not re.search(r"^\s*terraform [^\n]*\b(plan|apply)\b", validate, re.M)
+        assert text not in body, text
+    assert not re.search(r"^\s*terraform [^\n]*\b(plan|apply)\b", body, re.M)
 
 
 def test_the_deploy_roles_may_create_the_evals_log_group_before_the_module_that_needs_it():

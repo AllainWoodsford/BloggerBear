@@ -72,7 +72,9 @@ claimed, and a message that can cost more than the whole cap (lowered since the 
 the message finished with no row, so the run closes and `resume` sends it again. A failure reading the
 run's header, before the message can be placed in its run, has eval-work deliver it again
 (eval_judge.RETRY), and so does a failure before the claim whose count fails too: nothing was claimed,
-so the copy finishes it.
+so the copy finishes it. So does a claimed message that cannot be counted finished after a failure:
+its row may hold its result, which `resume` never sends again, so the copy counts it (already_scored),
+and takes an error or a claim gone stale over as any failed message's copy does.
 """
 
 from __future__ import annotations
@@ -1065,7 +1067,8 @@ def _score_message(
     table, raw: str, run_id: str, meta: dict, item: dict, combo: dict, m: int, now: datetime, sqs
 ) -> dict:
     """_score's work once it knows the message is number `m` of its run. Raises only before the item's
-    row is claimed: once it is, a failure is recorded as the message's outcome."""
+    row is claimed: once it is, a failure is recorded as the message's outcome, and a message that then
+    cannot be counted finished is delivered again (eval_judge.RETRY)."""
     n, articles = item["n"], meta["articles"]
     ((prompt_id, label),) = combo["prompt_versions"].items()
     key = eval_judge._run_key(run_id, f"{ITEM}{n}#{combo['code']}")
@@ -1112,9 +1115,12 @@ def _score_message(
             print(f"eval_score: item {n} of run {run_id} failed: {exc!r}")
             try:
                 return scoring.failed()
-            except Exception as again:  # noqa: BLE001 - an unwritten outcome leaves a claim that goes stale
-                print(f"eval_score: could not record that item {n} of run {run_id} failed: {again!r}")
-                return {"status": ERROR}
+            except Exception as again:  # noqa: BLE001 - not counted finished: eval-work delivers it again
+                print(f"eval_score: item {n} of run {run_id} could not be finished after failing: {again!r}")
+                # Its row may hold its result (done's count failed, then failed()'s), which resume never
+                # sends again, so a deleted message would leave its run running for good. The copy counts a
+                # result (already_scored), and takes an error or a claim gone stale over.
+                return {"status": eval_judge.RETRY}
     finally:
         eval_judge.release(table, now, settings, held)
 

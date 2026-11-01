@@ -20,11 +20,11 @@ common/eval_score.py). A record is answered by returning, whatever became of it,
 it: an item the day's spend cap holds back is sent to the queue again with a delay by the consumer
 itself, a judge item that failed stays unjudged for a later run to pick, and a scoring item that failed
 keeps its result row, or is counted finished without one, for `evals runs resume` to send again. The
-only records kept are a scoring job whose run's header could not be read, and one that failed before its
-row was claimed and could not be counted finished either (eval_judge.RETRY): the answer names each among
-its `batchItemFailures` (the mapping reports batch item failures), so eval-work delivers it again after
-its visibility timeout, and after three receives moves it to the pipeline's DLQ. That is a partial batch
-response, not a raise.
+only records kept are a scoring job whose run's header could not be read, and one that failed, before
+its row was claimed or after, and could not be counted finished either (eval_judge.RETRY): the answer
+names each among its `batchItemFailures` (the mapping reports batch item failures), so eval-work
+delivers it again after its visibility timeout, and after three receives moves it to the pipeline's
+DLQ. That is a partial batch response, not a raise.
 
 Never raises unhandled, like every other scheduled handler here, with one exception that section 6
 of the spec allows: a rollup that cannot read the evals log or read and write its tables
