@@ -1053,6 +1053,7 @@ rebased (spec section 6).
 | PR18b offline scoring runs | #409 | `claude/ranch-50-offline-runs` | PR18 |
 | PR18c call traces | #410 | `claude/ranch-51-call-traces` | PR14 |
 | PR20 MCP tools and agent prompt | #411 | `claude/ranch-53-mcp-tools` | evals-meet (PR19 base) |
+| PR21 bug sweep | #415 | `claude/ranch-60-bug-sweep` | PR20 (every PR merged in, and dev) |
 
 **Merge order.** #380 and #393 first; #393 must reach `dev` before or with the first of #389,
 #390 and #391 (the inline-policy cap, spec 7.1). Then each PR after its parent. Releases may
@@ -1081,8 +1082,12 @@ base, so its diff shows PR13b, PR15 and PR16 until they merge. The meet commit 1
 its second parent; PR20's branch records it again with a no-change merge (d7b4364), so a later
 merge or rebase sees those PRs as already there.
 
-**Being built now:** PR21, the bug sweep (`claude/ranch-60-bug-sweep`), from PR20's branch with
-PR18b, PR18c and PR11b merged in.
+**PR21** (#415) is every PR of the plan merged together (c6aa146), then dev (003a563, #401 and
+#412), then the sweep's parts A to H. Its PR takes PR20's branch as its base, so its diff shows
+every other stack until they merge; merge it last. When PR20 merges, retarget it to dev and merge
+dev in.
+
+**Being built now:** PR22, the docs sweep (`claude/ranch-61-docs-sweep`), from PR21's branch.
 
 **#401** fixes a test whose fixed date went stale on 2026-10-31
 (`test_rail_access_adapter.py`): until it reaches `dev`, CI fails that one test on any branch
@@ -1107,7 +1112,6 @@ When each is retargeted to dev:
 - PR19 (#408): `review_inbox.py` keeps both `FindingsSource` and #412's `_is_problem_note`.
 - PR18b (#409) carries the run-id pin in `test_eval_score.py` (pushed as ad471b5).
 
-**Then:** PR22, the docs sweep.
 
 **Owner actions waiting.**
 
