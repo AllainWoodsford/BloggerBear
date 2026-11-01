@@ -231,9 +231,10 @@ python scripts/admin_cli.py articles get <article_id>       # any status, with i
 python scripts/admin_cli.py articles checked <article_id>   # you checked a financial article the reviewer bear approved
 python scripts/admin_cli.py articles publish <article_id>
 python scripts/admin_cli.py articles unpublish <article_id>
-python scripts/admin_cli.py articles rewrite <article_id> --instructions "the second section confuses staking with lending"
-python scripts/admin_cli.py articles rewrite <article_id> -i "too long; cut the history section" --model <model_id>
-python scripts/admin_cli.py articles rewrite <article_id> -i "names the wrong company" --force   # take it down now
+python scripts/admin_cli.py articles fix <article_id> --instructions "the second section confuses staking with lending"
+python scripts/admin_cli.py articles fix <article_id> -i "too long; cut the history section" --model <model_id>
+python scripts/admin_cli.py articles fix <article_id> -i "names the wrong company" --force   # take it down now
+python scripts/admin_cli.py articles rewrite <article_id> -i "muddled throughout; write it again"   # a new article
 
 python scripts/admin_cli.py failed-executions list
 
@@ -389,24 +390,31 @@ safe to repeat. `cache_invalidated: false` in the response means CloudFront
 wasn't asked (or the request failed); a cached copy can then linger until the
 CDN's TTL expires.
 
-`articles rewrite` sends an article back to be rewritten, with `--instructions` saying what is
-wrong with it. A **published** article stays up, untouched, while it is rewritten: it is taken
-down (page, musings and CDN cache, as with `unpublish`) and set back to waiting for review only
-once the rewrite is ready to take its place in the inbox. If that rewrite fails, the article is
-still published exactly as it was, and `inbox` and `moderation list` say so, with the reason
-(`failed_rewrites`). `--force` takes it down first and then rewrites, for an article that must not
-stay up meanwhile. A **rejected** article is brought back to waiting for review; one already
-**waiting in the inbox** is rewritten in place. The rewrite runs in the background
-(`lambdas/common/rewrite.py`) with your note as the main thing to fix, alongside anything the
-reviews flagged. It corrects the article rather than writing a new one: the model sends back edits
-to the passages with a problem, and everything else is kept exactly as it was. It gets the same
-guards as any rewrite (no figure or link that is in none of the sources), goes through the
-fresh-data and compliance reviews again, and comes back to the inbox
-for you to approve, reject or rewrite again; approving it publishes it. `--model` picks a
-registered model (`models list`); by default it uses the model the topic writes with today. If the
-rewrite of an article that was not published (or was taken down with `--force`) fails, the article
-waits in the inbox with the reason, and `[w]` there retries with the same note. Approving it writes a fresh musing about the new version, in place of the ones the
-take-down removed.
+`articles fix` and `articles rewrite` send an article back, with `--instructions` saying what is
+wrong with it:
+
+- **`articles fix`** corrects the mistakes and keeps the rest: the model sends back edits to the
+  passages with a problem, and everything else is kept exactly as it was. However much of the
+  article the edits touch, that alone never fails a fix. Use it for most things.
+- **`articles rewrite`** writes it again as a completely new article on the same subject, from its
+  research and fresh data, without what your note and the reviews say is wrong. Use it when the
+  article is not worth correcting sentence by sentence.
+
+A **published** article stays up, untouched, while it is fixed or rewritten: it is taken down (page,
+musings and CDN cache, as with `unpublish`) and set back to waiting for review only once the new text
+is ready to take its place in the inbox. If it fails, the article is still published exactly as it
+was, and `inbox` and `moderation list` say so, with the reason (`failed_rewrites`). `--force` takes it
+down first, for an article that must not stay up meanwhile. A **rejected** article is brought back to
+waiting for review; one already **waiting in the inbox** is fixed or rewritten in place. Either runs in
+the background (`lambdas/common/rewrite.py`) with your note as the main thing to fix, alongside
+anything the reviews flagged. It gets the same guards as any rewrite (no figure or link that is in
+none of the sources, a length that has not shrunk below 40% or grown past 150%), goes through the
+fresh-data and compliance reviews again, and comes back to the inbox for you to approve, reject, fix
+or rewrite again; approving it publishes it. `--model` picks a registered model (`models list`); by
+default it uses the model the topic writes with today. If it fails on an article that was not
+published (or was taken down with `--force`), the article waits in the inbox with the reason, and
+`[f]` or `[w]` there retries with the same note. Approving it writes a fresh musing about the new
+version, in place of the ones the take-down removed.
 
 `lineage audit` lists articles with no lineage, articles whose cost is blank, and
 models in use that nothing can price. `lineage backfill` recomputes each article's
@@ -488,8 +496,9 @@ Two things need a person, and both are covered:
    - `reviewer set --may-approve off` (or, for one topic,
      `topics update <topic_id> --reviewer-may-approve off`) stops only his approvals. A topic set
      to `--reviewer-may-approve on` still lets him approve. He still sends a held article with a
-     real problem, or a fault in the draft, for a rewrite, and rejects it once it has had three
-     rewrites (`max_rewrites`). To make every decision yourself, also run
+     real problem, or a fault in the draft, back, and rejects it once it has had three rewrites
+     (`max_rewrites`). He favours a Fix: each send-back is one, except that his last before the
+     limit is a Re-Write when the attempt before it was a Fix that did not settle the article. To make every decision yourself, also run
      `reviewer set --review-held off`. That switch covers the whole project; there is none per
      topic.
    - Topics with `force_manual_review` (every vision topic) always wait for you.
@@ -509,30 +518,33 @@ you, a preview) and waits for one key, no Enter:
 |---|---|
 | `y` | Approve. An article is published (page rendered, musing written); a prompt change goes live for future drafts |
 | `r` | Reject. An article stays private; a prompt change is dropped |
-| `w` | Re-Write (articles held for a reason only). Pick a model; the article is rewritten in the background to fix what it was held for, and you move on |
+| `f` | Fix (articles held for a reason only). Pick a model; what the article was held for is corrected in the background, the rest kept as it is, and you move on |
+| `w` | Re-Write (articles held for a reason only). Pick a model; the article is written again in the background as a completely new one without what it was held for, and you move on |
 | `z` | Skip: leave it exactly as it is |
 | `v` | Read the whole text, then choose |
 | `q` | Quit. Nothing you already decided is lost |
 
-- **Re-Write** (`w`) sends the article, its hold reasons, its research and current data to the model
-  you pick (any enabled model from `admin_cli models`). It is a correction, not a new article: the
-  model sends back edits to the passages with a problem, and everything else is kept exactly as it
-  was. A rewrite whose edits cannot be placed in the article, that changes nothing, or that replaces
-  more than half of it fails. The result is checked like the automatic revision (no figure or link
-  that is in none of the sources), reviewed again, and comes back to this inbox as a new item showing
-  `Re-Write #n by <model> (~$cost); <n> passages edited, <k>% kept as it was` and the old title, to
-  approve, reject or rewrite again. Only problems in the text count as something to fix: the
-  fresh-data review's notes about the review itself (figures that moved inside the tolerance, a
-  review that could not run) do not, and alone they do not offer `w`. The article is never
-  published by a rewrite, and the text it replaced is
+- **Fix** (`f`) and **Re-Write** (`w`) send the article, its hold reasons, its research and current
+  data to the model you pick (any enabled model from `admin_cli models`). A **Fix** is a correction,
+  not a new article: the model sends back edits to the passages with a problem, and everything else
+  is kept exactly as it was. A fix whose edits cannot be placed in the article, or that changes
+  nothing, fails; how much of the article it changes does not. A **Re-Write** is a completely new
+  article on the same subject, written from the research and current data. Either result is checked
+  like the automatic revision (no figure or link that is in none of the sources), reviewed again, and
+  comes back to this inbox as a new item showing `Fix #n by <model> (~$cost); <n> passages edited, <k>%
+  kept as it was` (or `Re-Write #n by <model> (~$cost)`) and the old title, to approve, reject, fix or
+  rewrite again. Only problems in the text count as something to fix: the fresh-data review's notes
+  about the review itself (figures that moved inside the tolerance, a review that could not run) do
+  not, and alone they do not offer `f` or `w`. The article is never published by either, and the
+  text it replaced is
   kept in S3 (`articles/<id>.before-rewrite-<n>.md`). If it fails, the original comes back with the
   reason; one that never finishes is put back after 15 minutes. Its tokens and cost go into the
   article's lineage (stage `rewrite`) and the week's Stats.
 - **Up to 30 a time**, oldest first, articles before prompt changes. Run it again for the next batch
   (`--limit` changes the size; `--source moderation` or `--source refinements` picks one kind).
 - **Each choice is applied at once**, through the same signed Admin API as every other command, so a quit,
-  an error or a dropped connection never loses progress. A reject or a Re-Write is sent the moment you
-  press the key, not when the batch is finished: by the time you reach the tenth item, the rewrite of the
+  an error or a dropped connection never loses progress. A reject, a Fix or a Re-Write is sent the moment
+  you press the key, not when the batch is finished: by the time you reach the tenth item, the fix of the
   first is already running. A failure is shown and you stay on that item to retry, skip or quit.
   Something already handled elsewhere is noted and passed.
 - **It ends by saying what was done**, however it ends (the last item, `q`, Ctrl+C even in the middle of
@@ -544,7 +556,7 @@ you, a preview) and waits for one key, no Enter:
   Cancelled out of the session with 12 left: nothing you already decided is lost.
   ```
 
-  "Reviewed" counts every item you settled: approved, rejected, sent for a Re-Write, skipped, or
+  "Reviewed" counts every item you settled: approved, rejected, sent for a Fix or a Re-Write, skipped, or
   found already handled elsewhere. `q` reads "You stopped early"; Ctrl+C reads "Cancelled".
 - **Skipped items are hidden from your next runs** for 24 hours (`--skip-hours`; a small local file,
   `~/.bloggerbear/review-skips.json`, or `BLOGGERBEAR_REVIEW_STATE`; never sent anywhere), so a rerun gives

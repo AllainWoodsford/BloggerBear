@@ -155,10 +155,13 @@ LOG_READ_WAIT_SECONDS = 8
 
 SELF_CLEARING_KINDS = frozenset({"research_overdue", "no_article_today", "run_failed"}) | LOGGED_KINDS
 
-# Kinds whose suggested fix is to send the article for a rewrite, read off the catalogue so a kind
-# that gains or loses that fix follows without being listed here.
+# Kinds whose suggested fix is to send the article back (`articles fix`, or `articles rewrite` for a
+# new one: both run as a rewrite of it), read off the catalogue so a kind that gains or loses that
+# fix follows without being listed here.
 REWRITE_KINDS = frozenset(
-    kind for kind, entry in CATALOGUE.items() if (entry.arguments or "").startswith("articles rewrite {id}")
+    kind
+    for kind, entry in CATALOGUE.items()
+    if (entry.arguments or "").startswith(("articles fix {id}", "articles rewrite {id}"))
 )
 # Signs, in the pipeline's own tables, that the operator has already acted on a finding that is
 # still true. Each: the words for the card, and for speech (after "It looks like").

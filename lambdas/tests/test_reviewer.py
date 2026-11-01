@@ -309,6 +309,57 @@ def test_a_real_major_sends_it_for_a_rewrite_with_his_notes(aws):
     assert reviewer.do_task({"task": "held", "queue_id": "q"}, hands.build(), NOW) == "rewrite"
     assert hands.calls[-1][0] == "rewrite"
     assert "Remove the private address." in hands.calls[-1][2]
+    assert hands.calls[-1][3] == "fix"  # a Fix: the mistakes he names corrected, the rest kept
+
+
+FIX = {"mode": "fix", "edits": 2, "kept_percent": 80}
+
+
+@pytest.mark.parametrize(
+    ("rewrites", "mode"),
+    [
+        ([], "fix"),  # never sent back: a fix
+        ([FIX], "fix"),  # one fix of three: another
+        ([FIX, FIX], "rewrite"),  # the last try before a rejection, after a fix that did not settle it
+        ([FIX, {"mode": "rewrite"}], "fix"),  # the last try, but the attempt before was a new article
+        ([FIX, {"edits": 1, "kept_percent": 90}], "rewrite"),  # a fix from before records said so
+        ([FIX, {"n": 2}], "fix"),  # a whole-text rewrite from before there were edits
+    ],
+)
+def test_he_favours_a_fix_and_writes_it_again_only_as_the_last_try_after_a_fix(rewrites, mode):
+    settings = reviewer.effective_settings(None)  # max_rewrites 3
+
+    assert reviewer.send_back_mode({"rewrites": rewrites}, settings) == mode
+
+
+def test_with_one_send_back_allowed_it_is_always_a_fix():
+    settings = {**reviewer.effective_settings(None), "max_rewrites": 1}
+
+    assert reviewer.send_back_mode({"rewrites": []}, settings) == "fix"
+
+
+def test_a_held_article_two_fixes_did_not_settle_is_written_again_from_scratch(aws):
+    put_topic(aws)
+    put_held(aws, "q", "a", reasons=["PII: names a private person's address"], rewrites=[FIX, FIX])
+    hands = FakeHands([verdicts(True, instructions="Remove the private address.")])
+
+    assert reviewer.do_task({"task": "held", "queue_id": "q"}, hands.build(), NOW) == "rewrite_anew"
+    assert hands.calls[-1][0] == "rewrite" and hands.calls[-1][3] == "rewrite"
+    assert reviewer.report_facts({"rewrite_anew": 1}) == [
+        "had 1 article written again from scratch when fixing was not enough"
+    ]
+
+
+def test_content_and_published_articles_are_always_sent_for_a_fix(aws):
+    put_topic(aws)
+    put_article(aws, "bad", "wow", status="published", rewrites=[FIX, FIX])
+    answer = {"verdict": "rewrite", "rewrite_instructions": "Finish the last section."}
+    hands = FakeHands([json.dumps(answer)])
+
+    assert reviewer.do_task({"task": "published", "article_id": "bad"}, hands.build(), NOW) == "rewrite"
+    task = {"task": "content", "kind": "body_code_fence", "article_id": "bad"}
+    assert reviewer.do_task(task, hands.build(), NOW) == "content_rewrite"
+    assert [call[3] for call in hands.calls if call[0] == "rewrite"] == ["fix", "fix"]
 
 
 def test_an_unreadable_answer_or_a_topic_he_may_not_approve_waits_for_a_person(aws):
@@ -389,7 +440,7 @@ def test_a_content_finding_is_rewritten_or_its_musing_written_again(aws):
 def test_a_rewrite_already_running_is_skipped():
     hands = FakeHands()
     built = hands.build()
-    built.rewrite = lambda article_id, instructions: (409, {"error": "already being rewritten"})
+    built.rewrite = lambda article_id, instructions, mode: (409, {"error": "already being rewritten"})
     task = {"task": "content", "kind": "body_code_fence", "article_id": "t"}
     assert reviewer.do_task(task, built, NOW) == "skipped"
 
@@ -441,7 +492,7 @@ def test_a_flag_on_an_article_no_longer_published_is_cleared(aws):
 
 def test_the_report_says_what_he_did_in_fixed_words():
     facts = reviewer.report_facts({"approved": 1, "rewrite": 2, "skipped": 4, "error": 1})
-    assert facts == ["approved 1 held article", "sent 2 articles back for a rewrite"]
+    assert facts == ["approved 1 held article", "sent 2 articles back to have their mistakes fixed"]
 
 
 class FakeScheduler:
@@ -508,7 +559,7 @@ def test_the_report_links_what_he_published_and_names_what_he_sent_back(aws):
     assert topics == ["Topic f1"]
     assert reviewer.report_facts({"approved": 1, "rewrite": 2}, topics) == [
         "approved 1 held article",
-        "sent 2 articles back for a rewrite",
+        "sent 2 articles back to have their mistakes fixed",
         "the topics sent back for a rewrite: Topic f1",
     ]
 

@@ -102,17 +102,17 @@ empty at its limit.
 |---|---|
 | The research tick's summary | The bear's musings on an article a person or Grizzlewick publishes (an approval or a force-publish), on a rejection, on a pause, on new gear, on readers' feedback (every 4 days), and a regenerated one |
 | The daily cycle: ideation, draft, title, compliance and fresh-data reviews, and the bear's musing on an article it publishes by itself (with no fallback) | The weekly reflection, the names it gives new gear, and the name the bear gives gear you make by hand when you give it no theme |
-| Re-Write from the review inbox | Screening a reader's comment |
+| Fix and Re-Write from the review inbox | Screening a reader's comment |
 | Professor Grizzlewick, the reviewer bear | The operator's assistant (`OPS_AGENT_MODEL_ID`, which Terraform sets to the same value) |
 | The vision triage agent (the topic's model; it has no fallback, and fails closed) | |
 | The model catalog's reading of a web price (the global default, no topic) | |
 
 Three more calls have no fallback either. Each runs only on the model it was given (the routed
-one, or the model you picked for a Re-Write), and an error is not retried on the fallback:
+one, or the model you picked for a Fix or Re-Write), and an error is not retried on the fallback:
 
 - Professor Grizzlewick's own calls (his reads, judgements and musings). On an error he leaves the
   article for a person or his next run.
-- The Re-Write's rewriting call. On an error the Re-Write is marked failed. Its compliance and
+- The Fix's or Re-Write's own call. On an error it is marked failed. Its compliance and
   fresh-data reviews do fall back.
 - The model catalog's reading of a web price. On an error it counts as a lookup that could not be
   made.

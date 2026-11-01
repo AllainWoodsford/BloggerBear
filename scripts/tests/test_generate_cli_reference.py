@@ -140,7 +140,7 @@ def test_which_commands_are_destructive_is_read_from_the_parser(fresh):
         for path, entry in commands.items()
         for argument in entry.get("arguments", [])
         if argument["destructive"]
-    ) == [("articles rewrite", "--force"), ("topics trigger", "--force")]
+    ) == [("articles fix", "--force"), ("articles rewrite", "--force"), ("topics trigger", "--force")]
     # Nothing the rule would miss: no other command or flag is named like one that destroys.
     for path, entry in commands.items():
         words = set(path.split())

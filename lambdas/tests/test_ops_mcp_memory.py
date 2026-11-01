@@ -359,7 +359,7 @@ def test_follow_up_says_what_was_fixed_and_forgets_it_and_what_still_waits_and_f
     # The finding is back, with its suggestion rebuilt from the catalogue.
     (found,) = result["findings"]
     assert found == tools._truncated_finding("Hacker News", "held-1")
-    assert found["suggestion"]["command"].endswith('articles rewrite held-1 -i "the draft was cut short"')
+    assert found["suggestion"]["command"].endswith('articles fix held-1 -i "the draft was cut short"')
     assert result["spoken"] == (
         "You fixed 1 thing I suggested, for Crypto. 1 thing I suggested is still waiting: "
         "Hacker News for 3 days. The fixes are on screen again."
@@ -507,7 +507,7 @@ def test_the_kinds_fixed_by_a_rewrite_are_read_off_the_catalogue():
     assert memory.REWRITE_KINDS == {
         kind
         for kind, entry in suggestions.CATALOGUE.items()
-        if entry.arguments and entry.arguments.startswith("articles rewrite {id}")
+        if entry.arguments and entry.arguments.startswith(("articles fix {id}", "articles rewrite {id}"))
     }
     assert {"draft_truncated", "title_markup", "body_code_fence"} <= memory.REWRITE_KINDS
     assert "research_overdue" not in memory.REWRITE_KINDS
@@ -533,7 +533,7 @@ def test_a_finding_whose_article_is_being_rewritten_says_it_looks_actioned(table
         "advice": memory.ACTIONED_ADVICE,
     }
     # The finding is still there with its fix: nothing is dismissed for the operator.
-    assert found["suggestion"]["command"].startswith("python scripts/admin_cli.py articles rewrite")
+    assert found["suggestion"]["command"].startswith("python scripts/admin_cli.py articles fix")
     assert [row["dismissed"] for row in rows(tables, ALICE)] == [False]
 
 

@@ -91,9 +91,10 @@ Current schedules (runtime data, set through the Admin API, not Terraform):
 
 Production's daily articles run at 09:00–09:03 Sydney time, one topic per minute.
 
-### Operator Re-Write (on demand)
-From the review inbox, a held article can be sent for a Re-Write with a chosen model; it
-runs in the background and comes back to the inbox for approval (see §11, "Re-Write").
+### Operator Fix and Re-Write (on demand)
+From the review inbox, a held article can be sent for a Fix (its mistakes corrected, the rest kept)
+or a Re-Write (a completely new article) with a chosen model; it runs in the background and comes back
+to the inbox for approval (see §11, "Re-Write").
 
 ## 5) Data Model (DynamoDB)
 | Table | PK/SK | Purpose |
@@ -1166,8 +1167,8 @@ game to decide whether feedback goes through. Both were rejected in the anti-bot
 Two things wait for a person: **articles in the moderation queue** and **prompt-change proposals**. Both
 are in `admin_cli inbox` (a summary, plus heads-ups if feedback is locked down or verification is off)
 and `admin_cli approve` (`scripts/review_inbox.py`): one item at a time, one keystroke each (y approve,
-r reject, z skip, v read it all, q quit, and w Re-Write for an article held for a reason -- see "Re-Write"
-below), up to 30 a time, oldest first.
+r reject, z skip, v read it all, q quit, and f Fix or w Re-Write for an article held for a reason -- see
+"Re-Write" below), up to 30 a time, oldest first.
 
 It goes through the Admin API, never straight to DynamoDB or S3, because approving an article does more
 than flip a flag (it renders the page, publishes it, writes a musing). It needed one new admin-only route,
@@ -1588,26 +1589,41 @@ does, just driven manually since there was no admin route for "fix just the titl
 
 ### Re-Write: fixing a held article without writing it by hand
 
-**Status: implemented** (#130; `lambdas/common/rewrite.py`, `scripts/review_inbox.py`'s `w` key).
+**Status: implemented** (#130; `lambdas/common/rewrite.py`, `scripts/review_inbox.py`'s `f` and `w`
+keys).
 
-A held article can be rewritten from the review inbox: press `w`, pick one of the registered, enabled
-models, and the inbox moves straight on. `POST /moderation-queue/{queue_id}/rewrite` claims the queue item
-(`pending` → `rewriting`, a conditional write, so a second trigger gets 409) and invokes the daily-cycle
-Lambda asynchronously with `{"action": "rewrite"}`. It runs there, not in a Lambda of its own, because it
-needs exactly that Lambda's timeout, permissions and CoinGecko key.
+An article can be sent back in one of two modes, kept on its queue item as `rewrite_mode`:
+
+- **Fix** (`f` in the inbox, `admin_cli articles fix`, `POST .../fix`): correct the mistakes and keep the
+  rest of the article as it is. The default, and what Reviewer Bear uses.
+- **Re-Write** (`w`, `admin_cli articles rewrite`, `POST .../rewrite`): a completely new article on the
+  same subject, written from the research and fresh data, without the problems it was sent back for. For
+  an article not worth correcting sentence by sentence.
+
+From the review inbox: press `f` or `w`, pick one of the registered, enabled models, and the inbox moves
+straight on. `POST /moderation-queue/{queue_id}/fix` (or `.../rewrite`) claims the queue item (`pending` →
+`rewriting`, a conditional write, so a second trigger gets 409) and invokes the daily-cycle Lambda
+asynchronously with `{"action": "rewrite"}`. It runs there, not in a Lambda of its own, because it needs
+exactly that Lambda's timeout, permissions and CoinGecko key.
 
 - **Input to the model:** the article, the reasons it was held (minus the routine "financial topic"
   routing reason) and the claims its fresh-data review flagged (minus that review's notes about itself:
   figures inside the tolerance, a review that could not run, the daily cycle's own correction), the
   findings it was written from, and fresh data from the adapter.
-- **A correction, not a new article:** the model replies with edits (`{"find": <a passage quoted from
-  the article>, "replace": <its replacement>}`), and code applies them (`apply_edits`), so every
-  sentence no edit quotes comes through exactly as it was. Writing the whole article out again let a
-  rewrite reword sentences nothing was wrong with, and the reviews that ran on it found new problems
-  there: fixing an article became a loop instead of a refinement. A quote that is not in the article
-  (whitespace aside) or is in it more than once, overlapping edits, a reply that changes nothing, and
-  edits that replace more than half the article (`REWRITE_MIN_KEPT`) fail the rewrite. The inbox shows
-  how many passages were edited and how much was kept as it was.
+- **A Fix is a correction, not a new article:** the model replies with edits (`{"find": <a passage
+  quoted from the article>, "replace": <its replacement>}`), and code applies them (`apply_edits`), so
+  every sentence no edit quotes comes through exactly as it was. Writing the whole article out again let
+  a correction reword sentences nothing was wrong with, and the reviews that ran on it found new
+  problems there: fixing an article became a loop instead of a refinement. A quote that is not in the
+  article (whitespace aside) or is in it more than once, overlapping edits, and a reply that changes
+  nothing fail the fix. How much of the article the edits replace is not a guard: a cap at half the
+  article (`REWRITE_MIN_KEPT`, briefly) failed fixes whose problems ran through most of it, and the
+  edits still change only what they quote. The inbox shows how many passages were edited and how much
+  was kept as it was.
+- **A Re-Write is a new article:** the model is told to write the article afresh, not edit it, and
+  replies with the whole of it (`{"title": ..., "body": ...}`). It sees the old article only for its
+  subject and so as not to repeat its problems, and gets the topic's full drafting guidance (the
+  adapter's figure and drafting rules, and the financial drafting rules for a financial topic).
 - **Guards:** the same plain-code checks as the automatic revision (`revision_violations`: no figure or
   link that appears in none of the sources, a sensible title), with a looser length bound and no heading
   check, since fixing "investment advice" can mean removing a section. Then the fresh-data review and the
@@ -1615,9 +1631,10 @@ needs exactly that Lambda's timeout, permissions and CoinGecko key.
   too (`fresh_data`): the rewrite may correct a figure from it, and checked against the findings alone
   that corrected figure was held as fabricated.
 - **Always back to a person:** the old item becomes `rewritten`, and a new `pending` item carries the
-  rewritten article back to the inbox with the model and cost (`Re-Write #n by <model> (~$x AUD)`). A
-  rewrite never publishes anything.
-- **Nothing lost:** the replaced text is kept at `articles/<id>.before-rewrite-<n>.md`. Any failure puts
+  new text back to the inbox with the model and cost (`Fix #n` or `Re-Write #n by <model> (~$x AUD)`).
+  Neither ever publishes anything.
+- **Nothing lost:** the replaced text is kept at `articles/<id>.before-rewrite-<n>.md` (fixes and
+  Re-Writes share the numbering; the article's `rewrites` history records each one's `mode`). Any failure puts
   the original item back to `pending` with `last_rewrite_error`; a rewrite still `rewriting` after 15
   minutes is released the next time the queue is listed.
 - **Cost:** every call (stage `rewrite`, plus the review calls) is added to the article's lineage and the

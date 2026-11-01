@@ -107,10 +107,10 @@ flowchart LR
 | 1 | **Woken** | His schedule invokes his Lambda at 05:00 Sydney time on odd days of the month. With his `enabled` setting off, the run stops there. | `aws_scheduler_schedule.reviewer` (`<prefix>-<env>-reviewer`); `handle` in `lambdas/reviewer_handler.py` |
 | 2 | **The plan** | He reads the tables and builds the run's queue of tasks, with no model call, and saves it. A run still under way is left alone. | `start` and `plan` in `lambdas/common/reviewer.py`; the `reviewer-state` row of `<prefix>-<env>-model-config` |
 | 3 | **The ticks** | Each tick does the next few tasks, then makes a one-shot schedule for the next tick a few minutes later. The first tick runs straight after the plan. | `tick` in `common/reviewer.py`; `_advance` and `schedule_tick` in `reviewer_handler.py`; `<prefix>-<env>-reviewer-tick-<run id>-<n>` |
-| 4 | **Task 1: content findings** | A broken title or body that the assistant's content checks found is sent for a rewrite with a fixed instruction. A blank musing is written again. | `_content` in `common/reviewer.py`; `content_checks` in `lambdas/ops_mcp/content.py` |
-| 5 | **Task 2: held articles** | An article held two days or more is judged. A real problem is sent for a rewrite, or rejected once it has had its rewrites; with none, he reads it (its first 8,000 characters) and approves it, if he may. | `_held`, `held_issues`, `judge_majors`, `judge_published`, `may_approve` |
+| 4 | **Task 1: content findings** | A broken title or body that the assistant's content checks found is sent for a Fix with a fixed instruction. A blank musing is written again. | `_content` in `common/reviewer.py`; `content_checks` in `lambdas/ops_mcp/content.py` |
+| 5 | **Task 2: held articles** | An article held two days or more is judged. A real problem sends it back (a Fix; a Re-Write only as the last try, after a Fix), or it is rejected once it has had its rewrites; with none, he reads it (its first 8,000 characters) and approves it, if he may. | `_held`, `send_back_mode`, `held_issues`, `judge_majors`, `judge_published`, `may_approve` |
 | 6 | **Task 5: the de-fanged publish** | An article held ten days or more is published with the sentences that carry its real problems deleted, approved as it is, or rejected. | `_defang`, `judge_defang`, `cut_sentences`; `reviewer_replace_body` in `admin_api_handler.py` |
-| 7 | **Task 3: recently published** | A few of the newest published articles he has not reviewed are read. Fine: tagged. Not: sent for a rewrite. | `_published`, `judge_published` |
+| 7 | **Task 3: recently published** | A few of the newest published articles he has not reviewed are read. Fine: tagged. Not: sent for a Fix. | `_published`, `judge_published` |
 | 8 | **Task 4: his flags** | Each financial article he approved is watched. If a reader has downvoted it with a comment since he approved it, he takes it down and puts it back in the inbox. | `_flag`; `reviewer_hold` in `admin_api_handler.py`; `list_reviewer_flagged_articles` in `common/dynamo.py` |
 | 9 | **His report** | When the queue is empty, he posts what he did, in counts, on the Musings page. BloggerBear may reply, and he may answer. | `_report` and `_converse` in `reviewer_handler.py`; `report_facts`, `conversation_situation`; `common/musings.py` |
 
@@ -190,7 +190,7 @@ He runs the assistant's `content_checks` over the last `content_days` (7). For e
 
 | Finding | What he does |
 |---|---|
-| `title_markup`, `body_code_fence` or both | Sends the article for a rewrite, with a fixed instruction: a plain-text title, ordinary markdown prose for the body. Takes off his `reviewer_reviewed_at` tag, so it is read again once it is back. |
+| `title_markup`, `body_code_fence` or both | Sends the article for a Fix, with a fixed instruction: a plain-text title, ordinary markdown prose for the body. Takes off his `reviewer_reviewed_at` tag, so it is read again once it is back. |
 | `musing_no_text` | Writes the article's blank musings again (`reviewer_regenerate_musings`) |
 
 A rewrite already running is skipped. The assistant's own follow-up then sees each finding fixed and
@@ -215,7 +215,16 @@ text as it is now, not before a later rewrite. Then each major claim is a major,
 claim is a minor, ignored.
 
 Then he decides, in this order. "At the limit" means the article has had `max_rewrites` (3)
-rewrites.
+rewrites. "Sends it back" means a Fix or a Re-Write (`common/rewrite.py`), and he favours the Fix
+(`send_back_mode`):
+
+- **A Fix** corrects the mistakes he names and keeps the rest of the article as it is. Every
+  send-back is a Fix, except:
+- **A Re-Write** (a completely new article on the same subject) for his last send-back before the
+  limit, and only when the attempt before it was a Fix that did not settle the article. With the
+  default of 3: a Fix, a Fix, then a Re-Write, then a rejection. With `max_rewrites` 1 there is only
+  ever a Fix. If the attempt before was already a Re-Write (a person's, say), the last try is a Fix
+  of it.
 
 1. **Not his.** The item is gone or no longer pending, the article is one he took down, or its topic
    has `force_manual_review`: skipped. A rewrite that never landed is left for a person: the item
@@ -223,19 +232,19 @@ rewrites.
    look at who asked for the rewrite. His own rewrite of a held article keeps that article's queue
    item, so if it failed or never finished, he too leaves the article for a person on every later
    run, task 5 included.
-2. **A fault.** A rewrite, or a rejection at the limit.
+2. **A fault.** Sends it back, or a rejection at the limit.
 3. **The majors.** The topic's model reads the article and its majors as a skeptic (`judge_majors`):
    is each one really a problem? A date is personal data only when it is tied to an identifiable
    person, so a product's beta window is not. A major the model says nothing about counts as real.
-   An answer he cannot read leaves the article for a person. Any real major: a rewrite with his
-   notes, or a rejection at the limit. So a rejection needs a real problem still there; a rewrite
+   An answer he cannot read leaves the article for a person. Any real major: he sends it back with
+   his notes, or a rejection at the limit. So a rejection needs a real problem still there; a rewrite
    that fixed things is not thrown away.
 4. **May he approve?** Not for this topic (`may_approve`, below): left for a person.
 5. **A financial topic with majors**, even ones that turned out not to matter: left for a person.
 6. **The read.** The topic's model reads the article, up to its first 8,000 characters
    (`judge_published`): broken text, a private person's details, investment advice, a defamatory or
    plainly wrong claim. A read that cannot say leaves it for a person. A read that finds a problem:
-   a rewrite, or a rejection at the limit. A read that passes: he approves it. A financial one is approved only with no majors at all, and is
+   he sends it back, or a rejection at the limit. A read that passes: he approves it. A financial one is approved only with no majors at all, and is
    flagged for you.
 
 **Whether he may approve** (`may_approve` in `common/reviewer.py`): never for a topic with
@@ -279,8 +288,9 @@ of a topic with `force_manual_review`. So a run passes over the ones he has read
 The topic's model reads each one, up to its first 8,000 characters (`judge_published`):
 
 - **Fine:** tagged `reviewer_reviewed_at`.
-- **Not:** sent for a rewrite with his notes, and the tag taken off. The article stays up until the
-  rewrite is ready, then waits in the inbox like any rewrite.
+- **Not:** sent for a Fix with his notes (always a Fix here: a published article has no limit to
+  run up against), and the tag taken off. The article stays up until the fix is ready, then waits
+  in the inbox like any rewrite.
 - **No usable answer:** left untagged, for a later run.
 
 An article he approves in task 2 or 5 is tagged then, so this task never reads it again.
@@ -326,7 +336,9 @@ his next run clears the flag.
 - **An article he took down is never his again** (`reviewer_held_at`), and a rewrite that never
   landed, whether a person's or his own, is left for a person.
 - **He never adds or rewords text himself.** His cut only deletes sentences. His rewrites go through
-  the same Re-Write as yours, with its reviews, and come back to the inbox.
+  the same Fix as yours (`articles fix`: the mistakes he names are corrected and the rest is kept),
+  or, only as the last try on a held article after a Fix, the same Re-Write as yours (`articles
+  rewrite`), with its reviews, and come back to the inbox.
 - **He never reads a reader's comment**, only whether a downvote carried one.
 - **He never touches the assistant's table** (`<prefix>-<env>-operator-suggestions`). It is the
   assistant's alone. Every flag lives on the article, and the assistant reads it from there.
@@ -341,7 +353,7 @@ change exactly as they would for you.
 |---|---|---|
 | Approve | `reviewer_approve` | `moderation approve` (and `approve`): `_resolve_moderation_item`, with `published_by` `reviewer`. It renders the page and posts BloggerBear's article musing, in the thoughtful mood of any approval. |
 | Reject | `reviewer_reject` | `moderation reject`: `_reject_moderation_item`, which posts BloggerBear's shocked rejection musing |
-| Rewrite | `reviewer_rewrite` | `articles rewrite`: `_rewrite_article`, with the topic's model. The rewrite runs in the daily-cycle Lambda and comes back to the inbox. |
+| Rewrite | `reviewer_rewrite` | `articles fix`: `_fix_article` (or, for his last try on a held article, `articles rewrite`: `_rewrite_article`), with the topic's model. It runs in the daily-cycle Lambda and comes back to the inbox. |
 | Write blank musings again | `reviewer_regenerate_musings` | `musings regenerate --article`: `_regenerate_article_musings` |
 | Take down and hold | `reviewer_hold` | `articles unpublish`'s clean-up, but the article goes back to `pending_moderation`, not `rejected` |
 | Put in a cut body | `reviewer_replace_body` | No command: his alone, for task 5. It keeps the original beside it. |
@@ -382,7 +394,7 @@ report uses fixed words for each, so nothing a model or a reader wrote reaches i
 | Outcome | In the report |
 |---|---|
 | `approved`, `approved_flagged` | Held articles he approved; financial ones, flagged for a person |
-| `rewrite`, `content_rewrite` | Articles sent back for a rewrite; ones with a broken title or body |
+| `rewrite`, `rewrite_anew`, `content_rewrite` | Articles sent back for a Fix; ones written again from scratch as the last try; ones with a broken title or body |
 | `rejected` | Drafts still not right after their last rewrite |
 | `left_for_human` | Articles left for a person |
 | `reviewed_ok` | Newly published articles read and found fine |
@@ -439,7 +451,7 @@ on the article's item in the console.
 **Which model.** His reads and judgements use the topic's model (`resolve_model` in
 `common/model_routing.py`: a model from its rotation, else its own, else the project's default).
 Each call resolves it again. So does each rewrite he asks for: he names no model, so
-`_rewrite_article` picks the topic's model afresh. On a topic with a rotation list, his judgement,
+`_fix_article` (or `_rewrite_article`) picks the topic's model afresh. On a topic with a rotation list, his judgement,
 his read and the rewrite of one article may therefore each use a different model from it. His
 musings, and BloggerBear's replies to him, use the project's
 default model (`resolve_model` with no topic). None of his own calls falls back to another model: on

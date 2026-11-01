@@ -580,6 +580,8 @@ submission-round entries after them are docs and tests, with nothing to deploy.
 - [x] Cleanup: TTLs, expiring snapshots, 90-day log retention
 - [x] Refusal guard for angles and titles; recent titles fed to ideation
 - [x] Re-Write of a held article from the inbox (#130)
+- [x] Fix (edits, `articles fix`, inbox `f`) and Re-Write (a completely new article,
+  `articles rewrite`, inbox `w`) as two modes; no cap on how much of the article a fix changes
 - [x] GDELT time budgets; CoinGecko key passed to the daily cycle (#129)
 - [x] AgentCore Web Search as the fallback when GDELT fails (#132)
 - [x] Web search usage and spend on Stats: counted (#134) and read from the

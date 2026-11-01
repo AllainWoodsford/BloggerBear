@@ -9,7 +9,7 @@ same held articles):
 
 1. **Content findings.** The assistant's content checks (ops_mcp/content.py: a title with markup,
    a body that is one code fence, a musing with no text) on articles published in the last week.
-   A title or body problem is sent for a rewrite with a fixed instruction; a blank musing is
+   A title or body problem is sent for a Fix with a fixed instruction; a blank musing is
    written again. The assistant's own follow-up then sees it acted on and, once fixed, drops it:
    he never touches the assistant's table, which is the assistant's alone.
 2. **Held articles that have waited two days or more.** Minor fresh-data claims are ignored. The
@@ -17,16 +17,20 @@ same held articles):
    fresh-data review made of the text as it is now) are read by the topic's own model as a
    skeptic: is it really a problem? A date, for instance, is personal data only when it is tied
    to a person; a product's beta window is not. The compliance review's notes never held anything
-   and are minors. A real major (or a fault in the draft) sends it for a rewrite with his notes,
-   or, once it has had `max_rewrites`, rejects it: judged first, so a rewrite that fixed things
-   is never thrown away. Nothing real: he reads the whole article (judge_published) and, if it
-   passes and he may (`may_approve`), approves it; **nothing of his is approved unread**.
+   and are minors. A real major (or a fault in the draft) sends it back with his notes, or, once
+   it has had `max_rewrites`, rejects it: judged first, so a rewrite that fixed things is never
+   thrown away. He favours a Fix (common/rewrite.py: the mistakes he names corrected, the rest
+   kept) over a Re-Write (a completely new article): every send-back is a Fix but the last before
+   he would reject, and that one is a Re-Write only when the attempt before it was a Fix that did
+   not settle the article (`send_back_mode`). Nothing real: he reads the whole article
+   (judge_published) and, if it passes and he may (`may_approve`), approves it; **nothing of his
+   is approved unread**.
    Financial topics: no majors at all and a passing read, he approves it and flags it for a
    person (below); majors that did not matter, it waits for a person. A person's rewrite that
    never landed (failed, never started) is left for that person.
 3. **Recently published articles** he has not reviewed yet, at most `published_per_run`: the
    newest he has not tagged (`reviewer_reviewed_at`), skipping the tagged ones and looking further
-   back. Fine: tagged. Not: sent for a rewrite, and the tag taken off (it needs reviewing again).
+   back. Fine: tagged. Not: sent for a Fix, and the tag taken off (it needs reviewing again).
 4. **His flags.** A financial article he approved carries `reviewer_flag`, which the assistant
    reports (`reviewer_financial_check`) while it stands. While it stands he checks the article's
    feedback: a downvote with a comment that got through screening since he approved it, and he
@@ -77,6 +81,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from common import dynamo
+from common.rewrite import FIX_MODE, REWRITE_MODE
 
 REVIEWER_MAY_APPROVE_FIELD = "reviewer_may_approve"
 REVIEWED_FIELD = "reviewer_reviewed_at"
@@ -461,6 +466,23 @@ def judge_published(ask: Callable[[str], str], *, topic_name: str, title: str, b
     return answer["verdict"], str(answer.get("rewrite_instructions") or "").strip()
 
 
+def _was_a_fix(record: dict) -> bool:
+    """Whether a rewrite record (an article's `rewrites`) was a Fix. One from before records said
+    their mode was a fix if it kept edits, else a rewrite of the whole text."""
+    mode = record.get("mode")
+    return mode == FIX_MODE if mode else "edits" in record
+
+
+def send_back_mode(article: dict, settings: dict) -> str:
+    """How he sends a held article back: a Fix, favoured always, except for his last send-back
+    before he would reject it (the `max_rewrites`th rewrite), when the attempt before it was a Fix
+    that did not settle it. That one is a Re-Write: the fixes have had their turn, and a new
+    article is the last thing worth trying before a rejection."""
+    rewrites = article.get("rewrites") or []
+    last_chance = len(rewrites) + 1 >= settings["max_rewrites"]
+    return REWRITE_MODE if rewrites and last_chance and _was_a_fix(rewrites[-1]) else FIX_MODE
+
+
 def _instructions(lead: str, notes: str, issues: list[str]) -> str:
     """His rewrite note: what to fix, in his words or the flags' own."""
     body = notes or "Fix these: " + "; ".join(issues)
@@ -476,7 +498,7 @@ class Hands:
 
     approve: Callable[[str], tuple[int, dict]]
     reject: Callable[[str], tuple[int, dict]]
-    rewrite: Callable[[str, str], tuple[int, dict]]
+    rewrite: Callable[[str, str, str], tuple[int, dict]]  # (article id, instructions, mode)
     regenerate_musings: Callable[[str], tuple[int, dict]]
     hold: Callable[[str], tuple[int, dict]]
     ask: Callable[[str, str], str]  # (prompt, model_id) -> text
@@ -579,7 +601,7 @@ def _content(task: dict, hands: Hands, now: datetime) -> str:
         status, _ = hands.regenerate_musings(article_id)
         outcome = "musing_fixed" if status == 200 else "skipped"
     else:
-        status, _ = hands.rewrite(article_id, _CONTENT_INSTRUCTIONS[kind])
+        status, _ = hands.rewrite(article_id, _CONTENT_INSTRUCTIONS[kind], FIX_MODE)
         if status in (200, 202):
             dynamo.set_article_fields(article_id, {REVIEWED_FIELD: None})
             outcome = "content_rewrite"
@@ -659,9 +681,9 @@ def _read_passes(hands: Hands, topic, article: dict, body: str) -> bool | None:
 
 
 def _held(task: dict, hands: Hands, now: datetime, joke: int, settings: dict) -> str:
-    """Task 2. Judged first, then the backoff: a real problem (or a fault in the draft) is a
-    rewrite, or a rejection once it has had `max_rewrites`; nothing real, and he approves it only
-    after reading it whole, if he may."""
+    """Task 2. Judged first, then the backoff: a real problem (or a fault in the draft) sends it
+    back (a Fix, or for the last try a Re-Write: send_back_mode), or is a rejection once it has had
+    `max_rewrites`; nothing real, and he approves it only after reading it whole, if he may."""
     context, outcome = _held_context(task)
     if context is None:
         return outcome
@@ -671,8 +693,11 @@ def _held(task: dict, hands: Hands, now: datetime, joke: int, settings: dict) ->
     def rewrite_or_reject(lead: str, notes: str, problems: list[str]) -> str:
         if at_limit:
             return _reject(item, topic, hands, now, joke)
-        status, _ = hands.rewrite(article["article_id"], _instructions(lead, notes, problems))
-        return "rewrite" if status in (200, 202) else "skipped"
+        mode = send_back_mode(article, settings)
+        status, _ = hands.rewrite(article["article_id"], _instructions(lead, notes, problems), mode)
+        if status not in (200, 202):
+            return "skipped"
+        return "rewrite_anew" if mode == REWRITE_MODE else "rewrite"
 
     issues = held_issues(item, article)
     if issues.faults:
@@ -807,7 +832,9 @@ def _published(task: dict, hands: Hands, now: datetime) -> str:
         dynamo.set_article_fields(article["article_id"], {REVIEWED_FIELD: _iso(now)})
         return "reviewed_ok"
     status, _ = hands.rewrite(
-        article["article_id"], _instructions("Professor Grizzlewick's review:", notes, ["see the article"])
+        article["article_id"],
+        _instructions("Professor Grizzlewick's review:", notes, ["see the article"]),
+        FIX_MODE,
     )
     if status not in (200, 202):
         return "skipped"
@@ -869,11 +896,12 @@ def do_task(task: dict, hands: Hands, now: datetime, *, joke: int = 0, settings:
 OUTCOMES = {
     "approved": "approved {n} held article{s}",
     "approved_flagged": "approved {n} financial article{s}, flagged for a human to check",
-    "rewrite": "sent {n} article{s} back for a rewrite",
+    "rewrite": "sent {n} article{s} back to have their mistakes fixed",
+    "rewrite_anew": "had {n} article{s} written again from scratch when fixing was not enough",
     "rejected": "rejected {n} draft{s} still not right after their last rewrite",
     "left_for_human": "left {n} article{s} for a human to decide",
     "reviewed_ok": "read {n} newly published article{s} and found nothing amiss",
-    "content_rewrite": "sent {n} article{s} with a broken title or body for a rewrite",
+    "content_rewrite": "sent {n} article{s} with a broken title or body back to be fixed",
     "musing_fixed": "rewrote {n} blank musing{s}",
     "held_downvoted": "took down {n} article{s} readers downvoted after I approved them",
     "defanged": "published {n} long-waiting article{s} with the flagged parts cut out",
@@ -883,7 +911,7 @@ OUTCOMES = {
 
 
 # How his report reads to BloggerBear (common/musings.py's back-and-forth).
-_STERN = ("rejected", "defang_rejected", "held_downvoted", "rewrite", "content_rewrite")
+_STERN = ("rejected", "defang_rejected", "held_downvoted", "rewrite", "rewrite_anew", "content_rewrite")
 _KIND = ("approved", "approved_flagged", "reviewed_ok", "defanged")
 
 
@@ -914,7 +942,7 @@ def report_facts(counts: dict, rewrite_topics: list[str] | None = None) -> list[
 
 # The outcomes his report links to (the articles he put out) and names the topics of (sent back).
 _LINKED = ("approved", "approved_flagged", "defanged")
-_REWRITES = ("rewrite", "content_rewrite")
+_REWRITES = ("rewrite", "rewrite_anew", "content_rewrite")
 
 
 def report_mentions(state: dict) -> tuple[list[dict], list[str]]:

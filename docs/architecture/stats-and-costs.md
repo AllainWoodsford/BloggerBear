@@ -113,7 +113,7 @@ flowchart LR
 
 | On this week's row | What it is | Written by |
 |---|---|---|
-| `articles_*` | Each drafted article's whole cost (authoring and research), as one entry. Each rewrite of an article (a held one from the review inbox, or any article you rewrite with `articles rewrite`) adds its own calls as another entry, even a rewrite that failed after its model call. So a rewritten article has more than one entry. An entry with any unpriced call counts as one unpriced article. | `record_article_lineage` |
+| `articles_*` | Each drafted article's whole cost (authoring and research), as one entry. Each rewrite of an article (a held one from the review inbox, or any article you send back with `articles fix` or `articles rewrite`) adds its own calls as another entry, even a rewrite that failed after its model call. So a rewritten article has more than one entry. An entry with any unpriced call counts as one unpriced article. | `record_article_lineage` |
 | `musings_*`, `weekly_reflection_*`, `gear_identity_*`, `comment_screening_*`, `assistant_*`, `vision_triage_*`, `model_pricing_*`, `reviewer_*` | Calls, tokens in and out, cost in AUD and unpriced calls, per category | `tracked_claude`, `record_model_usage`, `record_assistant_run` |
 | `feedback_given`, `feedback_rejected_comment`, `loot_drops` | Feedback stored; whole submissions refused because their comment failed the screen (a closed site, a bad token or the decoy field is not counted); gear announced as a loot drop | the public API; `common/musings.py` |
 | `web_search_agentcore_queries`, `web_search_agentcore_cost_aud`, `web_search_gdelt_fallbacks` | AgentCore queries and their estimated cost; GDELT searches that fell back | `lambdas/common/web_search.py` |

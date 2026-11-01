@@ -3584,10 +3584,10 @@ def _put_model_row(model_id=REWRITE_MODEL, enabled=True):
     )
 
 
-def _rewrite(queue_id="queue-1", body=None, client=None):
+def _rewrite(queue_id="queue-1", body=None, client=None, route="rewrite"):
     client = client or MagicMock()
     event = _event(
-        "POST /moderation-queue/{queue_id}/rewrite",
+        f"POST /moderation-queue/{{queue_id}}/{route}",
         path_params={"queue_id": queue_id},
         body=body if body is not None else {"model_id": REWRITE_MODEL},
     )
@@ -3608,9 +3608,15 @@ def test_rewrite_claims_the_item_and_starts_the_rewrite_in_the_background(aws_re
     result, body, client = _rewrite()
 
     assert result["statusCode"] == 202
-    assert body == {"rewriting": "queue-1", "article_id": "article-1", "model_id": REWRITE_MODEL}
+    assert body == {
+        "rewriting": "queue-1",
+        "mode": "rewrite",
+        "article_id": "article-1",
+        "model_id": REWRITE_MODEL,
+    }
     row = _queue_row()
     assert row["status"] == "rewriting" and row["rewrite_model_id"] == REWRITE_MODEL
+    assert row["rewrite_mode"] == "rewrite"  # a completely new article (common/rewrite.py)
     kwargs = client.invoke.call_args.kwargs
     assert kwargs["FunctionName"] == "daily-cycle-fn" and kwargs["InvocationType"] == "Event"
     assert json.loads(kwargs["Payload"]) == {
@@ -3618,6 +3624,27 @@ def test_rewrite_claims_the_item_and_starts_the_rewrite_in_the_background(aws_re
         "queue_id": "queue-1",
         "rewrite_id": row["rewrite_id"],
     }
+
+
+def test_fix_claims_the_item_for_a_fix_of_its_mistakes(aws_resources):
+    _put_model_row()
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+
+    result, body, client = _rewrite(route="fix")
+
+    assert result["statusCode"] == 202 and body["mode"] == "fix"
+    row = _queue_row()
+    assert row["status"] == "rewriting" and row["rewrite_mode"] == "fix"
+    assert json.loads(client.invoke.call_args.kwargs["Payload"])["action"] == "rewrite"
+
+
+def test_a_fix_with_nothing_to_fix_says_to_use_articles_fix(aws_resources):
+    _put_model_row()
+    _put_moderation_item(reasons=["financial topic - routed to manual moderation regardless of content"])
+
+    result, body, _ = _rewrite(route="fix")
+
+    assert result["statusCode"] == 400 and "admin_cli articles fix" in body["error"]
 
 
 def test_rewrite_needs_a_registered_enabled_model(aws_resources):
@@ -3745,10 +3772,10 @@ def test_a_rewrite_without_instructions_drops_the_note_an_earlier_one_left(aws_r
 # --- Steered rewrite of any article (POST /articles/{article_id}/rewrite) --------------------------
 
 
-def _rewrite_article(article_id="article-1", body=None, client=None):
+def _rewrite_article(article_id="article-1", body=None, client=None, route="rewrite"):
     client = client or MagicMock()
     event = _event(
-        "POST /articles/{article_id}/rewrite",
+        f"POST /articles/{{article_id}}/{route}",
         path_params={"article_id": article_id},
         body=body if body is not None else {"instructions": "The second section is out of date."},
     )
@@ -3794,6 +3821,56 @@ def test_rewriting_a_published_article_leaves_it_up_until_the_rewrite_is_ready(a
     assert new["status"] == "rewriting" and new["reasons"] == ["sent back by a person for a rewrite"]
     payload = json.loads(client.invoke.call_args.kwargs["Payload"])
     assert payload == {"action": "rewrite", "queue_id": new["queue_id"], "rewrite_id": new["rewrite_id"]}
+
+
+@pytest.mark.parametrize("route", ["fix", "rewrite"])
+def test_a_published_article_is_sent_for_the_mode_its_route_names(aws_resources, route):
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+
+    result, body, _, _ = _rewrite_article(route=route)
+
+    assert result["statusCode"] == 202 and body["mode"] == route
+    assert _queue_rows()[body["rewriting"]]["rewrite_mode"] == route
+    assert _article_row()["status"] == "published"
+
+
+@pytest.mark.parametrize("route", ["fix", "rewrite"])
+def test_a_held_article_is_sent_for_the_mode_its_route_names(aws_resources, route):
+    _put_article(status="pending_moderation")
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+
+    result, body, _, _ = _rewrite_article(route=route)
+
+    assert result["statusCode"] == 202 and body == {**body, "rewriting": "queue-1", "mode": route}
+    assert _queue_row()["rewrite_mode"] == route
+
+
+@pytest.mark.parametrize("mode", [None, "fix", "rewrite"])
+def test_reviewer_bear_sends_an_article_back_for_a_fix_unless_he_asks_for_a_new_one(aws_resources, mode):
+    _put_article(status="pending_moderation")
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+
+    with (
+        patch("admin_api_handler._get_lambda_client", return_value=MagicMock()),
+        patch("admin_api_handler.resolve_model", return_value=(REWRITE_MODEL, None)),
+    ):
+        args = ("article-1", "Fix the draft: x") + ((mode,) if mode else ())
+        status, body = admin_api_handler.reviewer_rewrite(*args)
+
+    assert status == 202 and body["mode"] == (mode or "fix")
+    assert _queue_row()["rewrite_mode"] == (mode or "fix")
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_fix_and_rewrite_route_is_in_the_environments_terraform(env):
+    main = (Path(__file__).resolve().parents[2] / "infra" / "environments" / env / "main.tf").read_text(
+        encoding="utf-8"
+    )
+    routes = [route for route in admin_api_handler._ROUTES if route.endswith(("/fix", "/rewrite"))]
+    assert len(routes) == 4
+    for route in routes:
+        assert f'"{route}",' in main, route
 
 
 def test_a_published_article_already_being_rewritten_is_refused(aws_resources):

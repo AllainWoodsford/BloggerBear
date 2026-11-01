@@ -255,7 +255,7 @@ def test_held_articles_are_listed_oldest_first_with_why(tables):
     )
     assert kinds(result) == [("draft_truncated", "a-old"), ("awaiting_review", None)]
     rewrite, review = result["findings"]
-    assert rewrite["suggestion"]["command"].endswith('articles rewrite a-old -i "the draft was cut short"')
+    assert rewrite["suggestion"]["command"].endswith('articles fix a-old -i "the draft was cut short"')
     assert review["suggestion"]["command"].endswith("approve --source moderation")
 
 

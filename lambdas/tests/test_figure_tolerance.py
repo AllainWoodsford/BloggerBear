@@ -276,16 +276,33 @@ def test_the_correction_prompt_says_how_to_write_figures_only_when_the_adapter_d
     assert f"How to write figures: {CryptoFeedAdapter.figure_guidance}" in guided
 
 
-def test_the_rewrite_prompt_carries_the_adapters_figure_rule_and_keeps_a_closing_summary():
+def test_the_fix_prompt_carries_the_adapters_figure_rule_and_keeps_a_closing_summary():
     args = ("Crypto", "T", "Body", ["an issue"], "- finding", "evidence", "now")
 
-    assert "How articles on this topic are written" not in rewrite.build_rewrite_prompt(*args)
+    assert "How articles on this topic are written" not in rewrite.build_fix_prompt(*args)
     guidance = f"{CryptoFeedAdapter.figure_guidance}\n{rewrite._CLOSING_SECTIONS_RULE}"
-    prompt = rewrite.build_rewrite_prompt(*args, writing_guidance=guidance)
+    prompt = rewrite.build_fix_prompt(*args, writing_guidance=guidance)
     assert CryptoFeedAdapter.figure_guidance in prompt and "edit them too so they still match" in prompt
     # It comes after the rules and does not replace them.
     rules = prompt.index("Do not add any claim, number, name or link")
     assert rules < prompt.index("How articles on this topic")
+
+
+def test_a_rewrite_into_a_new_article_is_given_all_of_the_adapters_guidance():
+    crypto = {"topic_id": "crypto", "adapter": "crypto_feed", "is_financial": True}
+    rules = fr.writing_rules(crypto)
+
+    guidance = rewrite._writing_guidance(rewrite.REWRITE_MODE, crypto, rules)
+
+    assert CryptoFeedAdapter.figure_guidance in guidance
+    assert rules["drafting_guidance"] and rules["drafting_guidance"] in guidance
+    assert compliance.FINANCIAL_DRAFTING_GUIDANCE in guidance
+    assert rewrite._CLOSING_SECTIONS_RULE not in guidance  # that is a fix's: keep the old ending in step
+    assert rewrite._CLOSING_SECTIONS_RULE in rewrite._writing_guidance(rewrite.FIX_MODE, crypto, rules)
+    prompt = rewrite.build_rewrite_prompt(
+        "Crypto", "T", "Body", ["an issue"], "- finding", "evidence", "now", writing_guidance=guidance
+    )
+    assert prompt.index("every claim, number, name and link") < prompt.index("How articles on this topic")
 
 
 # --- the disclaimer -------------------------------------------------------------------------------

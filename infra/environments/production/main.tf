@@ -1148,9 +1148,12 @@ module "admin_api" {
     # admin_api_handler.py's _unpublish_article and `articles unpublish`.
     "POST /articles/{article_id}/unpublish",
     "POST /articles/{article_id}/checked",
-    # A rewrite steered by what a person says is wrong: takes a published article
-    # down first, and the result waits in the inbox. See admin_api_handler.py's
-    # _rewrite_article and `articles rewrite`.
+    # Sent back, steered by what a person says is wrong: `fix` corrects the mistakes
+    # and keeps the rest, `rewrite` writes a completely new article. A published
+    # article stays up until the new text is ready, which then waits in the inbox.
+    # See admin_api_handler.py's _fix_article / _rewrite_article, `articles fix`
+    # and `articles rewrite` (common/rewrite.py).
+    "POST /articles/{article_id}/fix",
     "POST /articles/{article_id}/rewrite",
     # Lineage/cost repair: `audit` lists articles with missing lineage or cost and
     # models with no known price; `backfill` recomputes cost from stored tokens
@@ -1169,6 +1172,7 @@ module "admin_api" {
     "GET /moderation-queue",
     "POST /moderation-queue/{queue_id}/approve",
     "POST /moderation-queue/{queue_id}/reject",
+    "POST /moderation-queue/{queue_id}/fix",
     "POST /moderation-queue/{queue_id}/rewrite",
     # Phase 6: "what's actually been flagged so far" visibility -- see
     # admin_api_handler.py's _moderation_queue_stats and

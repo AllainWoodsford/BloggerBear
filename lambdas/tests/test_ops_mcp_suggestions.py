@@ -110,7 +110,7 @@ def test_the_id_is_put_into_the_command_as_it_is():
     command = suggestions.suggest("draft_truncated", ARTICLE_ID)["command"]
 
     assert (
-        command == f'python scripts/admin_cli.py articles rewrite {ARTICLE_ID} -i "the draft was cut short"'
+        command == f'python scripts/admin_cli.py articles fix {ARTICLE_ID} -i "the draft was cut short"'
     )
 
 

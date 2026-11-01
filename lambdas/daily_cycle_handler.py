@@ -240,9 +240,10 @@ def _run_id(event: dict, context) -> str | None:
 
 
 def _handle(event: dict, context=None) -> dict:
-    # A Re-Write of a held article (common/rewrite.py), invoked asynchronously by the Admin
-    # API's POST /moderation-queue/{queue_id}/rewrite. It runs here rather than in a Lambda of
-    # its own because it needs exactly this one's timeout, permissions and CoinGecko key.
+    # A Fix or Re-Write of an article (common/rewrite.py; the queue item's `rewrite_mode` says
+    # which), invoked asynchronously by the Admin API's POST .../fix and .../rewrite routes. It runs
+    # here rather than in a Lambda of its own because it needs exactly this one's timeout,
+    # permissions and CoinGecko key.
     if (event or {}).get("action") == "rewrite":
         queue_id, rewrite_id = event.get("queue_id"), event.get("rewrite_id")
         if not queue_id or not rewrite_id:
