@@ -47,6 +47,8 @@ GUARDED = sorted(
         "common/human_review.py",
         # Offline scoring runs (eval-jobs and the admin API), which print what they could not read or send.
         "common/eval_score.py",
+        # Every traced call site's, which prints what it could not store.
+        "common/call_traces.py",
         *(str(path.relative_to(LAMBDAS)) for path in (LAMBDAS / "common" / "adapters").glob("*.py")),
     ]
 )

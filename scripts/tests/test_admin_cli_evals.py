@@ -74,7 +74,7 @@ def test_register_adds_the_evals_group_and_its_commands():
     commands = _subparsers(subparsers.choices["evals"]).choices
     assert set(commands) == {
         "get", "set", "rollup", "status", "digest", "forgive", "punish", "ungate", "revoke", "cull",
-        "score", "runs",
+        "score", "runs", "trace",
     }  # fmt: skip
     assert set(_subparsers(commands["runs"]).choices) == {"list", "get", "cancel", "resume"}
 
@@ -460,3 +460,11 @@ def test_the_runs_commands_send_what_their_routes_take():
     assert run_cli("runs", "get", "score-1")[0] == [("GET", "/evals/runs/score-1", None)]
     assert run_cli("runs", "cancel", "score-1")[0] == [("DELETE", "/evals/runs/score-1", None)]
     assert run_cli("runs", "resume", "score-1")[0] == [("POST", "/evals/runs/score-1/resume", {})]
+
+
+def test_trace_reads_one_articles_call_traces():
+    """PR18c: GET /evals/traces/{article_id}, the id quoted so nothing in it can name another path."""
+    assert cli("trace", "0b7e4c1e-5d3a-4f8e-9c2b-1a2b3c4d5e6f") == [
+        ("GET", "/evals/traces/0b7e4c1e-5d3a-4f8e-9c2b-1a2b3c4d5e6f", None)
+    ]
+    assert cli("trace", "a/../b") == [("GET", "/evals/traces/a%2F..%2Fb", None)]

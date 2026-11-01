@@ -212,17 +212,120 @@ def test_the_content_bucket_is_versioned_and_old_versions_expire():
 # --- Cleanup PR: snapshots expire, TTLs were added, log retention was set ---------------------
 
 
+def _lifecycle_rule(env: str, rule_id: str) -> str:
+    """One `rule { ... }` of the content bucket's lifecycle, whole and no more: from its opening to
+    its own closing brace, so a test of one rule never reads the rule that follows it."""
+    text = _uncommented(_read("environments", env, "main.tf"))
+    lifecycle = _resource_block(text, "aws_s3_bucket_lifecycle_configuration", "content")
+    assert "bucket = aws_s3_bucket.content.id" in lifecycle, env
+    rules = re.findall(r"^  rule \{\n(.*?)^  \}$", lifecycle, re.S | re.M)
+    [rule] = [body for body in rules if re.search(rf'^\s*id\s*=\s*"{re.escape(rule_id)}"$', body, re.M)]
+    return rule
+
+
 @pytest.mark.parametrize("env", ["dev", "production"])
 def test_raw_source_snapshots_expire_separately_from_the_rest_of_the_bucket(env):
     """21 days, not the Findings table's own 14-day FINDING_TTL_DAYS -- a safety margin over how
     long a DynamoDB TTL deletion can lag past a Finding's actual expiry, so a live Finding's
     raw_snapshot_s3_key is never left pointing at an already-deleted object."""
-    text = _read("environments", env, "main.tf")
-    start = re.search(r'id\s*=\s*"expire-old-snapshots"', text).start()
-    rule = text[start : start + 400]
+    rule = _lifecycle_rule(env, "expire-old-snapshots")
 
     assert 'prefix = "snapshots/"' in rule
-    assert "days = 21" in rule
+    assert re.search(r"^\s*days = 21$", rule, re.M)
+    assert 'status = "Enabled"' in rule
+
+
+# --- PR18c: call traces (lambdas/common/call_traces.py) ----------------------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_call_traces_expire_after_14_days_in_both_environments(env):
+    """Traces hold whole prompts and replies: two weeks to read them back, then gone. Production's
+    bucket is versioned, so its rule also drops the noncurrent copy an expiry or a later trace
+    leaves, a day on, rather than after the whole bucket's 30 days."""
+    rule = _lifecycle_rule(env, "expire-call-traces")
+
+    assert 'prefix = "traces/"' in rule
+    assert re.search(r"^\s*days = 14$", rule, re.M)
+    assert 'status = "Enabled"' in rule
+    if env == "production":
+        assert re.search(r"^\s*noncurrent_days = 1$", rule, re.M)
+
+
+@pytest.mark.parametrize(("env", "default"), [("dev", "true"), ("production", "false")])
+def test_trace_calls_is_on_by_default_in_dev_and_off_in_production(env, default):
+    """Section 4.5: trace_calls is false, and the dev root sets it true. The root's say is the
+    TRACE_CALLS_DEFAULT every pipeline Lambda is given (common/evals_settings.defaults reads it)."""
+    main = _uncommented(_read("environments", env, "main.tf"))
+    shared = main.split("  lambda_env_variables = {")[1].split("\n}\n")[0]
+
+    assert re.findall(r'^\s*TRACE_CALLS_DEFAULT\s*=\s*"(\w+)"$', shared, re.M) == [default]
+
+
+# The resource types that may name the content bucket in a root (dev's has no versioning): none of
+# them can make an object readable by anyone outside the account.
+_CONTENT_BUCKET_SETTINGS = {
+    "aws_s3_bucket_ownership_controls",
+    "aws_s3_bucket_public_access_block",
+    "aws_s3_bucket_versioning",
+    "aws_s3_bucket_lifecycle_configuration",
+}
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_no_public_path_reaches_the_content_buckets_call_traces(env):
+    """Call traces sit in the content bucket under traces/, and hold whole prompts and replies, so
+    nothing public may read them. The bucket has no public path at all: no CloudFront distribution
+    takes it as an origin (the site's takes the site bucket, through its OAC policy on that bucket
+    alone; the API's takes the public API), it has no bucket policy and every public access is
+    blocked, and the only role besides lambda_exec that may read it (the assistant's) reads named
+    prefixes, never traces/. The public API's own reads are held in test_call_traces.py. A bucket
+    policy, an origin or a broader grant added later fails here."""
+    main = _uncommented(_read("environments", env, "main.tf"))
+
+    names_it = re.compile(r"aws_s3_bucket\.content\.(id|bucket|arn)\b")
+    resources = re.findall(r'^resource "(\w+)" "\w+" \{\n(.*?)^\}', main, re.S | re.M)
+    settings = {kind for kind, body in resources if names_it.search(body)}
+    assert "aws_s3_bucket_public_access_block" in settings and settings <= _CONTENT_BUCKET_SETTINGS, env
+    # Besides those, only lambda_exec's own policy documents (an identity policy grants no one else).
+    data = re.findall(r'^data "(\w+)" "(\w+)" \{\n(.*?)^\}', main, re.S | re.M)
+    assert {(kind, name) for kind, name, body in data if names_it.search(body)} == {
+        ("aws_iam_policy_document", "lambda_exec")
+    }, env
+    blocked = _resource_block(main, "aws_s3_bucket_public_access_block", "content")
+    for setting in (
+        "block_public_acls",
+        "block_public_policy",
+        "ignore_public_acls",
+        "restrict_public_buckets",
+    ):
+        assert re.search(rf"^\s*{setting}\s*=\s*true$", blocked, re.M), (env, setting)
+    # The modules a root hands the bucket to: the assistant alone.
+    modules = re.findall(r'^module "(\w+)" \{\n(.*?)^\}', main, re.S | re.M)
+    handed = {name for name, body in modules if "aws_s3_bucket.content" in body}
+    assert handed == {"ops_assistant"}, env
+
+    # Every CloudFront origin in the tree, and what it is.
+    origins = []
+    for path in terraform_files():
+        text = _uncommented(path.read_text(encoding="utf-8"))
+        origins += re.findall(r"^  origin \{\n(.*?)^  \}", text, re.S | re.M)
+    domains = sorted(re.search(r"^\s*domain_name\s*=\s*(\S+)$", origin, re.M).group(1) for origin in origins)
+    assert domains == ["aws_s3_bucket.site.bucket_regional_domain_name", "var.api_domain"]
+    site = _uncommented(_read("modules", "static-site", "main.tf"))
+    policy = _resource_block(site, "aws_s3_bucket_policy", "site")
+    assert "bucket = aws_s3_bucket.site.id" in policy
+    assert re.findall(r"^\s*Resource\s*=\s*(.+)$", policy, re.M) == ['"${aws_s3_bucket.site.arn}/*"']
+
+    # The assistant's grants on the bucket name their prefixes, and none is the bucket itself.
+    granted = []
+    for path in sorted((INFRA / "modules" / "ops-assistant").glob("*.tf")):
+        text = _uncommented(path.read_text(encoding="utf-8"))
+        granted += re.findall(r"\$\{var\.content_bucket_arn\}([^\"]*)\"", text)
+        assert not re.search(r"[=\[,]\s*var\.content_bucket_arn\b", text), path.name
+    assert len(granted) >= 2
+    for resource in granted:
+        assert re.match(r"/(articles|snapshots)/", resource), resource
 
 
 def test_four_more_tables_gained_a_ttl_in_the_cleanup_pr():

@@ -35,6 +35,9 @@ which admin_cli.build_parser calls. Today's commands:
 - `evals runs list|get|cancel|resume`: the judge's and the scoring runs, one run's progress and
   results (`get --wait` follows it), cancelling one, and sending a scoring run's unscored items again
   (GET /evals/runs, GET|DELETE /evals/runs/{run_id}, POST /evals/runs/{run_id}/resume).
+- `evals trace ARTICLE_ID`: one article's call traces, each model call's prompt and reply as stored
+  while `trace_calls` was on, the gear's guidance and the operator's note as their sha256, and those
+  of the research behind it (GET /evals/traces/{article_id}; lambdas/common/call_traces.py).
 
 After any change to these commands run
 `python scripts/generate_cli_reference.py`, so the assistant's CLI reference
@@ -71,7 +74,7 @@ SET_FLAGS = (
     ("--daily-spend-cap", "evals_daily_spend_cap_aud", "amount",
      "A-dollars the judge and scoring runs may spend a day, 0 to 100 (default 2)"),
     ("--trace-calls", "trace_calls", "switch",
-     "Store each model call's prompt and reply for review (default off)"),
+     "Store each model call's prompt and reply for 14 days, for `evals trace` (default off; on in dev)"),
     ("--timezone", "timezone", "text",
      "The IANA time zone whose days the rollup counts (default Australia/Sydney)"),
     ("--excluded-sources", "excluded_sources", "list",
@@ -361,6 +364,7 @@ def register(subparsers: argparse._SubParsersAction, helpers: dict) -> None:
     cull_parser.set_defaults(func=cmd_cull)
 
     _register_runs(evals_sub, helpers)
+    _register_trace(evals_sub, do_request)
 
 
 # --- offline scoring runs (`evals score`, `evals runs ...`) --------------------------------------------
@@ -583,4 +587,20 @@ def _register_runs(evals_sub, helpers: dict) -> None:
         func=lambda args: do_request(
             args, "POST", f"/evals/runs/{quote(args.run_id, safe='')}/resume", body={}
         )
+    )
+
+
+def _register_trace(evals_sub: argparse._SubParsersAction, do_request) -> None:
+    """`evals trace` (PR18c): one article's call traces, read back through the admin API."""
+    trace_parser = evals_sub.add_parser(
+        "trace",
+        help="One article's call traces: each model call's prompt and reply as stored while trace_calls "
+        "was on (the gear's guidance and the operator's note as their sha256), and those of the research "
+        "behind it",
+    )
+    trace_parser.add_argument(
+        "article_id", help="The article's id, or the id a run that stored no article traced its calls under"
+    )
+    trace_parser.set_defaults(
+        func=lambda args: do_request(args, "GET", f"/evals/traces/{quote(args.article_id, safe='')}")
     )

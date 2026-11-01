@@ -290,6 +290,28 @@ resource "aws_s3_bucket_lifecycle_configuration" "content" {
       days = 21
     }
   }
+
+  # Call traces (lambdas/common/call_traces.py): each model call's whole prompt and reply, written
+  # only while the evals setting trace_calls is on (off by default here: TRACE_CALLS_DEFAULT below).
+  # Two weeks, as in dev. Versioning keeps an expired or replaced trace as a noncurrent copy, which
+  # the whole-bucket rule above would keep 30 days more; this rule drops those after one, and S3
+  # applies the shorter of two overlapping expirations, so a trace is gone within 15 days.
+  rule {
+    id     = "expire-call-traces"
+    status = "Enabled"
+
+    filter {
+      prefix = "traces/"
+    }
+
+    expiration {
+      days = 14
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
 }
 
 # -----------------------------------------------------------------------
@@ -881,6 +903,13 @@ locals {
     PROMPTS_BUCKET          = module.prompts.bucket_name
     PROMPT_HASHES_TABLE     = module.prompts.hash_table_name
     PROMPT_AS_ASSET_ENABLED = var.prompt_as_asset_enabled ? "true" : "false"
+
+    # Call traces (common/call_traces.py): whether the evals setting trace_calls is on while the evals
+    # row does not say. Off here, as section 4.5 of docs/enhancements/model-ranch-prompt-assets-evals.md
+    # has it (dev's root says "true"); `admin_cli evals set --trace-calls on` turns them on. The
+    # traces expire after 14 days (the content bucket's expire-call-traces rule) and nothing public
+    # can read them.
+    TRACE_CALLS_DEFAULT = "false"
   }
 }
 
@@ -1337,6 +1366,10 @@ module "admin_api" {
     "GET /evals/runs/{run_id}",
     "DELETE /evals/runs/{run_id}",
     "POST /evals/runs/{run_id}/resume",
+    # One article's call traces (common/call_traces.py: its model calls' prompts and replies, stored
+    # while the evals setting trace_calls is on). See admin_api_handler.py's _evals_traces_route and
+    # `admin_cli evals trace`.
+    "GET /evals/traces/{article_id}",
     "GET /reviewer-config",
     "PUT /reviewer-config",
     # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): each registered

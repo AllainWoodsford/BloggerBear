@@ -53,6 +53,8 @@ ROUTES = {
     "POST /evals/runs", "GET /evals/runs", "GET /evals/runs/{run_id}", "DELETE /evals/runs/{run_id}",
     "POST /evals/runs/{run_id}/resume",
 }  # fmt: skip
+# PR18c's call traces (test_call_traces.py tests the route itself).
+ROUTES.add("GET /evals/traces/{article_id}")
 
 
 @pytest.fixture
