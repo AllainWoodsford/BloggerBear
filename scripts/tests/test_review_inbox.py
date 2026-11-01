@@ -1368,6 +1368,31 @@ def test_a_rewritten_article_says_which_rewrite_by_what_and_for_how_much():
     assert 'Re-Write #2 by Claude Haiku (~$0.004 AUD); was titled "Buy Now"' in item.facts
 
 
+def test_a_rewritten_article_says_how_much_of_it_was_left_as_it_was():
+    rewrite = {"number": 1, "model_label": "Claude Haiku", "cost_aud": 0.0042, "edits": 2, "kept_percent": 91}
+    (item,) = ri.ModerationSource(_moderation([_held("q1", rewrite=rewrite)])).fetch(5, set())
+
+    assert "Re-Write #1 by Claude Haiku (~$0.004 AUD); 2 passages edited, 91% kept as it was" in item.facts
+
+
+def test_notes_about_the_review_alone_do_not_offer_a_rewrite():
+    about_the_review = [
+        "fresh-data review unavailable: could not fetch fresh data: timeout",
+        "fresh-data review: 2 figure(s) had moved a little since the article was written, within "
+        "this topic's tolerance, and were not flagged",
+    ]
+    claim = "fresh-data review: BTC at $81,000 -- stale (minor): now $80,500"
+    rows = [
+        _row("informational", "2026-09-20T10:00:00+00:00", notes=about_the_review),
+        _row("claim", "2026-09-21T10:00:00+00:00", notes=[*about_the_review, claim]),
+    ]
+
+    informational, flagged = ri.ModerationSource(_moderation(rows)).fetch(5, set())
+
+    assert informational.can_rewrite is False and informational.notes == about_the_review
+    assert flagged.can_rewrite is True
+
+
 def test_a_failed_rewrite_is_shown_on_the_original():
     row = _held("q1", last_rewrite_error="the rewrite could not be trusted: introduces figure(s)")
     (item,) = ri.ModerationSource(_moderation([row])).fetch(5, set())

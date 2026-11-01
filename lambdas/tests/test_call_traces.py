@@ -522,6 +522,9 @@ def test_a_rewrite_traces_its_call_and_its_reviews_under_the_article_as_sent():
 
 
 REWRITE_REVIEWS = {"rewrite_adversarial_review", "rewrite_compliance_review"}
+# A Re-Write replies with edits that quote the article, and rw-1 has already taken out the sentence
+# the default reply quotes, so rw-2 edits a passage rw-1 left.
+SECOND_EDIT = [{"find": "More context here.", "replace": "More context."}]
 
 
 @pytest.mark.usefixtures("rewrite_aws", "tracing")
@@ -531,7 +534,7 @@ REWRITE_REVIEWS = {"rewrite_adversarial_review", "rewrite_compliance_review"}
         # Cut off at its rewrite: it reaches neither review.
         (_model_reply(stop_reason="max_tokens"), "enforce", "failed", REWRITE_REVIEWS),
         # Run with the fresh-data review off: it reaches only the compliance review.
-        (_model_reply(), "off", "rewritten", {"rewrite_adversarial_review"}),
+        (_model_reply(edits=SECOND_EDIT), "off", "rewritten", {"rewrite_adversarial_review"}),
     ],
 )
 def test_a_later_rewrite_never_shows_an_earlier_rewrites_reviews_as_its_own(

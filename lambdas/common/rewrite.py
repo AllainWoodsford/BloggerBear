@@ -26,6 +26,16 @@ fresh-data review and the compliance review again. It always goes back to a pers
 queue item becomes `rewritten` and a new `pending` item carries the rewritten article, with
 whatever the reviews now say. An Article that was `pending_moderation` stays so throughout.
 
+**A correction, not a new article.** The model does not write the article out again. It replies
+with edits: each one a passage quoted from the article and the text that replaces it. Code applies
+them (`apply_edits`), so every sentence no edit quotes comes through exactly as it was, and the
+reviews that run again find nothing new in it that the rewrite wrote. A quote that is not in the
+article, or is in it more than once, overlapping edits, a reply that changes nothing, and edits
+that replace more than half the article (`REWRITE_MIN_KEPT`) all fail the rewrite. Only real
+problems are sent as issues to fix (`rewrite_issues`): the fresh-data review's notes that say
+something about the review, not the text, are left out. The compliance review of the result sees
+the fresh data too, so a figure the rewrite corrected from it is not called fabricated.
+
 **Nothing is lost.** The text it replaces is kept in S3 (`articles/{id}.before-rewrite-{n}.md`).
 Any failure (the model call, a guard, output that isn't the expected JSON) puts the *original*
 item back to `pending` untouched, with the reason in `last_rewrite_error` (`rewrite_failed` for
@@ -89,6 +99,9 @@ REWRITE_MAX_TOKENS = 8192
 # Looser than the automatic revision's (0.65, 1.35) and no heading check: fixing "investment
 # advice" or "fabricated claim" can mean removing a whole paragraph or section.
 REWRITE_BODY_LENGTH_BOUNDS = (0.4, 1.5)
+# At least this share of the article must come through untouched (no edit quotes it). Below it the
+# edits are a new article, not a correction of this one, and the reviews would start over on it.
+REWRITE_MIN_KEPT = 0.5
 # Past this a `rewriting` item is assumed dead (the Lambda's own timeout is 300s).
 STALE_REWRITE_MINUTES = 15
 MAX_FINDINGS = 48
@@ -99,11 +112,30 @@ _FINANCIAL_REASON = "financial topic"
 # summary table, takeaways). A rewrite fixes issues and keeps the length, so it is not asked to
 # add that ending to an older article, only not to leave one it finds out of step with the text.
 _CLOSING_SECTIONS_RULE = (
-    "If the draft ends with summary sections (a table, a list of takeaways), keep them and update "
-    "them so they still match the article after your changes."
+    "If the draft ends with summary sections (a table, a list of takeaways) that repeat something "
+    "you change, edit them too so they still match the article."
 )
 # Every block the rewrite prompt uses (fresh_review._defang knows only its own three).
 _DELIMITER_TAG = re.compile(r"<(/?)(draft|findings|fresh_data|issues_to_fix|editor_note)", re.IGNORECASE)
+# The fresh-data review's notes (fresh_review.review_notes) all start with this. Only those that
+# flag a claim ("<claim> -- stale (minor): ...") are problems in the text; the rest say that the
+# review could not run, that figures moved inside the topic's tolerance and were not flagged, or
+# that the daily cycle corrected the draft or tried to. Asked to "fix" those, a model changes
+# sentences nothing was wrong with, and the reviews then find new things in them.
+_FRESH_REVIEW_NOTE = "fresh-data review"
+_CLAIM_NOTE = re.compile(
+    rf" -- (?:{'|'.join(fresh_review.PROBLEMS)}) \((?:{'|'.join(fresh_review.SEVERITIES)})\)"
+)
+_JSON_FENCE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
+# Stands in for a deletion while edits are applied, so the line it leaves can be tidied
+# (`_tidy_deletions`); a private-use character, never in an article.
+_DELETED = "\ue000"
+# A line holding nothing but whitespace or a list marker: what deleting a line's text leaves.
+_BARE_LINE = re.compile(r"[ \t]*(?:[-*+]|\d+[.)])?[ \t]*")
+
+
+class EditError(ValueError):
+    """An edit that cannot be applied to the article as written; the message says which."""
 
 
 def _defang(text: str) -> str:
@@ -112,22 +144,34 @@ def _defang(text: str) -> str:
     return _DELIMITER_TAG.sub(lambda m: f"< {m.group(1)}{m.group(2)}", text)
 
 
+def _is_problem_note(note: str) -> bool:
+    return not note.startswith(_FRESH_REVIEW_NOTE) or bool(_CLAIM_NOTE.search(note))
+
+
 def rewrite_issues(item: dict) -> list[str]:
-    """What a rewrite is asked to fix: the item's hold reasons and review notes, without the
-    routine "financial topic" reason (that is a routing rule, not a problem in the text) or the
-    "sent back" reason (that says why it is in the inbox; the person's instructions say what)."""
+    """What a rewrite is asked to fix: the item's hold reasons and the claims the fresh-data
+    review flagged, without the routine "financial topic" reason (that is a routing rule, not a
+    problem in the text), the "sent back" reason (that says why it is in the inbox; the person's
+    instructions say what), or a review note that is about the review rather than the text."""
     reasons = [
         str(r)
         for r in item.get("reasons") or []
         if _FINANCIAL_REASON not in str(r).lower() and str(r) != SENT_BACK_REASON
     ]
-    return reasons + [str(n) for n in item.get("review_notes") or []]
+    return reasons + [str(n) for n in item.get("review_notes") or [] if _is_problem_note(str(n))]
 
 
-# The reply contract `fresh_review.parse_revision` reads: the locked tail of the prompt.
+# The reply contract `parse_edits` reads: the locked tail of the prompt.
 _REPLY_RULE = (
-    'Reply with JSON only, no prose and no code fences: {"title": "...", "body": "..."} where '
-    "body is the complete rewritten article in markdown."
+    "Reply with JSON only, no prose and no code fences: "
+    '{"title": "...", "edits": [{"find": "...", "replace": "..."}]}\n'
+    '- "title": the article\'s title, exactly as it is unless an issue is about it.\n'
+    '- "find": a passage copied character for character from the body of the draft (never '
+    "its Title line): the sentence or sentences to change, long enough to appear only once "
+    "in the body.\n"
+    '- "replace": the text that takes its place; "" deletes it.\n'
+    "Edits must not overlap. Whatever no edit quotes is kept exactly as it is, so do not "
+    "repeat it."
 )
 
 
@@ -152,7 +196,9 @@ def rewrite_prompt(
         if writing_guidance
         else ""
     )
-    listed = "\n".join(f"- {issue}" for issue in issues) or "- (none: the reviews flagged nothing)"
+    listed = "\n".join(f"{n}. {issue}" for n, issue in enumerate(issues, 1)) or (
+        "(none: the reviews flagged nothing)"
+    )
     draft = _defang(f"Title: {title}\n\n{body}")
     # The person's note is the one thing here that is not data: it comes from the operator who
     # asked for the rewrite (Admin API, IAM-signed), not from the web. It still cannot lift the
@@ -206,6 +252,107 @@ def build_rewrite_prompt(
         instructions,
         writing_guidance=writing_guidance,
     ).text
+
+
+def parse_edits(text: str) -> tuple[str, list[tuple[str, str]]] | None:
+    """(title, [(find, replace), ...]) from the rewrite's reply, or None when it is not the
+    expected JSON (any edit that is not a non-empty `find` with a string `replace` included).
+    The title is "" when the reply gives none: the article keeps its own."""
+    if not isinstance(text, str):
+        return None
+    cleaned = _JSON_FENCE.sub("", text.strip()).strip()
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(cleaned[start : end + 1])
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("edits"), list):
+        return None
+    title = data.get("title")
+    if title is not None and not isinstance(title, str):
+        return None
+    edits = []
+    for edit in data["edits"]:
+        if not isinstance(edit, dict):
+            return None
+        find, replace = edit.get("find"), edit.get("replace", "")
+        if not isinstance(find, str) or not find.strip() or not isinstance(replace, str):
+            return None
+        edits.append((find, replace))
+    return (title or "").strip(), edits
+
+
+def _short(text: str, limit: int = 80) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _locate(body: str, quote: str) -> list[tuple[int, int]]:
+    """Where `quote` is in `body`, as (start, end) spans: word for word, or failing that with any
+    run of whitespace standing for any other (a model copying a passage often re-wraps it)."""
+    spans = [(m.start(), m.end()) for m in re.finditer(re.escape(quote), body)]
+    if spans:
+        return spans
+    words = quote.split()
+    if not words:
+        return []
+    pattern = r"\s+".join(re.escape(word) for word in words)
+    return [(m.start(), m.end()) for m in re.finditer(pattern, body)]
+
+
+def _tidy_deletions(text: str) -> str:
+    """Close up what deletions left (each marked `_DELETED`): a space left at the end of a line,
+    or doubled where a sentence was taken out of one, goes; a line they emptied, or left as a bare
+    list marker, goes, and so does a blank line that would then be doubled. Lines no deletion
+    touched are not looked at."""
+    lines: list[str] = []
+    dropped_at: list[int] = []
+    for line in text.split("\n"):
+        if _DELETED not in line:
+            lines.append(line)
+            continue
+        line = re.sub(rf"[ \t]*{_DELETED}[ \t]*$", "", line)
+        line = re.sub(rf"(^|[ \t]){_DELETED}[ \t]+", r"\1", line)
+        line = line.replace(_DELETED, "")
+        if _BARE_LINE.fullmatch(line):
+            dropped_at.append(len(lines))
+            continue
+        lines.append(line)
+    for at in reversed(dropped_at):
+        if 0 < at < len(lines) and lines[at - 1] == "" and lines[at] == "":
+            del lines[at]
+    return "\n".join(lines)
+
+
+def apply_edits(body: str, edits: list[tuple[str, str]]) -> tuple[str, int]:
+    """`body` with each (find, replace) edit made, and how many of its characters the edits
+    replaced. Every `find` is placed in the body as given, before any edit is made, so an edit can
+    never act on another's output. Raises EditError when a `find` is not in the body, is in it
+    more than once, or overlaps another edit's."""
+    placed = []
+    for n, (find, replace) in enumerate(edits, 1):
+        spans = _locate(body, find)
+        if not spans:
+            raise EditError(f"edit {n} quotes text that is not in the article: {_short(find)!r}")
+        if len(spans) > 1:
+            raise EditError(
+                f"edit {n} quotes text that is in the article {len(spans)} times: {_short(find)!r}"
+            )
+        placed.append((*spans[0], replace, n))
+    placed.sort()
+    for (_, end, _, first), (start, _, _, second) in zip(placed, placed[1:]):
+        if start < end:
+            raise EditError(f"edits {first} and {second} overlap")
+    # An article that holds the mark itself could not tell it from ours: its gaps are left as they are.
+    mark = "" if _DELETED in body else _DELETED
+    edited = body
+    for start, end, replace, _ in reversed(placed):
+        edited = edited[:start] + (replace if replace.strip() else mark) + edited[end:]
+    if mark:
+        edited = _tidy_deletions(edited)
+    return edited.strip(), sum(end - start for start, end, _, _ in placed)
 
 
 def release_stale_rewrites(now: datetime | None = None) -> int:
@@ -481,10 +628,27 @@ def _rewrite(item: dict, queue_id: str, rewrite_id: str) -> dict:
         call_traces.record(calls[-1], prompt.text, result["text"])
         if result.get("stop_reason") == "max_tokens":
             return _fail(item, rewrite_id, "the rewrite was cut off before it finished", article, calls)
-        parsed = fresh_review.parse_revision(result["text"])
+        parsed = parse_edits(result["text"])
         if parsed is None:
             return _fail(item, rewrite_id, "the rewrite was not the expected JSON", article, calls)
-        new_title, new_body = parsed
+        new_title, edits = parsed
+        new_title = new_title or original_title
+        try:
+            new_body, replaced = apply_edits(body, edits)
+        except EditError as exc:
+            return _fail(item, rewrite_id, f"the rewrite's edits could not be applied: {exc}", article, calls)
+        if new_title == original_title and new_body == body.strip():
+            return _fail(item, rewrite_id, "the rewrite changed nothing", article, calls)
+        kept = 1 - replaced / max(len(body), 1)
+        if kept < REWRITE_MIN_KEPT:
+            return _fail(
+                item,
+                rewrite_id,
+                f"the rewrite replaced {round((1 - kept) * 100)}% of the article: a Re-Write corrects "
+                "the passages with a problem and keeps the rest",
+                article,
+                calls,
+            )
         violations = fresh_review.revision_violations(
             original_title,
             body,
@@ -519,8 +683,14 @@ def _rewrite(item: dict, queue_id: str, rewrite_id: str) -> dict:
             )
             calls.append(fresh_record.pop("lineage_call", None))
             fresh_record.pop("evidence", None)
+        # The fresh data counts as a source: the rewrite was told to correct figures from it.
         compliance_review = compliance.review_draft(
-            new_body, topic, review_model, fallback_model_id=review_fallback, source_material=findings_text
+            new_body,
+            topic,
+            review_model,
+            fallback_model_id=review_fallback,
+            source_material=findings_text,
+            fresh_data=evidence,
         )
         calls.append(compliance_review["lineage_call"])
     except Exception as exc:  # noqa: BLE001 - top-level guard: never strand the item
@@ -558,6 +728,8 @@ def _rewrite(item: dict, queue_id: str, rewrite_id: str) -> dict:
             issues=issues,
             instructions=instructions,
             extra_reasons=[page_note] if page_note else [],
+            edits=len(edits),
+            kept_percent=round(kept * 100),
         )
     except Exception as exc:  # noqa: BLE001 - the old item is already "rewritten": re-queue
         print(f"rewrite: saving rewrite #{number} failed part-way: {exc!r}")
@@ -619,9 +791,12 @@ def _save(
     issues: list[str],
     instructions: str = "",
     extra_reasons: list[str] | None = None,
+    edits: int = 0,
+    kept_percent: int = 100,
 ) -> None:
     """Write a finished rewrite: keep the replaced text, store the new one, update the article's
-    title/lineage/review/history, and put it back in the inbox as `new_queue_id`."""
+    title/lineage/review/history, and put it back in the inbox as `new_queue_id`. `edits` is how
+    many passages it changed and `kept_percent` how much of the article no edit touched."""
     article_id = article["article_id"]
     model_id = item["rewrite_model_id"]
     previous_key = f"articles/{article_id}.before-rewrite-{number}.md"
@@ -647,6 +822,8 @@ def _save(
         "previous_title": article.get("title") or "",
         "previous_body_s3_key": previous_key,
         "issues": issues,
+        "edits": edits,
+        "kept_percent": kept_percent,
     }
     if instructions:
         rewrite["instructions"] = instructions
@@ -666,8 +843,20 @@ def _save(
         review_notes=fresh_review.review_notes(fresh_record),
         rewrite={
             k: rewrite[k]
-            for k in ("number", "model_id", "model_label", "cost_aud", "previous_title", "instructions")
+            for k in (
+                "number",
+                "model_id",
+                "model_label",
+                "cost_aud",
+                "previous_title",
+                "instructions",
+                "edits",
+                "kept_percent",
+            )
             if k in rewrite
         },
     )
-    print(f"rewrite: rewrote article_id={article_id} (#{number}, {label}); back in the inbox")
+    print(
+        f"rewrite: rewrote article_id={article_id} (#{number}, {label}; {edits} edit(s), "
+        f"{kept_percent}% kept as it was); back in the inbox"
+    )

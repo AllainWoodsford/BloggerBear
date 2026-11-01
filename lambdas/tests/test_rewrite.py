@@ -13,7 +13,7 @@ from table_schemas import create_table
 
 import common.dynamo as dynamo
 import daily_cycle_handler
-from common import compliance, rewrite
+from common import compliance, fresh_review, rewrite
 
 REGION = "ap-southeast-2"
 BUCKET = "bloggerbear-content-test"
@@ -122,10 +122,15 @@ def _seed(*, topic=TOPIC, body=BODY, reasons=None, notes=None, status="rewriting
     _table("ModerationQueue").put_item(Item=item)
 
 
-def _model_reply(title="Bitcoin Holds Its Range", body=None, stop_reason="end_turn"):
-    body = body if body is not None else BODY.replace(" You should buy it now.", "")
+# The default reply drops the sentence the item was held for, and touches nothing else.
+DROP_ADVICE = [{"find": " You should buy it now.", "replace": ""}]
+INVENTED = [{"find": "$81,000", "replace": "$99,999"}]
+
+
+def _model_reply(title="Bitcoin Holds Its Range", edits=None, stop_reason="end_turn"):
+    edits = edits if edits is not None else DROP_ADVICE
     return {
-        "text": json.dumps({"title": title, "body": body}),
+        "text": json.dumps({"title": title, "edits": edits}),
         "model_id": MODEL,
         "input_tokens": 1200,
         "output_tokens": 400,
@@ -145,7 +150,17 @@ def _compliance(reasons=()):
     return {"compliant": not reasons, "reasons": list(reasons), "lineage_call": call}
 
 
-def _run(reply=None, *, compliance_result=None, compliance_error=None, invoke_error=None, review_mode="off"):
+def _run(
+    reply=None,
+    *,
+    compliance_result=None,
+    compliance_error=None,
+    invoke_error=None,
+    review_mode="off",
+    mocks=None,
+):
+    """Run the rewrite of q1 with the model, the reviews and the evidence faked. `mocks`, if
+    given, gets the compliance review's mock as "review_draft"."""
     invoke = patch("common.rewrite.invoke_model_tracked", return_value=reply or _model_reply())
     if invoke_error is not None:
         invoke = patch("common.rewrite.invoke_model_tracked", side_effect=invoke_error)
@@ -154,13 +169,15 @@ def _run(reply=None, *, compliance_result=None, compliance_error=None, invoke_er
         review = patch("common.rewrite.compliance.review_draft", side_effect=compliance_error)
     with (
         invoke as mock_invoke,
-        review,
+        review as mock_review,
         patch("common.rewrite._pipeline_config", return_value={"review_mode": review_mode}),
         patch("common.rewrite._evidence", return_value="BTC now $80,500"),
         patch("common.rewrite.resolve_model", return_value=(MODEL, None)),
         patch("common.rewrite.record_article_lineage") as mock_stats,
     ):
         result = rewrite.run_rewrite("q1", "rw-1")
+    if mocks is not None:
+        mocks["review_draft"] = mock_review
     return result, mock_invoke, mock_stats
 
 
@@ -187,6 +204,34 @@ def test_the_routine_financial_reason_is_not_an_issue_to_fix():
     assert rewrite.rewrite_issues({"reasons": ["financial topic - routed..."]}) == []
 
 
+def test_review_notes_about_the_review_rather_than_the_text_are_not_issues_to_fix():
+    claim = {"claim": "BTC at $81,000", "problem": "stale", "severity": "minor", "evidence": "now $80,500"}
+    reviewed = {
+        "status": "reviewed",
+        "claims": [claim],
+        "within_tolerance": 2,
+        "revised": True,
+        "revision_rejected": "changes the number of headings",
+    }
+    notes = fresh_review.review_notes(reviewed) + fresh_review.review_notes(
+        {"status": "unavailable", "reason": "timeout"}
+    )
+    assert len(notes) == 5  # the claim, then four that say something about the review
+
+    issues = rewrite.rewrite_issues({"reasons": ["NOTE: tighten the tone"], "review_notes": notes})
+
+    assert issues == ["NOTE: tighten the tone", notes[0]]
+    assert notes[0] == "fresh-data review: BTC at $81,000 -- stale (minor): now $80,500"
+
+
+def test_the_prompt_asks_for_edits_to_this_article_not_a_new_one():
+    prompt = rewrite.build_rewrite_prompt("Crypto", "T", "Body", ["an issue"], "- finding", "", "now")
+
+    assert "not a new draft" in prompt and "changing as little of the article as each fix needs" in prompt
+    assert '{"title": "...", "edits": [{"find": "...", "replace": "..."}]}' in prompt
+    assert '"body"' not in prompt
+
+
 def test_the_prompt_lists_the_issues_and_keeps_web_text_inside_its_block():
     prompt = rewrite.build_rewrite_prompt(
         "Crypto",
@@ -198,7 +243,7 @@ def test_the_prompt_lists_the_issues_and_keeps_web_text_inside_its_block():
         "now",
     )
 
-    assert "- Investment advice: buy now" in prompt
+    assert "1. Investment advice: buy now" in prompt
     assert prompt.count("</fresh_data>") == 1  # the evidence's own closing tag was defanged
 
 
@@ -582,6 +627,129 @@ def test_the_fresh_data_review_runs_on_the_new_text_when_it_is_on(aws):
     assert "stale" in _queue()[result["new_queue_id"]]["review_notes"][0]
 
 
+# --- a correction, not a new article --------------------------------------------------------------
+
+# An article with the things a model copying it out again tends to change: a hard line break (two
+# trailing spaces), a list, and spacing that is not single.
+LONG_BODY = (
+    "## Heading\n\n"
+    "Bitcoin traded at $81,000 today. You should buy it now. It moved little.\n\n"
+    "- first point  \n"
+    "- second point\n\n"
+    "Ether held   at $2,650, a level   it has kept for weeks.\n\n"
+    "More context here, and more after it, so the article has some length to keep."
+)
+
+
+def test_only_the_quoted_passages_change_and_the_rest_comes_through_exactly():
+    edits = [
+        ("You should buy it now.", ""),
+        ("Ether held at $2,650,", "Ether held near $2,650,"),  # copied with single spaces: still placed
+    ]
+
+    edited, replaced = rewrite.apply_edits(LONG_BODY, edits)
+
+    assert edited == (
+        "## Heading\n\n"
+        "Bitcoin traded at $81,000 today. It moved little.\n\n"
+        "- first point  \n"
+        "- second point\n\n"
+        "Ether held near $2,650, a level   it has kept for weeks.\n\n"
+        "More context here, and more after it, so the article has some length to keep."
+    )
+    assert replaced == len("You should buy it now.") + len("Ether held   at $2,650,")
+
+
+def test_a_deleted_paragraph_or_list_item_leaves_no_gap():
+    body = "Intro.\n\nDrop this paragraph.\n\n- keep\n- drop me\n- keep too\n\nEnd, as it was."
+
+    edited, _ = rewrite.apply_edits(body, [("Drop this paragraph.", ""), ("drop me", "")])
+
+    assert edited == "Intro.\n\n- keep\n- keep too\n\nEnd, as it was."
+
+
+def test_every_edit_is_placed_in_the_article_as_it_was_not_in_another_edits_output():
+    edited, _ = rewrite.apply_edits("Alpha then Beta.", [("Alpha", "Beta"), ("Beta.", "Gamma.")])
+
+    assert edited == "Beta then Gamma."
+
+
+@pytest.mark.parametrize(
+    ("edits", "says"),
+    [
+        ([("You must buy.", "")], "edit 1 quotes text that is not in the article"),
+        ([("$81,000", "x"), ("point", "y")], "edit 2 quotes text that is in the article 2 times"),
+        ([("$81,000 today.", "x"), ("today. You", "y")], "edits 1 and 2 overlap"),
+    ],
+)
+def test_an_edit_that_cannot_be_placed_exactly_once_is_refused(edits, says):
+    with pytest.raises(rewrite.EditError, match=says):
+        rewrite.apply_edits(LONG_BODY, edits)
+
+
+def test_a_rewrite_changes_only_what_its_edits_quote_and_says_how_much_it_kept(aws):
+    _seed(body=LONG_BODY)
+    mocks = {}
+
+    result, _, _ = _run(_model_reply(edits=[{"find": " You should buy it now.", "replace": ""}]), mocks=mocks)
+
+    assert result["status"] == "rewritten"
+    assert _s3_text("articles/a1.md") == LONG_BODY.replace(" You should buy it now.", "")
+    record = _table("Articles").get_item(Key={"article_id": "a1"})["Item"]["rewrites"][0]
+    kept = round((1 - len(" You should buy it now.") / len(LONG_BODY)) * 100)
+    assert (record["edits"], record["kept_percent"]) == (1, kept)
+    new = _queue()[result["new_queue_id"]]
+    assert (new["rewrite"]["edits"], new["rewrite"]["kept_percent"]) == (1, kept)
+    # The compliance review may find the figures the rewrite was allowed to correct from.
+    assert mocks["review_draft"].call_args.kwargs["fresh_data"] == "BTC now $80,500"
+
+
+def test_a_title_only_fix_needs_no_edits(aws):
+    _seed(reasons=["Title reads as advice: Buy Bitcoin Now"])
+
+    result, _, _ = _run(_model_reply(edits=[]))
+
+    assert result["status"] == "rewritten" and _s3_text("articles/a1.md") == BODY
+    assert _table("Articles").get_item(Key={"article_id": "a1"})["Item"]["title"] == "Bitcoin Holds Its Range"
+
+
+def test_a_reply_with_no_title_keeps_the_articles_own(aws):
+    _seed()
+
+    result, _, _ = _run({**_model_reply(), "text": json.dumps({"edits": DROP_ADVICE})})
+
+    assert result["status"] == "rewritten"
+    assert _table("Articles").get_item(Key={"article_id": "a1"})["Item"]["title"] == "Buy Bitcoin Now"
+
+
+@pytest.mark.parametrize(
+    ("reply", "says"),
+    [
+        (
+            _model_reply(edits=[{"find": "You must buy.", "replace": ""}]),
+            "could not be applied: edit 1 quotes",
+        ),
+        (_model_reply(title="Buy Bitcoin Now", edits=[]), "the rewrite changed nothing"),
+        (
+            _model_reply(edits=[{"find": BODY.split("\n\n")[1], "replace": "Up."}]),
+            "the rewrite replaced 63% of the article",
+        ),
+        # The old reply, the whole article written out again, is no longer taken.
+        ({**_model_reply(), "text": json.dumps({"title": "T", "body": BODY})}, "not the expected JSON"),
+    ],
+)
+def test_a_rewrite_that_is_not_a_correction_of_this_article_is_refused(aws, reply, says):
+    _seed()
+
+    result, _, mock_stats = _run(reply)
+
+    assert result["status"] == "failed"
+    item = _queue()["q1"]
+    assert item["status"] == "pending" and says in item["last_rewrite_error"]
+    assert _s3_text("articles/a1.md") == BODY
+    mock_stats.assert_called_once()  # its tokens were spent all the same
+
+
 # --- failures put the original back ---------------------------------------------------------------
 
 
@@ -598,9 +766,7 @@ def test_a_failed_model_call_puts_the_original_back_untouched(aws):
 
 def test_an_invented_figure_rejects_the_rewrite_but_its_cost_is_still_counted(aws):
     _seed()
-    invented = BODY.replace("$81,000", "$99,999")
-
-    result, _, mock_stats = _run(_model_reply(body=invented))
+    result, _, mock_stats = _run(_model_reply(edits=INVENTED))
 
     assert result["status"] == "failed"
     assert "99999" in _queue()["q1"]["last_rewrite_error"]
@@ -806,7 +972,7 @@ def test_a_rewrite_the_guards_reject_leaves_a_published_article_up(aws):
     _seed(reasons=[rewrite.SENT_BACK_REASON])
     _publish_seeded_article()
 
-    result, mocks = _run_live(reply=_model_reply(body=BODY.replace("$81,000", "$99,999")))
+    result, mocks = _run_live(reply=_model_reply(edits=INVENTED))
 
     assert result["status"] == "failed" and _article_status() == "published"
     mocks["remove"].assert_not_called()
