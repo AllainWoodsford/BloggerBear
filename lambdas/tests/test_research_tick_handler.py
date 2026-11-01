@@ -1202,6 +1202,94 @@ def test_a_queue_job_that_fails_still_returns_rather_than_raising(aws_resources,
     assert "last_research_at" not in _stored_topic()
 
 
+def test_a_scheduler_tick_whose_fetch_fails_at_a_shadowed_turn_is_no_mismatch(
+    aws_resources, monkeypatch, clock, capsys
+):
+    """Shadow mode, a topic still on its schedules (slot 1: research heartbeat cron(5 * * * ? *)).
+    At 09:05 Sydney (22:05 UTC) both paths take the turn: the dispatcher records it, and the
+    Scheduler path's research tick fires in the same minute, finds the topic due and calls its
+    source, which answers 429. A tick whose fetch raises stamps no last_research_at (so the next
+    heartbeat retries), exactly what a queue job would do with the same source. The two paths agreed
+    on the turn, so the judging tick (22:10:30) must count no mismatch: one flaky source at a judged
+    turn must not refuse the cutover (common/dispatch.py's shadow_problems)."""
+    from common.dispatch import Dispatcher, shadow_problems
+
+    previous = DUE_CHECKED_AT - timedelta(hours=1) - timedelta(seconds=28)  # 21:05:02, last hour's stamp
+    _queue_topic(dispatch_mode="schedule", last_research_at=previous.isoformat())
+    calls = []
+
+    def rate_limited(adapter, topic_config):
+        calls.append(topic_config["topic_id"])
+        raise RuntimeError("429 Too Many Requests")
+
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", rate_limited)
+    dispatcher = Dispatcher(
+        sqs=MagicMock(),
+        sfn=MagicMock(),
+        queue_url="https://sqs.ap-southeast-2.amazonaws.com/123456789012/work.fifo",
+        state_machine_arn="arn:aws:states:ap-southeast-2:123456789012:stateMachine:daily-cycle",
+    )
+
+    # The dispatcher's tick of the turn minute records the turn.
+    dispatcher.tick(DUE_CHECKED_AT - timedelta(minutes=1))
+    dispatcher.tick(DUE_CHECKED_AT)
+    assert _stored_topic()["shadow_last_research_dispatch_at"] == "2026-10-24T22:05:30+00:00"
+
+    # The Scheduler path's research tick of the same minute (its schedule, no force) runs and fails.
+    clock["now"] = DUE_CHECKED_AT + timedelta(seconds=10)
+    result = research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
+    assert result["status"] == "error" and "429" in result["reason"]
+    assert calls == ["github-trending-python"]  # it ran at the turn: due, and the source was asked
+    row = _stored_topic()
+    assert row["last_research_at"] == previous.isoformat()  # nothing stamped, by design
+    assert row["last_research_attempt_at"] == "2026-10-24T22:05:40+00:00"  # but it took the turn
+
+    # The dispatcher ticks on every minute through the judging window (turn + SHADOW_TOLERANCE).
+    for minutes in range(1, 8):
+        dispatcher.tick(DUE_CHECKED_AT + timedelta(minutes=minutes))
+
+    row = _stored_topic()
+    assert row.get("shadow_mismatches", 0) == 0
+    assert row["shadow_research_matched_at"] == "2026-10-24T22:05:30+00:00"
+    assert not [reason for reason in shadow_problems(row, research_is_rate=False) if "mismatch" in reason]
+    assert "shadow research mismatch" not in capsys.readouterr().out
+
+
+def test_a_tick_that_finds_the_topic_not_due_records_no_attempt(aws_resources, monkeypatch, clock):
+    """A heartbeat that finds the interval still running did no work and took no turn: were it to
+    stamp an attempt, a Scheduler tick firing at a minute the dispatcher found the topic due, but
+    which found it not due itself, would pass for agreement."""
+    ten_minutes_ago = (DUE_CHECKED_AT - timedelta(minutes=10)).isoformat()
+    _queue_topic(dispatch_mode="schedule", last_research_at=ten_minutes_ago)
+    _fresh_state(monkeypatch)
+    clock["now"] = DUE_CHECKED_AT
+
+    assert research_tick_handler.handler({"topic_id": "github-trending-python"}, None)["status"] == "not_due"
+
+    assert "last_research_attempt_at" not in _stored_topic()
+
+
+def test_a_tick_whose_attempt_cannot_be_recorded_still_checks_its_source(
+    aws_resources, monkeypatch, clock, capsys
+):
+    _queue_topic(dispatch_mode="schedule")
+    _fresh_state(monkeypatch)
+
+    def refused(topic_id, fields, **kwargs):
+        raise RuntimeError("throttled")
+
+    monkeypatch.setattr(research_tick_handler, "set_topic_fields", refused)
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")):
+        result = research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
+
+    assert result["status"] == "material_change"
+    assert _stored_topic()["last_research_at"] == (DUE_CHECKED_AT + LATE).isoformat()
+    assert "could not record the research attempt for github-trending-python: RuntimeError(" in (
+        capsys.readouterr().out
+    )
+
+
 def test_a_batch_of_two_queue_records_says_so_and_runs_only_the_first(
     aws_resources, monkeypatch, clock, capsys
 ):

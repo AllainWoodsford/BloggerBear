@@ -597,8 +597,9 @@ def _dispatch_line(topic: dict) -> str:
 def _shadow_line(topic: dict) -> str:
     """The dispatcher's shadow record for one topic, in words, or "" before its first shadow turn:
     the mismatches with what the schedules did, the days the check could not answer (neither counts
-    as a match), the days it did (moving to the queue needs at least one), and the last turns it
-    would have dispatched."""
+    as a match), the days it did, how many of those matched in a row since the last mismatch or
+    unchecked day when the dispatcher has counted them (moving to the queue needs one), and the last
+    turns it would have dispatched."""
     research = topic.get("shadow_last_research_dispatch_at")
     daily = topic.get("shadow_last_daily_dispatch_at")
     if not research and not daily:
@@ -611,6 +612,9 @@ def _shadow_line(topic: dict) -> str:
         f"{unchecked} unchecked day{'s' if unchecked != 1 else ''}",
         f"{checked} checked day{'s' if checked != 1 else ''}",
     ]
+    if topic.get("shadow_clean_days") is not None:
+        clean = int(topic["shadow_clean_days"])
+        parts.append(f"{clean} clean in a row")
     if research:
         parts.append(f"last research turn {research}")
     if daily:

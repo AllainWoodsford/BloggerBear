@@ -143,6 +143,26 @@ def test_the_scalar_kinds(kind, good, bad):
         assert evidence.check(kind, value) is None, (kind, value)
 
 
+@pytest.mark.parametrize(("kind", "value"), [("code", "outcome"), ("id", "rail-sydney"), ("model", MODEL)])
+def test_a_trailing_newline_is_no_part_of_a_code_an_id_or_a_model_id(kind, value):
+    """Matched whole, as common/evals.py matches its own: `$` also matches before a final newline,
+    which made `rail-sydney\\n` an id of its own to every reader grouping by it."""
+    assert evidence.check(kind, value) == value
+    for bad in (f"{value}\n", f"{value}\n\n", f"\n{value}"):
+        assert evidence.check(kind, bad) is None, (kind, bad)
+
+
+def test_a_line_read_back_drops_a_value_with_a_trailing_newline():
+    forged = json.dumps({
+        "evidence": evidence.VERSION, "event": "vision_site", "site_id": "sydney\n", "outcome": "measured\n",
+        "scene_id": "S2A_56HLH_20261014_0_L2A",
+    })  # fmt: skip
+    out = evidence.parse(forged)
+    assert out == {
+        "evidence": evidence.VERSION, "event": "vision_site", "scene_id": "S2A_56HLH_20261014_0_L2A"
+    }
+
+
 def test_num_is_rounded_to_six_significant_figures_and_ints_stay_ints():
     assert evidence.check("num", 0.123456789) == 0.123457
     assert evidence.check("num", 54123456.7) == 54123500.0

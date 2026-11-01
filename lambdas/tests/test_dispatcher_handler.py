@@ -244,6 +244,30 @@ def test_a_throttled_start_releases_the_day_and_raises(world):
     assert "last_daily_dispatched_on" not in stored()
 
 
+@pytest.mark.parametrize(
+    "code",
+    ["AccessDeniedException", "StateMachineDoesNotExist", "KmsAccessDeniedException", "ServiceUnavailable"],
+)
+def test_a_start_refused_for_an_infrastructure_reason_raises_so_the_alarm_fires(world, capsys, code):
+    """A StartExecution refusal that no one topic can cause (the role lost states:StartExecution,
+    the state machine is gone, its key is refused, the service is down) stops every queue topic's
+    daily cycle. Spec 5.1: raise on infrastructure errors so the Errors alarm fires; the research
+    path already raises on any send failure. Swallowed as one topic's trouble, the heartbeat would
+    count the tick as ok, and nothing would alert while no article is written."""
+    put_topics(topic(dispatch_mode="queue"))
+    world["clock"]["now"] = DAILY_TURN
+    world["sfn"].start_execution.side_effect = ClientError(
+        {"Error": {"Code": code, "Message": "refused"}}, "StartExecution"
+    )
+
+    with pytest.raises(DispatchError):
+        run()
+
+    assert "last_daily_dispatched_on" not in stored()  # released: the next tick tries again
+    (line,) = ticks(capsys.readouterr().out)
+    assert line["outcome"] == "error" and line["error_type"] == "DispatchError"
+
+
 def test_a_failed_topics_scan_raises_so_the_errors_alarm_fires(world, monkeypatch, capsys):
     monkeypatch.setenv("TOPICS_TABLE", "NoSuchTable")
 

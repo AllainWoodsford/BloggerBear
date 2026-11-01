@@ -143,9 +143,9 @@ def daily_offset_minutes(slot: int | None, stagger_minutes: int, topic_count: in
 
 def _shift_hours(field: str, carry: int, *, wrap: bool) -> str | None:
     """The cron hour field moved `carry` hours later, for the shapes a topic's cadence uses:
-    `*` (unchanged), `9`, `*/4`, `1/4`, `9,21`, `9-17`. Anything else is left as it is. An hour
-    that would pass midnight wraps round the clock only when `wrap` (an every-day schedule, where
-    the day does not matter); otherwise None: the shift cannot be made."""
+    `*` (unchanged), `9`, `*/4`, `1/4`, `9,21`, `9-17`, `22-2`. Anything else is left as it is. An
+    hour that would pass midnight wraps round the clock only when `wrap` (an every-day schedule,
+    where the day does not matter); otherwise None: the shift cannot be made."""
     if carry == 0 or field == "*":
         return field
     if _WHOLE.match(field):
@@ -162,8 +162,13 @@ def _shift_hours(field: str, carry: int, *, wrap: bool) -> str | None:
         return f"{(first + carry) % every}/{every}"
     span = _RANGE.match(field)
     if span:
-        low, high = int(span.group(1)) + carry, int(span.group(2)) + carry
-        return f"{low}-{high}" if high < 24 else None
+        low, high = int(span.group(1)), int(span.group(2))
+        if low <= high:
+            return f"{low + carry}-{high + carry}" if high + carry < 24 else None
+        # A range that wraps midnight (`22-2`: 22, 23, 0, 1, 2) always holds 23, which any carry
+        # takes past midnight: round the clock for an every-day schedule (`22-2` two hours on is
+        # `0-4`, never `24-4`), else not at all.
+        return f"{(low + carry) % 24}-{(high + carry) % 24}" if wrap else None
     if all(_WHOLE.match(part) for part in field.split(",")):
         hours = [int(part) + carry for part in field.split(",")]
         if max(hours) < 24:

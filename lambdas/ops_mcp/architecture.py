@@ -550,7 +550,7 @@ CATALOGUE: tuple[Component, ...] = (
         f"on the queue (dispatch_mode queue), on each research job on {PREFIX}{ENV}-work.fifo, "
         "at most worker_concurrency at once",
         details=(
-            ("Writes", "findings; topics.last_research_at"),
+            ("Writes", "findings; topics.last_research_at, last_research_attempt_at"),
             ("Schedules", f"{PREFIX}{ENV}-<topic_id>-research-tick"),
         ),
         alarms=(_PROMPT_FALLBACK_ALARM,),
@@ -566,7 +566,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "Writes",
                 "topics.research_claimed_at, last_daily_dispatched_on and daily_claim_n; in shadow mode "
                 "topics.shadow_last_research_dispatch_at, shadow_last_daily_dispatch_at, "
-                "shadow_mismatches, shadow_unchecked and shadow_checked_days; last_tick on the "
+                "shadow_mismatches, shadow_unchecked, shadow_checked_days, shadow_clean_days, "
+                "shadow_research_mismatch_at and shadow_research_matched_at; last_tick on the "
                 "model-config pipeline row",
             ),
             (
