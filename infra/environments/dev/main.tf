@@ -704,6 +704,16 @@ locals {
     # need no variable: the Lambda passes them its own ARN. The on/off switches are DynamoDB's
     # (`model-catalog` row, discover_enabled / reprice_enabled, on unless set to false).
     MODEL_CATALOG_FUNCTION_NAME = "${var.unique_name_prefix}-dev-model-catalog"
+
+    # Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): the bucket the
+    # prompt templates are published to, the table of their approved hashes, and whether the code
+    # reads them at all ("false" keeps every prompt as the copy in the code). Both names are empty
+    # until the prompts module makes the bucket and the table; the switch is
+    # var.prompt_as_asset_enabled, from the PROMPT_AS_ASSET_ENABLED GitHub variable, off by default,
+    # so merging the prompts work changes no prompt until someone sets it.
+    PROMPTS_BUCKET          = ""
+    PROMPT_HASHES_TABLE     = ""
+    PROMPT_AS_ASSET_ENABLED = var.prompt_as_asset_enabled ? "true" : "false"
   }
 }
 
@@ -2754,6 +2764,12 @@ module "observability" {
     # An incident opened by hand at high severity (admin_cli security open) alerts too.
     aws_cloudwatch_log_group.lambda[aws_lambda_function.admin_api.function_name].name,
   ]
+
+  # Every pipeline Lambda's log group, for the prompt-fallback alarm: a Lambda that cannot use a
+  # prompt asset prints one prompt_fallback evidence line and carries on with the copy in its
+  # code (docs/enhancements/model-ranch-prompt-assets-evals.md). The log group resources, not
+  # names built by hand, so the metric filters depend on them.
+  prompt_fallback_log_groups = [for group in aws_cloudwatch_log_group.lambda : group.name]
 
   # Scaling PR C: what the edge dashboard (API Gateway and WAF, api_waf_dashboards.tf in the
   # module) would show. Not created in dev (edge_dashboard_enabled defaults to false): dashboards

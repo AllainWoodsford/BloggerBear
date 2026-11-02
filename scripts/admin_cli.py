@@ -2727,6 +2727,13 @@ def build_parser() -> argparse.ArgumentParser:
     equipment_unequip_parser.add_argument("version")
     equipment_unequip_parser.set_defaults(func=_cmd_equipment_unequip)
 
+    # The prompt commands (prompts as assets) live in scripts/admin_cli_prompts.py. It is handed this
+    # module's request helper and error type rather than importing them, and is imported here rather
+    # than at the top, so the two modules never import each other at load time (a cycle otherwise).
+    from admin_cli_prompts import register as register_prompt_commands
+
+    register_prompt_commands(subparsers, {"do_request": _do_request, "CliError": CliError})
+
     return parser
 
 

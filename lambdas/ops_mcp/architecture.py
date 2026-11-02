@@ -152,6 +152,11 @@ def _table(key: str, purpose: str, keys: tuple[str, ...], **more) -> Component:
 
 _PIPELINE_DASHBOARD = f"{PREFIX}{ENV}-pipeline"
 _EDGE_DASHBOARD = f"{PREFIX}{ENV}-edge"
+# Prompts as assets (docs/enhancements/model-ranch-prompt-assets-evals.md): a Lambda that cannot use a
+# prompt asset carries on with the copy in its code and logs a prompt_fallback line; the alarm (the
+# observability module's filter over every pipeline log group) reports the first in an hour. It is
+# listed on the functions whose prompts become assets, the ones that can fall back.
+_PROMPT_FALLBACK_ALARM = f"{PREFIX}{ENV}-prompt-fallback"
 
 # Every resource the assistant can explain, by kind. Purposes are one sentence, for speech; the
 # rest is for the page. Written from the Terraform's own comments (infra/modules/app-data,
@@ -473,6 +478,7 @@ CATALOGUE: tuple[Component, ...] = (
             ("Writes", "findings; topics.last_research_at"),
             ("Schedules", f"{PREFIX}{ENV}-<topic_id>-research-tick"),
         ),
+        alarms=(_PROMPT_FALLBACK_ALARM,),
     ),
     _lambda(
         "daily-cycle",
@@ -490,13 +496,18 @@ CATALOGUE: tuple[Component, ...] = (
             ),
             ("Schedules", f"{PREFIX}{ENV}-<topic_id>-daily-cycle"),
         ),
-        alarms=(f"{PREFIX}{ENV}-daily-cycle-executions-failed", f"{PREFIX}{ENV}-pipeline-dlq-messages"),
+        alarms=(
+            f"{PREFIX}{ENV}-daily-cycle-executions-failed",
+            f"{PREFIX}{ENV}-pipeline-dlq-messages",
+            _PROMPT_FALLBACK_ALARM,
+        ),
     ),
     _lambda(
         "admin-api",
         "The Admin API behind admin_cli: topics, review, models, settings, rewrites.",
         "on each request to the Admin API (IAM-signed, behind an address allowlist)",
         dashboards=(_EDGE_DASHBOARD,),
+        alarms=(_PROMPT_FALLBACK_ALARM,),
     ),
     _lambda(
         "public-api",
@@ -518,6 +529,7 @@ CATALOGUE: tuple[Component, ...] = (
         "weekly-reflection",
         "Reads a week of reader feedback and proposes prompt refinements per topic.",
         "Mondays 13:00 Sydney time (EventBridge Scheduler)",
+        alarms=(_PROMPT_FALLBACK_ALARM,),
     ),
     _lambda(
         "stats-rollover",
@@ -539,6 +551,7 @@ CATALOGUE: tuple[Component, ...] = (
         "every second day, discover at 02:00 and reprice at 03:00 Sydney time, the rotation cycle "
         "Fridays 04:00 Sydney time (EventBridge Scheduler), each tick and review on a one-shot "
         "schedule of its own, and on demand (models discover, models reprice)",
+        alarms=(_PROMPT_FALLBACK_ALARM,),
     ),
     _lambda(
         "reviewer",
@@ -549,11 +562,13 @@ CATALOGUE: tuple[Component, ...] = (
         "Settings in the model-config table's reviewer row.",
         "every second day at 05:00 Sydney time (EventBridge Scheduler), each tick on a one-shot "
         "schedule of its own",
+        alarms=(_PROMPT_FALLBACK_ALARM,),
     ),
     _lambda(
         "musing-feedback",
         "Writes a musing reflecting on the last four days of reader feedback.",
         "every 4 days (EventBridge Scheduler)",
+        alarms=(_PROMPT_FALLBACK_ALARM,),
     ),
     _lambda(
         "security-events",

@@ -137,6 +137,15 @@ jobs:
     # firewall's shared one). Read like VISION_ENABLED: only `true`, in any letter case, turns it
     # on; unset or anything else is `false`, the variable's own default (docs/configuration.md).
     # Production's assistant always has the tool, so the release workflow does not read it.
+    # TF_VAR_prompt_as_asset_enabled: whether the Lambdas read their prompts from the prompts
+    # bucket (prompts as assets, docs/enhancements/model-ranch-prompt-assets-evals.md). Read like
+    # VISION_ENABLED: only `true`, in any letter case, turns it on; unset or anything else is
+    # `false`, the variable's own default, so merging the prompts work changes no prompt until
+    # someone sets it (docs/configuration.md).
+    # TF_VAR_prompts_publisher_role_arn: the role the prompts publisher workflow signs in as
+    # (gha-<prefix>-dev-prompts, from infra/bootstrap), the one principal the prompts bucket will
+    # let write. A secret, like the deploy role's ARN: it carries the account ID. Unset is an
+    # empty string, which Terraform reads as "no publisher yet".
     env:
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_DEV || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
@@ -152,6 +161,8 @@ jobs:
       TF_VAR_reviewer_enabled: ${{ vars.REVIEWER_ENABLED == 'false' && 'false' || 'true' }}
       TF_VAR_web_search_region: ${{ vars.WEB_SEARCH_REGION_DEV || vars.WEB_SEARCH_REGION || 'ap-northeast-1' }}
       TF_VAR_ops_firewall_review: ${{ vars.OPS_FIREWALL_REVIEW_DEV == 'true' && 'true' || 'false' }}
+      TF_VAR_prompt_as_asset_enabled: ${{ vars.PROMPT_AS_ASSET_ENABLED == 'true' && 'true' || 'false' }}
+      TF_VAR_prompts_publisher_role_arn: ${{ secrets.AWS_DEV_PROMPTS_ROLE_ARN }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
