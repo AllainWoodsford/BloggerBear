@@ -149,7 +149,6 @@ from common.adapters import RAIL_ACCESS_ADAPTER_KEY
 from common.adapters.base import Adapter, DaySubject, render_review_evidence
 from common.editorial_resolver import ADAPTER_DEFAULTS
 from common.figures import MAX_ALT_CHARS, MAX_CAPTION_CHARS
-from common.model_routing import resolve_model
 from common.vision_sites import (
     AWS_OPEN_DATA_SOURCE,
     COPERNICUS_SOURCE,
@@ -498,7 +497,7 @@ class RailAccessAdapter(Adapter):
     store_network = staticmethod(vision_sites.store_network)
     load_network = staticmethod(vision_sites.load_network)
     triage_agent = staticmethod(vision_triage.triage)
-    choose_model = staticmethod(resolve_model)
+    choose_model = staticmethod(vision_triage.choose_model)
     web_search = staticmethod(search_web)
     clock = staticmethod(time.monotonic)
 

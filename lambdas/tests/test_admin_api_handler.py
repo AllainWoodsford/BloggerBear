@@ -1991,7 +1991,7 @@ def test_a_model_that_does_not_write_text_is_refused_and_the_pool_is_left_alone(
     status, refused = _set_pool({"candidates": ["model-a", "model-image"]})
 
     assert status == 400
-    assert refused["error"] == "model 'model-image' does not write text (pricing_unit: other)"
+    assert refused["error"] == "model 'model-image' does not write text (purpose: other)"
     assert _stored_pool()["candidates"] == ["model-kept"]
 
 
@@ -2050,6 +2050,67 @@ def test_a_pool_of_exactly_the_bound_is_taken(aws_resources):
     status, body = _set_pool({"candidates": most})
 
     assert status == 200 and body["candidates"] == most
+
+
+def _topic_body(**fields):
+    return {"topic_id": "new-topic", "name": "New Topic", "adapter": "github_trending", **fields}
+
+
+def test_a_model_classed_as_an_embedding_is_refused_wherever_a_model_is_named(aws_resources):
+    """model_fleet.suitable: the registry's say on a model, where the pool, a topic and the model
+    config name one. A model with no registry row passes, as it always has."""
+    _register_model("embed", model_purpose="embedding", model_inputs=["TEXT"])
+    _register_model("words", model_purpose="text", model_inputs=["TEXT"])
+    refusal = "model 'embed' does not write text (purpose: embedding)"
+
+    status, refused = _set_pool({"candidates": ["words", "embed"]})
+    assert (status, refused["error"]) == (400, refusal)
+
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        for field in ("model_id", "fallback_model_id"):
+            body = _topic_body(**{field: "embed"})
+            result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+            assert (result["statusCode"], json.loads(result["body"])["error"]) == (400, refusal), field
+        rotating = _topic_body(model_id_candidates=["words", "embed"])
+        result = admin_api_handler.handler(_event("POST /topics", body=rotating), None)
+        assert (result["statusCode"], json.loads(result["body"])["error"]) == (400, refusal)
+        fine = _topic_body(model_id="words", fallback_model_id="unregistered", model_id_candidates=["words"])
+        assert admin_api_handler.handler(_event("POST /topics", body=fine), None)["statusCode"] == 201
+
+        _put_topic()
+        changes = ({"model_id": "embed"}, {"fallback_model_id": "embed"}, {"model_id_candidates": ["embed"]})
+        for body in changes:
+            result = admin_api_handler.handler(
+                _event("PUT /topics/{topic_id}", path_params={"topic_id": TOPIC["topic_id"]}, body=body), None
+            )
+            assert (result["statusCode"], json.loads(result["body"])["error"]) == (400, refusal), body
+        result = admin_api_handler.handler(
+            _event(
+                "PUT /topics/{topic_id}",
+                path_params={"topic_id": TOPIC["topic_id"]},
+                body={"model_id": "words", "model_id_candidates": ["unregistered"]},
+            ),
+            None,
+        )
+        assert result["statusCode"] == 200
+
+    for body in ({"model_id": "embed"}, {"model_id": "words", "fallback_model_id": "embed"}):
+        result = admin_api_handler.handler(_event("PUT /model-config", body=body), None)
+        assert (result["statusCode"], json.loads(result["body"])["error"]) == (400, refusal), body
+    fine = {"model_id": "words", "fallback_model_id": "unregistered"}
+    assert admin_api_handler.handler(_event("PUT /model-config", body=fine), None)["statusCode"] == 200
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_model_catalog_job_routes_are_in_the_environments_terraform(env):
+    main = (Path(__file__).resolve().parents[2] / "infra" / "environments" / env / "main.tf").read_text(
+        encoding="utf-8"
+    )
+    admin_routes = main[: main.index('"GET /articles/{article_id}/feedback-status"')]
+    routes = [route for route in admin_api_handler._ROUTES if route.startswith("POST /models/")]
+    assert set(routes) == {"POST /models/reprice", "POST /models/discover", "POST /models/classify"}
+    for route in routes:
+        assert f'"{route}",' in admin_routes, route
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])

@@ -1222,11 +1222,12 @@ module "admin_api" {
     # `admin_cli model-rotation`.
     "GET /model-rotation",
     "PUT /model-rotation",
-    # The model catalog (docs/enhancements/archive/model-catalog-refresh.md): run the reprice or discover
-    # job now, and its settings and pause flags. See admin_api_handler.py's model catalog routes and
-    # `admin_cli models reprice|discover`, `admin_cli model-catalog`.
+    # The model catalog (docs/enhancements/archive/model-catalog-refresh.md): run the reprice, discover
+    # or classify job now, and its settings and pause flags. See admin_api_handler.py's model catalog
+    # routes and `admin_cli models reprice|discover|classify`, `admin_cli model-catalog`.
     "POST /models/reprice",
     "POST /models/discover",
+    "POST /models/classify",
     "GET /model-catalog-config",
     "PUT /model-catalog-config",
     "GET /reviewer-config",

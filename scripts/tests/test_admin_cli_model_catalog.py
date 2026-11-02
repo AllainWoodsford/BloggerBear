@@ -1,8 +1,9 @@
-"""The Admin CLI's model catalog commands: `models reprice`, `models discover` and `model-catalog
-get|set` (docs/enhancements/archive/model-catalog-refresh.md)."""
+"""The Admin CLI's model catalog commands: `models list`, `models reprice`, `models discover`,
+`models classify` and `model-catalog get|set` (docs/enhancements/archive/model-catalog-refresh.md)."""
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -44,6 +45,7 @@ def test_the_cli_sends_each_setting_as_the_api_takes_it():
 def test_the_cli_starts_the_jobs_and_reads_the_settings():
     assert cli("models", "reprice") == [("POST", "/models/reprice", None)]
     assert cli("models", "discover") == [("POST", "/models/discover", None)]
+    assert cli("models", "classify") == [("POST", "/models/classify", None)]
     assert cli("model-catalog", "get") == [("GET", "/model-catalog-config", None)]
 
 
@@ -122,3 +124,57 @@ def test_disabling_the_default_stops_when_not_sure_and_yes_skips_the_question():
 def test_disable_refuses_a_model_that_is_not_registered():
     with pytest.raises(admin_cli.CliError):
         run_disable(["models", "disable", "--model-id", "nope"], [FakeResponse(200, {"models": [ROW]})])
+
+
+LISTING = {
+    "models": [
+        {
+            "model_id": "words",
+            "model_purpose": "text",
+            "model_inputs": ["TEXT", "IMAGE"],
+            "enabled": True,
+            "access": "granted",
+            "input_price_usd_per_1k_tokens": 0.001,
+            "output_price_usd_per_1k_tokens": 0.005,
+        },
+        {"model_id": "embed", "model_purpose": "embedding", "enabled": False},
+        {
+            "model_id": "older",
+            "input_price_usd_per_1k_tokens": 0.002,
+            "output_price_usd_per_1k_tokens": 0.008,
+        },
+    ]
+}
+
+
+def run_list(argv, listing):
+    """Run a listing command against a canned GET /models answer."""
+    args = admin_cli.build_parser().parse_args(argv)
+    with (
+        patch.object(admin_cli, "signed_request", lambda *a, **k: FakeResponse(200, listing)),
+        patch.object(admin_cli, "_resolve_api_url", lambda a: "https://api"),
+        patch.object(admin_cli, "_resolve_region", lambda a: "ap-southeast-2"),
+    ):
+        args.func(args)
+
+
+def test_models_list_is_a_table_with_each_models_purpose(capsys):
+    run_list(["models", "list"], LISTING)
+
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert lines[0].split() == ["MODEL", "ID", "PURPOSE", "ENABLED", "ACCESS", "IN", "$/1K", "OUT", "$/1K"]
+    assert lines[1].split() == ["words", "text", "yes", "granted", "0.00100", "0.00500"]
+    assert lines[2].split() == ["embed", "embedding", "no"]
+    assert lines[3].split() == ["older", "unclassified", "yes", "0.00200", "0.00800"]
+    assert lines[1].index("text") == lines[3].index("unclassified")  # one column, padded
+    assert "`models classify`" in out  # how to class the older row
+
+
+def test_models_list_says_when_the_registry_is_empty_and_prints_json_when_asked(capsys):
+    run_list(["models", "list"], {"models": []})
+    out = capsys.readouterr().out
+    assert out.splitlines()[0].startswith("MODEL ID") and "no models are registered" in out
+
+    run_list(["models", "list", "--json"], LISTING)
+    assert json.loads(capsys.readouterr().out) == LISTING

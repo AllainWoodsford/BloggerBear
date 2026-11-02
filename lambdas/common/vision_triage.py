@@ -56,14 +56,23 @@ from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from common import costing, stats_tracking, vision_client
+from common import costing, model_fleet, stats_tracking, vision_client
 from common import vision_contract as contract
 from common.figures import plain_text
 from common.model_pricing import canonical_model_id
+from common.model_routing import resolve_model
 
 CATEGORY = "vision_triage"
 VERDICTS = ("real", "artefact")
 MAX_TOKENS = 700
+
+
+def choose_model(topic: dict | None) -> tuple[str, str | None]:
+    """The model the agent triages the topic's sites with, and its fallback: the topic's own
+    (common/model_routing.resolve_model), asked for a text model that also takes an image, since
+    the agent shows it the figure. A topic model that cannot is routed around for this call only;
+    the adapters call this where they once called resolve_model itself."""
+    return resolve_model(topic, need=model_fleet.TEXT_WITH_IMAGE_INPUT)
 MAX_REASON_CHARS = 300
 # How the loop stopped, in the trail's `stop`: the model answered (well-formed or not), Bedrock
 # failed, the deadline or the turn limit was reached, or there was no profile for the task. The

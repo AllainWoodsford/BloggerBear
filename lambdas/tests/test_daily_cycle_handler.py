@@ -1446,6 +1446,32 @@ def test_a_topics_own_model_id_candidates_are_never_touched_by_rotation(
     mock_set.assert_called_once_with("github-trending", "model-a")
 
 
+def test_rotation_passes_over_a_pooled_model_that_is_disabled_or_not_a_text_model(
+    s3_bucket, _no_rotation_pool_by_default
+):
+    """The pool is checked when it is set, but a model may be disabled or classed as something
+    other than a text model afterwards (common/model_fleet.rotation_pool): the roll forward never
+    starts the next run on one."""
+    mock_get, mock_set = _no_rotation_pool_by_default
+    mock_get.return_value = ["embed", "off", "words"]
+    registry = [
+        {"model_id": "embed", "model_purpose": "embedding", "model_inputs": ["TEXT"]},
+        {"model_id": "off", "enabled": False, "model_purpose": "text"},
+        {"model_id": "words", "model_purpose": "text", "model_inputs": ["TEXT"]},
+    ]
+
+    # The pick takes the first it is offered: unfiltered, that would be "embed".
+    with (
+        patch("common.model_fleet.dynamo.list_models", return_value=registry),
+        patch("daily_cycle_handler.random.choice", side_effect=lambda c: c[0]) as mock_choice,
+    ):
+        result, _ = _run_a_full_cycle(compliant=True)
+
+    assert result["status"] == "published"
+    mock_choice.assert_called_once_with(["words"])
+    mock_set.assert_called_once_with("github-trending", "words")
+
+
 def test_top_voted_article_excerpt_appended_to_draft_prompt_only(s3_bucket):
     ideation_response = "Angle one\nAngle two\nAngle three"
     invoke_responses = [ideation_response, "Draft body text.", "Some Title"]

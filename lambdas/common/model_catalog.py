@@ -13,6 +13,14 @@ on its own weekly cron:
   longest ago first (so new, unpriced ones lead), and checks them a few at a time.
 * **cycle** (weekly, Fridays) refreshes the topics' model rotations (common/model_fleet.py), and
   discover prunes the registry once it is full (model_fleet.prune).
+* **classify** (on demand only, `models classify`) records each registry model's purpose
+  (`model_purpose`: text, image, embedding, ...) and inputs (`model_inputs`) from what Bedrock
+  lists, as discover does for the models it adds, so rows from before purposes were recorded are
+  judged by them (model_fleet.suitable) rather than by their pricing unit.
+
+Each job prints one `model_catalog_job` evidence line when it ends (common/evidence.py), with its
+counts: what discover added and found denied, what pruning removed, what a reprice changed and a
+review put back, what classify recorded.
 
 A queue is worked through by **ticks**: each checks CHECKS_PER_TICK models, then schedules the
 next one TICK_MINUTES later (one-shot schedules that delete themselves once they have fired), so
@@ -53,7 +61,8 @@ from datetime import UTC, datetime, timedelta
 
 import boto3
 
-from common import dynamo, model_fleet
+from common import dynamo, evidence, model_fleet
+from common.model_pricing import canonical_model_id
 from common.model_routing import resolve_model
 from common.naming import environment_prefix
 
@@ -64,6 +73,8 @@ ACTIVE_RUN_FIELD = "active_run_id"
 FAILURE_KIND = "model_pricing"
 SNAPSHOT_PREFIX = "pricing/"
 JOBS = ("discover", "reprice", "cycle")
+# On demand only (no schedule, so no pause flag): recorded on the state row like the three above.
+CLASSIFY_JOB = "classify"
 REVIEW_JOB = "review"
 TICK_JOB = "tick"
 
@@ -476,10 +487,63 @@ def pricing_unit(output_modalities: list[str]) -> str:
     return "tokens" if "TEXT" in (output_modalities or []) else "other"
 
 
+# What a model is for, from what Bedrock says it writes (model_purpose), in the order one that
+# writes several kinds is classed: text first. `other` is a listed model writing none of these;
+# `unknown` is a registry model Bedrock no longer lists (classify).
+PURPOSES = ("text", "image", "embedding", "video", "speech", "other", "unknown")
+UNKNOWN_PURPOSE = "unknown"
+
+
+def model_purpose(output_modalities: list[str] | None) -> str:
+    """A model's purpose from its output modalities: `text` when TEXT is among them, else the first
+    of image, embedding, video and speech it writes, else `other`."""
+    outputs = {str(m).upper() for m in (output_modalities or [])}
+    for purpose in PURPOSES[:-2]:
+        if purpose.upper() in outputs:
+            return purpose
+    return "other"
+
+
+def model_inputs(input_modalities: list[str] | None) -> list[str]:
+    """A model's input modalities as the registry records them: upper case, in Bedrock's order,
+    each once."""
+    return list(dict.fromkeys(str(m).upper() for m in (input_modalities or [])))
+
+
+def _system_profiles(client) -> list[dict]:
+    """Every system-defined inference profile Bedrock lists, page by page."""
+    profiles = []
+    kwargs = {"typeEquals": "SYSTEM_DEFINED"}
+    while True:
+        page = client.list_inference_profiles(**kwargs)
+        profiles.extend(page.get("inferenceProfileSummaries") or [])
+        if not page.get("nextToken"):
+            return profiles
+        kwargs["nextToken"] = page["nextToken"]
+
+
+def _profile_base(profile: dict, summaries: dict) -> dict | None:
+    """The foundation model summary (of `summaries`) an inference profile is a route to, or None."""
+    bases = {_base_id_from_arn(m.get("modelArn")) for m in profile.get("models") or []}
+    return next((summaries[b] for b in bases if b in summaries), None)
+
+
+def _registry_shaped(model_id: str, summary: dict) -> dict:
+    return {
+        "model_id": model_id,
+        "display_name": summary.get("modelName") or model_id,
+        "provider": (summary.get("providerName") or "unknown").lower(),
+        "pricing_unit": pricing_unit(summary.get("outputModalities") or []),
+        "model_purpose": model_purpose(summary.get("outputModalities")),
+        "model_inputs": model_inputs(summary.get("inputModalities")),
+    }
+
+
 def account_models(region: str, client=None) -> list[dict]:
     """Every model this account can call in `region`, from every provider, registry-shaped: the
     on-demand foundation models, and the system-defined inference profiles (au., apac., global.,
-    ...), which is how most models are called from outside us-east-1."""
+    ...), which is how most models are called from outside us-east-1. Only ACTIVE ones: what
+    discover may add (listed_models is everything Bedrock lists)."""
     client = client or boto3.client("bedrock", region_name=region)
     active_models = {}
     candidates = {}
@@ -491,31 +555,32 @@ def account_models(region: str, client=None) -> list[dict]:
             candidates[summary["modelId"]] = summary
 
     profiles = {}
-    kwargs = {"typeEquals": "SYSTEM_DEFINED"}
-    while True:
-        page = client.list_inference_profiles(**kwargs)
-        for profile in page.get("inferenceProfileSummaries") or []:
-            if profile.get("status", "ACTIVE") != "ACTIVE":
-                continue
-            bases = {_base_id_from_arn(m.get("modelArn")) for m in profile.get("models") or []}
-            base = next((active_models[b] for b in bases if b in active_models), None)
-            if base is not None:
-                profiles[profile["inferenceProfileId"]] = base
-        if not page.get("nextToken"):
-            break
-        kwargs["nextToken"] = page["nextToken"]
+    for profile in _system_profiles(client):
+        if profile.get("status", "ACTIVE") != "ACTIVE":
+            continue
+        base = _profile_base(profile, active_models)
+        if base is not None:
+            profiles[profile["inferenceProfileId"]] = base
 
-    found = []
-    for model_id, summary in sorted({**candidates, **profiles}.items()):
-        found.append(
-            {
-                "model_id": model_id,
-                "display_name": summary.get("modelName") or model_id,
-                "provider": (summary.get("providerName") or "unknown").lower(),
-                "pricing_unit": pricing_unit(summary.get("outputModalities") or []),
-            }
-        )
-    return found
+    callable_here = {**candidates, **profiles}
+    return [_registry_shaped(model_id, summary) for model_id, summary in sorted(callable_here.items())]
+
+
+def listed_models(region: str, client=None) -> dict[str, dict]:
+    """{model id: registry-shaped} for every model Bedrock lists in `region`, however it is called
+    and whatever its lifecycle: every foundation model (on demand or only through a profile; ACTIVE
+    or LEGACY, which still writes what it wrote), and every system-defined inference profile whose
+    base model is among them. What classify takes a model's purpose from, and the meaning of
+    "listed" there; discover adds only from account_models. A purpose says what a model writes,
+    not whether it can be called: the access probe and `enabled` say that."""
+    client = client or boto3.client("bedrock", region_name=region)
+    summaries = {s["modelId"]: s for s in client.list_foundation_models().get("modelSummaries") or []}
+    listed = dict(summaries)
+    for profile in _system_profiles(client):
+        base = _profile_base(profile, summaries)
+        if base is not None:
+            listed[profile["inferenceProfileId"]] = base
+    return {model_id: _registry_shaped(model_id, summary) for model_id, summary in sorted(listed.items())}
 
 
 # --- runs -----------------------------------------------------------------------------------------
@@ -890,7 +955,9 @@ def _end_pass(run: dict, settings: dict, now: datetime) -> dict:
     work = run.pop("pass")
     if work["kind"] == "price":
         if not run["changes"]:
-            return _finalise(run, now)
+            run = _finalise(run, now)
+            _pass_line(run, "reprice")
+            return run
         run["status"] = "reviewing"
         run["reviews_due"] = [_now_iso(now + timedelta(hours=h)) for h in settings["review_after_hours"]]
         dynamo.put_config_row(run)
@@ -898,6 +965,7 @@ def _end_pass(run: dict, settings: dict, now: datetime) -> dict:
             schedule_reviews(run["run_id"], run["reviews_due"])
         except Exception as exc:  # noqa: BLE001 - the next job runs an overdue review itself
             print(f"model_catalog: could not schedule the reviews of run {run['run_id']}: {exc!r}")
+        _pass_line(run, "reprice")
         return run
 
     number = work["number"]
@@ -910,6 +978,7 @@ def _end_pass(run: dict, settings: dict, now: datetime) -> dict:
     if work["reverted"]:
         _record_failure(run, work["reverted"], now)
     last = len(run["reviews_done"]) >= len(run["reviews_due"])
+    put_back = late_dropped = 0  # this review's quiet put-backs, and the drops among them
     if last:
         # Deferred at the last review: kept if an earlier review confirmed it, else put back
         # quietly (an outage is not a wrong price), for the next reprice to try again.
@@ -921,10 +990,16 @@ def _end_pass(run: dict, settings: dict, now: datetime) -> dict:
                 why = "no review could look the price up"
                 run["unconfirmed"] = [*run.get("unconfirmed", []), {**deferred, "why": why}]
                 print(f"model_catalog: run {run['run_id']} put back {deferred['model_id']}: {why}")
+                put_back += 1
             else:
                 run["dropped"] = [*run["dropped"], {**deferred, "why": CHANGED_SINCE}]
+                late_dropped += 1
     if last or work["passed"] + len(work["deferred"]) == 0:
-        return _finalise(run, now)
+        # The line follows the close, so it carries how the run ended (_finalise's status).
+        run = _finalise(run, now)
+        _pass_line(run, REVIEW_JOB, work, unconfirmed=put_back, late_dropped=late_dropped)
+        return run
+    _pass_line(run, REVIEW_JOB, work)
     while review_is_due(run, now) and _skip_if_saturated(run, settings, now):
         pass  # a saturated review that fell due meanwhile is skipped (never the last)
     if review_is_due(run, now):
@@ -938,6 +1013,42 @@ def _end_pass(run: dict, settings: dict, now: datetime) -> dict:
         return run
     dynamo.put_config_row(run)
     return run
+
+
+def _pass_line(
+    run: dict, job: str, work: dict | None = None, *, unconfirmed: int = 0, late_dropped: int = 0
+) -> None:
+    """The run's `model_catalog_job` evidence line for the pass that just ended: what the pricing
+    pass changed (`reprice`), or what a review passed, deferred, put back and dropped. `reverted`
+    is what the review failed (the run's `reverted`, and its failure record); `unconfirmed` what the
+    last review put back quietly because no review could look its price up; `review_dropped` what
+    someone else changed meanwhile, at any review (`late_dropped` of them while being put back)."""
+    counts = (
+        {
+            "repriced": len(run.get("changes") or []),
+            "confirmed": run.get("confirmed", 0),
+            "unpriced": len(run.get("unpriced") or []),
+            "lookup_errors": run.get("lookup_errors", 0),
+            "web_lookups": run.get("web_lookups", 0),
+        }
+        if work is None
+        else {
+            "review": work["number"],
+            "passed": work["passed"],
+            "deferred": len(work["deferred"]),
+            "reverted": len(work["reverted"]),
+            "unconfirmed": unconfirmed,
+            "review_dropped": len(work["dropped"]) + late_dropped,
+        }
+    )
+    evidence.emit(
+        "model_catalog_job",
+        job=job,
+        trigger=run.get("trigger"),
+        status=run.get("status"),
+        run_id=run.get("run_id"),
+        **counts,
+    )
 
 
 def next_review_at(run: dict) -> datetime | None:
@@ -1083,6 +1194,25 @@ def write_snapshot(run: dict, kept: list[dict], now: datetime, client=None) -> s
 # answers it is usable. Its tokens are tallied with the rest of the catalog's (model_pricing).
 GRANTED, DENIED, UNKNOWN = "granted", "denied", "unknown"
 ACCESS_FIELDS = ("access", "access_checked_at", "access_error")
+# What the Model Ranch keeps on a row: its purpose and inputs (discover, classify), the evals
+# rollup's ratings, the roles it plays (model_fleet.protected_models' codes) and the gate override.
+RANCH_FIELDS = (
+    "model_purpose",
+    "model_inputs",
+    "daily_perf",
+    "weekly_perf",
+    "monthly_perf",
+    "total_perf",
+    "perf_events",
+    "perf_updated_at",
+    "model_roles",
+    "ungated_until",
+)
+# Everything the catalog and the ranch record on a Models row besides what `models add` sets. A
+# writer that overwrites a whole row (admin_api_handler._put_model) carries these through; the
+# catalog's own writes (add_model_if_missing, set_model_fields) never overwrite a row, so they keep
+# them by construction.
+CATALOG_MODEL_FIELDS = ("region", "discovered_at", "pricing_unit", *ACCESS_FIELDS, *RANCH_FIELDS)
 # These say the account cannot call the model (or not through Converse on demand). Anything else
 # (throttling, an outage, a timeout) says nothing about access: UNKNOWN, checked again later.
 DENIED_CODES = frozenset({"AccessDeniedException", "ResourceNotFoundException", "ValidationException"})
@@ -1132,14 +1262,15 @@ def recently_denied(now: datetime) -> dict:
 
 
 def recheck_access(budget: int, now: datetime, probe) -> dict:
-    """Probe up to `budget` registry text models whose access is not known to be granted: never
-    checked first, then unknown, then denied, the longest ago first within each."""
+    """Probe up to `budget` registry text models (model_fleet.suitable) whose access is not known
+    to be granted: never checked first, then unknown, then denied, the longest ago first within
+    each."""
     rank = {None: 0, UNKNOWN: 1, DENIED: 2}
     pool = sorted(
         (
             m
             for m in dynamo.list_models()
-            if (m.get("pricing_unit") or "tokens") == "tokens" and m.get("access") != GRANTED
+            if model_fleet.suitable(m, model_fleet.TEXT) and m.get("access") != GRANTED
         ),
         key=lambda m: (rank.get(m.get("access"), 0), m.get("access_checked_at") or "", m["model_id"]),
     )
@@ -1196,10 +1327,68 @@ def discover(trigger: str, settings: dict, now: datetime, *, bedrock=None, probe
             "status": "done",
             "added": len(added),
             "added_ids": [m["model_id"] for m in added],
+            "denied": len(denied),
             "denied_ids": list(denied)[:RESULT_IDS_MAX],
             "not_added": len(new) - len(added) - len(denied),
         }
     result["access_checks"] = recheck_access(budget, now, probe)
+    evidence.emit(
+        "model_catalog_job",
+        job="discover",
+        trigger=trigger,
+        status=result["status"],
+        models=len(have),
+        discovered=result.get("added", 0),
+        denied=result.get("denied", 0),
+        not_added=result.get("not_added", 0),
+        access_checked=result["access_checks"]["checked"],
+    )
+    return result
+
+
+def classify(trigger: str, now: datetime, *, bedrock=None) -> dict:
+    """The classify job: record every registry model's purpose and inputs from what Bedrock lists
+    now (listed_models), as discover records them for the models it adds, so a row from before
+    purposes were recorded is judged by them (model_fleet.suitable) and not by its pricing unit.
+    Listed means anywhere in Bedrock's answer, whatever the model's lifecycle and however it is
+    called: a LEGACY model, or one called only through a profile, keeps its purpose. A model in
+    neither the foundation models nor the system profiles (an inference-profile ARN is looked up by
+    the profile it names) gets the purpose `unknown` and keeps its inputs. A row already saying the
+    same is left alone, so the job may be run any number of times; a listing that fails writes
+    nothing (the exception is the handler's)."""
+    listed = listed_models(_region(), bedrock)
+    models = dynamo.list_models()
+    classified, unknown, unchanged = [], [], 0
+    for model in models:
+        found = listed.get(canonical_model_id(model["model_id"]))
+        updates = (
+            {"model_purpose": found["model_purpose"], "model_inputs": found["model_inputs"]}
+            if found
+            else {"model_purpose": UNKNOWN_PURPOSE}
+        )
+        if all(model.get(field) == value for field, value in updates.items()):
+            unchanged += 1
+        elif dynamo.set_model_fields(model["model_id"], updates, expected={}):
+            (classified if found else unknown).append(model["model_id"])
+    result = {
+        "status": "done",
+        "models": len(models),
+        "classified": len(classified),
+        "classified_ids": classified[:RESULT_IDS_MAX],
+        "unknown": len(unknown),
+        "unknown_ids": unknown[:RESULT_IDS_MAX],
+        "unchanged": unchanged,
+    }
+    evidence.emit(
+        "model_catalog_job",
+        job=CLASSIFY_JOB,
+        trigger=trigger,
+        status="done",
+        models=len(models),
+        classified=len(classified),
+        unknown=len(unknown),
+        unchanged=unchanged,
+    )
     return result
 
 
@@ -1213,6 +1402,8 @@ def run_job(job: str, trigger: str, settings: dict, now: datetime) -> dict:
         result = discover(trigger, settings, now)
     elif job == "cycle":
         result = model_fleet.cycle(settings, now)
+    elif job == CLASSIFY_JOB:
+        result = classify(trigger, now)
     else:
         result = reprice(trigger, settings, now)
     dynamo.update_config_row(
@@ -1294,6 +1485,7 @@ def handle(event: dict, now: datetime | None = None, own_arn: str | None = None)
     * `{"job": "cycle", "trigger": "schedule"}`: its weekly schedule; skipped while it is paused.
     * `{"job": "discover"|"reprice"}`: the admin API (`models discover|reprice`); runs even when
       paused.
+    * `{"job": "classify"}`: the admin API (`models classify`); no schedule, so no pause flag.
     * `{"job": "review", "run_id": ...}`: one of a run's review schedules.
     * `{"job": "tick", "run_id": ..., "pass": ..., "tick": n}`: the next tick of a run's pass.
 
@@ -1308,10 +1500,10 @@ def handle(event: dict, now: datetime | None = None, own_arn: str | None = None)
         return {"status": "ok", "review": run_review(event.get("run_id"), settings, now)}
     if job == TICK_JOB:
         return {"status": "ok", "tick": run_tick(event, settings, now)}
-    if job not in JOBS:
+    if job not in JOBS and job != CLASSIFY_JOB:
         return {"status": "ignored", "reason": f"unknown job {job!r}"}
     trigger = "schedule" if event.get("trigger") == "schedule" else "admin"
-    if trigger == "schedule" and not settings[f"{job}_enabled"]:
+    if trigger == "schedule" and job in JOBS and not settings[f"{job}_enabled"]:
         return {"status": "paused", "job": job}
     caught_up = settle_overdue(settings, now)
     result = {"status": "ran", job: run_job(job, trigger, settings, now)}

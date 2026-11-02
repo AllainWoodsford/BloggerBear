@@ -66,7 +66,6 @@ from datetime import UTC, datetime
 
 from common import vision_client, vision_decisions, vision_sites, vision_triage
 from common.adapters.base import Adapter, render_review_evidence
-from common.model_routing import resolve_model
 from common.vision_sites import (
     ASSETS_SHIPS,
     AWS_OPEN_DATA_SOURCE,
@@ -178,7 +177,7 @@ class SatelliteVisionAdapter(Adapter):
     store_image = staticmethod(store_image)
     load_image = staticmethod(load_image)
     triage_agent = staticmethod(vision_triage.triage)
-    choose_model = staticmethod(resolve_model)
+    choose_model = staticmethod(vision_triage.choose_model)
     clock = staticmethod(time.monotonic)
 
     # Set by fetch_state for material_diff on the same instance.
