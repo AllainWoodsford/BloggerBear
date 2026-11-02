@@ -373,3 +373,21 @@ variable "web_search_region" {
     error_message = "web_search_region must be one of the Web Search Tool's regions: us-east-1, eu-west-1 or ap-northeast-1."
   }
 }
+
+variable "worker_concurrency" {
+  type        = number
+  default     = 2
+  description = <<-EOT
+    How many queue jobs the pipeline's workers may run at once: the maximum_concurrency of the
+    work queue's event source mapping once the queue platform lands (infra/modules/work-queue,
+    phase Q1 of docs/enhancements/model-ranch-prompt-assets-evals.md), which is the one knob that
+    caps the model calls and source requests in flight however many topics there are. At least 2,
+    the smallest value an SQS event source mapping accepts. Set from the WORKER_CONCURRENCY GitHub
+    variable (docs/configuration.md); nothing reads it until the module is added.
+  EOT
+
+  validation {
+    condition     = var.worker_concurrency >= 2
+    error_message = "worker_concurrency must be at least 2: the smallest maximum_concurrency an SQS event source mapping accepts."
+  }
+}

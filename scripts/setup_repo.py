@@ -225,6 +225,10 @@ NOT_ASKED = {
     # Whether dev's assistant may read dev's own firewall logs (docs/configuration.md). Off unless
     # someone sets it to "true" by hand; a first deploy never needs it, so this script does not ask.
     "OPS_FIREWALL_REVIEW_DEV",
+    # How many queue jobs the pipeline's workers may run at once (docs/configuration.md). Unset
+    # means 2, the smallest an SQS event source mapping accepts and what a first deploy wants;
+    # an operator raises it by hand once the queue platform is on, so this script does not ask.
+    "WORKER_CONCURRENCY",
 }
 
 # Secrets the workflows still read as `secrets.X || vars.X`, left over from when they were

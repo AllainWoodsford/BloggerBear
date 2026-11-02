@@ -803,6 +803,12 @@ locals {
     # need no variable: the Lambda passes them its own ARN. The on/off switches are DynamoDB's
     # (`model-catalog` row, discover_enabled / reprice_enabled, on unless set to false).
     MODEL_CATALOG_FUNCTION_NAME = "${var.unique_name_prefix}-production-model-catalog"
+
+    # The FIFO work queue the dispatcher sends research jobs to (phase Q of
+    # docs/enhancements/model-ranch-prompt-assets-evals.md). Empty until the work-queue module
+    # lands (Q1), when it becomes module.work_queue.work_queue_url; common/dispatch.py is not
+    # called by any handler before then, so nothing reads it yet.
+    WORK_QUEUE_URL = ""
   }
 }
 

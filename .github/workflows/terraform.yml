@@ -137,6 +137,10 @@ jobs:
     # firewall's shared one). Read like VISION_ENABLED: only `true`, in any letter case, turns it
     # on; unset or anything else is `false`, the variable's own default (docs/configuration.md).
     # Production's assistant always has the tool, so the release workflow does not read it.
+    # TF_VAR_worker_concurrency: how many queue jobs the pipeline's workers may run at once, from
+    # the WORKER_CONCURRENCY variable, else '2' (the variable's own default, and the smallest value
+    # an SQS event source mapping accepts; the plan refuses less). A plain variable: a number is not
+    # a secret. Nothing reads it until the work-queue module lands (docs/configuration.md).
     env:
       TF_VAR_waf_regional_enabled: ${{ vars.WAF_REGIONAL_ENABLED_DEV || vars.WAF_REGIONAL_ENABLED || 'true' }}
       TF_VAR_waf_admin_allowlist: ${{ vars.WAF_ADMIN_ALLOWLIST_DEV || vars.WAF_ADMIN_ALLOWLIST || 'true' }}
@@ -152,6 +156,7 @@ jobs:
       TF_VAR_reviewer_enabled: ${{ vars.REVIEWER_ENABLED == 'false' && 'false' || 'true' }}
       TF_VAR_web_search_region: ${{ vars.WEB_SEARCH_REGION_DEV || vars.WEB_SEARCH_REGION || 'ap-northeast-1' }}
       TF_VAR_ops_firewall_review: ${{ vars.OPS_FIREWALL_REVIEW_DEV == 'true' && 'true' || 'false' }}
+      TF_VAR_worker_concurrency: ${{ vars.WORKER_CONCURRENCY || '2' }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

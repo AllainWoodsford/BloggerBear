@@ -772,10 +772,15 @@ def _cmd_pipeline_config_set(args: argparse.Namespace) -> None:
         body["assistant_access"] = args.assistant_access or None  # '' clears it (back to open)
     if args.stagger_minutes is not None:
         body["stagger_minutes"] = _parse_stagger_minutes(args.stagger_minutes)
+    if args.dispatch_shadow is not None:
+        body["dispatch_shadow"] = {"on": True, "off": False}.get(args.dispatch_shadow)  # '' clears it
+    if args.daily_starts_per_tick is not None:
+        body["daily_starts_per_tick"] = _parse_whole("--daily-starts-per-tick", args.daily_starts_per_tick)
     if not body:
         raise CliError(
             "pipeline-config set needs --research-interval-hours, --review-mode, "
-            "--review-on-unavailable, --assistant-access and/or --stagger-minutes"
+            "--review-on-unavailable, --assistant-access, --stagger-minutes, --dispatch-shadow "
+            "and/or --daily-starts-per-tick"
         )
     _do_request(args, "PUT", "/pipeline-config", body=body)
     if "stagger_minutes" in body:
@@ -1992,7 +1997,8 @@ def build_parser() -> argparse.ArgumentParser:
         "pipeline-config",
         help=(
             "Pipeline-wide settings (the default research interval, the draft review mode, "
-            "who may reach the assistant, the stagger between topics)"
+            "who may reach the assistant, the stagger between topics, the dispatcher's shadow "
+            "mode and start cap)"
         ),
     )
     pipeline_config_sub = pipeline_config_parser.add_subparsers(dest="action", required=True)
@@ -2050,6 +2056,27 @@ def build_parser() -> argparse.ArgumentParser:
             "heartbeat at :05 past, slot 2's at :10, and every daily cycle one slot past the "
             "hour's last heartbeat, then one slot apart; 0 turns it off; '' clears it (back to "
             "5). Then run `topics reschedule`"
+        ),
+    )
+    pipeline_config_set.add_argument(
+        "--dispatch-shadow",
+        dest="dispatch_shadow",
+        default=None,
+        choices=["on", "off", ""],
+        help=(
+            "The dispatcher's shadow mode for topics still on their schedules: 'on' (the default) "
+            "only records on each topic what it would have sent and counts mismatches against the "
+            "schedules; 'off' leaves those topics alone. A topic on the queue is dispatched either "
+            "way. '' clears it (back to on)"
+        ),
+    )
+    pipeline_config_set.add_argument(
+        "--daily-starts-per-tick",
+        dest="daily_starts_per_tick",
+        default=None,
+        help=(
+            "Daily cycles the dispatcher may start in one minute (1-10); the rest wait for the next "
+            "minute. '' clears it (back to 3)"
         ),
     )
     pipeline_config_set.set_defaults(func=_cmd_pipeline_config_set)

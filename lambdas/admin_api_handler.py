@@ -41,6 +41,7 @@ import boto3
 
 from common import (
     backup,
+    dispatch,
     equipment,
     evidence,
     feedback_limits,
@@ -2895,6 +2896,7 @@ def _put_model_rotation_route(event: dict) -> dict:
 
 def _get_pipeline_config_route(event: dict) -> dict:
     config = get_pipeline_config() or {}
+    dispatcher = dispatch.effective_settings(config)
     return _response(
         200,
         {
@@ -2912,6 +2914,10 @@ def _get_pipeline_config_route(event: dict) -> dict:
             "stagger_minutes": config.get("stagger_minutes"),
             "effective_stagger_minutes": resolve_stagger_minutes(config),
             "default_stagger_minutes": DEFAULT_STAGGER_MINUTES,
+            "dispatch_shadow": config.get("dispatch_shadow"),
+            "effective_dispatch_shadow": dispatcher["dispatch_shadow"],
+            "daily_starts_per_tick": config.get("daily_starts_per_tick"),
+            "effective_daily_starts_per_tick": dispatcher["daily_starts_per_tick"],
         },
     )
 
@@ -2931,6 +2937,11 @@ def _put_pipeline_config_route(event: dict) -> dict:
     - `stagger_minutes`: the minutes between one topic's schedules and the next
       (common/stagger.py; 0 turns staggering off). Takes effect on each topic's next write,
       or on every topic at once with POST /topics/reschedule.
+    - `dispatch_shadow`: whether the dispatcher (common/dispatch.py) only records what it
+      would have sent for the topics still on their schedules (true, the default) or sends
+      nothing for them at all (false). A topic on the queue is dispatched either way.
+    - `daily_starts_per_tick`: how many daily cycles the dispatcher may start in one minute
+      (1 to 10; the default is 3). The rest wait for the next minute.
 
     A setting that isn't in the body is left as it is.
     """
@@ -2965,11 +2976,18 @@ def _put_pipeline_config_route(event: dict) -> dict:
         if stagger_problem:
             return _error(400, f"'stagger_minutes' {stagger_problem}")
         updates["stagger_minutes"] = body["stagger_minutes"]
+    for name in dispatch.SETTINGS:
+        if name in body:
+            dispatch_problem = dispatch.validate_setting(name, body[name])
+            if dispatch_problem:
+                return _error(400, dispatch_problem)
+            updates[name] = body[name]
     if not updates:
         return _error(
             400,
             "send 'research_interval_hours', 'review_mode', 'review_on_unavailable', "
-            "'assistant_access' and/or 'stagger_minutes' (null clears a setting)",
+            "'assistant_access', 'stagger_minutes', 'dispatch_shadow' and/or "
+            "'daily_starts_per_tick' (null clears a setting)",
         )
 
     put_pipeline_config(**updates)

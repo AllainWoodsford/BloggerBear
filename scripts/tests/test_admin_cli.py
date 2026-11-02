@@ -932,7 +932,7 @@ def test_pipeline_config_set_with_nothing_to_set_is_refused(capsys):
     m.assert_not_called()
     assert (
         "needs --research-interval-hours, --review-mode, --review-on-unavailable, "
-        "--assistant-access and/or --stagger-minutes"
+        "--assistant-access, --stagger-minutes, --dispatch-shadow and/or --daily-starts-per-tick"
     ) in capsys.readouterr().err
 
 
@@ -998,6 +998,57 @@ def test_pipeline_config_assistant_access_rejects_a_value_that_does_not_exist(va
             _run(["pipeline-config", "set", "--assistant-access", value])
     assert exc_info.value.code != 0
     m.assert_not_called()
+
+
+@pytest.mark.parametrize("flag, sent", [("on", True), ("off", False), ("", None)])
+def test_pipeline_config_sets_and_clears_the_dispatchers_shadow_mode(flag, sent):
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "set", "--dispatch-shadow", flag])
+    assert m.call_args.args[:3] == ("PUT", "https://api.example.com", "/pipeline-config")
+    assert m.call_args.kwargs["body"] == {"dispatch_shadow": sent}
+
+
+@pytest.mark.parametrize("value", ["true", "yes", "shadow", "1"])
+def test_pipeline_config_dispatch_shadow_takes_only_on_and_off(value):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["pipeline-config", "set", "--dispatch-shadow", value])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+
+
+def test_pipeline_config_sets_and_clears_the_dispatchers_daily_start_cap():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "set", "--daily-starts-per-tick", "5"])
+    assert m.call_args.kwargs["body"] == {"daily_starts_per_tick": 5}
+
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "set", "--daily-starts-per-tick", ""])
+    assert m.call_args.kwargs["body"] == {"daily_starts_per_tick": None}
+
+
+def test_a_daily_start_cap_that_is_not_a_whole_number_is_refused_before_any_request(capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["pipeline-config", "set", "--daily-starts-per-tick", "three"])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+    assert "--daily-starts-per-tick must be a whole number" in capsys.readouterr().err
+
+
+def test_the_dispatcher_settings_can_go_with_the_others_in_one_request():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(
+            [
+                "pipeline-config", "set", "--stagger-minutes", "3",
+                "--dispatch-shadow", "off", "--daily-starts-per-tick", "2",
+            ]
+        )
+    assert m.call_args.kwargs["body"] == {
+        "stagger_minutes": 3,
+        "dispatch_shadow": False,
+        "daily_starts_per_tick": 2,
+    }
 
 
 def test_pipeline_config_assistant_access_goes_with_the_other_settings_untouched():
